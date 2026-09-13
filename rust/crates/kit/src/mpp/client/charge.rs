@@ -1,11 +1,10 @@
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::TransactionSigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_system_interface::instruction as system_instruction;
-use solana_transaction::Transaction;
+use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
 use crate::mpp::error::Error;
@@ -14,7 +13,7 @@ use crate::mpp::protocol::core::{
 };
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
-    check_transaction_packet_size, programs, CredentialPayload, MethodDetails, Split,
+    check_transaction_size, programs, CredentialPayload, MethodDetails, Split,
     MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS, MAX_MEMO_BYTES, SOLANA_MAX_COMPUTE_UNIT_LIMIT,
 };
 
@@ -45,6 +44,10 @@ pub async fn build_charge_transaction(
 /// Options for building a Solana charge transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildChargeTransactionOptions {
+    /// Highest message version the signer can sign, when that is below what
+    /// the challenge accepts. The Ledger Solana app signs version 0 but not
+    /// yet version 1. `None` takes the highest version the challenge accepts.
+    pub max_tx_version: Option<crate::core::tx::TxVersion>,
     /// Optional root payment memo. Spec-aligned callers pass `ChargeRequest.externalId`.
     pub external_id: Option<String>,
     /// Opt-in: sign for an unknown Token-2022 mint.
@@ -180,8 +183,8 @@ pub struct PreparedCharge {
     /// The compiled, unsigned transaction. Its `signatures` vec is already
     /// sized to `num_required_signatures` (all-zero placeholders), so its
     /// serialized length equals the length after signing — see
-    /// [`check_transaction_packet_size`](crate::mpp::protocol::solana::check_transaction_packet_size).
-    pub transaction: Transaction,
+    /// [`check_transaction_size`](crate::mpp::protocol::solana::check_transaction_size).
+    pub transaction: VersionedTransaction,
     /// The fee payer compiled into `transaction` — the signer's own pubkey
     /// unless the challenge specified a server-side fee payer.
     pub fee_payer: Pubkey,
@@ -210,7 +213,7 @@ pub struct TransferEntry {
 /// its primary-transfer-plus-splits shape onto this, and a future direct
 /// `pay push` CSV batch path can call it directly (subject to the same
 /// packet-size limit — see
-/// [`check_transaction_packet_size`](crate::mpp::protocol::solana::check_transaction_packet_size)).
+/// [`check_transaction_size`](crate::mpp::protocol::solana::check_transaction_size)).
 ///
 /// Does NOT include compute-budget instructions — callers that want a
 /// compute-budget preamble (like [`build_prepared_charge`]) push it
@@ -309,12 +312,10 @@ pub async fn build_prepared_charge(
     options.compute_budget.validate()?;
 
     let mut instructions = Vec::new();
-    instructions.push(compute_unit_price_ix(
-        options.compute_budget.compute_unit_price_micro_lamports,
-    ));
-    instructions.push(compute_unit_limit_ix(
+    let budget = crate::core::tx::ComputeBudget::new(
         options.compute_budget.compute_unit_limit,
-    ));
+        options.compute_budget.compute_unit_price_micro_lamports,
+    );
 
     let mint = try_resolve_mint(currency, method_details.network.as_deref())?;
     let has_ata_creation_splits = splits
@@ -362,12 +363,21 @@ pub async fn build_prepared_charge(
     let blockhash = resolve_blockhash(rpc, method_details)?;
 
     let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
-    let message = Message::new_with_blockhash(&instructions, Some(&fee_payer), &blockhash);
-    let transaction = Transaction::new_unsigned(message);
+    let version = crate::core::tx::negotiate(
+        method_details.transaction_versions.as_deref(),
+        options.max_tx_version,
+    )?;
+    let transaction = crate::core::tx::build_unsigned_unchecked(
+        version,
+        &fee_payer,
+        &instructions,
+        blockhash,
+        Some(&budget),
+    )?;
 
     // Reject an oversized unsigned transaction before it is
     // ever handed to a signer.
-    check_transaction_packet_size(&transaction)?;
+    check_transaction_size(&transaction)?;
 
     Ok(PreparedCharge {
         transaction,
@@ -452,6 +462,10 @@ pub async fn build_charge_transaction_with_options(
                 recipient,
                 &fee_payer,
                 blockhash,
+                crate::core::tx::negotiate(
+                    method_details.transaction_versions.as_deref(),
+                    options.max_tx_version,
+                )?,
             )
             .await;
         }
@@ -481,13 +495,11 @@ pub async fn build_charge_transaction_with_options(
     .await?;
 
     let mut tx = prepared.transaction;
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
 
-    let serialized =
-        bincode::serialize(&tx).map_err(|e| Error::Other(format!("Serialization failed: {e}")))?;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &serialized);
+    let encoded = crate::core::tx::encode(&tx)?;
 
     Ok(CredentialPayload::Transaction {
         transaction: encoded,
@@ -669,30 +681,6 @@ fn challenge_is_unknown_token_2022(
 /// Returns true when a challenge is a schema-valid Solana charge challenge.
 pub fn is_solana_charge_challenge(challenge: &PaymentChallenge) -> bool {
     is_solana_charge_challenge_name(challenge) && decode_charge_challenge(challenge).is_ok()
-}
-
-// ── Compute budget instructions (inline, no heavy dep) ──
-
-fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
-    let program_id = Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
-    let mut data = vec![3u8]; // SetComputeUnitPrice discriminator
-    data.extend_from_slice(&micro_lamports.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
-}
-
-fn compute_unit_limit_ix(units: u32) -> Instruction {
-    let program_id = Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
-    let mut data = vec![2u8]; // SetComputeUnitLimit discriminator
-    data.extend_from_slice(&units.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
 }
 
 // ── Private helpers ──
@@ -1347,7 +1335,7 @@ mod tests {
 
     #[test]
     fn compute_unit_price_ix_structure() {
-        let ix = compute_unit_price_ix(42);
+        let ix = crate::core::tx::unit_price_instruction(42);
         let expected_program =
             Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
         assert_eq!(ix.program_id, expected_program);
@@ -1359,21 +1347,21 @@ mod tests {
 
     #[test]
     fn compute_unit_price_ix_zero() {
-        let ix = compute_unit_price_ix(0);
+        let ix = crate::core::tx::unit_price_instruction(0);
         let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
         assert_eq!(price, 0);
     }
 
     #[test]
     fn compute_unit_price_ix_max() {
-        let ix = compute_unit_price_ix(u64::MAX);
+        let ix = crate::core::tx::unit_price_instruction(u64::MAX);
         let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
         assert_eq!(price, u64::MAX);
     }
 
     #[test]
     fn compute_unit_limit_ix_structure() {
-        let ix = compute_unit_limit_ix(200_000);
+        let ix = crate::core::tx::unit_limit_instruction(200_000);
         let expected_program =
             Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
         assert_eq!(ix.program_id, expected_program);
@@ -1385,7 +1373,7 @@ mod tests {
 
     #[test]
     fn compute_unit_limit_ix_zero() {
-        let ix = compute_unit_limit_ix(0);
+        let ix = crate::core::tx::unit_limit_instruction(0);
         let units = u32::from_le_bytes(ix.data[1..5].try_into().unwrap());
         assert_eq!(units, 0);
     }
@@ -1859,10 +1847,10 @@ mod tests {
         };
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
             .unwrap();
-        let tx: Transaction = bincode::deserialize(&bytes).unwrap();
+        let tx = crate::core::tx::decode_bytes(&bytes).unwrap();
         let signer_index = tx
             .message
-            .account_keys
+            .static_account_keys()
             .iter()
             .position(|key| key == &signer.pubkey())
             .unwrap();
@@ -2439,7 +2427,7 @@ mod tests {
         };
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
             .unwrap();
-        let signed_tx: Transaction = bincode::deserialize(&bytes).unwrap();
+        let signed_tx = crate::core::tx::decode_bytes(&bytes).unwrap();
 
         assert_eq!(signed_tx.message.serialize(), expected_message_bytes);
         assert_ne!(
@@ -2510,12 +2498,70 @@ mod tests {
                 .await
                 .unwrap();
 
-        let price_ix = &prepared.transaction.message.instructions[0];
-        let limit_ix = &prepared.transaction.message.instructions[1];
+        // The compute budget prefix is limit first, then price.
+        let limit_ix = &prepared.transaction.message.instructions()[0];
+        let price_ix = &prepared.transaction.message.instructions()[1];
         let price = u64::from_le_bytes(price_ix.data[1..9].try_into().unwrap());
         let limit = u32::from_le_bytes(limit_ix.data[1..5].try_into().unwrap());
         assert_eq!(price, 12_345);
         assert_eq!(limit, 55_555);
+    }
+
+    #[tokio::test]
+    async fn build_prepared_charge_builds_the_highest_advertised_version() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            transaction_versions: Some(vec![
+                crate::core::tx::TxVersion::V0,
+                crate::core::tx::TxVersion::V1,
+            ]),
+            ..Default::default()
+        };
+        let options = BuildChargeTransactionOptions {
+            compute_budget: ComputeBudgetOptions {
+                compute_unit_price_micro_lamports: 50,
+                compute_unit_limit: 20_000,
+            },
+            ..Default::default()
+        };
+        let prepared =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap();
+
+        // Version 1: no ComputeBudget instructions; the budget is in the header
+        // (20_000 CU × 50 µlamports = 1 lamport).
+        match &prepared.transaction.message {
+            solana_message::VersionedMessage::V1(message) => {
+                assert_eq!(message.config.compute_unit_limit, Some(20_000));
+                assert_eq!(message.config.priority_fee, Some(1));
+            }
+            other => panic!("expected a version-1 message, got {other:?}"),
+        }
+        let compute_budget = crate::core::tx::COMPUTE_BUDGET_PROGRAM_ID;
+        let keys = prepared.transaction.message.static_account_keys();
+        assert!(prepared
+            .transaction
+            .message
+            .instructions()
+            .iter()
+            .all(|ix| keys[ix.program_id_index as usize] != compute_budget));
+
+        // Nothing advertised: version 0 with the two-instruction prefix.
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let prepared =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap();
+        assert!(matches!(
+            prepared.transaction.message,
+            solana_message::VersionedMessage::V0(_)
+        ));
     }
 
     #[tokio::test]
@@ -2585,11 +2631,11 @@ mod tests {
         };
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
             .unwrap();
-        let tx: Transaction = bincode::deserialize(&bytes).unwrap();
+        let tx = crate::core::tx::decode_bytes(&bytes).unwrap();
 
         let program_id_of = |idx: usize| -> Pubkey {
-            let compiled = &tx.message.instructions[idx];
-            tx.message.account_keys[compiled.program_id_index as usize]
+            let compiled = &tx.message.instructions()[idx];
+            tx.message.static_account_keys()[compiled.program_id_index as usize]
         };
 
         let compute_budget_program =
@@ -2599,7 +2645,7 @@ mod tests {
         let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
 
         assert_eq!(
-            tx.message.instructions.len(),
+            tx.message.instructions().len(),
             6,
             "unexpected instruction count"
         );
@@ -2609,7 +2655,7 @@ mod tests {
         assert_eq!(program_id_of(3), ata_program, "split ata create");
         assert_eq!(program_id_of(4), token_program_id, "split transfer");
         assert_eq!(program_id_of(5), memo_program, "split memo");
-        assert_eq!(tx.message.instructions[5].data, b"tip");
+        assert_eq!(tx.message.instructions()[5].data, b"tip");
     }
 
     // ── build_spl_instructions ──

@@ -34,6 +34,7 @@ import {
     type Signature,
     type TransactionPartialSigner,
     type TransactionSigner,
+    type TransactionVersion,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 
@@ -50,7 +51,7 @@ import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channe
 import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
-import { coSignBase64Transaction } from '../../utils/transactions.js';
+import { assertVersionedTransactionMessage, coSignBase64Transaction } from '../../utils/transactions.js';
 
 /**
  * Concrete instruction shape returned by every builder in this module:
@@ -523,8 +524,7 @@ export interface VerifyOpenTxResult {
 /**
  * Decode and validate the client-submitted open transaction.
  *
- * Accepts both legacy and v0 transaction encodings (the Rust client emits
- * legacy; the TS client emits v0).
+ * Accepts a version 0 message; legacy (unversioned) messages are rejected.
  *
  * Asserts the embedded Open IX targets the configured payment-channels
  * program, that `payee == expected.recipient`, that the mint matches the
@@ -541,8 +541,6 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
 
     const txBytes = getBase64Codec().encode(openPayload.transaction);
     const decoded = getTransactionDecoder().decode(txBytes);
-    // The kit compiled-message decoder dispatches on the version prefix
-    // byte, so legacy and v0 messages both decode to this shape.
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
         addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly {
@@ -552,7 +550,9 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         }[];
         lifetimeToken?: string | undefined;
         staticAccounts: readonly string[];
+        version: TransactionVersion;
     };
+    assertVersionedTransactionMessage(message);
 
     // The compiled message must use the challenged `recentBlockhash`: it
     // proves the transaction was built for this challenge, not replayed from
@@ -761,7 +761,9 @@ export async function submitTopUpTx(args: {
         addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly { accountIndices?: readonly number[]; data?: Uint8Array; programAddressIndex: number }[];
         staticAccounts: readonly string[];
+        version: TransactionVersion;
     };
+    assertVersionedTransactionMessage(message);
     if (message.addressTableLookups?.length) throw new Error('submitTopUpTx: address lookup tables are not permitted');
     let found = false;
     for (const ix of message.instructions) {

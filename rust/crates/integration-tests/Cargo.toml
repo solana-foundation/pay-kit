@@ -28,24 +28,25 @@ serial_test = "3"
 serde_json = "1"
 bytemuck = "1.25"
 spl-record = { version = "0.4.0", features = ["no-entrypoint"] }
-surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "b46c47e06c28ed1aa31e119215b479b70e72d4c3" }
-# litesvm 0.13.1 relaxes the Solana crate pins that made 0.13.0 fail to
-# resolve with the confidential proof crates.
-litesvm = "0.13.1"
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "30242a4fe3b87557f3d6f1629f548e2515718242" }
+# litesvm 0.16 is the first release that executes Transaction V1 and reads
+# the compute budget from its message config.
+litesvm = "0.16"
 # Atomic solana crates the integration tests import directly.
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "3", default-features = false }
+solana-message = { version = "~4.4", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "3", default-features = false }
-solana-rpc-client = { version = "4", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false }
+solana-rpc-client = { version = "4.1", default-features = false }
 # Confidential-transfer integration test (gated `#![cfg(feature = "confidential")]`).
 solana-zk-sdk = "7.0.1"
 solana-zk-elgamal-proof-interface = "0.1.2"
-spl-token-2022 = { version = "=10.0.0", default-features = false, features = ["zk-ops"] }
-spl-token-confidential-transfer-proof-extraction = "0.5.1"
+spl-token-2022 = { version = "=11.0.0", default-features = false, features = ["zk-ops"] }
+spl-token-confidential-transfer-proof-extraction = "0.6"
+solana-zk-sdk-pod = "0.1.1"
 spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
 
 [[test]]

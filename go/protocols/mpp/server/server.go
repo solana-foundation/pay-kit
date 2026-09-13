@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/bits"
 	"os"
@@ -572,11 +573,12 @@ func (m *Mpp) verifyTransaction(
 	if err := validateSplitsCount(details.Splits); err != nil {
 		return core.Receipt{}, err
 	}
-	tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
+	tx, err := decodeCredentialTransaction(payload.Transaction)
 	if err != nil {
 		return core.Receipt{}, err
 	}
-	// Accept legacy and v0 transactions with only static account keys, but
+	// Legacy messages are already rejected by the decoder. Accept v0
+	// transactions with only static account keys, but
 	// reject a v0 message carrying address lookup tables: the verifier
 	// cannot resolve ALT-referenced accounts locally, so a transfer hidden
 	// behind a lookup table could not be checked. Mirrors rust
@@ -699,6 +701,10 @@ func (m *Mpp) verifySignature(
 func (m *Mpp) verifyOnChain(ctx context.Context, signature solana.Signature, request intents.ChargeRequest, details paycore.MethodDetails) error {
 	tx, meta, err := solanatx.FetchTransaction(ctx, m.rpc, signature)
 	if err != nil {
+		// The version policy is reported verbatim, like decodeCredentialTransaction.
+		if errors.Is(err, solanatx.ErrLegacyTransaction) || errors.Is(err, solanatx.ErrMissingTransactionVersion) {
+			return &core.Error{Code: core.ErrCodeInvalidPayload, Message: err.Error(), Err: err}
+		}
 		return core.WrapError(core.ErrCodeTransactionNotFound, "transaction not found or not yet confirmed", err)
 	}
 	if meta != nil && meta.Err != nil {

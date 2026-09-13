@@ -15,7 +15,12 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { getTransferSolInstruction } from '@solana-program/system';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import {
+    assertReportedTransactionVersion,
+    coSignBase64Transaction,
+    LEGACY_TRANSACTION_ERROR,
+    MISSING_TRANSACTION_VERSION_ERROR,
+} from '../utils/transactions.js';
 
 // ── Helpers ──
 
@@ -106,4 +111,22 @@ test('coSignBase64Transaction throws when signTransactions returns no signature'
         },
     } as unknown as TransactionPartialSigner;
     await expect(coSignBase64Transaction(fakeSigner, base64Tx)).rejects.toThrow(/did not return a signature/);
+});
+
+// ── assertReportedTransactionVersion ──
+
+test.each([0, 1])('assertReportedTransactionVersion accepts version %i', version => {
+    expect(() => assertReportedTransactionVersion(version)).not.toThrow();
+});
+
+test('assertReportedTransactionVersion rejects a legacy transaction', () => {
+    expect(() => assertReportedTransactionVersion('legacy')).toThrow(LEGACY_TRANSACTION_ERROR);
+});
+
+test.each([undefined, null])('assertReportedTransactionVersion rejects a missing version (%s)', version => {
+    expect(() => assertReportedTransactionVersion(version)).toThrow(MISSING_TRANSACTION_VERSION_ERROR);
+});
+
+test.each([7, -1])('assertReportedTransactionVersion rejects an unaccepted version (%s)', version => {
+    expect(() => assertReportedTransactionVersion(version)).toThrow(/is not accepted; accepted versions: 0, 1/);
 });

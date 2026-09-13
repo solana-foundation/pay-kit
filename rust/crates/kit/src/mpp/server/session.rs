@@ -26,6 +26,7 @@ use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
+use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
 use crate::mpp::protocol::core::{Receipt, ReceiptKind};
@@ -381,6 +382,9 @@ impl DeliveryRequest {
 pub struct SessionServer<S: ChannelStore> {
     config: SessionConfig,
     store: S,
+    /// Transaction message versions accepted for `open` / `topUp` and
+    /// advertised in the challenge; see `core::tx`.
+    accepted_versions: Vec<TxVersion>,
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
     #[cfg(feature = "server")]
     tx_pipeline: tokio::sync::OnceCell<crate::core::tx_pipeline::TxPipeline>,
@@ -388,13 +392,37 @@ pub struct SessionServer<S: ChannelStore> {
 
 impl<S: ChannelStore> SessionServer<S> {
     pub fn new(config: SessionConfig, store: S) -> Self {
+        // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+        let accepted_versions = vec![TxVersion::V0];
         Self {
             config,
             store,
+            accepted_versions,
             blockhash_cache: None,
             #[cfg(feature = "server")]
             tx_pipeline: tokio::sync::OnceCell::new(),
         }
+    }
+
+    fn resolve_versions(config: &SessionConfig, mode: TxV1Mode) -> Vec<TxVersion> {
+        match (&config.rpc_url, mode) {
+            // No RPC means no funding verification and no gate to probe.
+            (None, TxV1Mode::Auto) => vec![TxVersion::V0],
+            (Some(url), mode) => {
+                mode.resolve(&solana_rpc_client::rpc_client::RpcClient::new(url.clone()))
+            }
+            (None, mode) => {
+                mode.resolve(&solana_rpc_client::rpc_client::RpcClient::new(String::new()))
+            }
+        }
+    }
+
+    /// Choose whether version-1 `open` / `topUp` transactions are accepted and
+    /// advertised. `Auto` probes the `enable_tx_v1` gate once; the default is
+    /// version 0 only.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = Self::resolve_versions(&self.config, mode);
+        self
     }
 
     /// Share the host's recent-blockhash cache with challenge issuance, so
@@ -502,6 +530,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         share_bps: split.bps,
                     })
                     .collect(),
+                transaction_versions: crate::core::tx::advertised(&self.accepted_versions),
             },
         })
     }
@@ -808,6 +837,7 @@ impl<S: ChannelStore> SessionServer<S> {
             &pipeline,
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
+            &self.accepted_versions,
         )
         .await?;
         #[cfg(not(feature = "server"))]
@@ -818,6 +848,7 @@ impl<S: ChannelStore> SessionServer<S> {
             &(),
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
+            &self.accepted_versions,
         )
         .await?;
 
@@ -1294,11 +1325,23 @@ impl<S: ChannelStore> SessionServer<S> {
         #[cfg(feature = "server")]
         let pipeline = self.transaction_pipeline().await?;
         #[cfg(feature = "server")]
-        let topup_signature =
-            verify_submit_and_fetch_topup(payload, &existing, &self.config, &pipeline).await?;
+        let topup_signature = verify_submit_and_fetch_topup(
+            payload,
+            &existing,
+            &self.config,
+            &pipeline,
+            &self.accepted_versions,
+        )
+        .await?;
         #[cfg(not(feature = "server"))]
-        let topup_signature =
-            verify_submit_and_fetch_topup(payload, &existing, &self.config, &()).await?;
+        let topup_signature = verify_submit_and_fetch_topup(
+            payload,
+            &existing,
+            &self.config,
+            &(),
+            &self.accepted_versions,
+        )
+        .await?;
 
         let cid = payload.channel_id.clone();
         let lifecycle_owner = self.config.operator.clone();
@@ -1914,17 +1957,22 @@ async fn verify_submit_and_fetch_open(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
+    accepted_versions: &[TxVersion],
 ) -> Result<String> {
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(Error::Other(
-            "open transaction must not use address lookup tables".to_string(),
-        ));
-    }
+    // Envelope: accepted version, no address lookup tables, size within the
+    // version's limit; then the version-1 header config against the same caps
+    // the ComputeBudget prefix gets on version 0.
+    crate::core::tx::check_envelope(&tx, accepted_versions)?;
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        if fee_payer_signer.is_some() {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        } else {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        },
+    )?;
     // The compiled message must use the challenged `recentBlockhash`: it
     // proves the transaction was built for this challenge, not replayed from
     // an older one the server never authorized.
@@ -2083,6 +2131,7 @@ async fn verify_submit_and_fetch_topup(
     state: &ChannelState,
     config: &SessionConfig,
     pipeline: &crate::core::tx_pipeline::TxPipeline,
+    accepted_versions: &[TxVersion],
 ) -> Result<String> {
     let amount = payload
         .additional_amount
@@ -2110,15 +2159,19 @@ async fn verify_submit_and_fetch_topup(
         &program_id,
     );
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(Error::Other(
-            "top-up transaction must not use address lookup tables".to_string(),
-        ));
-    }
+    // Envelope: accepted version, no address lookup tables, size within the
+    // version's limit; then the version-1 header config against the same caps
+    // the ComputeBudget prefix gets on version 0.
+    crate::core::tx::check_envelope(&tx, accepted_versions)?;
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        if config.fee_payer_signer.is_some() {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        } else {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        },
+    )?;
     let keys = tx.message.static_account_keys();
     let stored_rent_payer = parse_pubkey_field(&state.rent_payer, "stored rentPayer")?;
     let fee_payer_signer = match config.fee_payer_signer.as_deref() {
@@ -2242,6 +2295,7 @@ async fn verify_submit_and_fetch_topup(
     _state: &ChannelState,
     _config: &SessionConfig,
     _pipeline: &(),
+    _accepted_versions: &[TxVersion],
 ) -> Result<String> {
     Err(Error::Other(
         "session top-up verification requires the `server` feature".to_string(),
@@ -2256,6 +2310,7 @@ async fn verify_submit_and_fetch_open(
     _pipeline: &(),
     _fresh_open: bool,
     _fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
+    _accepted_versions: &[TxVersion],
 ) -> Result<String> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
@@ -2916,7 +2971,6 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn sponsored_open_advertises_cosigns_and_persists_rent_payer() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
 
         let sponsor = shared_signer(8);
@@ -2986,8 +3040,7 @@ mod tests {
         let mut tampered = submitted;
         tampered.signatures[1] = Signature::default();
         let mut invalid_open = open;
-        invalid_open.transaction = base64::engine::general_purpose::STANDARD
-            .encode(bincode::serialize(&tampered).unwrap());
+        invalid_open.transaction = crate::core::tx::encode(&tampered).unwrap();
         let error = server
             .process_open(
                 &invalid_open,
@@ -3350,10 +3403,7 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn confirmed_sponsored_topup_adds_only_the_declared_amount() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
-        use solana_message::Message;
-        use solana_transaction::Transaction;
 
         let (mut server, _session, channel_id) = client_server().await;
         let payer = signer(5);
@@ -3388,18 +3438,19 @@ mod tests {
             &token_program,
             &program_id,
         );
-        let message = Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
             &[ix],
-            Some(&sponsor.pubkey()),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(payer.as_ref(), &mut tx)
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
             .await
             .unwrap();
         assert_eq!(tx.signatures[0], Signature::default());
-        let transaction =
-            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        let transaction = crate::core::tx::encode(&tx).unwrap();
         let account = payment_channels::generated::generated::accounts::Channel {
             discriminator: 1,
             version: 1,
@@ -3489,10 +3540,7 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn topup_whose_own_transaction_fails_is_not_credited_from_the_aggregate_deposit() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
-        use solana_message::Message;
-        use solana_transaction::Transaction;
 
         let (mut server, _session, channel_id) = client_server().await;
         let payer = signer(5);
@@ -3527,17 +3575,18 @@ mod tests {
             &token_program,
             &program_id,
         );
-        let message = Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
             &[ix],
-            Some(&sponsor.pubkey()),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(payer.as_ref(), &mut tx)
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
             .await
             .unwrap();
-        let transaction =
-            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        let transaction = crate::core::tx::encode(&tx).unwrap();
         // The on-chain account already reflects deposit=1_100 — as if a
         // *different* concurrent top-up already landed — even though THIS
         // request's own transaction is about to be reported as failed.

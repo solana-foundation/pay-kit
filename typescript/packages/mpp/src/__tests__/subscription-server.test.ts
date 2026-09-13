@@ -116,6 +116,7 @@ async function buildActivationTransactionBase64(
         feePayerKey?: string;
         memo?: string;
         receiver?: string;
+        version?: 'legacy' | 0;
     } = {},
 ): Promise<{
     subscriber: TransactionSigner & MessagePartialSigner;
@@ -186,7 +187,7 @@ async function buildActivationTransactionBase64(
     if (options.memo !== undefined) instructions.push(memoIx);
 
     const txMessage = pipe(
-        createTransactionMessage({ version: 0 }),
+        createTransactionMessage({ version: options.version ?? 0 }),
         msg => setTransactionMessageFeePayerSigner(subscriber, msg),
         msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
         msg => appendTransactionMessageInstructions(instructions, msg),
@@ -515,6 +516,16 @@ describe('validateActivationInstructions', () => {
         await expect(__testing.validateActivationInstructions('not-a-real-tx', challenge, RECIPIENT)).rejects.toThrow(
             /Invalid transaction/,
         );
+    });
+
+    test('rejects a legacy (unversioned) activation transaction', async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ version: 'legacy' });
+        expect(() => __testing.extractSubscriberFromTransaction(transaction, challenge)).toThrow(
+            'legacy transactions are not supported; use a version 0 or version 1 message',
+        );
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
     });
 
     test('rejects transfer_subscription to an ATA owned by another recipient', async () => {
@@ -1457,7 +1468,7 @@ describe('subscription().verify() (push mode)', () => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             if (body.method === 'getTransaction') {
                 await Promise.resolve();
-                return rpcSuccess({ meta: { err: null }, transaction: [transaction, 'base64'] });
+                return rpcSuccess({ meta: { err: null }, transaction: [transaction, 'base64'], version: 0 });
             }
             if (body.method === 'getAccountInfo') {
                 return rpcSuccess({
@@ -1512,6 +1523,118 @@ describe('subscription().verify() (push mode)', () => {
         );
         expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
         expect(results.filter(result => result.status === 'rejected')).toHaveLength(15);
+    });
+
+    describe('push-mode reported transaction version', () => {
+        function pushModeMethod(store = Store.memory()) {
+            return subscription({
+                decimals: 6,
+                mint: MINT,
+                network: 'devnet',
+                periodCount: 30,
+                periodUnit: 'day',
+                planId: PLAN_ID,
+                puller: PULLER,
+                recipient: RECIPIENT,
+                rpcUrl: 'https://mock-rpc',
+                store,
+                tokenProgram: TOKEN_PROGRAM,
+            });
+        }
+
+        function pushModeCredential(challengeId: string, authentication: unknown, signature: string) {
+            return {
+                challenge: {
+                    id: challengeId,
+                    request: {
+                        amount: '10000000',
+                        currency: MINT,
+                        methodDetails: {
+                            decimals: 6,
+                            mint: MINT,
+                            planAddress: PLAN_ID,
+                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                            puller: PULLER,
+                            tokenProgram: TOKEN_PROGRAM,
+                        },
+                        periodCount: '30',
+                        periodUnit: 'day',
+                        recipient: RECIPIENT,
+                    },
+                },
+                payload: { authentication, signature, type: 'signature' },
+            } as never;
+        }
+
+        function mockPushModeFetch(transaction: string, subscriberAddress: string, version: unknown) {
+            const accountB64 = Buffer.from(buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n)).toString(
+                'base64',
+            );
+            globalThis.fetch = async (_input, init) => {
+                const body = JSON.parse(init?.body as string) as { method?: string };
+                if (body.method === 'getTransaction') {
+                    return rpcSuccess({
+                        meta: { err: null },
+                        transaction: [transaction, 'base64'],
+                        ...(version === undefined ? {} : { version }),
+                    });
+                }
+                if (body.method === 'getAccountInfo') {
+                    return rpcSuccess({
+                        value: {
+                            data: [accountB64, 'base64'],
+                            executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
+                            rentEpoch: 0,
+                        },
+                    });
+                }
+                return rpcSuccess({});
+            };
+        }
+
+        test('rejects a legacy activation reported by the RPC and leaves the signature unconsumed', async () => {
+            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
+            const authentication = await buildAuthentication('version-challenge', subscriber);
+            const store = Store.memory();
+            const method = pushModeMethod(store);
+            const credential = pushModeCredential('version-challenge', authentication, 'legacy-activation-signature');
+
+            mockPushModeFetch(transaction, subscriberAddress, 'legacy');
+            await expect(method.verify!({ credential, request: {} as never })).rejects.toThrow(
+                'legacy transactions are not supported; use a version 0 or version 1 message',
+            );
+            expect(await store.get('solana-subscription:consumed:legacy-activation-signature')).toBeNull();
+
+            mockPushModeFetch(transaction, subscriberAddress, 0);
+            const receipt = await method.verify!({ credential, request: {} as never });
+            expect(receipt.status).toBe('success');
+        });
+
+        test('rejects when the RPC does not report the activation transaction version', async () => {
+            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
+            const authentication = await buildAuthentication('no-version-challenge', subscriber);
+            mockPushModeFetch(transaction, subscriberAddress, undefined);
+            await expect(
+                pushModeMethod().verify!({
+                    credential: pushModeCredential('no-version-challenge', authentication, 'no-version-signature'),
+                    request: {} as never,
+                }),
+            ).rejects.toThrow('RPC did not report the transaction version');
+        });
+
+        test('accepts a version 0 activation reported by the RPC', async () => {
+            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
+            const authentication = await buildAuthentication('v0-challenge', subscriber);
+            mockPushModeFetch(transaction, subscriberAddress, 0);
+            const receipt = await pushModeMethod().verify!({
+                credential: pushModeCredential('v0-challenge', authentication, 'v0-activation-signature'),
+                request: {} as never,
+            });
+            expect(receipt.status).toBe('success');
+            expect(receipt.reference).toBe('v0-activation-signature');
+        });
     });
 
     test('rejects when push-mode getTransaction returns null', async () => {

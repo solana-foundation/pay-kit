@@ -39,6 +39,7 @@ pub async fn build_upto_payload(
     requirements: &UptoRequirements,
     expires_at: i64,
     _nonce: impl Into<String>,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<UptoPayload, Error> {
     let max = requirements.max_amount()?;
     let mint = Pubkey::from_str(&requirements.asset)
@@ -96,6 +97,11 @@ pub async fn build_upto_payload(
     // after `open`; without the declaration the transaction stays a bare open.
     let options = pc::OpenTxOptions {
         memo: requirements.extra.memo.clone(),
+        version: crate::core::tx::negotiate(
+            requirements.extra.transaction_versions.as_deref(),
+            max_tx_version,
+        )?,
+        ..Default::default()
     };
     let open = pc::build_open_payment_channel_tx_with_options(
         payer_signer,
@@ -165,8 +171,17 @@ pub async fn build_upto_header(
     requirements: &UptoRequirements,
     expires_at: i64,
     nonce: impl Into<String>,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<String, Error> {
-    let payload = build_upto_payload(payer_signer, rpc, requirements, expires_at, nonce).await?;
+    let payload = build_upto_payload(
+        payer_signer,
+        rpc,
+        requirements,
+        expires_at,
+        nonce,
+        max_tx_version,
+    )
+    .await?;
     encode_upto_header(requirements, payload)
 }
 
@@ -248,6 +263,7 @@ mod tests {
                 recent_slot: Some("314".to_string()),
                 valid_after: None,
                 memo: None,
+                transaction_versions: None,
             },
         }
     }
@@ -313,9 +329,10 @@ mod tests {
         // A "fails" mock makes any RPC hit error loudly: with both hints
         // embedded, the build must succeed without touching RPC at all.
         let rpc = RpcClient::new_mock("fails".to_string());
-        let payload = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1")
-            .await
-            .expect("payload from embedded hints");
+        let payload =
+            build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
+                .await
+                .expect("payload from embedded hints");
         assert_eq!(payload.open_slot, "314");
         assert!(payload.open_transaction.is_some());
     }
@@ -330,6 +347,7 @@ mod tests {
             &requirements_without_hints(),
             4_102_444_800,
             "n-1",
+            None,
         )
         .await
         .expect("payload from RPC fallback");
@@ -344,7 +362,7 @@ mod tests {
         let rpc = RpcClient::new_mock("succeeds".to_string());
         let mut req = requirements();
         req.extra.recent_slot = None;
-        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
             .await
             .expect("payload with fetched slot");
         assert_eq!(payload.open_slot, "1");
@@ -359,7 +377,7 @@ mod tests {
         let rpc = RpcClient::new_mock("fails".to_string());
         let mut req = requirements();
         req.extra.memo = Some("order-4711".to_string());
-        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
             .await
             .expect("payload with a declared memo");
         let tx = pc::decode_transaction(
@@ -377,7 +395,7 @@ mod tests {
         assert_eq!(memo.data.as_slice(), b"order-4711");
 
         // Bare open when the challenge declares no memo.
-        let bare = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1")
+        let bare = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
             .await
             .expect("payload without a memo");
         let bare_tx =
@@ -388,7 +406,7 @@ mod tests {
         // An over-long memo fails at build time rather than at the facilitator.
         req.extra.memo = Some("x".repeat(pc::OPEN_MAX_MEMO_BYTES + 1));
         assert!(
-            build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+            build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
                 .await
                 .is_err()
         );
@@ -404,6 +422,7 @@ mod tests {
             &requirements_without_hints(),
             4_102_444_800,
             "n-1",
+            None,
         )
         .await
         .expect_err("no hints and no RPC must fail");

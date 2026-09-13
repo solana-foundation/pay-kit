@@ -316,6 +316,7 @@ mod tests {
             encryption::{auth_encryption::AeKey, elgamal::ElGamalKeypair},
             zk_elgamal_proof_program::pubkey_validity::build_pubkey_validity_proof_data,
         };
+        use solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy;
         use spl_associated_token_account::{
             get_associated_token_address_with_program_id,
             instruction::create_associated_token_account,
@@ -332,7 +333,6 @@ mod tests {
                 BaseStateWithExtensions, ExtensionType, StateWithExtensions,
             },
             instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
-            solana_zk_sdk::encryption::pod::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy,
             state::{Account as TokenAccount, Mint},
         };
         use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
@@ -775,6 +775,564 @@ mod tests {
             recover_split_amount(&wrong_key, lo_bytes, hi_bytes),
             Some(amount),
             "a non-recipient key must not recover the amount"
+        );
+
+        // ---------------------------------------------------------------
+        // 6. Version 1: the same transfer as ONE transaction, every proof
+        //    verified inline. This is what the client emits when the challenge
+        //    accepts version 1: the server allow-list must admit it and it must
+        //    execute within the CU limit the client requests.
+        // ---------------------------------------------------------------
+        use crate::core::tx::{self as tx, ComputeBudget, TxVersion};
+        use crate::mpp::client::confidential::{
+            inline_transfer_instructions, CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT,
+        };
+
+        let sender_acc = svm.get_account(&sender_ata).unwrap();
+        let sender_state = StateWithExtensions::<TokenAccount>::unpack(&sender_acc.data).unwrap();
+        let sender_ext = sender_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        let current_available: solana_zk_sdk::encryption::elgamal::ElGamalCiphertext = {
+            let bytes: [u8; 64] = bytemuck::bytes_of(&sender_ext.available_balance)
+                .try_into()
+                .unwrap();
+            solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext(bytes)
+                .try_into()
+                .unwrap()
+        };
+        let current_decryptable =
+            solana_zk_sdk::encryption::auth_encryption::AeCiphertext::from_bytes(
+                bytemuck::bytes_of(&sender_ext.decryptable_available_balance),
+            )
+            .unwrap();
+        assert_eq!(current_decryptable.decrypt(&sender_ae), Some(new_avail));
+        let proof = transfer_split_proof_data(
+            &current_available,
+            &current_decryptable,
+            amount,
+            &sender_elgamal,
+            &sender_ae,
+            &recipient_elgamal_pubkey,
+            None,
+        )
+        .expect("generate split-transfer proofs");
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(new_avail - amount));
+        let ixs = inline_transfer_instructions(
+            &token_program,
+            &sender_ata,
+            &mint.pubkey(),
+            &recipient_ata,
+            &sender.pubkey(),
+            &proof,
+            &new_decryptable,
+        )
+        .unwrap();
+
+        let budget = ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+        let blockhash = svm.latest_blockhash();
+        assert!(
+            tx::build_unsigned(
+                TxVersion::V0,
+                &payer.pubkey(),
+                &ixs,
+                blockhash,
+                Some(&budget)
+            )
+            .is_err(),
+            "inline proofs must not fit a version-0 transaction"
+        );
+        let mut v1 = tx::build_unsigned(
+            TxVersion::V1,
+            &payer.pubkey(),
+            &ixs,
+            blockhash,
+            Some(&budget),
+        )
+        .unwrap();
+        let msg = v1.message.serialize();
+        for kp in [&payer, &sender] {
+            let idx = v1
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == kp.pubkey())
+                .unwrap();
+            v1.signatures[idx] = kp.sign_message(&msg);
+        }
+        let size = tx::serialized_size(&v1).unwrap();
+        assert!(size > 1232 && size <= 4096, "{size}");
+
+        // The gateway's allow-list admits it as exactly one transfer to the recipient.
+        #[cfg(feature = "server")]
+        assert_eq!(
+            crate::mpp::server::confidential::verify_confidential_bundle_tx(
+                &v1,
+                &payer.pubkey(),
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V1],
+            )
+            .unwrap(),
+            1
+        );
+
+        let meta = svm
+            .send_transaction(v1)
+            .unwrap_or_else(|e| panic!("inline V1 confidential transfer failed: {:?}", e.err));
+        eprintln!(
+            "inline V1 confidential transfer: {size} bytes, {} CU",
+            meta.compute_units_consumed
+        );
+        assert!(
+            meta.compute_units_consumed
+                <= u64::from(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT)
+        );
+
+        let recipient_acc = svm.get_account(&recipient_ata).unwrap();
+        let recipient_state =
+            StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data).unwrap();
+        let recipient_ext = recipient_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        assert_eq!(
+            recover_split_amount(
+                &recipient_elgamal,
+                bytemuck::bytes_of(&recipient_ext.pending_balance_lo),
+                bytemuck::bytes_of(&recipient_ext.pending_balance_hi),
+            ),
+            Some(2 * amount),
+            "recipient recovers both transfers with its own key"
+        );
+    }
+
+    /// Fee-bearing counterpart of step 6 above. The mint additionally carries
+    /// `TransferFeeConfig` (100 bps, 1_000_000 max) + `ConfidentialTransferFeeConfig`,
+    /// and the transfer settles as ONE version-1 transaction: five inline proofs
+    /// (equality, 3-handles validity, percentage-with-cap, 2-handles validity,
+    /// U256 range) then `transfer_with_fee` reading them by offset. The five
+    /// proofs alone cost 410,300 CU in the ZK ElGamal Proof program, so this
+    /// pins the with-fee CU limit against what LiteSVM actually consumes and
+    /// checks the recipient recovers `amount - fee` from its pending balance.
+    #[cfg(feature = "litesvm-tests")]
+    #[test]
+    fn inline_v1_confidential_transfer_with_fee_executes_in_litesvm() {
+        use std::mem::size_of;
+
+        use litesvm::LiteSVM;
+        use solana_address::Address;
+        use solana_keypair::Keypair;
+        use solana_signer::Signer;
+        use solana_system_interface::instruction as system_instruction;
+        use solana_transaction::Transaction;
+        use solana_zk_elgamal_proof_interface::{
+            instruction::{ContextStateInfo, ProofInstruction},
+            proof_data::PubkeyValidityProofContext,
+            state::ProofContextState,
+        };
+        use solana_zk_sdk::{
+            encryption::{
+                auth_encryption::{AeCiphertext, AeKey},
+                elgamal::{ElGamalCiphertext, ElGamalKeypair},
+            },
+            zk_elgamal_proof_program::pubkey_validity::build_pubkey_validity_proof_data,
+        };
+        use solana_zk_sdk_pod::encryption::elgamal::{
+            PodElGamalCiphertext as PodElGamalCiphertextLegacy,
+            PodElGamalPubkey as PodElGamalPubkeyLegacy,
+        };
+        use spl_associated_token_account::{
+            get_associated_token_address_with_program_id,
+            instruction::create_associated_token_account,
+        };
+        use spl_token_2022::{
+            extension::{
+                confidential_transfer::{
+                    instruction::{
+                        apply_pending_balance, configure_account, deposit, initialize_mint,
+                    },
+                    ConfidentialTransferAccount,
+                },
+                confidential_transfer_fee::instruction::initialize_confidential_transfer_fee_config,
+                transfer_fee::instruction::initialize_transfer_fee_config,
+                BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+            },
+            instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
+            state::{Account as TokenAccount, Mint},
+        };
+        use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
+        use spl_token_confidential_transfer_proof_generation::transfer_with_fee::transfer_with_fee_split_proof_data;
+
+        use crate::core::tx::{self as tx, ComputeBudget, TxVersion};
+        use crate::mpp::client::confidential::{
+            cast_ae_ciphertext_v7_to_legacy, inline_transfer_with_fee_instructions,
+            CONFIDENTIAL_INLINE_TRANSFER_WITH_FEE_COMPUTE_UNIT_LIMIT,
+        };
+
+        let zk_program = Pubkey::from_str_const("ZkE1Gama1Proof11111111111111111111111111111");
+        let token_program = spl_token_2022::id();
+        let decimals: u8 = 0;
+        let fee_basis_points: u16 = 100;
+        let maximum_fee: u64 = 1_000_000;
+
+        let mut svm = LiteSVM::new();
+        let payer = Keypair::new();
+        svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+
+        let submit = |svm: &mut LiteSVM,
+                      ixs: &[solana_instruction::Instruction],
+                      extra_signers: &[&Keypair],
+                      label: &str| {
+            let blockhash = svm.latest_blockhash();
+            let msg =
+                solana_message::Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &blockhash);
+            let mut tx = Transaction::new_unsigned(msg);
+            let data = tx.message_data();
+            let mut set_sig = |pk: &Pubkey, sig: solana_signature::Signature| {
+                let idx = tx
+                    .message
+                    .account_keys
+                    .iter()
+                    .position(|k| k == pk)
+                    .unwrap_or_else(|| panic!("signer {pk} not in tx accounts"));
+                tx.signatures[idx] = sig;
+            };
+            set_sig(&payer.pubkey(), payer.sign_message(&data));
+            for kp in extra_signers {
+                set_sig(&kp.pubkey(), kp.sign_message(&data));
+            }
+            svm.send_transaction(tx)
+                .unwrap_or_else(|e| panic!("{label} failed: {:?}", e.err));
+        };
+
+        // ---------------------------------------------------------------
+        // 1. Confidential mint with both fee extensions. The withdraw-withheld
+        //    authority holds its own ElGamal key: the fee ciphertext is
+        //    encrypted under it (2-handles validity proof).
+        // ---------------------------------------------------------------
+        let mint = Keypair::new();
+        let mint_authority = Keypair::new();
+        let withdraw_withheld_authority = Keypair::new();
+        let withdraw_withheld_elgamal = ElGamalKeypair::new_rand();
+        let withdraw_withheld_pod =
+            PodElGamalPubkeyLegacy(withdraw_withheld_elgamal.pubkey().to_bytes());
+        let mint_space = ExtensionType::try_calculate_account_len::<Mint>(&[
+            ExtensionType::ConfidentialTransferMint,
+            ExtensionType::TransferFeeConfig,
+            ExtensionType::ConfidentialTransferFeeConfig,
+        ])
+        .unwrap();
+        let mint_rent = svm.minimum_balance_for_rent_exemption(mint_space);
+        submit(
+            &mut svm,
+            &[
+                system_instruction::create_account(
+                    &payer.pubkey(),
+                    &mint.pubkey(),
+                    mint_rent,
+                    mint_space as u64,
+                    &token_program,
+                ),
+                initialize_transfer_fee_config(
+                    &token_program,
+                    &mint.pubkey(),
+                    None,
+                    Some(&withdraw_withheld_authority.pubkey()),
+                    fee_basis_points,
+                    maximum_fee,
+                )
+                .unwrap(),
+                initialize_mint(&token_program, &mint.pubkey(), None, true, None).unwrap(),
+                initialize_confidential_transfer_fee_config(
+                    &token_program,
+                    &mint.pubkey(),
+                    None,
+                    &withdraw_withheld_pod,
+                )
+                .unwrap(),
+                initialize_mint_base(
+                    &token_program,
+                    &mint.pubkey(),
+                    &mint_authority.pubkey(),
+                    None,
+                    decimals,
+                )
+                .unwrap(),
+            ],
+            &[&mint],
+            "create confidential mint with fees",
+        );
+
+        // ---------------------------------------------------------------
+        // 2. Configure sender + recipient. The ATA is created with the
+        //    TransferFeeAmount extension the fee mint requires; the realloc
+        //    must add ConfidentialTransferFeeAmount next to the CT account
+        //    extension because `configure_account` initializes it on fee mints.
+        // ---------------------------------------------------------------
+        let configure = |svm: &mut LiteSVM, owner: &Keypair| -> (Pubkey, ElGamalKeypair, AeKey) {
+            let ata = get_associated_token_address_with_program_id(
+                &owner.pubkey(),
+                &mint.pubkey(),
+                &token_program,
+            );
+            submit(
+                svm,
+                &[create_associated_token_account(
+                    &payer.pubkey(),
+                    &owner.pubkey(),
+                    &mint.pubkey(),
+                    &token_program,
+                )],
+                &[],
+                "create ATA",
+            );
+
+            let elgamal = ElGamalKeypair::new_rand();
+            let ae = AeKey::new_rand();
+            let decryptable_zero = cast_ae_ciphertext_v7_to_legacy(&ae.encrypt(0u64));
+
+            let proof_data = build_pubkey_validity_proof_data(&elgamal).unwrap();
+            let proof_account = Keypair::new();
+            let ctx_size = size_of::<ProofContextState<PubkeyValidityProofContext>>();
+            let ctx_rent = svm.minimum_balance_for_rent_exemption(ctx_size);
+            let create_ctx = system_instruction::create_account(
+                &payer.pubkey(),
+                &proof_account.pubkey(),
+                ctx_rent,
+                ctx_size as u64,
+                &zk_program,
+            );
+            let verify = ProofInstruction::VerifyPubkeyValidity.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: &Address::from(proof_account.pubkey().to_bytes()),
+                    context_state_authority: &Address::from(owner.pubkey().to_bytes()),
+                }),
+                &proof_data,
+            );
+            let realloc = reallocate(
+                &token_program,
+                &ata,
+                &payer.pubkey(),
+                &owner.pubkey(),
+                &[&owner.pubkey()],
+                &[
+                    ExtensionType::ConfidentialTransferAccount,
+                    ExtensionType::ConfidentialTransferFeeAmount,
+                ],
+            )
+            .unwrap();
+            let configure_ixs = configure_account(
+                &token_program,
+                &ata,
+                &mint.pubkey(),
+                &decryptable_zero,
+                65536,
+                &owner.pubkey(),
+                &[],
+                ProofLocation::ContextStateAccount(&proof_account.pubkey()),
+            )
+            .unwrap();
+
+            let mut ixs = vec![create_ctx, verify, realloc];
+            ixs.extend(configure_ixs);
+            submit(svm, &ixs, &[owner, &proof_account], "configure account");
+
+            (ata, elgamal, ae)
+        };
+
+        let sender = Keypair::new();
+        let recipient = Keypair::new();
+        let (sender_ata, sender_elgamal, sender_ae) = configure(&mut svm, &sender);
+        let (recipient_ata, recipient_elgamal, _recipient_ae) = configure(&mut svm, &recipient);
+
+        // ---------------------------------------------------------------
+        // 3. Fund the sender: mint → deposit → apply_pending_balance.
+        // ---------------------------------------------------------------
+        let starting_balance: u64 = 50_000;
+        submit(
+            &mut svm,
+            &[mint_to(
+                &token_program,
+                &mint.pubkey(),
+                &sender_ata,
+                &mint_authority.pubkey(),
+                &[],
+                starting_balance,
+            )
+            .unwrap()],
+            &[&mint_authority],
+            "mint_to sender",
+        );
+        submit(
+            &mut svm,
+            &[deposit(
+                &token_program,
+                &sender_ata,
+                &mint.pubkey(),
+                starting_balance,
+                decimals,
+                &sender.pubkey(),
+                &[&sender.pubkey()],
+            )
+            .unwrap()],
+            &[&sender],
+            "deposit",
+        );
+        let sender_ct = |svm: &LiteSVM| -> ConfidentialTransferAccount {
+            let acc = svm.get_account(&sender_ata).unwrap();
+            let state = StateWithExtensions::<TokenAccount>::unpack(&acc.data).unwrap();
+            *state
+                .get_extension::<ConfidentialTransferAccount>()
+                .unwrap()
+        };
+        {
+            let ext = sender_ct(&svm);
+            let decrypt = |ct: &PodElGamalCiphertextLegacy| -> u64 {
+                let bytes: [u8; 64] = bytemuck::bytes_of(ct).try_into().unwrap();
+                let c = ElGamalCiphertext::from_bytes(&bytes).unwrap();
+                sender_elgamal.secret().decrypt_u32(&c).unwrap()
+            };
+            let pending_total =
+                decrypt(&ext.pending_balance_lo) + (decrypt(&ext.pending_balance_hi) << 16);
+            assert_eq!(pending_total, starting_balance);
+            let expected_counter: u64 = ext.pending_balance_credit_counter.into();
+            let new_decryptable =
+                cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(pending_total));
+            let apply_ix = apply_pending_balance(
+                &token_program,
+                &sender_ata,
+                expected_counter,
+                &new_decryptable,
+                &sender.pubkey(),
+                &[&sender.pubkey()],
+            )
+            .unwrap();
+            submit(&mut svm, &[apply_ix], &[&sender], "apply_pending_balance");
+        }
+
+        // ---------------------------------------------------------------
+        // 4. One version-1 transaction: five inline proofs + transfer_with_fee.
+        //    The sender's available balance drops by the full amount; the
+        //    recipient's pending balance receives amount - fee (the fee lands
+        //    in its withheld ciphertext).
+        // ---------------------------------------------------------------
+        let amount: u64 = 1_000;
+        let fee = (amount * u64::from(fee_basis_points))
+            .div_ceil(10_000)
+            .min(maximum_fee);
+        assert_eq!(fee, 10);
+
+        let sender_ext = sender_ct(&svm);
+        let current_available: ElGamalCiphertext = {
+            let bytes: [u8; 64] = bytemuck::bytes_of(&sender_ext.available_balance)
+                .try_into()
+                .unwrap();
+            PodElGamalCiphertextLegacy(bytes).try_into().unwrap()
+        };
+        let current_decryptable = AeCiphertext::from_bytes(bytemuck::bytes_of(
+            &sender_ext.decryptable_available_balance,
+        ))
+        .unwrap();
+        assert_eq!(
+            current_decryptable.decrypt(&sender_ae),
+            Some(starting_balance)
+        );
+
+        let proof = transfer_with_fee_split_proof_data(
+            &current_available,
+            &current_decryptable,
+            amount,
+            &sender_elgamal,
+            &sender_ae,
+            recipient_elgamal.pubkey(),
+            None,
+            withdraw_withheld_elgamal.pubkey(),
+            fee_basis_points,
+            maximum_fee,
+        )
+        .expect("generate transfer-with-fee proofs");
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(starting_balance - amount));
+        let ixs = inline_transfer_with_fee_instructions(
+            &token_program,
+            &sender_ata,
+            &mint.pubkey(),
+            &recipient_ata,
+            &sender.pubkey(),
+            &proof,
+            &new_decryptable,
+        )
+        .unwrap();
+
+        let budget =
+            ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_WITH_FEE_COMPUTE_UNIT_LIMIT, 0);
+        let blockhash = svm.latest_blockhash();
+        let mut v1 = tx::build_unsigned(
+            TxVersion::V1,
+            &payer.pubkey(),
+            &ixs,
+            blockhash,
+            Some(&budget),
+        )
+        .unwrap();
+        let msg = v1.message.serialize();
+        for kp in [&payer, &sender] {
+            let idx = v1
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == kp.pubkey())
+                .unwrap();
+            v1.signatures[idx] = kp.sign_message(&msg);
+        }
+        let size = tx::serialized_size(&v1).unwrap();
+        assert!(size <= 4096, "{size}");
+
+        // The gateway's allow-list admits it as exactly one transfer to the recipient.
+        #[cfg(feature = "server")]
+        assert_eq!(
+            crate::mpp::server::confidential::verify_confidential_bundle_tx(
+                &v1,
+                &payer.pubkey(),
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V1],
+            )
+            .unwrap(),
+            1
+        );
+
+        let meta = svm.send_transaction(v1).unwrap_or_else(|e| {
+            panic!(
+                "inline V1 confidential transfer_with_fee failed: {:?}",
+                e.err
+            )
+        });
+        eprintln!(
+            "inline V1 confidential transfer_with_fee: {size} bytes, {} CU",
+            meta.compute_units_consumed
+        );
+        assert!(
+            meta.compute_units_consumed
+                <= u64::from(CONFIDENTIAL_INLINE_TRANSFER_WITH_FEE_COMPUTE_UNIT_LIMIT)
+        );
+        assert!(meta.compute_units_consumed <= 1_400_000);
+
+        let recipient_acc = svm.get_account(&recipient_ata).unwrap();
+        let recipient_state =
+            StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data).unwrap();
+        let recipient_ext = recipient_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        assert_eq!(
+            recover_split_amount(
+                &recipient_elgamal,
+                bytemuck::bytes_of(&recipient_ext.pending_balance_lo),
+                bytemuck::bytes_of(&recipient_ext.pending_balance_hi),
+            ),
+            Some(amount - fee),
+            "recipient recovers amount - fee with its own key"
         );
     }
 

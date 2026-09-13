@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
@@ -180,9 +180,12 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction base64: %w", err), Gate: req.Gate}
 	}
-	tx, err := solana.TransactionFromDecoder(bin.NewBinDecoder(rawTx))
+	tx, err := solanatx.DecodeTransaction(rawTx)
 	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction decode: %w", err), Gate: req.Gate}
+		if !errors.Is(err, solanatx.ErrLegacyTransaction) {
+			err = fmt.Errorf("transaction decode: %w", err)
+		}
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
 	if len(tx.Signatures) == 0 {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: errors.New("transaction carries no signatures"), Gate: req.Gate}

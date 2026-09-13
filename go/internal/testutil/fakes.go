@@ -36,6 +36,9 @@ type FakeRPC struct {
 	MintOwners map[string]solana.PublicKey
 	Statuses   map[string]*rpc.SignatureStatusesResult
 	BySig      map[string]*solana.Transaction
+	// TxVersion is the raw JSON `version` field GetTransaction reports:
+	// `0` (the default, a v0 transaction), `"legacy"`, or "" to omit it.
+	TxVersion string
 
 	SimulateErr error
 	SendErr     error
@@ -53,6 +56,7 @@ func NewFakeRPC() *FakeRPC {
 		MintOwners: map[string]solana.PublicKey{},
 		Statuses:   map[string]*rpc.SignatureStatusesResult{},
 		BySig:      map[string]*solana.Transaction{},
+		TxVersion:  "0",
 	}
 }
 
@@ -108,11 +112,12 @@ func (f *FakeRPC) GetTransaction(_ context.Context, signature solana.Signature, 
 	}
 	f.mu.Lock()
 	tx, ok := f.BySig[signature.String()]
+	version := f.TxVersion
 	f.mu.Unlock()
 	if !ok {
 		return nil, rpc.ErrNotFound
 	}
-	return TxResultFromTransaction(tx)
+	return TxResultFromTransaction(tx, version)
 }
 
 // SendTransactionWithOpts records the broadcast transaction (clone) and
@@ -159,13 +164,18 @@ func (f *FakeRPC) SimulateTransactionWithOpts(_ context.Context, tx *solana.Tran
 	}, nil
 }
 
-// TxResultFromTransaction converts a transaction into an rpc.GetTransactionResult.
-func TxResultFromTransaction(tx *solana.Transaction) (*rpc.GetTransactionResult, error) {
+// TxResultFromTransaction converts a transaction into an rpc.GetTransactionResult
+// whose `version` field carries the raw JSON in version ("" omits the field).
+func TxResultFromTransaction(tx *solana.Transaction, version string) (*rpc.GetTransactionResult, error) {
 	wire, err := tx.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
-	payload := fmt.Sprintf(`{"slot":1,"transaction":["%s","base64"],"meta":null,"version":"legacy"}`, base64.StdEncoding.EncodeToString(wire))
+	payload := fmt.Sprintf(`{"slot":1,"transaction":["%s","base64"],"meta":null`, base64.StdEncoding.EncodeToString(wire))
+	if version != "" {
+		payload += `,"version":` + version
+	}
+	payload += "}"
 	var out rpc.GetTransactionResult
 	if err := json.Unmarshal([]byte(payload), &out); err != nil {
 		return nil, err

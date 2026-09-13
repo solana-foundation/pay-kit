@@ -213,7 +213,7 @@ func TestSessionPullOpenWithoutSignatureReferencesChannel(t *testing.T) {
 }
 
 func TestSessionOpenSurfacesStoreFailures(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fake := testutil.NewFakeRPC()
 	store := &failingGetStore{ChannelStore: NewMemoryChannelStore(), getErr: errors.New("store offline")}
 	session := newTestSession(t, func(o *SessionOptions) {
@@ -231,7 +231,7 @@ func TestSessionOpenSurfacesStoreFailures(t *testing.T) {
 }
 
 func TestSessionServerSubmitterSurfacesBroadcastFailure(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fake := testutil.NewFakeRPC()
 	fake.SendErr = errors.New("blockhash not found")
 	session := newTestSession(t, func(o *SessionOptions) {
@@ -485,7 +485,7 @@ func TestSettlementInstructionsStateErrorPaths(t *testing.T) {
 
 func TestSubmitOpenTxFailureMatrix(t *testing.T) {
 	ctx := context.Background()
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 
 	if _, err := SubmitOpenTx(ctx, fixture.expected, &fixture.payload, nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "requires an RPC client") {
@@ -545,7 +545,7 @@ func buildRawOpenPayload(t *testing.T, accounts []*solana.AccountMeta, data []by
 	payer := testutil.NewPrivateKey()
 	ix := solana.NewInstruction(paymentchannels.ProgramPubkey(), accounts, data)
 	blockhash := solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 	}
 
 	// An empty currency with no explicit mint cannot resolve a mint.
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	unknownCurrency := fixture.expected
 	unknownCurrency.Currency = ""
 	unknownCurrency.Mint = ""

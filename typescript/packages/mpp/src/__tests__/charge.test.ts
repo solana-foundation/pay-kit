@@ -383,6 +383,7 @@ function memoInfoIx(key: 'data' | 'memo', memo: string) {
 function txWithInstructions(instructions: unknown[]) {
     return {
         meta: { err: null },
+        version: 0,
         transaction: {
             message: {
                 instructions,
@@ -1594,6 +1595,7 @@ test('signature: throws when transaction failed on-chain', async () => {
         rpcSuccess({
             meta: { err: { InstructionError: [0, 'Custom'] } },
             transaction: { message: { instructions: [] } },
+            version: 0,
         });
 
     await expect(
@@ -1622,6 +1624,91 @@ test('signature: throws on RPC error response', async () => {
     ).rejects.toThrow(/RPC error/);
 });
 
+// ── Reported transaction version (type="signature") ──
+
+test('signature: rejects a legacy transaction reported by the RPC and leaves the signature unconsumed', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version: 'legacy' });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
+
+    // A rejected read-back must not burn the signature: the same signature
+    // settles once the RPC reports an accepted version.
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    const receipt = await method.verify({
+        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+        request: {} as any,
+    });
+    expect(receipt.status).toBe('success');
+});
+
+test('signature: rejects when the RPC does not report the transaction version', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const { version: _omitted, ...withoutVersion } = solTransferTx(RECIPIENT, 1000000);
+    globalThis.fetch = async () => rpcSuccess(withoutVersion);
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('RPC did not report the transaction version');
+});
+
+test('signature: rejects a transaction version outside the accepted set', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version: 7 });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('transaction version 7 is not accepted; accepted versions: 0, 1');
+});
+
+test.each([0, 1])('signature: accepts a version %i transaction reported by the RPC', async version => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version });
+
+    const receipt = await method.verify({
+        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+        request: {} as any,
+    });
+
+    expect(receipt.status).toBe('success');
+    expect(receipt.reference).toBe(SIGNATURE);
+});
+
 test('signature: throws when no transfer instruction found (SOL)', async () => {
     const method = charge({
         recipient: RECIPIENT,
@@ -1633,6 +1720,7 @@ test('signature: throws when no transfer instruction found (SOL)', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: { message: { instructions: [] } },
         });
 
@@ -1657,6 +1745,7 @@ test('signature: throws when no TransferChecked instruction found (SPL)', async 
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: { message: { instructions: [] } },
         });
 
@@ -1729,6 +1818,25 @@ test('pull: accepts valid native SOL transfer', async () => {
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(transactionSignatureFromBase64(transaction));
+});
+
+test('pull: rejects a legacy transaction reported by the RPC after broadcast', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    mockServerBroadcastFetch({ ...solTransferTx(RECIPIENT, 1000000), version: 'legacy' });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(transaction, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
 });
 
 test('pull: identical challenge-bound retry recovers the settled receipt', async () => {
@@ -2523,6 +2631,7 @@ test('splits: SOL verification passes with valid primary + split transfers', asy
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2554,6 +2663,7 @@ test('splits: SOL verification fails when split transfer missing', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2581,6 +2691,7 @@ test('splits: SOL verification fails when split amount is wrong', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2619,6 +2730,7 @@ test('splits: SOL verification matches distinct same-recipient transfers by amou
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2647,7 +2759,8 @@ test('splits: rejects splits that consume entire amount', async () => {
     const splits = [{ recipient: PLATFORM, amount: '1000000' }];
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store, splits });
 
-    globalThis.fetch = async () => rpcSuccess({ meta: { err: null }, transaction: { message: { instructions: [] } } });
+    globalThis.fetch = async () =>
+        rpcSuccess({ meta: { err: null }, version: 0, transaction: { message: { instructions: [] } } });
 
     await expect(
         method.verify({
@@ -2661,7 +2774,8 @@ test('splits: rejects splits that exceed total amount', async () => {
     const splits = [{ recipient: PLATFORM, amount: '2000000' }];
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store, splits });
 
-    globalThis.fetch = async () => rpcSuccess({ meta: { err: null }, transaction: { message: { instructions: [] } } });
+    globalThis.fetch = async () =>
+        rpcSuccess({ meta: { err: null }, version: 0, transaction: { message: { instructions: [] } } });
 
     await expect(
         method.verify({
@@ -2697,6 +2811,7 @@ test('splits: SPL verification passes with valid primary + split transfers', asy
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2748,6 +2863,7 @@ test('splits: SPL verification fails when split transfer is missing', async () =
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2797,6 +2913,7 @@ test('splits: SPL verification fails when primary amount is wrong', async () => 
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2857,6 +2974,7 @@ test('splits: SPL verification fails when split amount is wrong', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2909,6 +3027,7 @@ test('splits: SPL verification matches distinct same-recipient transfers by amou
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -2980,6 +3099,7 @@ test('splits: multiple splits with SPL', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -3027,6 +3147,7 @@ test('splits: duplicate SOL recipients require distinct transfer instructions', 
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -3080,6 +3201,7 @@ test('splits: duplicate SPL recipients require distinct transfer instructions', 
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -3121,6 +3243,7 @@ test('splits: multiple splits with SOL', async () => {
     globalThis.fetch = async () =>
         rpcSuccess({
             meta: { err: null },
+            version: 0,
             transaction: {
                 message: {
                     instructions: [
@@ -3276,6 +3399,29 @@ test('#25 client-paid compute-unit price above the tight cap still passes (gener
             recipient: RECIPIENT,
         }),
     ).resolves.toBeUndefined();
+});
+
+test('verifyChargeTransaction rejects a legacy (unversioned) transaction', async () => {
+    const authority = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 'legacy' }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n })],
+                msg,
+            ),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
 });
 
 // #3 — post-timeout definitive status interpretation

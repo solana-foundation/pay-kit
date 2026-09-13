@@ -33,6 +33,7 @@ from solana_pay_kit._paycore.solana import (
     default_token_program_for_currency,
     is_native_sol,
 )
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.protocols.x402.exact.extensions import (
     echo_extensions,
     extensions_is_empty,
@@ -458,10 +459,7 @@ async def build_payment(
     """
     from solders.hash import Hash
     from solders.instruction import AccountMeta, Instruction
-    from solders.message import MessageV0, to_bytes_versioned
     from solders.pubkey import Pubkey
-    from solders.signature import Signature
-    from solders.transaction import VersionedTransaction
 
     req = cast("dict[str, object]", requirement)
     extra = _extra_of(requirement)
@@ -566,19 +564,7 @@ async def build_payment(
         blockhash_str = await _resolve_blockhash(rpc, recent_blockhash_provider)
     blockhash = Hash.from_string(blockhash_str)
 
-    message = MessageV0.try_compile(fee_payer_key, instructions, [], blockhash)
-    num_signers = int(message.header.num_required_signatures)
-    tx = VersionedTransaction.populate(message, [Signature.default() for _ in range(num_signers)])
-
-    sig = Signature.from_bytes(signer.sign(bytes(to_bytes_versioned(message))))
-    account_keys = list(message.account_keys)
-    try:
-        signer_index = account_keys.index(signer_pubkey)
-    except ValueError as exc:
-        raise ValueError("solana_pay_kit: signer not found in transaction accounts") from exc
-    signatures = list(tx.signatures)
-    signatures[signer_index] = sig
-    tx = VersionedTransaction.populate(message, signatures)
+    tx_bytes = build_partially_signed_v0_transaction(instructions, fee_payer_key, blockhash, signer_pubkey, signer.sign)
 
     # Derive the envelope-level resource BEFORE building the echoed ``accepted``
     # body, then strip the private resource-info key so the echo carries only
@@ -588,7 +574,7 @@ async def build_payment(
     resource_info = _resource_info_of(req)
     accepted = {key: value for key, value in req.items() if key != _RESOURCE_INFO_KEY}
 
-    encoded = base64.b64encode(bytes(tx)).decode("ascii")
+    encoded = base64.b64encode(tx_bytes).decode("ascii")
     payload: X402PayloadField = {"transaction": encoded}
     envelope: dict[str, object] = {
         "x402Version": X402_VERSION,

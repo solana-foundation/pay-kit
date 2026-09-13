@@ -422,7 +422,7 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestValidateUptoOpenInstructionRejectsWrongRentPayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(wrongRentPayer))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(wrongRentPayer))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestValidateUptoOpenInstructionRejectsForeignProgram(t *testing.T) {
 	operator := testutil.NewPrivateKey().PublicKey()
 	system := solana.SystemProgramID
 	evil := solana.NewInstruction(system, solana.AccountMetaSlice{}, []byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
-	tx, err := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operator))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operator))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_555)
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	extra := solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{}, nil)
-	tx, err := solana.NewTransaction([]solana.Instruction{ix, extra}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix, extra}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	}
 	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_555)
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	wrongPayee := testutil.NewPrivateKey().PublicKey()
 	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
 	if err == nil || !strings.Contains(err.Error(), "payee mismatch") {
@@ -529,7 +529,7 @@ func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
 	}
 	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_555)
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 
 	check := func(maxAmount uint64, recentSlot *uint64) error {
 		return validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, maxAmount, DefaultUptoWithdrawDelaySeconds, "7", "55555", recentSlot)
@@ -583,7 +583,7 @@ func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
 	}
 	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_555)
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 
 	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
 	if err == nil || (!strings.Contains(err.Error(), "payer_token_account mismatch") && !strings.Contains(err.Error(), "token_program mismatch")) {
@@ -675,7 +675,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 
 	// Build the transaction with the open instruction.
 	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
-	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -814,7 +814,7 @@ func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -869,7 +869,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 
@@ -1154,7 +1154,7 @@ func TestUptoRequirementsMaxAmountError(t *testing.T) {
 func TestValidateUptoOpenInstructionRejectsNonOpenDiscriminator(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
 	evil := solana.NewInstruction(paymentchannels.ProgramPubkey(), solana.AccountMetaSlice{}, []byte{99})
-	tx, _ := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, payer, solana.TokenProgramID, payer, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", nil)
 	if err == nil || !strings.Contains(err.Error(), "not a channel-open") {
 		t.Fatalf("expected non-open discriminator rejection, got %v", err)
@@ -1167,7 +1167,7 @@ func TestSignPaykitTransactionRejectsWrongSigner(t *testing.T) {
 	// in the signer list.
 	otherKey := testutil.NewPrivateKey().PublicKey()
 	evil := solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{}, []byte{0})
-	tx, err := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(otherKey))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(otherKey))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -1210,7 +1210,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))
@@ -1254,7 +1254,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))
@@ -1297,7 +1297,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))
@@ -1326,6 +1326,45 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	}
 }
 
+// TestUptoVerifyOpenRejectsLegacyOpenTransaction pins the shared decode
+// boundary: an otherwise-valid open transaction encoded as a legacy
+// (unversioned) message is rejected before any instruction or RPC check.
+func TestUptoVerifyOpenRejectsLegacyOpenTransaction(t *testing.T) {
+	operatorKey := testutil.NewPrivateKey()
+	payerKey := testutil.NewPrivateKey()
+	payee := operatorKey.PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	salt := uint64(7)
+	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt, 55_555)
+	params := paymentchannels.OpenChannelParams{
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Salt: salt, OpenSlot: 55_555, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	openIx, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	solanatx.SignTransaction(tx, payerSigner{payerKey})
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	engine, _ := NewX402Upto(UptoConfig{
+		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
+		FeePayerSigner:          signerSigner{operatorKey},
+		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
+	})
+	engine.SetRPCForTests(newUptoTestRPC())
+	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
+		Nonce: "7", OpenSlot: "55555", AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
+	}}
+	raw, _ := json.Marshal(env)
+	_, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
+	if err == nil || err.Error() != solanatx.ErrLegacyTransaction.Error() {
+		t.Fatalf("err = %v, want %q", err, solanatx.ErrLegacyTransaction)
+	}
+}
+
 // TestUptoVerifyOpenRejectsWrongRentPayer exercises the on-chain rent-payer binding.
 func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()
@@ -1340,7 +1379,7 @@ func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))
@@ -1383,7 +1422,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))
@@ -1426,7 +1465,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	fakeRPC := newUptoTestRPC() // no channel account added
@@ -1462,7 +1501,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHashArr := distributionHash(singleSplitTo(payee))

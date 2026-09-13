@@ -38,6 +38,7 @@ from solana_pay_kit._paycore.solana import (
     validate_splits,
 )
 from solana_pay_kit._paycore.store import Store
+from solana_pay_kit._paycore.transaction import require_reported_version
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
@@ -102,6 +103,11 @@ __all__ = [
     "_verify_parsed_sol_transfers",
     "_verify_parsed_spl_transfers",
 ]
+
+
+def _invalid_payload(message: str) -> PaymentError:
+    """Error factory for ``require_reported_version`` on the push-mode path."""
+    return PaymentError(message, code="invalid-payload")
 
 
 @dataclass
@@ -520,6 +526,8 @@ class Mpp:
         # check fails fast before the full verification + broadcast pipeline.
         try:
             blockhash_b58 = _extract_recent_blockhash(payload.transaction)
+        except PaymentError:
+            raise
         except Exception as exc:  # noqa: BLE001 — propagate decode failures as invalid payload
             raise PaymentError(
                 f"could not decode transaction to read blockhash: {exc}",
@@ -594,7 +602,7 @@ class Mpp:
         # conversion is redundant work on the post-consume critical path.
         await self._rpc.await_confirmation(signature)
 
-        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
@@ -629,10 +637,13 @@ class Mpp:
         from solders.signature import Signature
 
         sig = Signature.from_string(payload.signature)
-        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
+        # maxSupportedTransactionVersion only bounds what the node returns; the
+        # server refuses legacy here just as it does for transaction bytes.
+        require_reported_version(tx.get("version"), error=_invalid_payload)
         self._verify_confirmed_transaction(tx, request, details)
 
         consumed_key = _CONSUMED_PREFIX + payload.signature

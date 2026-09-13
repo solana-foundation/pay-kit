@@ -28,8 +28,8 @@ use solana_pubkey::Pubkey;
 
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels::{
-    build_open_payment_channel_tx, derive_channel_addresses, random_salt, Distribution,
-    OpenChannelParams, PaymentChannelOpenTransaction,
+    build_open_payment_channel_tx_with_options, derive_channel_addresses, random_salt,
+    Distribution, OpenChannelParams, OpenTxOptions, PaymentChannelOpenTransaction,
 };
 use crate::mpp::protocol::intents::session::{
     ClosePayload, OpenPayload, SessionAction, SessionAuthentication, SessionRequest,
@@ -320,6 +320,10 @@ impl PaymentChannelOpen {
 
 #[derive(Debug, Clone, Default)]
 pub struct PaymentChannelOpenOptions {
+    /// Highest message version the signer can sign, when that is below what
+    /// the challenge accepts. The Ledger Solana app signs version 0 but not
+    /// yet version 1. `None` takes the highest version the challenge accepts.
+    pub max_tx_version: Option<crate::core::tx::TxVersion>,
     pub deposit: Option<u64>,
     pub grace_period: Option<u32>,
     /// Override for the channel's open slot (the program's `openSlot`).
@@ -505,6 +509,7 @@ pub async fn build_open_payment_channel_transaction(
     params: BuildOpenPaymentChannelTransactionParams<'_>,
 ) -> Result<PaymentChannelOpenTransaction> {
     let payer = params.signer.pubkey();
+    let max_tx_version = params.options.max_tx_version;
     let advertised_fee_payer = if params.request.method_details.fee_payer == Some(true) {
         Some(parse_pubkey(
             params
@@ -536,7 +541,7 @@ pub async fn build_open_payment_channel_transaction(
         options: params.options,
     })?;
 
-    build_open_payment_channel_tx(
+    build_open_payment_channel_tx_with_options(
         params.signer,
         &open.payee,
         &open.mint,
@@ -550,6 +555,17 @@ pub async fn build_open_payment_channel_transaction(
         &open.program_id,
         &fee_payer,
         recent_blockhash,
+        &OpenTxOptions {
+            version: crate::core::tx::negotiate(
+                params
+                    .request
+                    .method_details
+                    .transaction_versions
+                    .as_deref(),
+                max_tx_version,
+            )?,
+            ..Default::default()
+        },
     )
     .await
     .map_err(Into::into)
@@ -592,7 +608,7 @@ pub async fn create_payment_channel_session_opener(
         authorized_signer,
         options: options.open.clone(),
     })?;
-    let tx = build_open_payment_channel_tx(
+    let tx = build_open_payment_channel_tx_with_options(
         payer_signer,
         &open.payee,
         &open.mint,
@@ -606,6 +622,13 @@ pub async fn create_payment_channel_session_opener(
         &open.program_id,
         &fee_payer,
         recent_blockhash,
+        &OpenTxOptions {
+            version: crate::core::tx::negotiate(
+                request.method_details.transaction_versions.as_deref(),
+                options.open.max_tx_version,
+            )?,
+            ..Default::default()
+        },
     )
     .await?;
     let mut session = ActiveSession::new(open.channel_id, session_signer);
@@ -708,6 +731,7 @@ mod tests {
                 idle_timeout_seconds: Some(300),
                 grace_period_seconds: Some(900),
                 distribution_splits: vec![],
+                transaction_versions: None,
             },
         }
     }

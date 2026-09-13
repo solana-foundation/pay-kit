@@ -37,12 +37,9 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-// Legacy `Transaction` is only needed by the test-only pre-broadcast helper.
-#[cfg(test)]
-use solana_transaction::Transaction;
-use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
+use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::mpp::error::Error;
 use crate::mpp::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt,
@@ -58,8 +55,8 @@ use crate::mpp::store::{
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
 pub(crate) const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
-const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
-const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
+pub(crate) const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 /// Tighter price cap applied when the *server* is the fee payer.
 ///
 /// In fee-sponsored pull mode the server signs the transaction before it is
@@ -290,6 +287,9 @@ pub struct ChargeOptions<'a> {
 pub struct Mpp {
     pub(crate) rpc: Arc<RpcClient>,
     pub(crate) rpc_url: String,
+    /// Transaction message versions this server accepts and advertises.
+    /// Resolved from [`TxV1Mode`] at construction; see `core::tx`.
+    pub(crate) accepted_versions: Vec<TxVersion>,
     pub(crate) realm: String,
     pub(crate) challenge_binding_secret: String,
     pub(crate) currency: String,
@@ -369,6 +369,8 @@ impl Mpp {
             resolve_server_token_program(&rpc, &config.currency, Some(&config.network))?;
 
         Ok(Mpp {
+            // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+            accepted_versions: vec![TxVersion::V0],
             rpc,
             rpc_url,
             realm,
@@ -392,6 +394,18 @@ impl Mpp {
     /// `charge`/`charge_with_options` embed a recent blockhash without a
     /// per-challenge RPC fetch. Falls back to a direct fetch when the cache is
     /// empty or stale.
+    /// Choose whether version-1 transactions are accepted and advertised.
+    /// `Auto` probes the `enable_tx_v1` gate once; the default is version 0 only.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = mode.resolve(&self.rpc);
+        self
+    }
+
+    /// Transaction message versions this server accepts.
+    pub fn accepted_versions(&self) -> &[TxVersion] {
+        &self.accepted_versions
+    }
+
     pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
@@ -533,6 +547,12 @@ impl Mpp {
         };
         if let Some(blockhash) = blockhash {
             details.insert("recentBlockhash".into(), serde_json::json!(blockhash));
+        }
+        if let Some(versions) = crate::core::tx::advertised(&self.accepted_versions) {
+            details.insert(
+                "transactionVersions".into(),
+                serde_json::to_value(versions).unwrap(),
+            );
         }
 
         request.method_details = Some(serde_json::Value::Object(details));
@@ -1163,14 +1183,8 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        // Accept legacy and v0 transactions. Decode straight to
-        // `VersionedTransaction` — its message deserializer dispatches on the
-        // version-prefix byte, so it handles both formats. (Trying legacy
-        // `Transaction` first is unsound: bincode ignores trailing bytes, so a
-        // long-enough v0 tx can deserialize as a *garbage* legacy tx — wrong
-        // account keys, e.g. a bogus fee payer — instead of failing through to
-        // the v0 path.)
-        let mut tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
+        // Canonical decode: version 0 or 1, no legacy, no trailing bytes.
+        let mut tx = crate::core::tx::decode_bytes(&tx_bytes)
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
         let t0 = std::time::Instant::now();
@@ -1187,7 +1201,12 @@ impl Mpp {
         check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
-        verify_versioned_transaction_pre_broadcast(&tx, request, method_details)?;
+        verify_versioned_transaction_pre_broadcast(
+            &tx,
+            request,
+            method_details,
+            &self.accepted_versions,
+        )?;
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
 
         // Co-sign if server is fee payer (only after verification passes).
@@ -1211,7 +1230,11 @@ impl Mpp {
         let mut broadcast_signature: Option<Signature> = None;
         for attempt in 1..=SIMULATION_MAX_ATTEMPTS {
             let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
-            match self.rpc.send_transaction(&tx) {
+            match crate::core::rpc::send_transaction(
+                &self.rpc,
+                &tx,
+                crate::core::rpc::preflight_config(&self.rpc),
+            ) {
                 Ok(signature) => {
                     broadcast_signature = Some(signature);
                     break;
@@ -1256,10 +1279,11 @@ impl Mpp {
                                 skip_preflight = SKIP_PREFLIGHT_SEND.skip_preflight,
                                 "broadcast_pull retrying without preflight after blockhash preflight failure"
                             );
-                            match self
-                                .rpc
-                                .send_transaction_with_config(&tx, SKIP_PREFLIGHT_SEND.config())
-                            {
+                            match crate::core::rpc::send_transaction(
+                                &self.rpc,
+                                &tx,
+                                SKIP_PREFLIGHT_SEND.config(),
+                            ) {
                                 Ok(signature) => {
                                     broadcast_signature = Some(signature);
                                     break;
@@ -1404,7 +1428,7 @@ impl Mpp {
 
         let tx = self
             .rpc
-            .get_transaction(&signature, UiTransactionEncoding::JsonParsed)
+            .get_transaction_with_config(&signature, crate::core::rpc::parsed_transaction_config())
             .map_err(|e| {
                 if e.to_string().contains("not found") {
                     VerificationError::not_found("Transaction not found or not yet confirmed")
@@ -1412,6 +1436,14 @@ impl Mpp {
                     VerificationError::network_error(format!("RPC error: {e}"))
                 }
             })?;
+
+        // The RPC returns whatever version we asked for; the server decides
+        // what it accepts, exactly as for a transaction credential.
+        crate::core::tx::check_reported_version(
+            tx.transaction.version.as_ref(),
+            &self.accepted_versions,
+        )
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
         // Check for on-chain error.
         if let Some(meta) = &tx.transaction.meta {
@@ -1620,14 +1652,15 @@ pub fn check_network_blockhash(
 
 #[cfg(test)]
 fn verify_transaction_pre_broadcast(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
 ) -> Result<(), VerificationError> {
     verify_versioned_transaction_pre_broadcast(
-        &VersionedTransaction::from(tx.clone()),
+        tx,
         request,
         method_details,
+        &[TxVersion::V0, TxVersion::V1],
     )
 }
 
@@ -1635,8 +1668,24 @@ fn verify_versioned_transaction_pre_broadcast(
     tx: &VersionedTransaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
+    accepted_versions: &[TxVersion],
 ) -> Result<(), VerificationError> {
-    reject_address_lookup_tables(tx)?;
+    // Envelope first: accepted version, no lookup tables, size within the
+    // version's limit. Then, for version 1, the header compute config is held
+    // to the same caps the ComputeBudget instructions get on version 0.
+    crate::core::tx::check_envelope(tx, accepted_versions)
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+    let fee_sponsored = method_details.fee_payer.unwrap_or(false);
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        MAX_COMPUTE_UNIT_LIMIT,
+        if fee_sponsored {
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        } else {
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        },
+    )
+    .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
@@ -2007,22 +2056,6 @@ fn interpret_post_timeout_status(
     }
 }
 
-pub(crate) fn reject_address_lookup_tables(
-    tx: &VersionedTransaction,
-) -> Result<(), VerificationError> {
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(VerificationError::invalid_payload(
-            "v0 transactions with address lookup tables are not supported",
-        ));
-    }
-
-    Ok(())
-}
-
 fn expected_fee_payer(
     tx: &VersionedTransaction,
     method_details: &MethodDetails,
@@ -2169,31 +2202,7 @@ fn validate_instruction_allowlist(
     Ok(())
 }
 
-/// A decoded ComputeBudget instruction we permit: a unit limit or a unit price.
-/// The on-chain wire format (tag 2 = `SetComputeUnitLimit`, 5 bytes, `u32`;
-/// tag 3 = `SetComputeUnitPrice`, 9 bytes, `u64`) is identical on the plaintext
-/// and confidential paths, so it is decoded once here. Each caller applies its
-/// own caps / error type (the two paths differ on both), so this returns the
-/// raw value and stays free of policy.
-pub(crate) enum ComputeBudgetOp {
-    UnitLimit(u32),
-    UnitPrice(u64),
-}
-
-/// Decode a `SetComputeUnitLimit` / `SetComputeUnitPrice` ComputeBudget
-/// instruction. Returns `None` for any other opcode or malformed length —
-/// callers decide whether that is an error and how to report it.
-pub(crate) fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<ComputeBudgetOp> {
-    match (ix.data.first().copied(), ix.data.len()) {
-        (Some(2), 5) => Some(ComputeBudgetOp::UnitLimit(u32::from_le_bytes(
-            ix.data[1..5].try_into().unwrap(),
-        ))),
-        (Some(3), 9) => Some(ComputeBudgetOp::UnitPrice(u64::from_le_bytes(
-            ix.data[1..9].try_into().unwrap(),
-        ))),
-        _ => None,
-    }
-}
+pub(crate) use crate::core::tx::{decode_compute_budget_op, ComputeBudgetOp};
 
 pub(crate) fn validate_compute_budget_instruction(
     ix: &CompiledInstruction,
@@ -2227,9 +2236,9 @@ pub(crate) fn validate_compute_budget_instruction(
             }
             Ok(())
         }
-        None => Err(VerificationError::invalid_payload(
-            "Unsupported compute budget instruction",
-        )),
+        Some(ComputeBudgetOp::LoadedAccountsDataSizeLimit(_)) | None => Err(
+            VerificationError::invalid_payload("Unsupported compute budget instruction"),
+        ),
     }
 }
 
@@ -3755,12 +3764,15 @@ mod tests {
         }
     }
 
-    fn dummy_tx(instructions: Vec<Instruction>, payer: &Pubkey) -> Transaction {
-        let message = Message::new_with_blockhash(&instructions, Some(payer), &Hash::default());
-        Transaction {
-            signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
-            message,
-        }
+    fn dummy_tx(instructions: Vec<Instruction>, payer: &Pubkey) -> VersionedTransaction {
+        crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V0,
+            payer,
+            &instructions,
+            Hash::default(),
+            None,
+        )
+        .unwrap()
     }
 
     fn dummy_v0_tx(
@@ -3814,7 +3826,13 @@ mod tests {
             VersionedTransaction::from(dummy_tx(ixs, payer))
         };
         let verify = |tx: &VersionedTransaction| {
-            verify_confidential_bundle_tx(tx, &gateway, &token_program, &recipient_ata)
+            verify_confidential_bundle_tx(
+                tx,
+                &gateway,
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V0, TxVersion::V1],
+            )
         };
         let mk = |p: Pubkey| Instruction {
             program_id: p,
@@ -3883,6 +3901,41 @@ mod tests {
             &gateway,
         );
         assert_eq!(verify(&ok2).unwrap(), 1);
+
+        // OK (version 1): proofs verified inline with no context account —
+        // zero accounts, nothing persistent, so there is no authority to pin.
+        let zk_verify_no_context = Instruction {
+            program_id: zk,
+            accounts: vec![],
+            data: vec![1u8; 64],
+        };
+        let inline_v1 = crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V1,
+            &gateway,
+            &[
+                zk_verify_no_context.clone(),
+                zk_verify_no_context.clone(),
+                zk_verify_no_context.clone(),
+                ct_transfer(recipient_ata),
+            ],
+            Hash::default(),
+            Some(&crate::core::tx::ComputeBudget::new(1_000_000, 0)),
+        )
+        .unwrap();
+        assert_eq!(verify(&inline_v1).unwrap(), 1);
+        assert_eq!(
+            verify(&vtx(vec![zk_verify_no_context], &gateway)).unwrap(),
+            0
+        );
+        // REJECT: a version-1 bundle when the server only accepts version 0.
+        assert!(verify_confidential_bundle_tx(
+            &inline_v1,
+            &gateway,
+            &token_program,
+            &recipient_ata,
+            &[TxVersion::V0],
+        )
+        .is_err());
 
         // REJECT: ZK verify (inline) that sets an attacker as context authority —
         // it could close the gateway-funded account externally and drain the rent.
@@ -4162,7 +4215,13 @@ mod tests {
         let request = charge_request(amount, "SOL", &recipient);
         let method_details = MethodDetails::default();
 
-        assert!(verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+        assert!(verify_versioned_transaction_pre_broadcast(
+            &tx,
+            &request,
+            &method_details,
+            &[TxVersion::V0]
+        )
+        .is_ok());
     }
 
     #[test]
@@ -4183,8 +4242,13 @@ mod tests {
         let request = charge_request(amount, "SOL", &recipient);
         let method_details = MethodDetails::default();
 
-        let err =
-            verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        let err = verify_versioned_transaction_pre_broadcast(
+            &tx,
+            &request,
+            &method_details,
+            &[TxVersion::V0],
+        )
+        .unwrap_err();
         assert!(err.message.contains("address lookup tables"));
     }
 

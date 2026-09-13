@@ -11,12 +11,11 @@
 
 use std::str::FromStr;
 
+use crate::core::tx::TxVersion;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::{SolanaSigner, TransactionSigner};
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_transaction::Transaction;
 
 use crate::mpp::error::Error;
 use crate::mpp::program::subscriptions::{
@@ -41,6 +40,10 @@ pub use crate::mpp::protocol::intents::SubscriptionMethodDetails;
 /// Options for building a Solana subscription activation transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildSubscriptionActivationOptions {
+    /// Highest message version the signer can sign, when that is below what
+    /// the challenge accepts. The Ledger Solana app signs version 0 but not
+    /// yet version 1. `None` takes the highest version the challenge accepts.
+    pub max_tx_version: Option<crate::core::tx::TxVersion>,
     /// Optional memo with the merchant's external reference, embedded as a
     /// trailing memo instruction.
     pub external_id: Option<String>,
@@ -274,12 +277,12 @@ pub async fn build_subscription_activation_transaction_with_options(
 
     let mut instructions: Vec<Instruction> = Vec::new();
 
-    instructions.push(compute_unit_price_ix(
-        options.compute_unit_price.unwrap_or(1),
-    ));
-    instructions.push(compute_unit_limit_ix(
+    // Compute budget: a ComputeBudget prefix on version 0, the header config
+    // on version 1.
+    let budget = crate::core::tx::ComputeBudget::new(
         options.compute_unit_limit.unwrap_or(400_000),
-    ));
+        options.compute_unit_price.unwrap_or(1),
+    );
 
     // ATA bootstrap. The on-chain `init_subscription_authority` (and
     // every subsequent transfer) requires the subscriber's USDC ATA to
@@ -420,20 +423,27 @@ pub async fn build_subscription_activation_transaction_with_options(
     // Blockhash was already parsed above for the SA-init pre-step; reuse it
     // for the activation tx. Both transactions share the same recentBlockhash
     // so they land in the same ~150-slot window.
-    let message = Message::new_with_blockhash(&instructions, Some(&fee_payer_pubkey), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
+    let version = crate::core::tx::negotiate(
+        method_details.transaction_versions.as_deref(),
+        options.max_tx_version,
+    )?;
+    let mut tx = crate::core::tx::build_unsigned(
+        version,
+        &fee_payer_pubkey,
+        &instructions,
+        blockhash,
+        Some(&budget),
+    )?;
 
     // Sign as subscriber; the server adds the puller and fee-payer
     // signatures (puller is the server, so the server holds the puller key
     // too). The subscriber is the only client-side signer; when fee
     // sponsorship is in play, the tx is broadcast partially signed.
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("Subscriber signature failed: {e}")))?;
 
-    let serialized = bincode::serialize(&tx)
-        .map_err(|e| Error::Other(format!("Failed to serialize tx: {e}")))?;
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &serialized);
+    let b64 = crate::core::tx::encode(&tx)?;
     Ok(CredentialPayload::Transaction { transaction: b64 })
 }
 
@@ -478,13 +488,13 @@ async fn ensure_subscription_authority_init_id(
         },
     );
 
-    let message = Message::new_with_blockhash(&[init_ix], Some(&subscriber), blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    let mut tx =
+        crate::core::tx::build_unsigned(TxVersion::V0, &subscriber, &[init_ix], *blockhash, None)?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("SA init signature failed: {e}")))?;
 
-    rpc.send_and_confirm_transaction(&tx).map_err(|e| {
+    crate::core::rpc::send_and_confirm_transaction(rpc, &tx).map_err(|e| {
         Error::Other(format!(
             "Failed to broadcast SubscriptionAuthority init: {e}"
         ))
@@ -568,30 +578,6 @@ fn build_memo_instruction(memo: &str) -> Instruction {
 //
 // Mirror the inline builders used by `client::charge` to avoid pulling in
 // `solana-compute-budget-interface`.
-
-fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
-    let program_id =
-        Pubkey::from_str("ComputeBudget111111111111111111111111111111").expect("valid program id");
-    let mut data = vec![3u8]; // SetComputeUnitPrice discriminator
-    data.extend_from_slice(&micro_lamports.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
-}
-
-fn compute_unit_limit_ix(units: u32) -> Instruction {
-    let program_id =
-        Pubkey::from_str("ComputeBudget111111111111111111111111111111").expect("valid program id");
-    let mut data = vec![2u8]; // SetComputeUnitLimit discriminator
-    data.extend_from_slice(&units.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -701,6 +687,7 @@ mod tests {
             plan_bump: Some(255),
             expected_period_hours: Some(720),
             expected_created_at: Some(1_700_000_000),
+            transaction_versions: None,
         }
     }
 
@@ -763,16 +750,16 @@ mod tests {
                     &transaction,
                 )
                 .expect("base64 decode");
-                let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
+                let tx = crate::core::tx::decode_bytes(&raw).expect("tx");
                 // [compute_price, compute_limit, ata_create_idempotent,
                 //  subscribe, transfer, memo] = 6. Init runs as a separate
                 // pre-broadcast tx, not bundled into the activation.
-                assert_eq!(tx.message.instructions.len(), 6);
+                assert_eq!(tx.message.instructions().len(), 6);
                 // Last instruction must be the memo.
-                let last = &tx.message.instructions[5];
+                let last = &tx.message.instructions()[5];
                 let memo_program_id =
                     Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
-                let last_program = tx.message.account_keys[last.program_id_index as usize];
+                let last_program = tx.message.static_account_keys()[last.program_id_index as usize];
                 assert_eq!(last_program, memo_program_id);
                 assert_eq!(last.data, b"order-42");
             }
@@ -817,14 +804,14 @@ mod tests {
                     &transaction,
                 )
                 .expect("base64 decode");
-                let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
+                let tx = crate::core::tx::decode_bytes(&raw).expect("tx");
                 // In a sponsored transaction the fee payer is account_keys[0].
                 let expected_fee_payer = Pubkey::from_str(fee_payer_key).unwrap();
-                assert_eq!(tx.message.account_keys[0], expected_fee_payer);
+                assert_eq!(tx.message.static_account_keys()[0], expected_fee_payer);
 
                 let subscriber_index = tx
                     .message
-                    .account_keys
+                    .static_account_keys()
                     .iter()
                     .position(|key| key == &signer.pubkey())
                     .expect("subscriber signer account");
@@ -934,10 +921,10 @@ mod tests {
 
     #[test]
     fn compute_unit_price_and_limit_have_correct_discriminators() {
-        let price_ix = compute_unit_price_ix(1_000);
+        let price_ix = crate::core::tx::unit_price_instruction(1_000);
         assert_eq!(price_ix.data[0], 3);
         assert_eq!(price_ix.data.len(), 9);
-        let limit_ix = compute_unit_limit_ix(200_000);
+        let limit_ix = crate::core::tx::unit_limit_instruction(200_000);
         assert_eq!(limit_ix.data[0], 2);
         assert_eq!(limit_ix.data.len(), 5);
     }

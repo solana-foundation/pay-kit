@@ -97,6 +97,16 @@ final class PaymentRequiredException extends RuntimeException implements PayKitE
 }
 
 /**
+ * Thrown by the transaction decode boundary when a client submits a
+ * legacy (unprefixed) Solana message. Subclass of InvalidArgumentException
+ * so the generic malformed-payload handlers still catch it; callers that
+ * need to keep the message verbatim catch this type first.
+ */
+final class LegacyTransactionException extends InvalidArgumentException implements PayKitException
+{
+}
+
+/**
  * Thrown when a client requests a scheme the server's config does
  * not accept (e.g. x402 against an MPP-only deployment).
  */

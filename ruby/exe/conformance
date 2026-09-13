@@ -181,7 +181,11 @@ class TxFixtureBuilder
     signer_count = 1
     readonly_unsigned = keys.length - 1
 
+    # Version-0 message: 0x80 prefix, then the header, and a zero-length
+    # address-table-lookup vector after the instructions. Servers reject
+    # legacy (unprefixed) messages.
     message = +"".b
+    message << [0x80].pack("C")
     message << [signer_count, 0, readonly_unsigned].pack("C3")
     message << PayCore::Solana::Transaction.compact_u16(keys.length)
     keys.each { |k| message << PayCore::Solana::PublicKey.new(k).bytes.pack("C*") }
@@ -194,6 +198,7 @@ class TxFixtureBuilder
       message << PayCore::Solana::Transaction.compact_u16(ix[:data].bytesize)
       message << ix[:data]
     end
+    message << PayCore::Solana::Transaction.compact_u16(0)
 
     signatures = PayCore::Solana::Transaction.compact_u16(signer_count) +
       ("\x00".b * 64 * signer_count)

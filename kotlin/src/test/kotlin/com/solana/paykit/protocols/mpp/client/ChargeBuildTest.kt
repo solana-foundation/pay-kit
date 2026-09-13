@@ -59,6 +59,8 @@ class ChargeBuildTest {
         val raw = JBase64.getDecoder().decode(transaction)
         // 1 signature slot + 64 bytes of signature + message
         assertEquals(0x01.toByte(), raw[0])
+        // The message is a v0 versioned message (servers reject legacy).
+        assertEquals(0x80.toByte(), raw[1 + 64], "charge transaction must be a v0 message")
         // After signature slot and message header is the account-keys count
         // which we cannot pin without recomputing; just sanity-check the
         // shape is non-trivial.
@@ -637,6 +639,7 @@ class ChargeBuildTest {
         )
         assertTrue(unsigned.size > 64)
         assertEquals(0x01.toByte(), unsigned[0])
+        assertEquals(0x80.toByte(), unsigned[1 + 64], "unsigned charge transaction must be a v0 message")
     }
 
     // ── Optional recipient / methodDetails (rust spine parity) ──────────────────

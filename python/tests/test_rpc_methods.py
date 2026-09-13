@@ -102,7 +102,7 @@ async def test_get_transaction_returns_wrapped_value():
     body = rpc._client.last_body  # type: ignore[attr-defined]
     assert body["method"] == "getTransaction"
     assert body["params"][1]["encoding"] == "jsonParsed"
-    assert body["params"][1]["maxSupportedTransactionVersion"] == 0
+    assert body["params"][1]["maxSupportedTransactionVersion"] == 1
 
 
 @pytest.mark.asyncio

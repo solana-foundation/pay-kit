@@ -1,19 +1,19 @@
-//! Greedy, size-bounded packing of per-channel instruction groups into legacy
-//! transactions (no address lookup tables).
+//! Greedy, size-bounded packing of per-channel instruction groups into
+//! transactions of one message version, without address lookup tables.
 //!
 //! Callers supply an operation-specific count cap; this module independently
-//! enforces the Solana packet limit. A voucher settlement and a reclaim have
-//! different account and data footprints, so there is deliberately no global
-//! "channels per transaction" default here.
+//! enforces the version's wire limits through [`crate::core::tx::measure`]. A
+//! voucher settlement and a reclaim have different account and data
+//! footprints, so there is deliberately no global "channels per transaction"
+//! default here.
 //!
 //! Shared by both the mpp session and x402 settlement paths via the worker.
 
 use solana_instruction::Instruction;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 
-/// Max serialized transaction size (Solana packet limit).
-pub const MAX_TX_BYTES: usize = 1232;
+use crate::core::tx::{measure, ComputeBudget, TxVersion};
+use crate::core::Result;
 
 /// One channel operation's instructions, tagged with its id for tracing,
 /// metrics, and reconciliation.
@@ -23,30 +23,37 @@ pub struct ChannelInstructionGroup {
     pub instructions: Vec<Instruction>,
 }
 
-/// Serialized size of a legacy transaction carrying `instructions`, fee-paid by
-/// `payer`. Computed without signing: message bytes + the signature array
-/// (`num_required_signatures * 64`) + the compact-u16 length prefix.
-pub fn tx_size(instructions: &[Instruction], payer: &Pubkey) -> usize {
-    let msg = Message::new(instructions, Some(payer));
-    let sigs = msg.header.num_required_signatures as usize;
-    let sig_prefix = if sigs < 128 { 1 } else { 2 };
-    msg.serialize().len() + sigs * 64 + sig_prefix
+/// Serialized size of a `version` transaction carrying `instructions`,
+/// fee-paid by `payer`, with no compute budget. Exact for the signed
+/// transaction: signatures are fixed-size and the blockhash does not change
+/// the length. Errors only when the instructions cannot be compiled at all.
+pub fn tx_size(
+    version: TxVersion,
+    instructions: &[Instruction],
+    payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
+) -> Result<usize> {
+    measure(version, payer, instructions, budget)
 }
 
 /// The shared batch-boundary rule for greedy packing: whether appending a
 /// group whose flattened instructions are `next` to a current batch holding
 /// `cur_group_count` groups (flattened to `cur`) would overflow the caller's
-/// operation-specific cap or the [`MAX_TX_BYTES`] byte limit.
+/// operation-specific cap or the version's size limit. A group that cannot be
+/// measured counts as overflowing, so it is sealed into its own batch and
+/// surfaces as an error at build time rather than being dropped.
 ///
 /// Used by both [`pack`] and the worker's `regroup` so the packing rule lives
 /// in one place. Note: it rebuilds and serializes the candidate message on each
 /// call, so a greedy packer built on it is O(n²) in instruction bytes — fine
 /// for realistic batch sizes (a handful of channels), not for large fan-in.
 pub fn would_overflow_tx(
+    version: TxVersion,
     cur: &[Instruction],
     cur_group_count: usize,
     next: &[Instruction],
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_groups_per_tx: usize,
 ) -> bool {
     if cur_group_count >= max_groups_per_tx.max(1) {
@@ -54,17 +61,22 @@ pub fn would_overflow_tx(
     }
     let mut probe: Vec<Instruction> = cur.to_vec();
     probe.extend_from_slice(next);
-    tx_size(&probe, payer) > MAX_TX_BYTES
+    match tx_size(version, &probe, payer, budget) {
+        Ok(size) => size > version.limits().max_bytes,
+        Err(_) => true,
+    }
 }
 
-/// Greedily group channel operations into legacy-tx-sized batches. Each
-/// returned batch's flattened instructions serialize to `<= MAX_TX_BYTES` and
+/// Greedily group channel operations into `version`-sized batches. Each
+/// returned batch's flattened instructions fit the version's size limit and
 /// hold at most `max_groups_per_tx` operations. A single operation that alone
 /// exceeds the limit is returned as its own over-size batch; the caller
 /// surfaces that as an error rather than silently dropping it.
 pub fn pack(
+    version: TxVersion,
     channels: Vec<ChannelInstructionGroup>,
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_groups_per_tx: usize,
 ) -> Vec<Vec<ChannelInstructionGroup>> {
     let mut out: Vec<Vec<ChannelInstructionGroup>> = Vec::new();
@@ -77,10 +89,12 @@ pub fn pack(
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             if would_overflow_tx(
+                version,
                 &cur_ix,
                 cur.len(),
                 &ch.instructions,
                 payer,
+                budget,
                 max_groups_per_tx,
             ) {
                 out.push(std::mem::take(&mut cur));
@@ -99,7 +113,7 @@ mod tests {
     use super::*;
     use crate::core::payment_channels::{
         build_reclaim_instruction, build_settle_and_seal_instructions, default_program_id,
-        MAX_RECLAIMS_PER_TX, MAX_VOUCHER_SETTLEMENTS_PER_TX,
+        max_reclaims_per_tx, max_voucher_settlements_per_tx,
     };
 
     fn pk(tag: u8, seed: u64) -> Pubkey {
@@ -137,48 +151,67 @@ mod tests {
         }
     }
 
+    fn fits(version: TxVersion, payer: &Pubkey, ixs: &[Instruction]) -> bool {
+        let limits = version.limits();
+        let Ok(tx) = crate::core::tx::build_unsigned_unchecked(
+            version,
+            payer,
+            ixs,
+            solana_hash::Hash::default(),
+            None,
+        ) else {
+            return false;
+        };
+        crate::core::tx::serialized_size(&tx).unwrap() <= limits.max_bytes
+            && tx.message.static_account_keys().len() <= limits.max_static_accounts
+            && limits
+                .max_instructions
+                .is_none_or(|max| tx.message.instructions().len() <= max)
+    }
+
     #[test]
     fn voucher_settlement_limit_matches_wire_size() {
         let operator = pk(0xAA, 0);
-        let mut max_fit = 0usize;
-        for n in 1..=12u64 {
-            let chans: Vec<_> = (0..n).map(voucher_settlement_instructions).collect();
-            let flat: Vec<Instruction> = chans
-                .iter()
-                .flat_map(|c| c.instructions.iter().cloned())
-                .collect();
-            let size = tx_size(&flat, &operator);
-            eprintln!(
-                "channels={n:2}  tx_bytes={size:4}  fits={}",
-                size <= MAX_TX_BYTES
-            );
-            if size <= MAX_TX_BYTES {
-                max_fit = n as usize;
+        for version in [TxVersion::V0, TxVersion::V1] {
+            let mut max_fit = 0usize;
+            for n in 1..=40u64 {
+                let chans: Vec<_> = (0..n).map(voucher_settlement_instructions).collect();
+                let flat: Vec<Instruction> = chans
+                    .iter()
+                    .flat_map(|c| c.instructions.iter().cloned())
+                    .collect();
+                if fits(version, &operator, &flat) {
+                    max_fit = n as usize;
+                }
             }
+            assert_eq!(
+                max_fit,
+                max_voucher_settlements_per_tx(version),
+                "version {version} voucher settlement cap must match the calibrated wire limits"
+            );
         }
-        assert_eq!(
-            max_fit, MAX_VOUCHER_SETTLEMENTS_PER_TX,
-            "voucher settlement cap must match the calibrated packet-size limit"
-        );
     }
 
     #[test]
     fn reclaim_limit_matches_wire_size_with_shared_rent_payer() {
         let operator = pk(0xAA, 0);
         let program_id = default_program_id();
-        let mut max_fit = 0usize;
-        for n in 1..=64u64 {
-            let instructions: Vec<_> = (0..n)
-                .map(|i| build_reclaim_instruction(&pk(0x03, i), &operator, &program_id))
-                .collect();
-            if tx_size(&instructions, &operator) <= MAX_TX_BYTES {
-                max_fit = n as usize;
+        for version in [TxVersion::V0, TxVersion::V1] {
+            let mut max_fit = 0usize;
+            for n in 1..=80u64 {
+                let instructions: Vec<_> = (0..n)
+                    .map(|i| build_reclaim_instruction(&pk(0x03, i), &operator, &program_id))
+                    .collect();
+                if fits(version, &operator, &instructions) {
+                    max_fit = n as usize;
+                }
             }
+            assert_eq!(
+                max_fit,
+                max_reclaims_per_tx(version),
+                "version {version} reclaim cap must match the calibrated wire limits"
+            );
         }
-        assert_eq!(
-            max_fit, MAX_RECLAIMS_PER_TX,
-            "reclaim cap must match the calibrated packet-size limit"
-        );
     }
 
     #[test]
@@ -187,7 +220,7 @@ mod tests {
         let channels: Vec<_> = (0..10).map(voucher_settlement_instructions).collect();
 
         // Byte-bounded packing (generous count cap).
-        let batches = pack(channels.clone(), &operator, 1000);
+        let batches = pack(TxVersion::V0, channels.clone(), &operator, None, 1000);
         assert!(!batches.is_empty());
         for b in &batches {
             let flat: Vec<Instruction> = b
@@ -195,14 +228,15 @@ mod tests {
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             assert!(
-                tx_size(&flat, &operator) <= MAX_TX_BYTES,
+                tx_size(TxVersion::V0, &flat, &operator, None).unwrap()
+                    <= TxVersion::V0.limits().max_bytes,
                 "batch exceeds packet size"
             );
         }
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 10);
 
         // Count cap of 1 ⇒ one channel per batch.
-        let singles = pack(channels, &operator, 1);
+        let singles = pack(TxVersion::V0, channels, &operator, None, 1);
         assert_eq!(singles.len(), 10);
         assert!(singles.iter().all(|b| b.len() == 1));
     }

@@ -143,10 +143,10 @@ async def build_charge_transaction(
     # Lazy imports so the module can be imported without solana/solders installed
     from solders.hash import Hash  # type: ignore[import-untyped]
     from solders.instruction import Instruction  # type: ignore[import-untyped]
-    from solders.message import Message  # type: ignore[import-untyped]
     from solders.pubkey import Pubkey  # type: ignore[import-untyped]
     from solders.system_program import TransferParams, transfer  # type: ignore[import-untyped]
-    from solders.transaction import Transaction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 
     details = method_details or MethodDetails()
     amount_int = int(amount)
@@ -308,20 +308,23 @@ async def build_charge_transaction(
         resp = await _get_latest_blockhash_confirmed(rpc_client)
         blockhash = resp.value.blockhash
 
-    # Build and sign transaction. The message fee payer (account[0]) is the
-    # server fee payer when sponsored, else the signer, matching rust
+    # Build and sign a v0 transaction. The message fee payer (account[0]) is
+    # the server fee payer when sponsored, else the signer, matching rust
     # ``actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey)``
-    # (charge.rs:162-163). The client signs ONLY its own slot via partial_sign;
-    # when sponsored the server cosigns the fee-payer slot at account[0].
+    # (charge.rs:162-163). The client signs ONLY its own slot; when sponsored
+    # the server cosigns the fee-payer slot at account[0].
     actual_fee_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey()
-    msg = Message.new_with_blockhash(instructions, actual_fee_payer, blockhash)
-    tx = Transaction.new_unsigned(msg)
-    tx.partial_sign([signer], blockhash)
+    tx_bytes = build_partially_signed_v0_transaction(
+        instructions,
+        actual_fee_payer,
+        blockhash,
+        signer.pubkey(),
+        lambda message: bytes(signer.sign_message(message)),
+    )
 
     # Encode transaction
     import base64 as b64
 
-    tx_bytes = bytes(tx)
     tx_b64 = b64.b64encode(tx_bytes).decode("ascii")
 
     return CredentialPayload(type="transaction", transaction=tx_b64)

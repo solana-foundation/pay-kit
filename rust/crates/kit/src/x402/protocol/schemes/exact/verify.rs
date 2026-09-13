@@ -5,10 +5,9 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
-    UiParsedInstruction, UiTransactionEncoding,
+    UiParsedInstruction,
 };
 
 use super::{programs, resolve_stablecoin_mint, PaymentRequirements};
@@ -200,16 +199,11 @@ fn matches_raw_transfer(
 ///
 /// This mirrors the canonical TypeScript facilitator's transaction-shape checks.
 pub fn verify_exact_transaction(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     requirements: &PaymentRequirements,
     managed_signers: &[Pubkey],
 ) -> Result<(), Error> {
-    verify_exact_instructions(
-        &tx.message.account_keys,
-        &tx.message.instructions,
-        requirements,
-        managed_signers,
-    )
+    verify_exact_versioned_transaction(tx, requirements, managed_signers)
 }
 
 /// Verify a signed versioned `exact` transaction against payment requirements.
@@ -218,11 +212,30 @@ pub fn verify_exact_versioned_transaction(
     requirements: &PaymentRequirements,
     managed_signers: &[Pubkey],
 ) -> Result<(), Error> {
+    let version = crate::core::tx::TxVersion::of(&tx.message)
+        .map_err(|e| Error::Other(format!("invalid_exact_svm_payload_transaction: {e}")))?;
+    // Version 1 carries its compute budget in the header, so the static layout
+    // has no ComputeBudget prefix; the price cap is applied to the header.
+    let budgeted = version == crate::core::tx::TxVersion::V1;
+    if budgeted {
+        crate::core::tx::check_v1_budget_caps(
+            &tx.message,
+            u32::MAX,
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        )
+        .map_err(|_| {
+            Error::Other(
+                "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
+                    .into(),
+            )
+        })?;
+    }
     verify_exact_instructions(
         tx.message.static_account_keys(),
         tx.message.instructions(),
         requirements,
         managed_signers,
+        budgeted,
     )
 }
 
@@ -231,25 +244,31 @@ fn verify_exact_instructions(
     instructions: &[CompiledInstruction],
     requirements: &PaymentRequirements,
     managed_signers: &[Pubkey],
+    header_budget: bool,
 ) -> Result<(), Error> {
-    if !(3..=6).contains(&instructions.len()) {
+    // Version 0: [limit, price, transfer, ≤3 optional]. Version 1: the budget
+    // is in the header, so [transfer, ≤3 optional].
+    let prefix = if header_budget { 0 } else { 2 };
+    if !(prefix + 1..=prefix + 4).contains(&instructions.len()) {
         return invalid("invalid_exact_svm_payload_transaction_instructions_length");
     }
 
-    verify_compute_limit_instruction(
-        instructions.first().ok_or_else(|| {
-            Error::Other("invalid_exact_svm_payload_transaction_instructions_length".into())
-        })?,
-        account_keys,
-    )?;
-    verify_compute_price_instruction(
-        instructions.get(1).ok_or_else(|| {
-            Error::Other("invalid_exact_svm_payload_transaction_instructions_length".into())
-        })?,
-        account_keys,
-    )?;
+    if !header_budget {
+        verify_compute_limit_instruction(
+            instructions.first().ok_or_else(|| {
+                Error::Other("invalid_exact_svm_payload_transaction_instructions_length".into())
+            })?,
+            account_keys,
+        )?;
+        verify_compute_price_instruction(
+            instructions.get(1).ok_or_else(|| {
+                Error::Other("invalid_exact_svm_payload_transaction_instructions_length".into())
+            })?,
+            account_keys,
+        )?;
+    }
 
-    let transfer_ix = instructions.get(2).ok_or_else(|| {
+    let transfer_ix = instructions.get(prefix).ok_or_else(|| {
         Error::Other("invalid_exact_svm_payload_transaction_instructions_length".into())
     })?;
     verify_transfer_instruction(transfer_ix, account_keys, requirements, managed_signers)?;
@@ -260,7 +279,7 @@ fn verify_exact_instructions(
         "invalid_exact_svm_payload_unknown_sixth_instruction",
     ];
 
-    for (index, instruction) in instructions.iter().skip(3).enumerate() {
+    for (index, instruction) in instructions.iter().skip(prefix + 1).enumerate() {
         let program = program_id_for_instruction(instruction, account_keys)?;
         let program = program.to_string();
         if program == programs::LIGHTHOUSE_PROGRAM || program == programs::MEMO_PROGRAM {
@@ -277,7 +296,7 @@ fn verify_exact_instructions(
     if let Some(expected_memo) = expected_memo(requirements) {
         let memo_instructions: Vec<_> = instructions
             .iter()
-            .skip(3)
+            .skip(prefix + 1)
             .filter(|instruction| {
                 program_id_for_instruction(instruction, account_keys)
                     .map(|program| program.to_string() == programs::MEMO_PROGRAM)
@@ -307,7 +326,7 @@ pub fn fetch_transaction(
     let signature = Signature::from_str(signature_str)
         .map_err(|e| Error::Other(format!("Invalid signature: {e}")))?;
 
-    rpc.get_transaction(&signature, UiTransactionEncoding::JsonParsed)
+    rpc.get_transaction_with_config(&signature, crate::core::rpc::parsed_transaction_config())
         .map_err(|e| {
             if e.to_string().contains("not found") {
                 Error::TransactionNotFound
@@ -565,13 +584,23 @@ impl RequirementsRecipientExt for PaymentRequirements {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mutable access to a compiled instruction of a version-0 test fixture.
+    fn ix_mut(
+        tx: &mut VersionedTransaction,
+        index: usize,
+    ) -> &mut solana_message::compiled_instruction::CompiledInstruction {
+        match &mut tx.message {
+            solana_message::VersionedMessage::V0(message) => &mut message.instructions[index],
+            _ => panic!("fixture is version 0"),
+        }
+    }
     use crate::x402::protocol::schemes::exact::{mints, SOLANA_DEVNET};
     use solana_hash::Hash;
     use solana_instruction::{AccountMeta, Instruction};
     use solana_message::{v0, MessageHeader, VersionedMessage};
     use solana_signature::Signature;
     use solana_transaction::versioned::VersionedTransaction;
-    use solana_transaction::Transaction;
     use solana_transaction::TransactionError;
     use solana_transaction_status_client_types::{
         option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
@@ -596,6 +625,7 @@ mod tests {
             extra: None,
             accepted: None,
             resource_info: None,
+            transaction_versions: None,
         }
     }
 
@@ -620,6 +650,7 @@ mod tests {
                         recent_blockhash: "blockhash".to_string(),
                         instructions: vec![],
                         address_table_lookups: None,
+                        transaction_config: None,
                     }),
                 }),
                 meta: Some(UiTransactionStatusMeta {
@@ -777,7 +808,7 @@ mod tests {
         amount: u64,
         destination_override: Option<Pubkey>,
         mint_override: Option<Pubkey>,
-    ) -> Transaction {
+    ) -> VersionedTransaction {
         let mut instructions = vec![
             compute_limit_ix(),
             compute_price_ix(1),
@@ -791,11 +822,86 @@ mod tests {
         ];
         instructions.extend(optional_ixs);
 
-        Transaction::new_unsigned(solana_message::Message::new_with_blockhash(
+        crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            owner,
             &instructions,
-            Some(owner),
-            &Hash::new_from_array([9u8; 32]),
-        ))
+            Hash::new_from_array([9u8; 32]),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Version 1: the compute budget lives in the header, so the transaction
+    /// carries the transfer at index 0 and no ComputeBudget instructions.
+    fn build_exact_v1_transaction(
+        requirements: &PaymentRequirements,
+        fee_payer: &Pubkey,
+        transfer_owner: &Pubkey,
+        optional_ixs: Vec<Instruction>,
+        budget: crate::core::tx::ComputeBudget,
+    ) -> VersionedTransaction {
+        let mut instructions = vec![transfer_checked_ix(
+            transfer_owner,
+            requirements,
+            1000,
+            None,
+            None,
+        )];
+        instructions.extend(optional_ixs);
+        crate::core::tx::build_unsigned(
+            crate::core::tx::TxVersion::V1,
+            fee_payer,
+            &instructions,
+            Hash::new_from_array([9u8; 32]),
+            Some(&budget),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn verify_exact_versioned_transaction_accepts_v1_header_budget() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let tx = build_exact_v1_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![memo_ix()],
+            crate::core::tx::ComputeBudget::new(20_000, 1),
+        );
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).is_ok());
+
+        // The per-unit price cap applies to the header fee: 20_000 CU at
+        // 6 lamports/CU is over the 5 lamports/CU maximum.
+        let tx = build_exact_v1_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![memo_ix()],
+            crate::core::tx::ComputeBudget::new(20_000, 6_000_000),
+        );
+        let err = verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        assert!(err.to_string().contains("compute_price"), "{err}");
+
+        // ComputeBudget instructions inside a version-1 message are rejected:
+        // the runtime ignores them, so nothing they say could be bounded.
+        let mut instructions = vec![
+            compute_limit_ix(),
+            compute_price_ix(1),
+            transfer_checked_ix(&owner, &requirements, 1000, None, None),
+        ];
+        instructions.push(memo_ix());
+        let tx = crate::core::tx::build_unsigned(
+            crate::core::tx::TxVersion::V1,
+            &fee_payer,
+            &instructions,
+            Hash::new_from_array([9u8; 32]),
+            Some(&crate::core::tx::ComputeBudget::new(20_000, 1)),
+        )
+        .unwrap();
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).is_err());
     }
 
     fn build_exact_versioned_transaction(
@@ -1056,11 +1162,14 @@ mod tests {
     fn verify_exact_transaction_rejects_instruction_length() {
         let requirements = requirements("1000");
         let fee_payer = Pubkey::new_unique();
-        let tx = Transaction::new_unsigned(solana_message::Message::new_with_blockhash(
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &fee_payer,
             &[compute_limit_ix(), compute_price_ix(1)],
-            Some(&fee_payer),
-            &Hash::new_from_array([9u8; 32]),
-        ));
+            Hash::new_from_array([9u8; 32]),
+            None,
+        )
+        .unwrap();
         let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_instructions_length")
@@ -1074,7 +1183,7 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mut tx =
             build_exact_transaction(&requirements, &fee_payer, &owner, vec![], 1000, None, None);
-        tx.message.instructions[0].data = vec![9];
+        ix_mut(&mut tx, 0).data = vec![9];
         let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction")
@@ -1088,7 +1197,7 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mut tx =
             build_exact_transaction(&requirements, &fee_payer, &owner, vec![], 1000, None, None);
-        tx.message.instructions[1].data = vec![3];
+        ix_mut(&mut tx, 1).data = vec![3];
         let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction")
@@ -1102,7 +1211,7 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mut tx =
             build_exact_transaction(&requirements, &fee_payer, &owner, vec![], 1000, None, None);
-        tx.message.instructions[1].data = [
+        ix_mut(&mut tx, 1).data = [
             vec![3],
             (MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1)
                 .to_le_bytes()
@@ -1122,7 +1231,7 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mut tx =
             build_exact_transaction(&requirements, &fee_payer, &owner, vec![], 1000, None, None);
-        tx.message.instructions[2].program_id_index = 0;
+        ix_mut(&mut tx, 2).program_id_index = 0;
         let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_no_transfer_instruction")

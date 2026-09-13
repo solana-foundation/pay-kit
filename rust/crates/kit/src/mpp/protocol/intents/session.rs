@@ -203,6 +203,11 @@ pub struct SessionMethodDetails {
     pub fee_payer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_payer_key: Option<String>,
+
+    /// Transaction message versions the server accepts (`0`, `1`). Absent
+    /// means `[0]`. See `core::tx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voucher_signer: Option<SessionVoucherSigner>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -62,7 +62,7 @@ type testutilConfig struct {
 
 func newTestTransaction(t *testing.T, payer solana.PrivateKey, instructions ...solana.Instruction) *solana.Transaction {
 	t.Helper()
-	tx, err := solana.NewTransaction(
+	tx, err := solanatx.NewV0Transaction(
 		instructions,
 		solana.Hash{},
 		solana.TransactionPayer(payer.PublicKey()),
@@ -1541,7 +1541,7 @@ func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient so
 	if err != nil {
 		t.Fatalf("ix: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx: %v", err)
 	}
@@ -1736,7 +1736,7 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 	}
 	payer := testutil.NewPrivateKey()
 	ix, _ := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	// Intentionally do NOT sign — zero signatures slot remains, primary is zero.
 	tx.Signatures = []solana.Signature{{}}
 	encoded, _ := solanatx.EncodeTransactionBase64(tx)
@@ -1959,3 +1959,132 @@ func TestPaymentMiddlewareReceiptFromContextAbsent(t *testing.T) {
 
 // Reference mpp to silence unused import in some configurations.
 var _ = core.AuthorizationHeader
+
+// landLegacyPushTransaction records a confirmed legacy SOL transfer paying
+// the challenge in the fake RPC and returns a push-mode credential for it
+// plus the referenced signature.
+func landLegacyPushTransaction(t *testing.T, rpcClient *testutil.FakeRPC, recipient solana.PublicKey, echo core.ChallengeEcho) (core.PaymentCredential, string) {
+	t.Helper()
+	payer := testutil.NewPrivateKey()
+	tx, err := solanatx.DecodeTransactionBase64(buildSOLPullTransaction(t, payer, recipient, 1_000_000, rpcClient.Blockhash))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	signature := tx.Signatures[0].String()
+	rpcClient.BySig[signature] = tx
+	credential, err := core.NewPaymentCredential(echo, map[string]string{
+		"type":      "signature",
+		"signature": signature,
+	})
+	if err != nil {
+		t.Fatalf("credential: %v", err)
+	}
+	return credential, signature
+}
+
+func assertLegacyRejection(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, solanatx.ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+	var sdkErr *core.Error
+	if !errors.As(err, &sdkErr) || sdkErr.Code != core.ErrCodeInvalidPayload {
+		t.Fatalf("err = %#v, want code %q", err, core.ErrCodeInvalidPayload)
+	}
+	if !strings.Contains(err.Error(), "legacy transactions are not supported; use a version 0 or version 1 message") {
+		t.Fatalf("unexpected message %q", err)
+	}
+}
+
+// A landed v0 transaction the RPC reports as "legacy" is rejected before the
+// signature is consumed: once the RPC reports the real version the same
+// credential settles.
+func TestVerifySignatureRejectsLegacyReportedVersion(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	authHeader, err := client.BuildCredentialHeaderWithOptions(context.Background(), cfg.Client, rpcClient, challenge, client.BuildOptions{Broadcast: true})
+	if err != nil {
+		t.Fatalf("build credential failed: %v", err)
+	}
+	credential, err := core.ParseAuthorization(authHeader)
+	if err != nil {
+		t.Fatalf("parse authorization failed: %v", err)
+	}
+	rpcClient.TxVersion = `"legacy"`
+	_, err = verifyCredentialEchoed(handler, context.Background(), credential)
+	assertLegacyRejection(t, err)
+
+	rpcClient.TxVersion = "0"
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
+	if err != nil {
+		t.Fatalf("verify after legacy rejection failed: %v", err)
+	}
+	if receipt.Status != core.ReceiptStatusSuccess {
+		t.Fatalf("unexpected receipt: %#v", receipt)
+	}
+}
+
+// A landed legacy transaction is rejected whether the RPC reports "legacy"
+// or omits the version field, and the replay marker stays untouched.
+func TestVerifySignatureRejectsLegacyTransaction(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+	}{
+		{name: "reported legacy", version: `"legacy"`},
+		{name: "version omitted", version: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, rpcClient, _ := newTestMpp(t)
+			challenge, err := handler.Charge(context.Background(), "0.001")
+			if err != nil {
+				t.Fatalf("charge failed: %v", err)
+			}
+			credential, signature := landLegacyPushTransaction(t, rpcClient, handler.recipient, challenge.ToEcho())
+			rpcClient.TxVersion = tc.version
+			_, err = verifyCredentialEchoed(handler, context.Background(), credential)
+			assertLegacyRejection(t, err)
+			inserted, err := handler.store.PutIfAbsent(context.Background(), consumedPrefix+signature, true)
+			if err != nil {
+				t.Fatalf("store: %v", err)
+			}
+			if !inserted {
+				t.Fatal("legacy rejection must not consume the replay marker")
+			}
+		})
+	}
+}
+
+func TestVerifySignatureAcceptsV0Transaction(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	if rpcClient.TxVersion != "0" {
+		t.Fatalf("default fixture version = %q, want 0", rpcClient.TxVersion)
+	}
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	authHeader, err := client.BuildCredentialHeaderWithOptions(context.Background(), cfg.Client, rpcClient, challenge, client.BuildOptions{Broadcast: true})
+	if err != nil {
+		t.Fatalf("build credential failed: %v", err)
+	}
+	credential, err := core.ParseAuthorization(authHeader)
+	if err != nil {
+		t.Fatalf("parse authorization failed: %v", err)
+	}
+	if got := rpcClient.Sent[0].Message.GetVersion(); got != solana.MessageVersionV0 {
+		t.Fatalf("landed transaction version = %v, want v0", got)
+	}
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+	if receipt.Status != core.ReceiptStatusSuccess || receipt.Reference == "" {
+		t.Fatalf("unexpected receipt: %#v", receipt)
+	}
+}

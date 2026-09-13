@@ -496,7 +496,7 @@ func TestValidateUptoOpenInstructionStructuralRejections(t *testing.T) {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 	buildTx := func(instructions ...solana.Instruction) *solana.Transaction {
-		tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(payer))
+		tx, err := solanatx.NewV0Transaction(instructions, blockhash, solana.TransactionPayer(payer))
 		if err != nil {
 			t.Fatalf("NewTransaction: %v", err)
 		}

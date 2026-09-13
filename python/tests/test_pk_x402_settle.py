@@ -17,7 +17,7 @@ import pytest
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.message import MessageV0
+from solders.message import MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
@@ -33,6 +33,7 @@ from solana_pay_kit import (
     configure,
 )
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402 import (
@@ -164,12 +165,12 @@ def _build_envelope(adapter, gate, op_kp, *, amount_override=None, memo_override
     memo_text = memo_override if memo_override is not None else offer["extra"]["memo"]
     memo = Instruction(Pubkey.from_string(MEMO_PROGRAM), memo_text.encode(), [])
     msg = MessageV0.try_compile(op_kp.pubkey(), [cl, cp, transfer, memo], [], Hash.from_string(BH))
-    # Unsigned v0 wire form (zeroed sig slots) so cosign takes its v0 branch.
+    # Unsigned v0 wire form: zeroed sig slots, then the 0x80-prefixed message.
     num = int(msg.header.num_required_signatures)
     wire = bytearray()
     wire.append(num)
     wire.extend(bytes(64) * num)
-    wire.extend(bytes(msg))
+    wire.extend(bytes(to_bytes_versioned(msg)))
     tx_b64 = base64.b64encode(bytes(wire)).decode()
     envelope = {
         "x402Version": X402_VERSION,
@@ -569,3 +570,21 @@ def test_co_sign_unparseable_bytes_rejected():
     with pytest.raises(InvalidProofError) as exc:
         _co_sign(bogus, LocalSigner.from_keypair(Keypair()))
     assert exc.value.code == "invalid_exact_svm_payload_transaction_parse"
+
+
+def test_co_sign_rejects_legacy_transaction():
+    from solders.message import Message
+    from solders.system_program import TransferParams, transfer
+    from solders.transaction import Transaction
+
+    op_kp = Keypair()
+    ix = transfer(TransferParams(from_pubkey=op_kp.pubkey(), to_pubkey=Keypair().pubkey(), lamports=1))
+    tx = Transaction.new_unsigned(Message.new_with_blockhash([ix], op_kp.pubkey(), Hash.from_string(BH)))
+    tx_b64 = base64.b64encode(bytes(tx)).decode()
+    with pytest.raises(InvalidProofError) as exc:
+        _co_sign(tx_b64, LocalSigner.from_keypair(op_kp))
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "invalid_exact_svm_payload_transaction_parse"
+    with pytest.raises(InvalidProofError) as exc:
+        _transaction_signature(bytes(tx))
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED

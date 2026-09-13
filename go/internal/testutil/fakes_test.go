@@ -55,3 +55,36 @@ func TestFakeRPCHelpers(t *testing.T) {
 		t.Fatalf("simulate failed: %v", err)
 	}
 }
+
+func TestFakeRPCReportsTransactionVersion(t *testing.T) {
+	rpcClient := NewFakeRPC()
+	if rpcClient.TxVersion != "0" {
+		t.Fatalf("default TxVersion = %q, want 0", rpcClient.TxVersion)
+	}
+	signer := NewPrivateKey()
+	ix, _ := system.NewTransferInstruction(1000, signer.PublicKey(), NewPrivateKey().PublicKey()).ValidateAndBuild()
+	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	message, _ := tx.Message.MarshalBinary()
+	sig, _ := signer.Sign(message)
+	tx.Signatures = []solana.Signature{sig}
+	rpcClient.BySig[sig.String()] = tx
+	cases := []struct {
+		version string
+		want    rpc.TransactionVersion
+	}{
+		{version: "0", want: 0},
+		{version: `"legacy"`, want: rpc.LegacyTransactionVersion},
+		// An omitted field decodes as the zero value, indistinguishable from 0.
+		{version: "", want: 0},
+	}
+	for _, tc := range cases {
+		rpcClient.TxVersion = tc.version
+		result, err := rpcClient.GetTransaction(context.Background(), sig, nil)
+		if err != nil {
+			t.Fatalf("version %q: get transaction failed: %v", tc.version, err)
+		}
+		if result.Version != tc.want {
+			t.Fatalf("version %q: reported %v, want %v", tc.version, result.Version, tc.want)
+		}
+	}
+}

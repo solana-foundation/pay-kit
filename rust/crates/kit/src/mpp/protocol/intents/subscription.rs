@@ -316,6 +316,11 @@ pub struct SubscriptionMethodDetails {
     /// true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_key: Option<String>,
+
+    /// Transaction message versions the server accepts (`0`, `1`). Absent
+    /// means `[0]`. See `core::tx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
     /// Pre-fetched recent blockhash. When set, the client skips its own
     /// `getLatestBlockhash` RPC call.
     #[serde(default, skip_serializing_if = "Option::is_none")]

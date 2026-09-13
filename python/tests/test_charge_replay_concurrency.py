@@ -71,6 +71,7 @@ def _confirmed_sol_tx() -> dict:
     """A confirmed SOL transfer to the route recipient, no memo."""
     return {
         "meta": {"err": None},
+        "version": 0,
         "transaction": {
             "message": {
                 "instructions": [

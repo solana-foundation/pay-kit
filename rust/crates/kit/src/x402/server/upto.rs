@@ -27,14 +27,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use solana_instruction::Instruction;
 use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_message::compiled_instruction::CompiledInstruction;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
+use crate::core::tx::{TxV1Mode, TxVersion};
 // The ComputeBudget wire format is identical wherever it appears, so the
 // charge verifier's policy-free decoder is reused here rather than duplicated.
 
@@ -166,6 +165,8 @@ impl Drop for InFlightGuard {
 #[derive(Clone)]
 pub struct X402Upto {
     rpc: Arc<RpcClient>,
+    /// Transaction message versions accepted and advertised; see `core::tx`.
+    accepted_versions: Vec<TxVersion>,
     config: UptoConfig,
     fee_payer: Pubkey,
     receiver_authorizer: Pubkey,
@@ -224,13 +225,16 @@ impl X402Upto {
             .clone()
             .unwrap_or_else(|| default_rpc_url(&config.cluster).to_string());
 
+        // `confirmed`, not the default `finalized`: the channel open + voucher
+        // settlement shouldn't block ~13s on finalization.
+        let rpc = Arc::new(RpcClient::new_with_commitment(
+            rpc_url,
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        ));
         Ok(Self {
-            // `confirmed`, not the default `finalized`: the channel open + voucher
-            // settlement shouldn't block ~13s on finalization.
-            rpc: Arc::new(RpcClient::new_with_commitment(
-                rpc_url,
-                solana_commitment_config::CommitmentConfig::confirmed(),
-            )),
+            // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+            accepted_versions: vec![TxVersion::V0],
+            rpc,
             config,
             fee_payer,
             receiver_authorizer,
@@ -238,6 +242,17 @@ impl X402Upto {
             blockhash_cache: None,
             settlement_worker: Arc::new(tokio::sync::OnceCell::new()),
         })
+    }
+
+    /// Choose whether version-1 transactions are accepted, advertised and used
+    /// for settlement. `Auto` probes the `enable_tx_v1` gate once; the default is version 0 only.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = mode.resolve(&self.rpc);
+        self
+    }
+
+    fn tx_version(&self) -> TxVersion {
+        crate::core::tx::highest(&self.accepted_versions)
     }
 
     /// Attach a shared blockhash cache (refreshed by a background task) so the
@@ -387,6 +402,7 @@ impl X402Upto {
                 // No seller memo: the server accepts (but never requires) the
                 // client's own memo after `open`.
                 memo: None,
+                transaction_versions: crate::core::tx::advertised(&self.accepted_versions),
             },
         })
     }
@@ -595,8 +611,7 @@ impl X402Upto {
             &payload.open_slot,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
-        self.rpc
-            .send_and_confirm_transaction(&tx)
+        crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
 
         // Read the confirmed channel state and bind it.
@@ -696,13 +711,16 @@ impl X402Upto {
             .rpc
             .get_latest_blockhash()
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(&instructions, Some(&self.fee_payer), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
+        let mut tx = crate::core::tx::build_unsigned(
+            self.tx_version(),
+            &self.fee_payer,
+            &instructions,
+            blockhash,
+            None,
+        )?;
         self.sign_settlement_transaction(&mut tx).await?;
 
-        let signature = self
-            .rpc
-            .send_and_confirm_transaction(&tx)
+        let signature = crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("settle broadcast failed: {e}")))?;
 
         Ok(self.settlement_response(open, actual, signature.to_string()))
@@ -853,7 +871,7 @@ impl X402Upto {
             .settlement_worker
             .get_or_init(|| async move {
                 spawn(
-                    SettlementConfig::new(fee_payer, signer),
+                    SettlementConfig::new(fee_payer, signer).with_tx_version(self.tx_version()),
                     Arc::new(RpcBroadcaster::new(rpc_url)),
                 )
             })
@@ -908,6 +926,7 @@ impl X402Upto {
             });
         validate_open_instruction(
             tx,
+            &self.accepted_versions,
             &program_id,
             // feePayer funds rent while receiverAuthorizer signs vouchers.
             &self.fee_payer,
@@ -934,10 +953,16 @@ impl X402Upto {
     /// signer: it is both the transaction fee payer and the `settle_and_seal`
     /// payee signer, while the receiver authorizer's voucher rides inside the
     /// instruction data rather than as a transaction signature.
-    async fn sign_settlement_transaction(&self, tx: &mut Transaction) -> Result<(), Error> {
-        crate::core::signing::sign_legacy_transaction(self.config.fee_payer_signer.as_ref(), tx)
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
+    async fn sign_settlement_transaction(
+        &self,
+        tx: &mut VersionedTransaction,
+    ) -> Result<(), Error> {
+        crate::core::signing::sign_versioned_transaction_slot(
+            self.config.fee_payer_signer.as_ref(),
+            tx,
+        )
+        .await
+        .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
     }
 
@@ -1086,6 +1111,7 @@ fn find_canonical_open_instruction<'tx>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_open_instruction(
     tx: &VersionedTransaction,
+    accepted_versions: &[TxVersion],
     program_id: &Pubkey,
     rent_payer: &Pubkey,
     authorized_signer: &Pubkey,
@@ -1106,15 +1132,15 @@ pub(crate) fn validate_open_instruction(
     // non-empty ALT lookup could smuggle in accounts the guards below cannot
     // see - and the operator would blindly co-sign. Mirrors the mpp charge-tx
     // verifier's `reject_address_lookup_tables`.
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(Error::Other(
-            "open transaction must not use address lookup tables".to_string(),
-        ));
-    }
+    // Envelope: accepted version, no address lookup tables (every guard below
+    // resolves accounts via `static_account_keys()`), size within the version's
+    // limit; then the version-1 header config against the ComputeBudget caps.
+    crate::core::tx::check_envelope(tx, accepted_versions)?;
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        pc::OPEN_MAX_COMPUTE_UNIT_LIMIT,
+        pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    )?;
 
     let keys = tx.message.static_account_keys();
     let ix = find_canonical_open_instruction(tx, keys, program_id)?;
@@ -1323,16 +1349,21 @@ mod tests {
     }
 
     fn unsigned_tx(instructions: &[solana_instruction::Instruction]) -> VersionedTransaction {
-        let msg = Message::new(instructions, Some(&Pubkey::new_unique()));
-        VersionedTransaction::from(Transaction::new_unsigned(msg))
+        unsigned_tx_with_fee_payer(instructions, Pubkey::new_unique())
     }
 
     fn unsigned_tx_with_fee_payer(
         instructions: &[solana_instruction::Instruction],
         fee_payer: Pubkey,
     ) -> VersionedTransaction {
-        let msg = Message::new(instructions, Some(&fee_payer));
-        VersionedTransaction::from(Transaction::new_unsigned(msg))
+        crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &fee_payer,
+            instructions,
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1349,6 +1380,7 @@ mod tests {
 
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1397,6 +1429,7 @@ mod tests {
         // Correct expectations (rentPayer = operator, authorized_signer = payer).
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &payer,
@@ -1417,6 +1450,7 @@ mod tests {
         // validated independently rather than against one conflated key.
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &payer,
             &operator,
@@ -1454,6 +1488,7 @@ mod tests {
         let check = |channel: &Pubkey, max_amount: Option<u64>, recent_slot: Option<u64>| {
             validate_open_instruction(
                 &tx,
+                &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
                 &operator,
@@ -1496,6 +1531,7 @@ mod tests {
         let strict = |withdraw_delay: u32, payload_nonce: &str, payload_open_slot: &str| {
             validate_open_instruction(
                 &tx,
+                &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
                 &operator,
@@ -1537,6 +1573,7 @@ mod tests {
         let channel = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1575,6 +1612,7 @@ mod tests {
         let two = unsigned_tx(&[open.clone(), extra]);
         assert!(validate_open_instruction(
             &two,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1596,6 +1634,7 @@ mod tests {
         let wrong_payee = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &one,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1675,6 +1714,7 @@ mod tests {
         let tx = unsigned_tx(&wrapped);
         validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1825,6 +1865,7 @@ mod tests {
         );
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1858,6 +1899,7 @@ mod tests {
 
         assert!(validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -1986,7 +2028,7 @@ mod tests {
 
         // Build an otherwise-valid open, then wrap it in a v0 message carrying a
         // non-empty address-table lookup.
-        let legacy = Message::new(&[build_open_instruction(&params)], Some(&payer));
+        let legacy = solana_message::Message::new(&[build_open_instruction(&params)], Some(&payer));
         let v0_msg = v0::Message {
             header: legacy.header,
             account_keys: legacy.account_keys,
@@ -2005,6 +2047,7 @@ mod tests {
 
         let err = validate_open_instruction(
             &tx,
+            &[TxVersion::V0],
             &pc::default_program_id(),
             &operator,
             &operator,
@@ -2201,6 +2244,7 @@ mod tests {
         let check = |payee: &Pubkey| {
             validate_open_instruction(
                 &tx,
+                &[TxVersion::V0],
                 &pc::default_program_id(),
                 &fee_payer,
                 &receiver_authorizer,

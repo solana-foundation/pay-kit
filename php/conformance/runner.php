@@ -56,6 +56,7 @@ ini_set('display_errors', 'stderr');
 require __DIR__ . '/../vendor/autoload.php';
 
 use PayKit\PayCore\Solana\Mints;
+use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\PayCore\Wire\Base64Url;
 use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Core\Challenge;
@@ -69,8 +70,6 @@ use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
-use SolanaPhpSdk\Transaction\Transaction;
-use SolanaPhpSdk\Transaction\VersionedTransaction;
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const DEFAULT_NETWORK = 'mainnet';
@@ -181,30 +180,19 @@ function shape_from_transaction(string $transactionBase64): array
         throw new InvalidArgumentException('invalid transaction payload');
     }
 
-    $version = VersionedTransaction::peekVersion($wire);
-    if ($version === 'legacy') {
-        $tx = Transaction::deserialize($wire);
-        // Legacy Message->instructions are already
-        // {programIdIndex, accounts, data} arrays (see Message::deserialize).
-        $accountKeys = $tx->message->accountKeys;
-        $instructions = $tx->message->instructions;
-    } elseif ($version === 0) {
-        $tx = VersionedTransaction::deserialize($wire);
-        if ($tx->message->addressTableLookups !== []) {
-            throw new InvalidArgumentException('v0 address lookup tables are not supported');
-        }
-        $accountKeys = $tx->message->staticAccountKeys;
-        $instructions = array_map(
-            static fn (object $ix): array => [
-                'programIdIndex' => $ix->programIdIndex,
-                'accounts' => $ix->accountKeyIndexes,
-                'data' => $ix->data,
-            ],
-            $tx->message->compiledInstructions,
-        );
-    } else {
-        throw new InvalidArgumentException('unsupported transaction version');
+    $tx = TransactionWire::deserialize($wire);
+    if ($tx->message->addressTableLookups !== []) {
+        throw new InvalidArgumentException('v0 address lookup tables are not supported');
     }
+    $accountKeys = $tx->message->staticAccountKeys;
+    $instructions = array_map(
+        static fn (object $ix): array => [
+            'programIdIndex' => $ix->programIdIndex,
+            'accounts' => $ix->accountKeyIndexes,
+            'data' => $ix->data,
+        ],
+        $tx->message->compiledInstructions,
+    );
 
     if ($accountKeys === []) {
         throw new InvalidArgumentException('transaction has no account keys');
@@ -496,7 +484,9 @@ function build_fixture(ChargeRequest $request, array $signerSecretKey): string
     $signerCount = 1;
     $readonlyUnsigned = count($keys) - 1;
 
-    $message = chr($signerCount) . chr(0) . chr($readonlyUnsigned);
+    // v0 wire: version prefix, header, keys, blockhash, instructions, and an
+    // empty address-table-lookup vector. The server rejects legacy messages.
+    $message = chr(0x80) . chr($signerCount) . chr(0) . chr($readonlyUnsigned);
     $message .= compact_u16(count($keys));
     foreach ($keys as $k) {
         $message .= PublicKey::fromBase58($k)->toBytes();
@@ -512,6 +502,8 @@ function build_fixture(ChargeRequest $request, array $signerSecretKey): string
         $message .= compact_u16(strlen($ix['data']));
         $message .= $ix['data'];
     }
+
+    $message .= compact_u16(0);
 
     $signatures = compact_u16($signerCount) . str_repeat(chr(0), 64 * $signerCount);
     return base64_encode($signatures . $message);

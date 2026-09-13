@@ -267,7 +267,7 @@ public enum PaymentChannels {
         )
         let instruction = try buildOpenInstruction(params)
         let message = try TransactionBuilder.compile(
-            version: .legacy,
+            version: .v0,
             feePayer: feePayer,
             instructions: [instruction],
             recentBlockhash: recentBlockhash

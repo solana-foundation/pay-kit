@@ -23,11 +23,12 @@ pub mod mints;
 #[cfg(feature = "otel")]
 pub mod otel;
 pub mod payment_channels;
-pub(crate) mod rpc;
+pub mod rpc;
 pub mod session;
 pub mod settlement;
 pub mod signing;
 pub mod store;
+pub mod tx;
 pub mod tx_pipeline;
 pub mod units;
 pub mod voucher;

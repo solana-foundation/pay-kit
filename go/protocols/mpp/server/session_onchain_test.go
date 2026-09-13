@@ -45,7 +45,7 @@ const (
 
 // buildOpenTxFixture builds a payer-signed open transaction in the requested
 // encoding (clients across the language SDKs emit either).
-func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
+func buildOpenTxFixture(t *testing.T) openTxFixture {
 	t.Helper()
 
 	payer := testutil.NewPrivateKey()
@@ -82,7 +82,7 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 		mint:       mint,
 		channel:    channel,
 	}
-	fixture.signature, fixture.payload = signAndAttachOpenTx(t, &fixture, ix, v0)
+	fixture.signature, fixture.payload = signAndAttachOpenTx(t, &fixture, ix)
 	fixture.expected = VerifyOpenTxExpected{
 		AuthorizedSigner: authorized.String(),
 		Currency:         "USDC",
@@ -97,15 +97,12 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 // signAndAttachOpenTx assembles, signs, and base64-encodes the open
 // transaction for ix, returning the fee-payer signature and the open payload
 // carrying the wire transaction.
-func signAndAttachOpenTx(t *testing.T, fixture *openTxFixture, ix solana.Instruction, v0 bool) (string, intents.OpenPayload) {
+func signAndAttachOpenTx(t *testing.T, fixture *openTxFixture, ix solana.Instruction) (string, intents.OpenPayload) {
 	t.Helper()
 	blockhash := solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(fixture.payer.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(fixture.payer.PublicKey()))
 	if err != nil {
-		t.Fatalf("NewTransaction: %v", err)
-	}
-	if v0 {
-		tx.Message.SetVersion(solana.MessageVersionV0)
+		t.Fatalf("NewV0Transaction: %v", err)
 	}
 	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key.Equals(fixture.payer.PublicKey()) {
@@ -138,22 +135,29 @@ func signAndAttachOpenTx(t *testing.T, fixture *openTxFixture, ix solana.Instruc
 
 // ── VerifyOpenTx: accepted encodings ──
 
-func TestVerifyOpenTxAcceptsLegacyEncoding(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
-	result, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil)
+func TestVerifyOpenTxRejectsLegacyEncoding(t *testing.T) {
+	// Re-encode the otherwise-valid v0 fixture as a legacy (unversioned)
+	// message: the shared decoder must reject it before any account check.
+	fixture := buildOpenTxFixture(t)
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
 	if err != nil {
-		t.Fatalf("VerifyOpenTx: %v", err)
+		t.Fatalf("decode v0 fixture: %v", err)
 	}
-	if result.ChannelID != fixture.channel.String() {
-		t.Fatalf("channelId = %s, want %s", result.ChannelID, fixture.channel)
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("re-encode legacy tx: %v", err)
 	}
-	if result.Deposit != openFixtureDeposit || result.GracePeriod != openFixtureGrace || result.Salt != openFixtureSalt {
-		t.Fatalf("result = %+v, want deposit/grace/salt %d/%d/%d", result, openFixtureDeposit, openFixtureGrace, openFixtureSalt)
+	fixture.payload.Transaction = &encoded
+
+	_, err = VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil)
+	if err == nil || err.Error() != solanatx.ErrLegacyTransaction.Error() {
+		t.Fatalf("err = %v, want %q", err, solanatx.ErrLegacyTransaction)
 	}
 }
 
 func TestVerifyOpenTxAcceptsV0Encoding(t *testing.T) {
-	fixture := buildOpenTxFixture(t, true)
+	fixture := buildOpenTxFixture(t)
 	// Confirm the fixture really emits the v0 wire prefix before asserting it
 	// verifies: the message must round-trip through the versioned decoder.
 	decoded, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
@@ -179,7 +183,7 @@ func TestVerifyOpenTxRejectsAddressLookupTables(t *testing.T) {
 	// an ALT could hide the real payee/rentPayer/mint/authorizedSigner/channel
 	// behind the guard. Inject an ALT lookup into an otherwise-valid v0 tx and
 	// confirm it is rejected before any account check passes.
-	fixture := buildOpenTxFixture(t, true)
+	fixture := buildOpenTxFixture(t)
 	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode v0 fixture: %v", err)
@@ -201,7 +205,7 @@ func TestVerifyOpenTxRejectsAddressLookupTables(t *testing.T) {
 }
 
 func TestVerifyOpenTxHonorsExplicitMintAndProgramOverrides(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.expected.Currency = "not-a-currency"
 	fixture.expected.Mint = fixture.mint.String()
 	programID := paymentchannels.ProgramPubkey()
@@ -214,7 +218,7 @@ func TestVerifyOpenTxHonorsExplicitMintAndProgramOverrides(t *testing.T) {
 // ── VerifyOpenTx: failure modes ──
 
 func TestVerifyOpenTxRejectsUndecodableTransaction(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	garbage := "not-base64!"
 	fixture.payload.Transaction = &garbage
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "decode open transaction") {
@@ -223,7 +227,7 @@ func TestVerifyOpenTxRejectsUndecodableTransaction(t *testing.T) {
 }
 
 func TestVerifyOpenTxRequiresTransaction(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.payload.Transaction = nil
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "transaction is required") {
 		t.Fatalf("err = %v, want transaction-required rejection", err)
@@ -231,7 +235,7 @@ func TestVerifyOpenTxRequiresTransaction(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsWrongPayee(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.expected.Recipient = fixture.payer.PublicKey().String()
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "payee") {
 		t.Fatalf("err = %v, want payee rejection", err)
@@ -239,7 +243,7 @@ func TestVerifyOpenTxRejectsWrongPayee(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsWrongMint(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.expected.Currency = "USDT"
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "mint") {
 		t.Fatalf("err = %v, want mint rejection", err)
@@ -247,7 +251,7 @@ func TestVerifyOpenTxRejectsWrongMint(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsWrongAuthorizedSigner(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.expected.AuthorizedSigner = testutil.NewPrivateKey().PublicKey().String()
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "authorizedSigner") {
 		t.Fatalf("err = %v, want authorizedSigner rejection", err)
@@ -255,7 +259,7 @@ func TestVerifyOpenTxRejectsWrongAuthorizedSigner(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsOverCapDeposit(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.expected.MaxCap = openFixtureDeposit - 1
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "exceeds max cap") {
 		t.Fatalf("err = %v, want over-cap rejection", err)
@@ -263,7 +267,7 @@ func TestVerifyOpenTxRejectsOverCapDeposit(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsZeroDeposit(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	// Rebuild the open instruction with a zero deposit; the channel PDA does
 	// not embed the deposit, so only the deposit check can reject it.
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
@@ -280,14 +284,14 @@ func TestVerifyOpenTxRejectsZeroDeposit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
-	_, fixture.payload = signAndAttachOpenTx(t, &fixture, ix, false)
+	_, fixture.payload = signAndAttachOpenTx(t, &fixture, ix)
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "greater than zero") {
 		t.Fatalf("err = %v, want zero-deposit rejection", err)
 	}
 }
 
 func TestVerifyOpenTxRejectsUnboundSignature(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	other := testutil.NewPrivateKey()
 	unrelated, err := other.Sign([]byte("unrelated transaction"))
 	if err != nil {
@@ -300,7 +304,7 @@ func TestVerifyOpenTxRejectsUnboundSignature(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsSignatureWithoutFeePayerSignature(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode fixture transaction: %v", err)
@@ -317,7 +321,7 @@ func TestVerifyOpenTxRejectsSignatureWithoutFeePayerSignature(t *testing.T) {
 }
 
 func TestVerifyOpenTxAcceptsPlaceholderSignatureWithoutBinding(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fixture.payload.Signature = strings.Repeat("1", 64)
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err != nil {
 		t.Fatalf("VerifyOpenTx with placeholder signature: %v", err)
@@ -325,19 +329,19 @@ func TestVerifyOpenTxAcceptsPlaceholderSignatureWithoutBinding(t *testing.T) {
 }
 
 func TestVerifyOpenTxRejectsMissingOpenInstruction(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	memo, err := solanatx.BuildMemoInstruction("not an open")
 	if err != nil {
 		t.Fatalf("BuildMemoInstruction: %v", err)
 	}
-	_, fixture.payload = signAndAttachOpenTx(t, &fixture, memo, false)
+	_, fixture.payload = signAndAttachOpenTx(t, &fixture, memo)
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "no payment-channels open instruction") {
 		t.Fatalf("err = %v, want missing-open-instruction rejection", err)
 	}
 }
 
 func TestVerifyOpenTxRejectsChannelPDAMismatch(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            fixture.payer.PublicKey(),
 		RentPayer:        fixture.payer.PublicKey(),
@@ -367,14 +371,14 @@ func TestVerifyOpenTxRejectsChannelPDAMismatch(t *testing.T) {
 	accounts[5] = &tampered
 	forged := solana.NewInstruction(ix.ProgramID(), accounts, data)
 
-	_, fixture.payload = signAndAttachOpenTx(t, &fixture, forged, false)
+	_, fixture.payload = signAndAttachOpenTx(t, &fixture, forged)
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "PDA") {
 		t.Fatalf("err = %v, want channel-PDA rejection", err)
 	}
 }
 
 func TestVerifyOpenTxRejectsPayloadChannelIDMismatch(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	other := testutil.NewPrivateKey().PublicKey().String()
 	fixture.payload.ChannelID = &other
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "channelId") {
@@ -385,7 +389,7 @@ func TestVerifyOpenTxRejectsPayloadChannelIDMismatch(t *testing.T) {
 // ── VerifyOpenTx: RPC liveness ──
 
 func TestVerifyOpenTxConfirmsBoundSignatureViaRPC(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fakeRPC := testutil.NewFakeRPC()
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, fakeRPC); err != nil {
 		t.Fatalf("VerifyOpenTx with confirmed signature: %v", err)
@@ -393,7 +397,7 @@ func TestVerifyOpenTxConfirmsBoundSignatureViaRPC(t *testing.T) {
 }
 
 func TestVerifyOpenTxSurfacesRPCFailure(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fakeRPC := testutil.NewFakeRPC()
 	fakeRPC.Statuses[fixture.signature] = &rpc.SignatureStatusesResult{Err: "InstructionError"}
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, fakeRPC); err == nil || !strings.Contains(err.Error(), "failed on-chain") {
@@ -402,7 +406,7 @@ func TestVerifyOpenTxSurfacesRPCFailure(t *testing.T) {
 }
 
 func TestVerifyOpenTxSurfacesRPCNotFound(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fakeRPC := testutil.NewFakeRPC()
 	fakeRPC.Statuses[fixture.signature] = nil
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, fakeRPC); err == nil || !strings.Contains(err.Error(), "not found") {
@@ -447,7 +451,7 @@ func openSessionConfig(fixture openTxFixture) SessionConfig {
 }
 
 func TestNewOpenTxVerifierAcceptsValidOpenThroughProcessOpen(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
 	config.VerifyOpenTx = NewOpenTxVerifier(config, nil)
 	server := newSessionTestServer(config)
@@ -462,7 +466,7 @@ func TestNewOpenTxVerifierAcceptsValidOpenThroughProcessOpen(t *testing.T) {
 }
 
 func TestNewOpenTxVerifierRejectsForeignRecipientThroughProcessOpen(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
 	config.Recipient = fixture.payer.PublicKey().String() // not the tx payee
 	config.VerifyOpenTx = NewOpenTxVerifier(config, nil)
@@ -474,7 +478,7 @@ func TestNewOpenTxVerifierRejectsForeignRecipientThroughProcessOpen(t *testing.T
 }
 
 func TestNewOpenTxVerifierWithoutTransactionRequiresRPC(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
 	verifier := NewOpenTxVerifier(config, nil)
 	payload := fixture.payload
@@ -485,7 +489,7 @@ func TestNewOpenTxVerifierWithoutTransactionRequiresRPC(t *testing.T) {
 }
 
 func TestNewOpenTxVerifierReturnsChannelPayerForTransaction(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
 	verifier := NewOpenTxVerifier(config, nil)
 	payer, err := verifier(context.Background(), &fixture.payload)
@@ -498,7 +502,7 @@ func TestNewOpenTxVerifierReturnsChannelPayerForTransaction(t *testing.T) {
 }
 
 func TestNewOpenTxVerifierWithoutTransactionConfirmsSignature(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
 	verifier := NewOpenTxVerifier(config, testutil.NewFakeRPC())
 	payload := fixture.payload

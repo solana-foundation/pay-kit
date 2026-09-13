@@ -173,7 +173,7 @@ pub fn default_token_program_for_currency(currency: &str, network: Option<&str>)
 // ── Prepared-transaction bounds ──
 //
 // Shared numeric ceilings for the prepared charge/message builder in
-// `mpp::client::charge` (`ComputeBudgetOptions`, `check_transaction_packet_size`).
+// `mpp::client::charge` (`ComputeBudgetOptions`, `check_transaction_size`).
 // Kept here rather than in `mpp::client::charge` because a future direct
 // `pay push` batch path (outside this crate) is expected to enforce the same
 // bounds without depending on the charge/challenge builder module.
@@ -198,40 +198,25 @@ pub const SOLANA_MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 /// (`mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`).
 pub const MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 
-/// Maximum serialized byte size of a Solana transaction, i.e. the
-/// `solana-packet` crate's `PACKET_DATA_SIZE` (minimum IPv6 MTU of `1280`
-/// minus a `40`-byte IPv6 header minus an `8`-byte UDP header). Solana's
-/// networking stack rejects any transaction whose wire size exceeds this.
-///
-/// Duplicated here instead of depending on the `solana-packet` crate (also
-/// only reachable transitively elsewhere in this workspace's `Cargo.lock`,
-/// not a dependency of this crate) because the formula is a fixed IPv6/UDP
-/// protocol invariant, not implementation detail — value and derivation
-/// match `solana_packet::PACKET_DATA_SIZE` exactly (`1232`).
-pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
+/// Solana packet limit, the version-0 transaction size cap (`1232`). Kept as a
+/// re-export for callers that name it; version limits live in
+/// [`crate::core::tx::TxVersion::limits`].
+pub use crate::core::tx::version::PACKET_DATA_SIZE;
 
-/// Reject a transaction whose serialized size exceeds Solana's packet limit
-/// ([`PACKET_DATA_SIZE`]) before it is signed.
-///
-/// `bincode`-serializes `tx` exactly as it would be sent over the wire.
-/// Calling this on an *unsigned* transaction built with the correct number
-/// of (zeroed) signature slots — e.g. via `Transaction::new_unsigned` —
-/// gives the same length as after signing, since Ed25519 signatures are a
-/// fixed 64 bytes: callers can reject an oversized prepared message before
-/// ever touching a signer.
-pub fn check_transaction_packet_size(
-    tx: &solana_transaction::Transaction,
+/// Reject a transaction that exceeds its message version's size limit before
+/// it is signed. Signatures are fixed-size, so an unsigned transaction built
+/// with zeroed signature slots measures exactly what the signed one will.
+pub fn check_transaction_size(
+    tx: &solana_transaction::versioned::VersionedTransaction,
 ) -> Result<usize, crate::mpp::error::Error> {
-    let size = bincode::serialize(tx)
-        .map_err(|e| {
-            crate::mpp::error::Error::Other(format!("Failed to measure transaction size: {e}"))
-        })?
-        .len();
-    if size > PACKET_DATA_SIZE {
-        return Err(crate::mpp::error::Error::TransactionTooLarge {
-            size,
-            limit: PACKET_DATA_SIZE,
-        });
+    let version = crate::core::tx::TxVersion::of(&tx.message)
+        .map_err(|e| crate::mpp::error::Error::Other(e.to_string()))?;
+    let size = crate::core::tx::serialized_size(tx).map_err(|e| {
+        crate::mpp::error::Error::Other(format!("Failed to measure transaction size: {e}"))
+    })?;
+    let limit = version.limits().max_bytes;
+    if size > limit {
+        return Err(crate::mpp::error::Error::TransactionTooLarge { size, limit });
     }
     Ok(size)
 }
@@ -441,6 +426,7 @@ mod tests {
             confidential: None,
             auditor_elgamal_pubkey: None,
             recipient_elgamal_pubkey: None,
+            transaction_versions: None,
         };
         let json = serde_json::to_string(&md).unwrap();
         let deserialized: MethodDetails = serde_json::from_str(&json).unwrap();
@@ -876,7 +862,7 @@ mod tests {
         assert!(format!("{err}").contains("splits"), "got: {err}");
     }
 
-    // ── check_transaction_packet_size ──
+    // ── check_transaction_size ──
 
     fn instruction_with_data_len(len: usize) -> solana_instruction::Instruction {
         solana_instruction::Instruction {
@@ -888,27 +874,33 @@ mod tests {
 
     fn unsigned_tx_with_instruction(
         ix: solana_instruction::Instruction,
-    ) -> solana_transaction::Transaction {
+    ) -> solana_transaction::versioned::VersionedTransaction {
         let payer = solana_pubkey::Pubkey::new_unique();
-        let message = solana_message::Message::new_with_blockhash(
+        crate::core::tx::build::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &payer,
             &[ix],
-            Some(&payer),
-            &solana_hash::Hash::default(),
-        );
-        solana_transaction::Transaction::new_unsigned(message)
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn wire_len(tx: &solana_transaction::versioned::VersionedTransaction) -> usize {
+        crate::core::tx::serialized_size(tx).unwrap()
     }
 
     #[test]
-    fn check_transaction_packet_size_accepts_small_transaction() {
+    fn check_transaction_size_accepts_small_transaction() {
         let tx = unsigned_tx_with_instruction(instruction_with_data_len(10));
-        let size = check_transaction_packet_size(&tx).expect("small tx must be accepted");
+        let size = check_transaction_size(&tx).expect("small tx must be accepted");
         assert!(size < PACKET_DATA_SIZE);
     }
 
     #[test]
-    fn check_transaction_packet_size_rejects_oversized_transaction() {
+    fn check_transaction_size_rejects_oversized_transaction() {
         let tx = unsigned_tx_with_instruction(instruction_with_data_len(PACKET_DATA_SIZE + 200));
-        let err = check_transaction_packet_size(&tx).expect_err("oversized tx must be rejected");
+        let err = check_transaction_size(&tx).expect_err("oversized tx must be rejected");
         match err {
             crate::mpp::error::Error::TransactionTooLarge { size, limit } => {
                 assert!(size > limit);
@@ -919,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn check_transaction_packet_size_boundary_exact_limit_accepted_one_more_byte_rejected() {
+    fn check_transaction_size_boundary_exact_limit_accepted_one_more_byte_rejected() {
         // Find the exact instruction-data padding that lands the serialized
         // transaction exactly on PACKET_DATA_SIZE by direct measurement,
         // incrementing one byte at a time. bincode's length-prefix encoding
@@ -927,22 +919,18 @@ mod tests {
         // "fixed overhead" measurement (assuming +1 byte of data == +1
         // serialized byte) is not reliable near varint-width boundaries.
         let mut pad = 0usize;
-        let mut size = bincode::serialize(&unsigned_tx_with_instruction(
-            instruction_with_data_len(pad),
-        ))
-        .unwrap()
-        .len();
+        let mut size = wire_len(&unsigned_tx_with_instruction(instruction_with_data_len(
+            pad,
+        )));
         assert!(
             size < PACKET_DATA_SIZE,
             "test assumption violated: base size {size} already >= limit"
         );
         while size < PACKET_DATA_SIZE {
             pad += 1;
-            size = bincode::serialize(&unsigned_tx_with_instruction(instruction_with_data_len(
+            size = wire_len(&unsigned_tx_with_instruction(instruction_with_data_len(
                 pad,
-            )))
-            .unwrap()
-            .len();
+            )));
         }
         assert_eq!(
             size, PACKET_DATA_SIZE,
@@ -951,18 +939,18 @@ mod tests {
 
         let exact_tx = unsigned_tx_with_instruction(instruction_with_data_len(pad));
         assert!(
-            check_transaction_packet_size(&exact_tx).is_ok(),
+            check_transaction_size(&exact_tx).is_ok(),
             "exactly at the limit must be accepted"
         );
 
         let over_tx = unsigned_tx_with_instruction(instruction_with_data_len(pad + 1));
-        let over_size = bincode::serialize(&over_tx).unwrap().len();
+        let over_size = wire_len(&over_tx);
         assert!(
             over_size > PACKET_DATA_SIZE,
             "expected the next byte to push size strictly over the limit"
         );
         assert!(
-            check_transaction_packet_size(&over_tx).is_err(),
+            check_transaction_size(&over_tx).is_err(),
             "one byte over the limit must be rejected"
         );
     }
@@ -988,6 +976,11 @@ pub struct MethodDetails {
     /// Server's fee payer public key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_payer_key: Option<String>,
+
+    /// Transaction message versions the server accepts (`0`, `1`). Absent
+    /// means `[0]`. See `core::tx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
 
     /// Additional payment splits (max `MAX_SPLITS`).
     #[serde(skip_serializing_if = "Option::is_none")]

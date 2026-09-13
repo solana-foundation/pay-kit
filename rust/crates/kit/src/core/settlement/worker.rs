@@ -1,9 +1,10 @@
 //! Background batched-settlement worker.
 //!
 //! An mpsc actor that accumulates per-channel settlement instructions and
-//! flushes them as **legacy** transactions on either trigger:
+//! flushes them as one transaction (version from [`SettlementConfig`]) on
+//! either trigger:
 //!   - **size:** the batch fills (`max_voucher_settlements_per_tx`, or the next
-//!     settlement would exceed the 1232-byte packet limit) → seal a tx, start a
+//!     settlement would exceed the version's size limit) → seal a tx, start a
 //!     new batch;
 //!   - **timer:** a `linger` window (default 350ms) elapses → flush whatever's
 //!     pending.
@@ -23,16 +24,16 @@ use async_trait::async_trait;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
 use solana_keychain::TransactionSigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
-use solana_transaction::Transaction;
+use solana_transaction::versioned::VersionedTransaction;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::core::{
-    payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX,
+    payment_channels::max_voucher_settlements_per_tx,
     rpc::SKIP_PREFLIGHT_SEND,
+    tx::{build_unsigned, ComputeBudget, TxVersion},
     tx_pipeline::{TxPipeline, TxPipelineConfig, TxPipelineError},
 };
 
@@ -67,7 +68,7 @@ pub enum ConfirmOutcome {
 pub trait Broadcaster: Send + Sync {
     async fn latest_blockhash(&self) -> Result<Hash, String>;
     /// Broadcast a signed tx; return its signature (no confirmation wait).
-    async fn send(&self, tx: &Transaction) -> Result<String, String>;
+    async fn send(&self, tx: &VersionedTransaction) -> Result<String, String>;
     /// Poll confirmation for a previously-sent signature. `Err` is a transient
     /// RPC error (caller may retry); `Ok` distinguishes confirmed / pending /
     /// permanent on-chain failure so the caller can stop polling a dead tx.
@@ -86,6 +87,11 @@ pub struct SettlementConfig {
     pub max_in_flight_tx: usize,
     /// Confirmation poll attempts before giving up (store reconciles the rest).
     pub confirm_attempts: u32,
+    /// Message version of the flush transactions.
+    pub tx_version: TxVersion,
+    /// Compute budget for the flush transactions. Required for version 1;
+    /// `None` on version 0 adds no ComputeBudget prefix.
+    pub compute_budget: Option<ComputeBudget>,
 }
 
 impl SettlementConfig {
@@ -93,11 +99,21 @@ impl SettlementConfig {
         Self {
             operator,
             operator_signer,
-            max_voucher_settlements_per_tx: MAX_VOUCHER_SETTLEMENTS_PER_TX,
+            max_voucher_settlements_per_tx: max_voucher_settlements_per_tx(TxVersion::V0),
             linger: Duration::from_millis(350),
             max_in_flight_tx: 16,
             confirm_attempts: 10,
+            tx_version: TxVersion::V0,
+            compute_budget: None,
         }
+    }
+
+    /// Flush transactions of `version`, with the voucher-settlement cap
+    /// recalibrated to that version's wire limits.
+    pub fn with_tx_version(mut self, version: TxVersion) -> Self {
+        self.tx_version = version;
+        self.max_voucher_settlements_per_tx = max_voucher_settlements_per_tx(version);
+        self
     }
 }
 
@@ -199,7 +215,13 @@ fn spawn_flush(
     trigger: &'static str,
 ) {
     tokio::spawn(async move {
-        for group in regroup(units, &cfg.operator, cfg.max_voucher_settlements_per_tx) {
+        for group in regroup(
+            units,
+            cfg.tx_version,
+            &cfg.operator,
+            cfg.compute_budget.as_ref(),
+            cfg.max_voucher_settlements_per_tx,
+        ) {
             // One permit per settle transaction (not per flush, which may
             // regroup into several): bounds concurrent in-flight settle txs
             // across all flushes to `max_in_flight_tx`. The worker owns the
@@ -220,7 +242,9 @@ fn spawn_flush(
 /// keeps the per-unit reply channels.
 fn regroup(
     units: Vec<SettlementUnit>,
+    version: TxVersion,
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_per_tx: usize,
 ) -> Vec<Vec<SettlementUnit>> {
     let mut out: Vec<Vec<SettlementUnit>> = Vec::new();
@@ -231,7 +255,15 @@ fn regroup(
                 .iter()
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
-            if would_overflow_tx(&cur_ix, cur.len(), &u.instructions, payer, max_per_tx) {
+            if would_overflow_tx(
+                version,
+                &cur_ix,
+                cur.len(),
+                &u.instructions,
+                payer,
+                budget,
+                max_per_tx,
+            ) {
                 out.push(std::mem::take(&mut cur));
             }
         }
@@ -277,16 +309,34 @@ async fn settle_group(
             .iter()
             .flat_map(|u| u.instructions.iter().cloned())
             .collect();
-        span.record("tx_bytes", tx_size(&flat, &cfg.operator));
+        span.record(
+            "tx_bytes",
+            tx_size(
+                cfg.tx_version,
+                &flat,
+                &cfg.operator,
+                cfg.compute_budget.as_ref(),
+            )
+            .unwrap_or(0),
+        );
 
         // Build + sign + broadcast.
         let result: SettlementResult = async {
             let blockhash = broadcaster.latest_blockhash().await?;
-            let message = Message::new_with_blockhash(&flat, Some(&cfg.operator), &blockhash);
-            let mut tx = Transaction::new_unsigned(message);
-            crate::core::signing::sign_legacy_transaction(cfg.operator_signer.as_ref(), &mut tx)
-                .await
-                .map_err(|e| format!("settle signing failed: {e}"))?;
+            let mut tx = build_unsigned(
+                cfg.tx_version,
+                &cfg.operator,
+                &flat,
+                blockhash,
+                cfg.compute_budget.as_ref(),
+            )
+            .map_err(|e| format!("settle build failed: {e}"))?;
+            crate::core::signing::sign_versioned_transaction_slot(
+                cfg.operator_signer.as_ref(),
+                &mut tx,
+            )
+            .await
+            .map_err(|e| format!("settle signing failed: {e}"))?;
             broadcaster.send(&tx).await
         }
         .await;
@@ -404,7 +454,7 @@ impl Broadcaster for RpcBroadcaster {
             .map_err(|error| error.to_string())
     }
 
-    async fn send(&self, tx: &Transaction) -> Result<String, String> {
+    async fn send(&self, tx: &VersionedTransaction) -> Result<String, String> {
         // Settlement follows a confirmed channel-open fetch. A separate
         // preflight simulation can run against a stale bank that has not
         // loaded the new channel PDA yet, producing false failures.
@@ -477,11 +527,11 @@ mod tests {
         async fn latest_blockhash(&self) -> Result<Hash, String> {
             Ok(Hash::new_from_array([9u8; 32]))
         }
-        async fn send(&self, tx: &Transaction) -> Result<String, String> {
+        async fn send(&self, tx: &VersionedTransaction) -> Result<String, String> {
             self.sent
                 .lock()
                 .unwrap()
-                .push(tx.message.instructions.len());
+                .push(tx.message.instructions().len());
             let mut seq = self.seq.lock().unwrap();
             *seq += 1;
             Ok(format!("sig{seq}"))
@@ -557,7 +607,7 @@ mod tests {
         use crate::core::payment_channels::{
             build_settle_and_seal_instructions, default_program_id,
         };
-        use crate::core::settlement::packing::{tx_size, MAX_TX_BYTES};
+        use crate::core::settlement::packing::tx_size;
 
         let operator = Pubkey::new_from_array([0xAA; 32]); // Delegated: authorized_signer == operator
         let program_id = default_program_id();
@@ -583,11 +633,14 @@ mod tests {
             .unwrap();
             assert_eq!(ixs.len(), 2, "settle+seal with voucher = ed25519 + settle");
             // Each channel's own tx must be packet-legal.
-            assert!(tx_size(&ixs, &operator) <= MAX_TX_BYTES);
+            assert!(
+                tx_size(TxVersion::V0, &ixs, &operator, None).unwrap()
+                    <= TxVersion::V0.limits().max_bytes
+            );
             channels.push((channel.to_string(), ixs));
         }
 
-        let (h, bc) = handle(MAX_VOUCHER_SETTLEMENTS_PER_TX, 5_000);
+        let (h, bc) = handle(max_voucher_settlements_per_tx(TxVersion::V0), 5_000);
         let mut tasks = Vec::new();
         for (id, ixs) in channels {
             let h = h.clone();

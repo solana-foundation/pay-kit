@@ -546,7 +546,7 @@ func buildTransaction(
 		}
 	}
 
-	tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(payer))
+	tx, err := solanatx.NewV0Transaction(instructions, blockhash, solana.TransactionPayer(payer))
 	if err != nil {
 		return "", fmt.Errorf("x402 client: build transaction: %w", err)
 	}

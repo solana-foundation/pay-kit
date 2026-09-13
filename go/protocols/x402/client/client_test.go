@@ -276,6 +276,9 @@ func decodeCredentialTx(t *testing.T, header string) *solana.Transaction {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("transaction version = %v, want v0", tx.Message.GetVersion())
+	}
 	return tx
 }
 

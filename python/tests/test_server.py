@@ -8,14 +8,16 @@ import pytest
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.message import Message
+from solders.message import MessageV0
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
-from solders.transaction import Transaction
+from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
 from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED, TRANSACTION_VERSION_NOT_REPORTED
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server.charge import (
@@ -78,9 +80,8 @@ def _build_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
-    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-    transaction = Transaction.new_unsigned(message)
-    transaction.sign([signer], blockhash)
+    message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+    transaction = VersionedTransaction(message, [signer])
 
     import base64
 
@@ -116,9 +117,8 @@ def _build_spl_transfer_checked_transaction(
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
-    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-    transaction = Transaction.new_unsigned(message)
-    transaction.sign([signer], blockhash)
+    message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+    transaction = VersionedTransaction(message, [signer])
 
     import base64
 
@@ -168,6 +168,7 @@ def mpp() -> Mpp:
     rpc = FakeRPC(
         tx={
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -388,6 +389,7 @@ class TestVerifyCredential:
         recipient_ata = _derive_ata(TEST_RECIPIENT, USDC_DEVNET)
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -432,6 +434,7 @@ class TestVerifyCredential:
     async def test_signature_verification_checks_external_id_memo(self):
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -470,6 +473,7 @@ class TestVerifyCredential:
     async def test_transaction_verification_broadcasts_and_checks_transaction(self):
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -508,7 +512,7 @@ class TestVerifyCredential:
         assert rpc.sent
 
     async def test_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -535,7 +539,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_transaction_verification_rejects_wrong_amount_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -562,7 +566,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_transaction_verification_rejects_missing_memo_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -592,6 +596,7 @@ class TestVerifyCredential:
         recipient_ata = _derive_ata(TEST_RECIPIENT, USDC_DEVNET)
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -636,7 +641,7 @@ class TestVerifyCredential:
         assert rpc.sent
 
     async def test_token_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -663,7 +668,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_token_transaction_verification_rejects_wrong_amount_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -690,7 +695,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_token_transaction_verification_rejects_missing_memo_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -889,9 +894,8 @@ class TestMemoV1Rejected:
             ),
         ]
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([signer], blockhash)
+        message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [signer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -939,6 +943,7 @@ class TestL8SettlementOrdering:
             self._confirm_value = confirm_value
             self.tx = {
                 "meta": {"err": None},
+                "version": 0,
                 "transaction": {
                     "message": {
                         "instructions": [
@@ -1186,10 +1191,8 @@ class TestCoSignSplitBounds:
         from solders.hash import Hash
         from solders.instruction import AccountMeta, Instruction
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1219,9 +1222,8 @@ class TestCoSignSplitBounds:
         )
 
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([transfer_ix, touch_rogue], real_signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([real_signer], blockhash)
+        message = MessageV0.try_compile(real_signer.pubkey(), [transfer_ix, touch_rogue], [], blockhash)
+        transaction = VersionedTransaction(message, [real_signer])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1238,10 +1240,8 @@ class TestCoSignSplitBounds:
         # check did not regress the happy path.
         from solders.hash import Hash
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1256,9 +1256,9 @@ class TestCoSignSplitBounds:
             )
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([ix], fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
+        message = MessageV0.try_compile(fee_payer.pubkey(), [ix], [], blockhash)
         # Leave the signature slot zeroed so cosign can fill it.
+        transaction = VersionedTransaction.populate(message, [Signature.default()])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1282,10 +1282,8 @@ class TestCoSignSplitBounds:
         """
         from solders.hash import Hash
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1307,9 +1305,8 @@ class TestCoSignSplitBounds:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
         # payer=real_signer keeps account_keys[0] = real_signer; the
         # transfer source becomes a second required signer at slot 1.
-        message = Message.new_with_blockhash([ix], real_signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([real_signer, rogue_fee_payer], blockhash)
+        message = MessageV0.try_compile(real_signer.pubkey(), [ix], [], blockhash)
+        transaction = VersionedTransaction(message, [real_signer, rogue_fee_payer])
 
         import base64
 
@@ -1344,9 +1341,8 @@ class TestComputeBudgetGuard:
             ),
         ]
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([signer], blockhash)
+        message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [signer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1484,9 +1480,8 @@ class TestInstructionAllowlist:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1872,9 +1867,8 @@ class TestFeePayerSourceDrainProtection:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2048,9 +2042,8 @@ class TestFeePayerSourceDrainProtection:
         # Build with fee_payer as the tx fee-payer; sender co-signs the
         # SPL authority slot.
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([legit], fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), [legit], [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2074,9 +2067,8 @@ class TestFeePayerPubkeySourceOfTruth:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2219,9 +2211,8 @@ class TestFeePayerPubkeySourceOfTruth:
             )
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([payment], server_fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([server_fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(server_fee_payer.pubkey(), [payment], [], blockhash)
+        transaction = VersionedTransaction(message, [server_fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2268,9 +2259,8 @@ class TestFeePayerPubkeySourceOfTruth:
             token_program=TOKEN_PROGRAM,
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([legit], server_fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([server_fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(server_fee_payer.pubkey(), [legit], [], blockhash)
+        transaction = VersionedTransaction(message, [server_fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2347,7 +2337,7 @@ class TestAuditPushModeOptIn:
                 decimals=9,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=FakeRPC(tx={"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}),
+                rpc=FakeRPC(tx={"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}),
                 store=MemoryStore(),
                 accept_push_mode=accept_push,
             )
@@ -2362,6 +2352,96 @@ class TestAuditPushModeOptIn:
         )
         with pytest.raises(PaymentError, match="push mode"):
             await _verify(mpp, credential, challenge)
+
+
+class TestSignatureReportedVersion:
+    """Push-mode parity with Rust ``core::tx::check_reported_version``: the
+    node returns whatever ``maxSupportedTransactionVersion`` allows, so the
+    server polices the reported ``version`` itself, before the signature is
+    consumed, exactly as ``require_versioned_wire`` does for transaction bytes.
+    """
+
+    @staticmethod
+    def _sol_tx(**overrides: Any) -> dict[str, Any]:
+        tx: dict[str, Any] = {
+            "meta": {"err": None},
+            "version": 0,
+            "transaction": {
+                "message": {
+                    "instructions": [
+                        {
+                            "program": "system",
+                            "parsed": {"type": "transfer", "info": {"destination": TEST_RECIPIENT, "lamports": "1000"}},
+                        }
+                    ]
+                }
+            },
+        }
+        tx.update(overrides)
+        return tx
+
+    def _mpp(self, tx: dict[str, Any]) -> tuple[Mpp, FakeRPC]:
+        rpc = FakeRPC(tx=tx)
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="SOL",
+                decimals=9,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=MemoryStore(),
+                accept_push_mode=True,
+            )
+        )
+        return mpp, rpc
+
+    @staticmethod
+    def _credential(mpp: Mpp):
+        challenge = mpp.charge("0.000001")
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "signature", "signature": VALID_SIGNATURE},
+        )
+        return credential, challenge
+
+    async def test_legacy_reported_version_rejected_before_consume(self):
+        mpp, rpc = self._mpp(self._sol_tx(version="legacy"))
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(mpp, credential, challenge)
+        assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+        assert exc.value.code == "invalid-payload"
+
+        # The signature was not consumed: once the node reports a versioned
+        # transaction the same credential settles instead of replaying.
+        rpc.tx = self._sol_tx()
+        receipt = await _verify(mpp, credential, challenge)
+        assert receipt.is_success()
+
+    async def test_missing_reported_version_rejected(self):
+        tx = self._sol_tx()
+        del tx["version"]
+        mpp, _rpc = self._mpp(tx)
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(mpp, credential, challenge)
+        assert str(exc.value) == TRANSACTION_VERSION_NOT_REPORTED
+        assert exc.value.code == "invalid-payload"
+
+    async def test_unknown_reported_version_rejected(self):
+        mpp, _rpc = self._mpp(self._sol_tx(version=7))
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError, match="transaction version 7 is not accepted") as exc:
+            await _verify(mpp, credential, challenge)
+        assert exc.value.code == "invalid-payload"
+
+    async def test_v0_reported_version_accepted(self):
+        mpp, _rpc = self._mpp(self._sol_tx(version=0))
+        credential, challenge = self._credential(mpp)
+        receipt = await _verify(mpp, credential, challenge)
+        assert receipt.is_success()
+        assert receipt.reference == VALID_SIGNATURE
 
 
 class TestAuditSplitIssuanceGuards:

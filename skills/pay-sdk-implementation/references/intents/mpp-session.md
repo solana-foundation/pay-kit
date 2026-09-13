@@ -218,8 +218,11 @@ For an open transaction, verify all of the following before persistence:
 - confirmation succeeded; and
 - the resulting channel account matches the expected state.
 
-Reject address lookup tables unless every loaded address is resolved and
-verified. A verifier that only sees static account keys must fail closed.
+Reject address lookup tables, legacy messages, and any message version the
+challenge did not advertise (`methodDetails.transactionVersions`, default
+`[0]`) before inspecting instructions; on version 1 bound the header compute
+config with the same caps as the ComputeBudget prefix. A verifier that only
+sees static account keys must fail closed.
 
 For top-up, bind the transaction to `channelId` and `additionalAmount`, require
 an actual increase, confirm it, and verify the resulting on-chain deposit is at
@@ -272,3 +275,20 @@ idempotent commit replays leave `lastActivityAt` unchanged.
 - Idle timeout activity races and timer reconstruction after restart.
 - Full lifecycle: open, vouchers or uses, top-up, more usage, close, settle,
   distribute, and reclaim.
+
+## Transaction versions
+
+Solana message versions `0` and `1` (SIMD-0385) are accepted; legacy
+messages are rejected before any instruction is inspected. The server
+advertises the versions it accepts as `transactionVersions` (an array of
+`0` and/or `1`) — in MPP `methodDetails`, in x402 `extra` — and omits the
+field when it accepts version 0 only. Clients build the highest advertised
+version, `0` when the field is absent, and never use address lookup
+tables. Version 1 carries its compute budget in the message header:
+`computeUnitLimit` and `loadedAccountsDataSizeLimit` MUST be set, the
+priority fee is a total in lamports, ComputeBudget instructions are
+rejected, and the size limit is 4096 bytes (1232 for version 0). Verifiers
+hold the header config to the same caps they apply to ComputeBudget
+instructions on version 0. Wire bytes are the canonical (wincode) encoding,
+base64 standard alphabet with padding; bincode cannot encode version 1. The
+Rust reference is `rust/crates/kit/src/core/tx/`.

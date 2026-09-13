@@ -5,21 +5,35 @@ require_relative "../test_helper"
 class TransactionTest < Minitest::Test
   include RubyMppTestHelpers
 
-  def test_parses_and_serializes_legacy_transaction
+  def test_parses_and_serializes_v0_transaction
     payer = pubkey(1)
     recipient = pubkey(2)
-    raw = legacy_transaction(
+    raw = v0_transaction(
       account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     )
 
     tx = ::PayCore::Solana::Transaction.from_bytes(raw)
 
-    assert_equal "legacy", tx.version
+    assert_equal 0, tx.version
     assert_equal payer, tx.message.account_keys[0]
     assert_equal recipient, tx.message.account_keys[1]
     assert_equal raw, tx.to_bytes
     assert_match(/\A[1-9A-HJ-NP-Za-km-z]+\z/, tx.primary_signature)
+  end
+
+  def test_rejects_legacy_transaction
+    raw = legacy_transaction(
+      account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+
+    error = assert_raises(::PayCore::Solana::Transaction::UnsupportedVersionError) { ::PayCore::Solana::Transaction.from_bytes(raw) }
+    assert_equal "legacy transactions are not supported; use a version 0 or version 1 message", error.message
+
+    # `from_base64` must surface the message verbatim (no payload-wrap prefix).
+    error = assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.from_base64(Base64.strict_encode64(raw)) }
+    assert_equal ::PayCore::Solana::Transaction::LEGACY_UNSUPPORTED, error.message
   end
 
   def test_parses_v0_transaction_without_address_lookups
@@ -50,7 +64,7 @@ class TransactionTest < Minitest::Test
     raw = compact_u16(0) + [0x81, 1, 0, 0].pack("C*")
     assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.from_bytes(raw) }
 
-    tx = ::PayCore::Solana::Transaction.from_bytes(legacy_transaction(
+    tx = ::PayCore::Solana::Transaction.from_bytes(v0_transaction(
       account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
@@ -60,7 +74,7 @@ class TransactionTest < Minitest::Test
 
   def test_rejects_fee_payer_when_not_required_signer
     keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
-    tx = ::PayCore::Solana::Transaction.from_bytes(legacy_transaction(
+    tx = ::PayCore::Solana::Transaction.from_bytes(v0_transaction(
       account_keys: [keypair.public_key.to_s, pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       signatures: [],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
@@ -71,7 +85,7 @@ class TransactionTest < Minitest::Test
 
   def test_signs_when_fee_payer_is_required_signer
     keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
-    tx = ::PayCore::Solana::Transaction.from_bytes(legacy_transaction(
+    tx = ::PayCore::Solana::Transaction.from_bytes(v0_transaction(
       account_keys: [keypair.public_key.to_s, pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       signatures: ["\x00".b * 64],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
@@ -85,6 +99,8 @@ class TransactionTest < Minitest::Test
   def test_from_base64_invalid_and_cursor_boundaries
     assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.from_base64("%%%") }
     assert_equal [0x80, 0x01].pack("C*"), ::PayCore::Solana::Transaction.compact_u16(128)
+    assert_equal [128, 2], ::PayCore::Solana::Transaction.read_short_vec("\x80\x01".b, 0)
+    assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.read_short_vec("".b, 0) }
     cursor = ::PayCore::Solana::Cursor.new("\xff\xff\xff\xff".b)
     assert_raises(ArgumentError) { cursor.compact_u16 }
     assert_raises(ArgumentError) { ::PayCore::Solana::Cursor.new("").peek }

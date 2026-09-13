@@ -36,11 +36,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
 use solana_keychain::TransactionSigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
@@ -49,6 +47,7 @@ use crate::core::store::{
     BatchReservation, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
     CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
+use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
 
 use crate::x402::error::Error;
@@ -167,6 +166,7 @@ fn has_active_pending_open(state: &ChannelState, now: u64) -> bool {
 /// pipeline, which globally paces submissions and coalesces signature-status
 /// polling across concurrent lifecycle chunks.
 fn spawn_next_submission(
+    version: TxVersion,
     in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
     pending: &mut std::collections::VecDeque<Vec<Instruction>>,
     pipeline: &TxPipeline,
@@ -184,17 +184,13 @@ fn spawn_next_submission(
             .latest_blockhash()
             .await
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(
-            &instructions,
-            Some(&pc::to_address(&fee_payer)),
-            &blockhash,
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(signer.as_ref(), &mut tx)
+        let mut tx =
+            crate::core::tx::build_unsigned(version, &fee_payer, &instructions, blockhash, None)?;
+        crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
             .await
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         pipeline
-            .submit_verified(&VersionedTransaction::from(tx))
+            .submit_verified(&tx)
             .await
             .map(|confirmed| confirmed.signature.to_string())
             .map_err(|e| Error::Rpc(format!("settlement submission failed: {e}")))
@@ -252,8 +248,7 @@ fn broadcast_and_confirm_deposit(
     // catches the rest — an unfunded payer, a frozen or wrong-owner token
     // account, a settlement path that would not be usable later — while
     // rejecting is still free.
-    let simulation = rpc
-        .simulate_transaction(tx)
+    let simulation = crate::core::rpc::simulate_transaction(rpc, tx)
         .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
     if let Some(err) = simulation.value.err {
         let logs = simulation.value.logs.unwrap_or_default().join(" | ");
@@ -265,7 +260,7 @@ fn broadcast_and_confirm_deposit(
             format!("simulation failed: {err:?}; program logs: {logs}"),
         ));
     }
-    match rpc.send_and_confirm_transaction(tx) {
+    match crate::core::rpc::send_and_confirm_transaction(rpc, tx) {
         Ok(confirmed) => Ok(confirmed.to_string()),
         Err(error) => {
             if await_ambiguous_deposit_confirmation(rpc, &signature)? {
@@ -512,6 +507,8 @@ impl BatchOutcome {
 #[derive(Clone)]
 pub struct X402BatchSettlement {
     rpc: Arc<RpcClient>,
+    /// Transaction message versions accepted and advertised; see `core::tx`.
+    accepted_versions: Vec<TxVersion>,
     config: BatchConfig,
     fee_payer: Pubkey,
     store: Arc<dyn ChannelStore>,
@@ -557,14 +554,28 @@ impl X402BatchSettlement {
             .rpc_url
             .clone()
             .unwrap_or_else(|| default_rpc_url(&config.cluster).to_string());
+        let rpc = Arc::new(RpcClient::new(rpc_url));
         Ok(Self {
-            rpc: Arc::new(RpcClient::new(rpc_url)),
+            // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+            accepted_versions: vec![TxVersion::V0],
+            rpc,
             config,
             fee_payer,
             store,
             tx_pipeline: Arc::new(tokio::sync::OnceCell::new()),
             in_flight: InFlight::default(),
         })
+    }
+
+    /// Choose whether version-1 transactions are accepted, advertised and used
+    /// for settlement. `Auto` probes the `enable_tx_v1` gate once; the default is version 0 only.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = mode.resolve(&self.rpc);
+        self
+    }
+
+    fn tx_version(&self) -> TxVersion {
+        crate::core::tx::highest(&self.accepted_versions)
     }
 
     /// Use a host-owned transaction pipeline for channel redemption.
@@ -670,6 +681,7 @@ impl X402BatchSettlement {
                 recent_slot: None,
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: crate::core::tx::advertised(&self.accepted_versions),
             },
         })
     }
@@ -1028,6 +1040,7 @@ impl X402BatchSettlement {
                 let expectations = TransactionExpectations {
                     program_id: &program_id,
                     fee_payer: &self.fee_payer,
+                    accepted_versions: &self.accepted_versions,
                     config: &config,
                     channel_id: &channel_id,
                     token_program: &token_program,
@@ -1324,6 +1337,7 @@ impl X402BatchSettlement {
         let expectations = TransactionExpectations {
             program_id: &program_id,
             fee_payer: &self.fee_payer,
+            accepted_versions: &self.accepted_versions,
             config,
             channel_id,
             token_program: &token_program,
@@ -2569,7 +2583,7 @@ impl X402BatchSettlement {
         if groups.is_empty() {
             return Ok(vec![]);
         }
-        let batches = pack(groups, &self.fee_payer, max_per_tx);
+        let batches = pack(self.tx_version(), groups, &self.fee_payer, None, max_per_tx);
 
         // Build instruction batches first. Each bounded task below fetches a
         // fresh blockhash, signs, and broadcasts its own transaction so slow
@@ -2592,6 +2606,7 @@ impl X402BatchSettlement {
         let mut in_flight = tokio::task::JoinSet::new();
         for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
             spawn_next_submission(
+                self.tx_version(),
                 &mut in_flight,
                 &mut pending,
                 &pipeline,
@@ -2603,6 +2618,7 @@ impl X402BatchSettlement {
         let mut failures = Vec::new();
         while let Some(joined) = in_flight.join_next().await {
             spawn_next_submission(
+                self.tx_version(),
                 &mut in_flight,
                 &mut pending,
                 &pipeline,
@@ -2749,7 +2765,9 @@ impl X402BatchSettlement {
             .iter()
             .map(|group| group.channel_id.clone())
             .collect();
-        let signatures = self.submit_groups(groups, pc::MAX_RECLAIMS_PER_TX).await?;
+        let signatures = self
+            .submit_groups(groups, pc::max_reclaims_per_tx(self.tx_version()))
+            .await?;
         for channel_id in reclaimed {
             self.store
                 .delete_channel(&channel_id)
@@ -3255,6 +3273,7 @@ mod tests {
                 recent_slot: None,
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         };
         let (_, config, channel) = client(&fee_payer, &requirements);

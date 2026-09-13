@@ -7,6 +7,7 @@ import {
     getTransactionDecoder,
     isTransactionPartialSigner,
     type TransactionPartialSigner,
+    type TransactionVersion,
 } from '@solana/kit';
 import {
     getSubscriptionAuthorityDecoder,
@@ -37,7 +38,12 @@ import {
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
-import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
+import {
+    assertReportedTransactionVersion,
+    assertVersionedTransactionMessage,
+    coSignBase64Transaction,
+    transactionSignatureFromBase64,
+} from '../utils/transactions.js';
 import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
 
 /**
@@ -480,6 +486,7 @@ async function settleActivation(
     }
     const tx = await fetchTransactionRaw(rpcUrl, signature);
     if (!tx) throw new Error('Transaction not found or not yet confirmed');
+    assertReportedTransactionVersion(tx.version);
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
     const [transactionBase64] = tx.transaction;
     const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
@@ -653,6 +660,7 @@ type CompiledMessage = {
     instructions: readonly CompiledInstruction[];
     signerAccounts: readonly string[];
     staticAccounts: readonly string[];
+    version: TransactionVersion;
 };
 
 type CompiledInstruction = {
@@ -662,17 +670,20 @@ type CompiledInstruction = {
 };
 
 function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
+    let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
+        const compiled = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
             CompiledMessage,
             'signerAccounts'
         >;
-        return { ...message, signerAccounts: Object.keys(decoded.signatures) };
+        message = { ...compiled, signerAccounts: Object.keys(decoded.signatures) };
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+    assertVersionedTransactionMessage(message);
+    return message;
 }
 
 function extractSubscriberFromTransaction(clientTxBase64: string, challenge: ChallengeRequest): string {
@@ -989,6 +1000,7 @@ function base64UrlEncodeNoPadding(bytes: Uint8Array): string {
 type RawTransaction = {
     meta: { err: unknown } | null;
     transaction: [string, 'base64'];
+    version?: unknown;
 };
 
 async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<RawTransaction | null> {
@@ -997,7 +1009,7 @@ async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<R
             id: 1,
             jsonrpc: '2.0',
             method: 'getTransaction',
-            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 0 }],
+            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 1 }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',

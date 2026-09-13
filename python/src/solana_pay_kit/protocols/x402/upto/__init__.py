@@ -35,7 +35,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.instruction import Instruction  # type: ignore[import-untyped]
-from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from spl.token.instructions import (  # type: ignore[import-untyped]
     create_idempotent_associated_token_account,
@@ -52,7 +51,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     voucher_message_bytes,
 )
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction, require_versioned_wire
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
@@ -87,6 +86,7 @@ _CHANNEL_STATUS_OPEN = 0
 
 # Default authorization window (Go DefaultMaxTimeoutSeconds).
 _DEFAULT_MAX_TIMEOUT_SECONDS = 6 * 50  # 300
+
 
 def _empty_distribution() -> list[Distribution]:
     return []
@@ -447,7 +447,7 @@ class X402Upto:
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
                 blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-                wire = _sign_legacy_transaction(instructions, fee_payer, blockhash, signer)
+                wire = build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, fee_payer, signer.sign)
                 sent = await rpc.send_raw_transaction(wire)
                 signature = str(sent.value)
                 await rpc.await_confirmation(signature)
@@ -617,19 +617,21 @@ def _distribution_hash(distribution: list[Distribution]) -> bytes:
     return hasher.digest()
 
 
+def _payment_invalid(message: str) -> InvalidProofError:
+    return InvalidProofError(message, code="payment_invalid")
+
+
 def _decode_transaction(transaction_b64: str) -> tuple[list[str], list[Any]]:
-    """Decode a base64 (legacy or v0) transaction into ``(account_keys, instructions)``."""
-    from solders.transaction import Transaction, VersionedTransaction
+    """Decode a base64 v0 transaction into ``(account_keys, instructions)``.
+
+    Legacy wires are rejected by ``require_versioned_wire``.
+    """
+    from solders.transaction import VersionedTransaction
 
     try:
         raw = base64.b64decode(transaction_b64, validate=True)
-        if is_v0_wire_bytes(raw):
-            message = VersionedTransaction.from_bytes(raw).message
-        else:
-            try:
-                message = Transaction.from_bytes(raw).message
-            except Exception:  # noqa: BLE001 - fall back to versioned
-                message = VersionedTransaction.from_bytes(raw).message
+        require_versioned_wire(raw, error=_payment_invalid)
+        message = VersionedTransaction.from_bytes(raw).message
     except InvalidProofError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -646,26 +648,15 @@ def _cosign_fee_payer(transaction_b64: str, signer: LocalSigner) -> bytes:
     the result is broadcastable. Mirrors the exact-scheme cosign.
     """
     from solders.message import to_bytes_versioned
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
     fee_payer = Pubkey.from_string(signer.pubkey())
-    if is_v0_wire_bytes(raw):
-        vtx = VersionedTransaction.from_bytes(raw)
-        account_keys = list(vtx.message.account_keys)
-        message_bytes = bytes(to_bytes_versioned(vtx.message))
-        num_required = int(vtx.message.header.num_required_signatures)
-    else:
-        try:
-            tx = Transaction.from_bytes(raw)
-            account_keys = list(tx.message.account_keys)
-            message_bytes = bytes(tx.message)
-            num_required = int(tx.message.header.num_required_signatures)
-        except Exception:  # noqa: BLE001
-            vtx = VersionedTransaction.from_bytes(raw)
-            account_keys = list(vtx.message.account_keys)
-            message_bytes = bytes(to_bytes_versioned(vtx.message))
-            num_required = int(vtx.message.header.num_required_signatures)
+    require_versioned_wire(raw, error=_payment_invalid)
+    vtx = VersionedTransaction.from_bytes(raw)
+    account_keys = list(vtx.message.account_keys)
+    message_bytes = bytes(to_bytes_versioned(vtx.message))
+    num_required = int(vtx.message.header.num_required_signatures)
     try:
         idx = account_keys.index(fee_payer)
     except ValueError as exc:
@@ -677,26 +668,6 @@ def _cosign_fee_payer(transaction_b64: str, signer: LocalSigner) -> bytes:
     start = 1 + idx * 64
     serialized[start : start + 64] = sig
     return bytes(serialized)
-
-
-def _sign_legacy_transaction(
-    instructions: list[Instruction],
-    fee_payer: Pubkey,
-    blockhash: Hash,
-    signer: LocalSigner,
-) -> bytes:
-    """Build a single-signer legacy transaction, sign with the fee payer, return wire.
-
-    The current Python config uses one signer for both advertised roles, so the
-    wire is ``[1][sig64][message]``. Building the
-    message + signing via the abstract signer keeps the path KMS-agnostic.
-    """
-    message = Message.new_with_blockhash(instructions, fee_payer, blockhash)
-    message_bytes = bytes(message)
-    sig = bytes(signer.sign(message_bytes))
-    if len(sig) != 64:
-        raise InvalidProofError(f"settlement signature length {len(sig)}, want 64", code="payment_invalid")
-    return bytes([1]) + sig + message_bytes
 
 
 def _request_path(request: Any) -> str:

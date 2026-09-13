@@ -1097,7 +1097,7 @@ func TestSessionRoutesShareStoreWithMethod(t *testing.T) {
 // ── open with a transaction ──
 
 func TestSessionOpenVerifiesAttachedTransaction(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
 		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
@@ -1123,7 +1123,7 @@ func TestSessionOpenVerifiesAttachedTransaction(t *testing.T) {
 }
 
 func TestSessionOpenRejectsTransactionForWrongRecipient(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	session := newTestSession(t, nil) // recipient differs from the fixture payee
 	if _, err := verifySessionAction(t, session, intents.NewOpenAction(fixture.payload)); err == nil ||
 		!strings.Contains(err.Error(), "payee") {
@@ -1132,7 +1132,7 @@ func TestSessionOpenRejectsTransactionForWrongRecipient(t *testing.T) {
 }
 
 func TestSessionServerSubmitterBroadcastsOnceAndReplaysWithoutRebroadcast(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
@@ -1163,7 +1163,7 @@ func TestSessionServerSubmitterBroadcastsOnceAndReplaysWithoutRebroadcast(t *tes
 }
 
 func TestSessionServerSubmitterRequiresRPC(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
 		o.OpenTxSubmitter = OpenTxSubmitterServer
@@ -1210,7 +1210,7 @@ func TestSessionServerSubmitterCompletesFeePayerSignature(t *testing.T) {
 // paired with a placeholder payload signature.
 func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) openTxFixture {
 	t.Helper()
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	// Rebuild the open transaction with the operator as fee payer; only the
 	// channel payer partial-signs, leaving the fee-payer slot zeroed.
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
@@ -1231,7 +1231,7 @@ func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) o
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 	blockhash := solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(operator.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(operator.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

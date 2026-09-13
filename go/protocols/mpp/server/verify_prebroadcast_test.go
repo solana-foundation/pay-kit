@@ -75,6 +75,25 @@ func TestVerifyChargeTransactionPreBroadcastRejectsUndecodableTransaction(t *tes
 	}
 }
 
+func TestVerifyChargeTransactionPreBroadcastRejectsLegacyTransaction(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+
+	_, tx := encodePreBroadcastSOLTransfer(t, payer, recipient, 1000)
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode legacy transaction failed: %v", err)
+	}
+	request := intents.ChargeRequest{Amount: "1000", Currency: "sol", Recipient: recipient.String()}
+
+	err = VerifyChargeTransactionPreBroadcast(encoded, request, paycore.MethodDetails{}, "localnet")
+	assertPreBroadcastCode(t, err, core.ErrCodeInvalidPayload)
+	if err.Error() != solanatx.ErrLegacyTransaction.Error() {
+		t.Fatalf("err = %q, want %q", err, solanatx.ErrLegacyTransaction)
+	}
+}
+
 func TestVerifyChargeTransactionPreBroadcastRejectsAddressLookupTables(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()

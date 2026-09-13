@@ -41,7 +41,7 @@ func validTransferReq(feePayer, mint, payTo solana.PublicKey, amount uint64) Tra
 
 func buildValidTx(t *testing.T, ixs []solana.Instruction, feePayer solana.PublicKey) *solana.Transaction {
 	t.Helper()
-	tx, err := solana.NewTransaction(ixs, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(feePayer))
+	tx, err := solanatx.NewV0Transaction(ixs, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(feePayer))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

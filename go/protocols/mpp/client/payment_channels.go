@@ -135,7 +135,7 @@ type PaymentChannelOpenTransaction struct {
 	ChannelID solana.PublicKey
 
 	// Transaction is the standard base64 (with padding) wire encoding of the
-	// payer-signed legacy transaction, for OpenPayload.Transaction.
+	// payer-signed version 0 transaction, for OpenPayload.Transaction.
 	Transaction string
 }
 
@@ -314,7 +314,7 @@ type BuildOpenPaymentChannelTransactionParams struct {
 }
 
 // BuildOpenPaymentChannelTransaction derives the open from the challenge and
-// assembles the legacy open transaction with the operator as fee payer,
+// assembles the version 0 open transaction with the operator as fee payer,
 // partially signed by the payer, base64-encoded for OpenPayload.Transaction.
 func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactionParams) (PaymentChannelOpenTransaction, error) {
 	operator, err := parseSessionPubkey(params.Request.Operator, "operator")
@@ -489,7 +489,7 @@ func NewEphemeralSessionSigner() (VoucherSigner, error) {
 	return key, nil
 }
 
-// buildOpenPaymentChannelTx assembles the single-instruction legacy open
+// buildOpenPaymentChannelTx assembles the single-instruction version 0 open
 // transaction with the given fee payer and partially signs it with the payer
 // wallet, leaving the fee-payer slot zeroed for the operator.
 func buildOpenPaymentChannelTx(
@@ -508,7 +508,7 @@ func buildOpenPaymentChannelTx(
 	if err != nil {
 		return PaymentChannelOpenTransaction{}, err
 	}
-	tx, err := solana.NewTransaction(
+	tx, err := solanatx.NewV0Transaction(
 		[]solana.Instruction{ix},
 		recentBlockhash,
 		solana.TransactionPayer(feePayer),

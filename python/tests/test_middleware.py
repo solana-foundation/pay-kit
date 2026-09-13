@@ -117,6 +117,7 @@ class TestPayDecorator:
         rpc = FakeRPC(
             tx={
                 "meta": {"err": None},
+                "version": 0,
                 "transaction": {
                     "message": {
                         "instructions": [

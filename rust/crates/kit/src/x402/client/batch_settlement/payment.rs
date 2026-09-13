@@ -17,10 +17,8 @@ use std::str::FromStr;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
 use solana_keychain::{SolanaSigner, TransactionSigner};
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 
@@ -57,6 +55,9 @@ pub struct BatchTerms {
     pub amount: u64,
     /// The Memo the setup transaction must carry.
     pub memo: String,
+    /// The message version to build: the highest the sponsor advertises in
+    /// `extra.transactionVersions` (`0` when it advertises none).
+    pub tx_version: crate::core::tx::TxVersion,
 }
 
 /// Validate a challenge's terms without touching the network.
@@ -68,6 +69,7 @@ pub struct BatchTerms {
 pub fn resolve_terms_with_token_program(
     requirements: &BatchRequirements,
     token_program: Pubkey,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
     let extra = &requirements.extra;
     crate::x402::protocol::schemes::batch_settlement::check_payment_flow(
@@ -102,6 +104,10 @@ pub fn resolve_terms_with_token_program(
         withdraw_delay: extra.withdraw_delay,
         amount: requirements.amount()?,
         memo,
+        tx_version: crate::core::tx::negotiate(
+            extra.transaction_versions.as_deref(),
+            max_tx_version,
+        )?,
     })
 }
 
@@ -114,12 +120,17 @@ pub fn resolve_terms_with_token_program(
 pub fn resolve_terms(
     rpc: &RpcClient,
     requirements: &BatchRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
     let mint = pc::parse_pubkey(&requirements.asset)?;
     let account = rpc
         .get_account(&mint)
         .map_err(|e| Error::Rpc(format!("mint fetch failed: {e}")))?;
-    resolve_terms_with_token_program(requirements, pc::from_address(&account.owner))
+    resolve_terms_with_token_program(
+        requirements,
+        pc::from_address(&account.owner),
+        max_tx_version,
+    )
 }
 
 fn random_hex_nonce() -> String {
@@ -405,6 +416,8 @@ pub async fn build_deposit(
         blockhash,
         &pc::OpenTxOptions {
             memo: Some(terms.memo.clone()),
+            version: terms.tx_version,
+            ..Default::default()
         },
     )
     .await?;
@@ -455,7 +468,14 @@ pub async fn build_top_up(
         ),
         memo_instruction(&terms.memo),
     ];
-    let transaction = sign_sponsored(signer, &terms.fee_payer, &instructions, blockhash).await?;
+    let transaction = sign_sponsored(
+        signer,
+        terms.tx_version,
+        &terms.fee_payer,
+        &instructions,
+        blockhash,
+    )
+    .await?;
     let voucher = channel.sign_next_voucher(signer, terms.amount).await?;
     Ok(BatchPayload::Deposit {
         channel_config: channel.config.clone(),
@@ -490,7 +510,14 @@ pub async fn build_refund(
     ];
     Ok(BatchPayload::Refund {
         channel_config: channel.config.clone(),
-        transaction: sign_sponsored(signer, &terms.fee_payer, &instructions, blockhash).await?,
+        transaction: sign_sponsored(
+            signer,
+            terms.tx_version,
+            &terms.fee_payer,
+            &instructions,
+            blockhash,
+        )
+        .await?,
         voucher: None,
         close_authorization: None,
     })
@@ -508,21 +535,17 @@ fn memo_instruction(memo: &str) -> Instruction {
 /// and return the base64 transaction for the sponsor to co-sign.
 async fn sign_sponsored(
     signer: &dyn TransactionSigner,
+    version: crate::core::tx::TxVersion,
     fee_payer: &Pubkey,
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
-    let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    let mut tx =
+        crate::core::tx::build_unsigned(version, fee_payer, instructions, blockhash, None)?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("transaction signing failed: {e}")))?;
-    let bytes = bincode::serialize(&tx)
-        .map_err(|e| Error::Other(format!("transaction serialization failed: {e}")))?;
-    Ok(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        bytes,
-    ))
+    Ok(crate::core::tx::encode(&tx)?)
 }
 
 /// Wrap a payload in a `PAYMENT-SIGNATURE` envelope and base64-encode it.
@@ -670,6 +693,7 @@ mod tests {
                 recent_slot: Some(341_000_000),
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         }
     }
@@ -678,6 +702,7 @@ mod tests {
         resolve_terms_with_token_program(
             requirements,
             pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
         )
         .expect("terms resolve")
     }
@@ -689,6 +714,7 @@ mod tests {
         let err = resolve_terms_with_token_program(
             &requirements,
             pc::parse_pubkey(programs::TOKEN_2022_PROGRAM).unwrap(),
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains(codes::INVALID_TOKEN_PROGRAM));
@@ -748,6 +774,7 @@ mod tests {
         let program_id = pc::default_program_id();
         let expectations = TransactionExpectations {
             program_id: &program_id,
+            accepted_versions: &[crate::core::tx::TxVersion::V0],
             fee_payer: &fee_payer,
             config: channel_config,
             channel_id: channel.channel_id(),
@@ -791,6 +818,7 @@ mod tests {
         let program_id = pc::default_program_id();
         let expectations = TransactionExpectations {
             program_id: &program_id,
+            accepted_versions: &[crate::core::tx::TxVersion::V0],
             fee_payer: &fee_payer,
             config: channel.config(),
             channel_id: channel.channel_id(),

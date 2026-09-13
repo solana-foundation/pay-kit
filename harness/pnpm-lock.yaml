@@ -856,7 +856,7 @@ packages:
     resolution: {directory: ../typescript/packages/mpp, type: directory}
     peerDependencies:
       '@solana/kit': '>=6.10.0'
-      mppx: '>=0.5.5'
+      mppx: '>=0.8.15'
 
   '@solana/nominal-types@6.10.0':
     resolution: {integrity: sha512-9ykyBBvnkInH7fCacjJi7zu2PJyd+OCt+VTjIISv070fHzKIMFqZqJJ/dJ0SRH2aHwfB3n86iVsmtBtuxi4KKA==}

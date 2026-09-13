@@ -496,6 +496,9 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	}
 	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
 	if err != nil {
+		if errors.Is(err, solanatx.ErrLegacyTransaction) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
 	// The challenged recentSlot at verify time: fetched fresh, so the

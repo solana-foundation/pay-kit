@@ -11,13 +11,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use solana_account_decoder_client_types::UiAccountEncoding;
+use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_client::rpc_request::RpcRequest;
 use solana_commitment_config::CommitmentConfig;
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_rpc_client::rpc_client::SerializableTransaction;
 use solana_rpc_client_api::config::RpcAccountInfoConfig;
 use solana_signature::Signature;
+use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction_status_client_types::UiTransactionEncoding;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 
 use crate::core::rpc::SKIP_PREFLIGHT_SEND;
@@ -183,11 +186,11 @@ impl TxPipeline {
     ///
     /// Only this API skips preflight. Callers must not pass arbitrary client
     /// transactions without first performing byte-exact validation.
-    pub async fn submit_verified<T>(&self, transaction: &T) -> PipelineResult<ConfirmedTransaction>
-    where
-        T: SerializableTransaction + Sync,
-    {
-        let signature = *transaction.get_signature();
+    pub async fn submit_verified(
+        &self,
+        transaction: &VersionedTransaction,
+    ) -> PipelineResult<ConfirmedTransaction> {
+        let signature = transaction.signatures[0];
         // A send failure is not authoritative: the same signed transaction
         // may already have landed while its prior response was lost. Always
         // ask the shared confirmation tracker before deciding the outcome.
@@ -204,11 +207,20 @@ impl TxPipeline {
 
     /// Broadcast a locally verified transaction without preflight and return
     /// immediately. Confirmation can be awaited separately through [`Self::confirm`].
-    pub async fn broadcast_verified<T>(&self, transaction: &T) -> PipelineResult<Signature>
-    where
-        T: SerializableTransaction + Sync,
-    {
-        let signature = *transaction.get_signature();
+    pub async fn broadcast_verified(
+        &self,
+        transaction: &VersionedTransaction,
+    ) -> PipelineResult<Signature> {
+        let signature = transaction.signatures[0];
+        // Canonical wire encoding for every message version; the RPC client's
+        // own `send_transaction` serializes with bincode, which cannot encode
+        // version 1.
+        let encoded = crate::core::tx::encode(transaction)
+            .map_err(|_| TxPipelineError::SubmissionFailed { signature })?;
+        let config = RpcSendTransactionConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            ..SKIP_PREFLIGHT_SEND.config()
+        };
         let permit = self
             .inner
             .send_permits
@@ -223,9 +235,13 @@ impl TxPipeline {
             result = self
                 .inner
                 .rpc
-                .send_transaction_with_config(transaction, SKIP_PREFLIGHT_SEND.config())
+                .send::<String>(
+                    RpcRequest::SendTransaction,
+                    serde_json::json!([encoded, config]),
+                )
                 .await
-                .map_err(|_| TxPipelineError::SubmissionFailed { signature });
+                .map_err(|_| TxPipelineError::SubmissionFailed { signature })
+                .map(|_| signature);
             if result.is_ok() || attempt == attempts {
                 break;
             }

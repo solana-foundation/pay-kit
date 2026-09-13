@@ -170,6 +170,8 @@ object PaymentChannels {
      * `payer` signs to authorize the deposit; the `feePayer` (operator) slot is
      * left empty for the server to co-sign before broadcast. `openSlot` is the
      * current slot the server prefetched into the 402 challenge.
+     * The message is a v0 versioned message (0x80 prefix, no address-table
+     * lookups); servers reject legacy messages.
      */
     fun buildOpenTransaction(
         payer: SolanaSigner,
@@ -194,7 +196,7 @@ object PaymentChannels {
         )
         val channelId = findChannelPda(payerPubkey, payee, mint, authorizedSigner, salt, openSlot, programId)
         val instruction = buildOpenInstruction(params)
-        val message = Transaction.buildLegacyMessage(feePayer, recentBlockhash, listOf(instruction))
+        val message = Transaction.buildV0Message(feePayer, recentBlockhash, listOf(instruction))
         val signature = payer.sign(message.serialize())
         require(signature.size == 64) { "open signature must be 64 bytes (got ${signature.size})" }
         val signerIndex = message.accountKeys.indexOfFirst { it.bytes.contentEquals(payerPubkey.bytes) }
@@ -208,7 +210,7 @@ object PaymentChannels {
             throw MppException.InvalidTransaction("payer signer index $signerIndex is outside the required-signer range")
         }
         signatures[signerIndex] = signature
-        val txBytes = Transaction.serializeLegacyTransaction(message, signatures)
+        val txBytes = Transaction.serializeV0Transaction(message, signatures)
         return OpenTransaction(channelId = channelId, transaction = Base64.getEncoder().encodeToString(txBytes))
     }
 

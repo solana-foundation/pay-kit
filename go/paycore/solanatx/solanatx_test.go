@@ -2,6 +2,7 @@ package solanatx
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestSignEncodeDecodeTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, blockhash, solana.TransactionPayer(signer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestWaitSimulateSendFetchTransaction(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	transfer, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1000)
-	tx, _ := solana.NewTransaction([]solana.Instruction{transfer}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{transfer}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err != nil {
 		t.Fatalf("simulate failed: %v", err)
@@ -297,6 +298,81 @@ func TestDecodeTransactionBase64InvalidTransaction(t *testing.T) {
 	}
 }
 
+// signedV0Wire returns a signed single-signature v0 SOL transfer as wire bytes.
+func signedV0Wire(t *testing.T) []byte {
+	t.Helper()
+	signer := testutil.NewPrivateKey()
+	transfer, err := BuildSOLTransfer(signer.PublicKey(), testutil.NewPrivateKey().PublicKey(), 1)
+	if err != nil {
+		t.Fatalf("build transfer failed: %v", err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	if err != nil {
+		t.Fatalf("new transaction failed: %v", err)
+	}
+	if err := SignTransaction(tx, signer); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	return wire
+}
+
+func TestDecodeTransactionAcceptsV0(t *testing.T) {
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", tx.Message.GetVersion())
+	}
+}
+
+func TestDecodeTransactionRejectsLegacy(t *testing.T) {
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal legacy failed: %v", err)
+	}
+	if wire[65]&0x80 != 0 {
+		t.Fatalf("fixture still carries a version prefix: %#x", wire[65])
+	}
+	_, err = DecodeTransaction(wire)
+	if !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+	if err.Error() != "legacy transactions are not supported; use a version 0 or version 1 message" {
+		t.Fatalf("unexpected message %q", err)
+	}
+	if _, err := DecodeTransactionBase64(base64.StdEncoding.EncodeToString(wire)); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("base64 err = %v, want ErrLegacyTransaction", err)
+	}
+}
+
+func TestDecodeTransactionRejectsUnsupportedVersionCleanly(t *testing.T) {
+	// One signature: the message starts at byte 65 with the 0x80 v0 prefix.
+	// Flip it to the 0x81 (version 1) prefix, which the Go decoder does not
+	// implement: the result must be an error, never a panic or an accept.
+	wire := signedV0Wire(t)
+	if wire[65] != 0x80 {
+		t.Fatalf("message prefix = %#x, want 0x80", wire[65])
+	}
+	wire[65] = 0x81
+	if _, err := DecodeTransaction(wire); err == nil || errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want unsupported-version rejection", err)
+	}
+	// A truncated version-1 payload must fail cleanly too.
+	if _, err := DecodeTransaction(wire[:70]); err == nil {
+		t.Fatal("expected truncated transaction to be rejected")
+	}
+}
+
 func TestResolveRecentBlockhashWithProvided(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	provided := "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"
@@ -361,7 +437,7 @@ func TestSignTransactionRejectsSignerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -378,7 +454,7 @@ func TestSignTransactionRejectsUnexpectedSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -566,7 +642,7 @@ func TestSignTransactionSignerError(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(payer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err := SignTransaction(tx, signerErr{pub: payer.PublicKey()}); err == nil {
 		t.Fatal("expected signer error")
 	}
@@ -578,7 +654,7 @@ func TestSignTransactionWrongSigner(t *testing.T) {
 	stranger := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(payer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err := SignTransaction(tx, stranger); err == nil {
 		t.Fatal("expected signer-not-required error")
 	}
@@ -590,7 +666,7 @@ func TestSimulateTransactionRPCError(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err == nil {
 		t.Fatal("expected simulate rpc error")
@@ -609,7 +685,7 @@ func TestSimulateTransactionValueError(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err == nil {
 		t.Fatal("expected simulate value error")
@@ -719,3 +795,148 @@ func TestBuildCreateAssociatedTokenAccountFindError(t *testing.T) {
 // Reference rpc to silence unused import in older Go versions.
 var _ = rpc.CommitmentConfirmed
 var _ = paycore.MemoProgram
+
+func TestNewV0TransactionEmitsVersionedWire(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	transfer, err := BuildSOLTransfer(signer.PublicKey(), recipient, 1000)
+	if err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	if err != nil {
+		t.Fatalf("tx failed: %v", err)
+	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", tx.Message.GetVersion())
+	}
+	if err := SignTransaction(tx, signer); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	if message[0] != 0x80 {
+		t.Fatalf("message prefix = %#x, want 0x80 (v0)", message[0])
+	}
+	if message[len(message)-1] != 0 {
+		t.Fatalf("trailing address-table-lookups count = %d, want 0", message[len(message)-1])
+	}
+	encoded, err := EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeTransactionBase64(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("decoded version = %v, want v0", decoded.Message.GetVersion())
+	}
+	if len(decoded.Message.AddressTableLookups) != 0 {
+		t.Fatalf("lookups = %d, want 0", len(decoded.Message.AddressTableLookups))
+	}
+	if !decoded.Signatures[0].Verify(signer.PublicKey(), message) {
+		t.Fatal("signature does not verify against the v0 message bytes")
+	}
+}
+
+func TestCheckReportedVersion(t *testing.T) {
+	if got := ErrMissingTransactionVersion.Error(); got != "RPC did not report the transaction version" {
+		t.Fatalf("unexpected message %q", got)
+	}
+	for _, version := range []any{rpc.TransactionVersion(0), rpc.TransactionVersion(1), float64(0), float64(1)} {
+		if err := CheckReportedVersion(version); err != nil {
+			t.Fatalf("version %v: %v, want accept", version, err)
+		}
+	}
+	sentinels := []struct {
+		version any
+		want    error
+	}{
+		{nil, ErrMissingTransactionVersion},
+		{rpc.LegacyTransactionVersion, ErrLegacyTransaction},
+		{"legacy", ErrLegacyTransaction},
+	}
+	for _, tc := range sentinels {
+		if err := CheckReportedVersion(tc.version); !errors.Is(err, tc.want) {
+			t.Fatalf("version %v: err = %v, want %v", tc.version, err, tc.want)
+		}
+	}
+	for _, version := range []any{rpc.TransactionVersion(2), float64(2), float64(0.5), "v0", true} {
+		err := CheckReportedVersion(version)
+		if err == nil || errors.Is(err, ErrLegacyTransaction) || errors.Is(err, ErrMissingTransactionVersion) {
+			t.Fatalf("version %v: err = %v, want unsupported-version rejection", version, err)
+		}
+	}
+}
+
+// recordingRPC captures the GetTransaction options FetchTransaction sends.
+type recordingRPC struct {
+	*testutil.FakeRPC
+	opts *rpc.GetTransactionOpts
+}
+
+func (r *recordingRPC) GetTransaction(ctx context.Context, signature solana.Signature, opts *rpc.GetTransactionOpts) (*rpc.GetTransactionResult, error) {
+	r.opts = opts
+	return r.FakeRPC.GetTransaction(ctx, signature, opts)
+}
+
+// landSignedWire records the signed wire transaction as confirmed in the
+// fake RPC, optionally rewritten as a legacy message, and returns its signature.
+func landSignedWire(t *testing.T, rpcClient *testutil.FakeRPC, legacy bool) solana.Signature {
+	t.Helper()
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	if legacy {
+		tx.Message.SetVersion(solana.MessageVersionLegacy)
+	}
+	rpcClient.BySig[tx.Signatures[0].String()] = tx
+	return tx.Signatures[0]
+}
+
+func TestFetchTransactionAcceptsReportedV0(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	if rpcClient.TxVersion != "0" {
+		t.Fatalf("default fixture version = %q, want 0", rpcClient.TxVersion)
+	}
+	wrapped := &recordingRPC{FakeRPC: rpcClient}
+	signature := landSignedWire(t, rpcClient, false)
+	fetched, _, err := FetchTransaction(context.Background(), wrapped, signature)
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if fetched.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", fetched.Message.GetVersion())
+	}
+	if wrapped.opts == nil || wrapped.opts.MaxSupportedTransactionVersion == nil || *wrapped.opts.MaxSupportedTransactionVersion != 1 {
+		t.Fatalf("getTransaction opts = %+v, want maxSupportedTransactionVersion 1", wrapped.opts)
+	}
+}
+
+func TestFetchTransactionRejectsLegacyReportedVersion(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signature := landSignedWire(t, rpcClient, false)
+	rpcClient.TxVersion = `"legacy"`
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+	rpcClient.TxVersion = "2"
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); err == nil || errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want unsupported-version rejection", err)
+	}
+}
+
+func TestFetchTransactionMissingVersionRejectsLegacyBytes(t *testing.T) {
+	// solana-go decodes an omitted version field as 0, so the wire decode is
+	// what has to catch a legacy transaction served without a version.
+	rpcClient := testutil.NewFakeRPC()
+	signature := landSignedWire(t, rpcClient, true)
+	rpcClient.TxVersion = ""
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+}
