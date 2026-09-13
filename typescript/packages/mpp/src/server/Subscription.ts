@@ -39,6 +39,7 @@ import {
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
 import {
+    assertReportedTransactionVersion,
     assertVersionedTransactionMessage,
     coSignBase64Transaction,
     transactionSignatureFromBase64,
@@ -485,6 +486,7 @@ async function settleActivation(
     }
     const tx = await fetchTransactionRaw(rpcUrl, signature);
     if (!tx) throw new Error('Transaction not found or not yet confirmed');
+    assertReportedTransactionVersion(tx.version);
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
     const [transactionBase64] = tx.transaction;
     const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
@@ -998,6 +1000,7 @@ function base64UrlEncodeNoPadding(bytes: Uint8Array): string {
 type RawTransaction = {
     meta: { err: unknown } | null;
     transaction: [string, 'base64'];
+    version?: unknown;
 };
 
 async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<RawTransaction | null> {

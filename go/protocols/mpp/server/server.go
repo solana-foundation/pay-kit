@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/bits"
 	"os"
@@ -700,6 +701,10 @@ func (m *Mpp) verifySignature(
 func (m *Mpp) verifyOnChain(ctx context.Context, signature solana.Signature, request intents.ChargeRequest, details paycore.MethodDetails) error {
 	tx, meta, err := solanatx.FetchTransaction(ctx, m.rpc, signature)
 	if err != nil {
+		// The version policy is reported verbatim, like decodeCredentialTransaction.
+		if errors.Is(err, solanatx.ErrLegacyTransaction) || errors.Is(err, solanatx.ErrMissingTransactionVersion) {
+			return &core.Error{Code: core.ErrCodeInvalidPayload, Message: err.Error(), Err: err}
+		}
 		return core.WrapError(core.ErrCodeTransactionNotFound, "transaction not found or not yet confirmed", err)
 	}
 	if meta != nil && meta.Err != nil {

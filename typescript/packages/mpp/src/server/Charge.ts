@@ -25,6 +25,7 @@ import {
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import {
+    assertReportedTransactionVersion,
     assertVersionedTransactionMessage,
     coSignBase64Transaction,
     transactionSignatureFromBase64,
@@ -870,6 +871,7 @@ async function verifySignature(
         // Fetch and verify the transaction on-chain.
         const tx = await fetchTransaction(rpcUrl, signature);
         if (!tx) throw new Error('Transaction not found or not yet confirmed');
+        assertReportedTransactionVersion(tx.version);
         if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
         const instructions = tx.transaction.message.instructions;
@@ -895,6 +897,7 @@ async function verifySignature(
 async function verifyOnChain(rpcUrl: string, signature: string, challenge: ChallengeRequest, recipient: string) {
     const tx = await fetchTransaction(rpcUrl, signature);
     if (!tx) throw new Error('Transaction not found or not yet confirmed');
+    assertReportedTransactionVersion(tx.version);
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
     const instructions = tx.transaction.message.instructions;
@@ -1287,6 +1290,7 @@ type ParsedTransaction = {
             instructions: ParsedInstruction[];
         };
     };
+    version?: unknown;
 };
 
 // ── RPC helpers ──

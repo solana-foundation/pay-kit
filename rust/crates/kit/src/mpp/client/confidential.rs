@@ -103,6 +103,12 @@ const CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT: u32 = 500_000;
 /// priority price the limit only raises the ceiling, so leave headroom.
 pub(crate) const CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT: u32 = 400_000;
 
+/// CU limit for the fee-bearing version-1 transaction: its five inline proofs
+/// alone cost 410,300 CU in the ZK ElGamal Proof program (U256 range = 368k),
+/// so the plain-path limit always fails. LiteSVM measures the whole tx at
+/// ~455k CU (`inline_v1_confidential_transfer_with_fee_executes_in_litesvm`).
+pub(crate) const CONFIDENTIAL_INLINE_TRANSFER_WITH_FEE_COMPUTE_UNIT_LIMIT: u32 = 700_000;
+
 /// Byte offset of the proof inside an spl-record account
 /// (`RecordData::WRITABLE_START_INDEX`: 1-byte version + 32-byte authority).
 const RECORD_PROOF_OFFSET: u32 = 33;
@@ -601,7 +607,8 @@ async fn build_confidential_transfer_with_fee_bundle(
             &proof_data,
             &new_decryptable,
         )?;
-        let budget = ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+        let budget =
+            ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_WITH_FEE_COMPUTE_UNIT_LIMIT, 0);
         let tx = partial_sign_tx(
             TxVersion::V1,
             signer,

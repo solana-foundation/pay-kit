@@ -17,6 +17,7 @@ from solders.transaction import VersionedTransaction
 from solana_pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
 from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED, TRANSACTION_VERSION_NOT_REPORTED
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server.charge import (
@@ -167,6 +168,7 @@ def mpp() -> Mpp:
     rpc = FakeRPC(
         tx={
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -387,6 +389,7 @@ class TestVerifyCredential:
         recipient_ata = _derive_ata(TEST_RECIPIENT, USDC_DEVNET)
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -431,6 +434,7 @@ class TestVerifyCredential:
     async def test_signature_verification_checks_external_id_memo(self):
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -469,6 +473,7 @@ class TestVerifyCredential:
     async def test_transaction_verification_broadcasts_and_checks_transaction(self):
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -507,7 +512,7 @@ class TestVerifyCredential:
         assert rpc.sent
 
     async def test_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -534,7 +539,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_transaction_verification_rejects_wrong_amount_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -561,7 +566,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_transaction_verification_rejects_missing_memo_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -591,6 +596,7 @@ class TestVerifyCredential:
         recipient_ata = _derive_ata(TEST_RECIPIENT, USDC_DEVNET)
         tx = {
             "meta": {"err": None},
+            "version": 0,
             "transaction": {
                 "message": {
                     "instructions": [
@@ -635,7 +641,7 @@ class TestVerifyCredential:
         assert rpc.sent
 
     async def test_token_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -662,7 +668,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_token_transaction_verification_rejects_wrong_amount_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -689,7 +695,7 @@ class TestVerifyCredential:
         assert rpc.sent == []
 
     async def test_token_transaction_verification_rejects_missing_memo_before_broadcast(self):
-        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
         rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
         mpp = Mpp(
             Config(
@@ -937,6 +943,7 @@ class TestL8SettlementOrdering:
             self._confirm_value = confirm_value
             self.tx = {
                 "meta": {"err": None},
+                "version": 0,
                 "transaction": {
                     "message": {
                         "instructions": [
@@ -2330,7 +2337,7 @@ class TestAuditPushModeOptIn:
                 decimals=9,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=FakeRPC(tx={"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}),
+                rpc=FakeRPC(tx={"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}),
                 store=MemoryStore(),
                 accept_push_mode=accept_push,
             )
@@ -2345,6 +2352,96 @@ class TestAuditPushModeOptIn:
         )
         with pytest.raises(PaymentError, match="push mode"):
             await _verify(mpp, credential, challenge)
+
+
+class TestSignatureReportedVersion:
+    """Push-mode parity with Rust ``core::tx::check_reported_version``: the
+    node returns whatever ``maxSupportedTransactionVersion`` allows, so the
+    server polices the reported ``version`` itself, before the signature is
+    consumed, exactly as ``require_versioned_wire`` does for transaction bytes.
+    """
+
+    @staticmethod
+    def _sol_tx(**overrides: Any) -> dict[str, Any]:
+        tx: dict[str, Any] = {
+            "meta": {"err": None},
+            "version": 0,
+            "transaction": {
+                "message": {
+                    "instructions": [
+                        {
+                            "program": "system",
+                            "parsed": {"type": "transfer", "info": {"destination": TEST_RECIPIENT, "lamports": "1000"}},
+                        }
+                    ]
+                }
+            },
+        }
+        tx.update(overrides)
+        return tx
+
+    def _mpp(self, tx: dict[str, Any]) -> tuple[Mpp, FakeRPC]:
+        rpc = FakeRPC(tx=tx)
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="SOL",
+                decimals=9,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=MemoryStore(),
+                accept_push_mode=True,
+            )
+        )
+        return mpp, rpc
+
+    @staticmethod
+    def _credential(mpp: Mpp):
+        challenge = mpp.charge("0.000001")
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "signature", "signature": VALID_SIGNATURE},
+        )
+        return credential, challenge
+
+    async def test_legacy_reported_version_rejected_before_consume(self):
+        mpp, rpc = self._mpp(self._sol_tx(version="legacy"))
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(mpp, credential, challenge)
+        assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+        assert exc.value.code == "invalid-payload"
+
+        # The signature was not consumed: once the node reports a versioned
+        # transaction the same credential settles instead of replaying.
+        rpc.tx = self._sol_tx()
+        receipt = await _verify(mpp, credential, challenge)
+        assert receipt.is_success()
+
+    async def test_missing_reported_version_rejected(self):
+        tx = self._sol_tx()
+        del tx["version"]
+        mpp, _rpc = self._mpp(tx)
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(mpp, credential, challenge)
+        assert str(exc.value) == TRANSACTION_VERSION_NOT_REPORTED
+        assert exc.value.code == "invalid-payload"
+
+    async def test_unknown_reported_version_rejected(self):
+        mpp, _rpc = self._mpp(self._sol_tx(version=7))
+        credential, challenge = self._credential(mpp)
+        with pytest.raises(PaymentError, match="transaction version 7 is not accepted") as exc:
+            await _verify(mpp, credential, challenge)
+        assert exc.value.code == "invalid-payload"
+
+    async def test_v0_reported_version_accepted(self):
+        mpp, _rpc = self._mpp(self._sol_tx(version=0))
+        credential, challenge = self._credential(mpp)
+        receipt = await _verify(mpp, credential, challenge)
+        assert receipt.is_success()
+        assert receipt.reference == VALID_SIGNATURE
 
 
 class TestAuditSplitIssuanceGuards:

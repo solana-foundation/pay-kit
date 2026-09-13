@@ -841,3 +841,102 @@ func TestNewV0TransactionEmitsVersionedWire(t *testing.T) {
 		t.Fatal("signature does not verify against the v0 message bytes")
 	}
 }
+
+func TestCheckReportedVersion(t *testing.T) {
+	if got := ErrMissingTransactionVersion.Error(); got != "RPC did not report the transaction version" {
+		t.Fatalf("unexpected message %q", got)
+	}
+	for _, version := range []any{rpc.TransactionVersion(0), rpc.TransactionVersion(1), float64(0), float64(1)} {
+		if err := CheckReportedVersion(version); err != nil {
+			t.Fatalf("version %v: %v, want accept", version, err)
+		}
+	}
+	sentinels := []struct {
+		version any
+		want    error
+	}{
+		{nil, ErrMissingTransactionVersion},
+		{rpc.LegacyTransactionVersion, ErrLegacyTransaction},
+		{"legacy", ErrLegacyTransaction},
+	}
+	for _, tc := range sentinels {
+		if err := CheckReportedVersion(tc.version); !errors.Is(err, tc.want) {
+			t.Fatalf("version %v: err = %v, want %v", tc.version, err, tc.want)
+		}
+	}
+	for _, version := range []any{rpc.TransactionVersion(2), float64(2), float64(0.5), "v0", true} {
+		err := CheckReportedVersion(version)
+		if err == nil || errors.Is(err, ErrLegacyTransaction) || errors.Is(err, ErrMissingTransactionVersion) {
+			t.Fatalf("version %v: err = %v, want unsupported-version rejection", version, err)
+		}
+	}
+}
+
+// recordingRPC captures the GetTransaction options FetchTransaction sends.
+type recordingRPC struct {
+	*testutil.FakeRPC
+	opts *rpc.GetTransactionOpts
+}
+
+func (r *recordingRPC) GetTransaction(ctx context.Context, signature solana.Signature, opts *rpc.GetTransactionOpts) (*rpc.GetTransactionResult, error) {
+	r.opts = opts
+	return r.FakeRPC.GetTransaction(ctx, signature, opts)
+}
+
+// landSignedWire records the signed wire transaction as confirmed in the
+// fake RPC, optionally rewritten as a legacy message, and returns its signature.
+func landSignedWire(t *testing.T, rpcClient *testutil.FakeRPC, legacy bool) solana.Signature {
+	t.Helper()
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	if legacy {
+		tx.Message.SetVersion(solana.MessageVersionLegacy)
+	}
+	rpcClient.BySig[tx.Signatures[0].String()] = tx
+	return tx.Signatures[0]
+}
+
+func TestFetchTransactionAcceptsReportedV0(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	if rpcClient.TxVersion != "0" {
+		t.Fatalf("default fixture version = %q, want 0", rpcClient.TxVersion)
+	}
+	wrapped := &recordingRPC{FakeRPC: rpcClient}
+	signature := landSignedWire(t, rpcClient, false)
+	fetched, _, err := FetchTransaction(context.Background(), wrapped, signature)
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if fetched.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", fetched.Message.GetVersion())
+	}
+	if wrapped.opts == nil || wrapped.opts.MaxSupportedTransactionVersion == nil || *wrapped.opts.MaxSupportedTransactionVersion != 1 {
+		t.Fatalf("getTransaction opts = %+v, want maxSupportedTransactionVersion 1", wrapped.opts)
+	}
+}
+
+func TestFetchTransactionRejectsLegacyReportedVersion(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signature := landSignedWire(t, rpcClient, false)
+	rpcClient.TxVersion = `"legacy"`
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+	rpcClient.TxVersion = "2"
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); err == nil || errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want unsupported-version rejection", err)
+	}
+}
+
+func TestFetchTransactionMissingVersionRejectsLegacyBytes(t *testing.T) {
+	// solana-go decodes an omitted version field as 0, so the wire decode is
+	// what has to catch a legacy transaction served without a version.
+	rpcClient := testutil.NewFakeRPC()
+	signature := landSignedWire(t, rpcClient, true)
+	rpcClient.TxVersion = ""
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+}

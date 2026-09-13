@@ -72,6 +72,30 @@ def require_versioned_wire(raw: bytes, error: Callable[[str], Exception] = Value
         raise error(LEGACY_TRANSACTION_REJECTED)
 
 
+#: Rejection text when a transaction fetched by signature carries no top-level
+#: ``version``; the Rust servers emit the same string.
+TRANSACTION_VERSION_NOT_REPORTED = "RPC did not report the transaction version"
+
+
+def require_reported_version(version: object, error: Callable[[str], Exception] = ValueError) -> None:
+    """Version policy for a transaction read back from the RPC by signature.
+
+    ``maxSupportedTransactionVersion`` only bounds what the node returns; the
+    server still accepts only version 0 or 1, exactly as ``require_versioned_wire``
+    does for transaction bytes. ``version`` is the top-level ``getTransaction``
+    result field: ``"legacy"`` is refused with ``LEGACY_TRANSACTION_REJECTED``,
+    a missing field (``None``) with ``TRANSACTION_VERSION_NOT_REPORTED`` (nodes
+    report one for every versioned transaction once asked), and any other value
+    as an unaccepted version. Mirrors ``core::tx::check_reported_version``.
+    """
+    if version is None:
+        raise error(TRANSACTION_VERSION_NOT_REPORTED)
+    if version == "legacy":
+        raise error(LEGACY_TRANSACTION_REJECTED)
+    if isinstance(version, bool) or not isinstance(version, int) or version not in (0, 1):
+        raise error(f"transaction version {version!r} is not accepted; accepted versions: 0, 1")
+
+
 def build_partially_signed_v0_transaction(
     instructions: Sequence[Any],
     fee_payer: Any,

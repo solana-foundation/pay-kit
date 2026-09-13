@@ -28,7 +28,9 @@ from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import MethodDetails
 from solana_pay_kit._paycore.transaction import (
     LEGACY_TRANSACTION_REJECTED,
+    TRANSACTION_VERSION_NOT_REPORTED,
     is_v0_wire_bytes,
+    require_reported_version,
     require_versioned_wire,
 )
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
@@ -274,6 +276,31 @@ def test_require_versioned_wire_rejects_legacy_and_passes_versioned():
     require_versioned_wire(b"")
     require_versioned_wire(b"\x01")
     require_versioned_wire(b"\x01" + bytes(64))
+
+
+def test_require_reported_version_mirrors_check_reported_version():
+    """Signature credentials are fetched by ``getTransaction``; the top-level
+    ``version`` of the result is policed like the wire prefix is for
+    transaction credentials (Rust ``core::tx::check_reported_version``)."""
+    require_reported_version(0)
+    require_reported_version(1)
+
+    with pytest.raises(ValueError) as exc:
+        require_reported_version("legacy")
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+
+    with pytest.raises(ValueError) as exc:
+        require_reported_version(None)
+    assert str(exc.value) == TRANSACTION_VERSION_NOT_REPORTED
+
+    for unaccepted in (2, 7, -1, True, "0", 0.0):
+        with pytest.raises(ValueError, match="is not accepted; accepted versions: 0, 1"):
+            require_reported_version(unaccepted)
+
+    # The caller-supplied error factory shapes the raised exception.
+    with pytest.raises(PaymentError) as perr:
+        require_reported_version("legacy", error=lambda m: PaymentError(m, code="invalid-payload"))
+    assert perr.value.code == "invalid-payload"
 
 
 def test_cosign_rejects_legacy_transaction():

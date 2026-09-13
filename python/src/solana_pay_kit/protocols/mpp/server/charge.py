@@ -38,6 +38,7 @@ from solana_pay_kit._paycore.solana import (
     validate_splits,
 )
 from solana_pay_kit._paycore.store import Store
+from solana_pay_kit._paycore.transaction import require_reported_version
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
@@ -102,6 +103,11 @@ __all__ = [
     "_verify_parsed_sol_transfers",
     "_verify_parsed_spl_transfers",
 ]
+
+
+def _invalid_payload(message: str) -> PaymentError:
+    """Error factory for ``require_reported_version`` on the push-mode path."""
+    return PaymentError(message, code="invalid-payload")
 
 
 @dataclass
@@ -635,6 +641,9 @@ class Mpp:
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
+        # maxSupportedTransactionVersion only bounds what the node returns; the
+        # server refuses legacy here just as it does for transaction bytes.
+        require_reported_version(tx.get("version"), error=_invalid_payload)
         self._verify_confirmed_transaction(tx, request, details)
 
         consumed_key = _CONSUMED_PREFIX + payload.signature
