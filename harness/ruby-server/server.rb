@@ -21,6 +21,7 @@ require "socket"
 require "stringio"
 
 require_relative "../../ruby/lib/solana_pay_kit"
+require "pay_kit/usage"
 
 # --- env helpers -------------------------------------------------------
 
@@ -46,7 +47,12 @@ end
 # namespace probing alone is ambiguous). Otherwise the adapter falls
 # back to "exactly one namespace must be populated".
 explicit_protocol = ENV["PAY_KIT_HARNESS_PROTOCOL"].to_s.strip.downcase
+upto_active = false
 case explicit_protocol
+when "x402-upto"
+  x402_active = false
+  mpp_active = false
+  upto_active = true
 when "x402"
   x402_active = true
   mpp_active = false
@@ -57,11 +63,10 @@ else
   x402_active = !ENV["X402_HARNESS_RPC_URL"].to_s.empty?
   mpp_active  = !ENV["MPP_HARNESS_RPC_URL"].to_s.empty?
   if x402_active == mpp_active
-    warn "ruby-server: set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL=x402|mpp"
+    warn "ruby-server: set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL=x402|x402-upto|mpp"
     exit 2
   end
 end
-protocol = x402_active ? :x402 : :mpp
 
 # --- per-protocol setup -------------------------------------------------
 
@@ -102,6 +107,46 @@ if x402_active
   PayKit.pricing = pricing_class.new
 
   dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: PayKit.pricing)
+elsif upto_active
+  # --- x402 upto (payment-channel) wiring -----------------------------
+  # One umbrella binary, third protocol. The orchestrator sets
+  # PAY_KIT_HARNESS_PROTOCOL=x402-upto and overrides X402_HARNESS_PAY_TO /
+  # FACILITATOR_SECRET_KEY to the channel-custody keypair; we mount the
+  # public Usage middleware (channel open-verify + voucher settle-after)
+  # exactly as an application would.
+  rpc_url            = require_env("X402_HARNESS_RPC_URL")
+  pay_to             = require_env("X402_HARNESS_PAY_TO")
+  facilitator_secret = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+  amount_raw         = require_env("X402_HARNESS_AMOUNT")
+  mint_raw           = require_env("X402_HARNESS_MINT")
+  network_raw        = optional_env("X402_HARNESS_NETWORK", ::PayCore::Solana::Caip2::DEVNET)
+  resource_path      = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
+  settlement_header  = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature")
+  channel_program    = optional_env("PAYMENT_CHANNELS_PROGRAM_ID", ::PayCore::Solana::PaymentChannels::PROGRAM_ID)
+  # The metered actual the handler bills; the e2e scenario sets it below the
+  # ceiling so settle lowers the charge from the authorized maximum.
+  upto_actual_amount = Integer(optional_env("X402_HARNESS_ACTUAL_AMOUNT", amount_raw), 10)
+
+  upto_engine = ::PayKit::Protocols::X402::Server::Upto.new(
+    ::PayKit::Protocols::X402::Server::Upto::Config.new(
+      rpc_url: rpc_url,
+      pay_to: pay_to,
+      facilitator_secret_key: facilitator_secret,
+      amount: amount_raw,
+      mint: mint_raw,
+      network: network_raw,
+      channel_program: channel_program,
+      resource_path: resource_path,
+      settlement_header: settlement_header
+    )
+  )
+  upto_app = lambda do |env|
+    env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(upto_actual_amount)
+    [200, {"content-type" => "application/json"}, [JSON.generate({ok: true, paid: true, protocol: "x402-upto"})]]
+  end
+  upto_middleware = ::PayKit::Usage::Middleware.new(
+    upto_app, engine: upto_engine, resource_path: resource_path, settlement_header: settlement_header
+  )
 else
   # --- MPP direct-mode wiring -----------------------------------------
 
@@ -218,7 +263,7 @@ $stdout.write(JSON.generate({
   implementation: "ruby",
   role: "server",
   port: port,
-  capabilities: [x402_active ? "exact" : "charge"]
+  capabilities: [x402_active ? "exact" : (upto_active ? "upto" : "charge")]
 }) + "\n")
 $stdout.flush
 
@@ -279,6 +324,13 @@ serve_mpp = proc do |conn, req|
   end
 end
 
+# Per-request handler for the x402 upto path (PayKit::Usage middleware).
+serve_upto = proc do |conn, req|
+  status, headers, body = upto_middleware.call(rack_env_for(req, port))
+  payload = body.respond_to?(:join) ? body.join : body.to_s
+  write_response(conn, status, headers, payload)
+end
+
 loop do
   begin
     conn = listener.accept
@@ -314,6 +366,8 @@ loop do
 
     if x402_active
       serve_x402.call(conn, req)
+    elsif upto_active
+      serve_upto.call(conn, req)
     else
       serve_mpp.call(conn, req)
     end
