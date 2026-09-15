@@ -90,22 +90,35 @@ jobs:
     name: "Harness: Python"
     needs: build
     runs-on: ubuntu-latest
+    env:
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: "audit-command,malware-check"
     steps:
       - uses: actions/checkout@v5
+      - name: Python supply-chain guard self-test
+        run: bash scripts/check-python-supply-chain_test.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
       - uses: astral-sh/setup-uv@v5
-      - name: Install Python SDK
+        with:
+          version: "0.11.26"
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
+      - name: Verify uv.lock is up to date
+        working-directory: python
+        run: uv lock --check
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
+      - name: Install Python SDK (frozen)
         working-directory: python
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness-leg
       - name: Sync Python uv environment
         working-directory: python
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
       - name: Run Python cross-SDK conformance vectors
         working-directory: harness
         env:
