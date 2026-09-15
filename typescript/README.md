@@ -233,6 +233,35 @@ matching protocol (MPP or x402) and retries the request with the
 `Authorization: Payment` credential. Pass a third argument
 (`'x402'` / `'mpp'`) to force a rail when an endpoint offers both.
 
+### Reusing a channel across calls
+
+`client.fetch` runs one full payment per call. For `upto` (usage-based) that
+means a fresh payment-channel open, settle, and finalize every time, because
+the x402 `upto` scheme is single-settlement by spec: each authorization settles
+exactly once and cannot be reused.
+
+For many small calls to the same host, reuse a channel with the MPP `session`
+scheme instead: open one channel, sign a cumulative voucher per call, and close
+once. Calls 2..N need no fresh open and no re-deposited ceiling, so the open,
+close, and the deposit float amortize across the session.
+
+```ts
+import { createPaymentChannelSessionOpener, createSessionFetch } from '@solana/mpp/client'
+
+const client = createSessionFetch({
+  opener: createPaymentChannelSessionOpener({ signer, rpcUrl }),
+})
+
+const res = await client.fetch('https://api.example/paid')
+```
+
+`createSessionFetch` returns a `SessionFetchClient` that opens one channel
+through the supplied opener and then reuses it: you feed your running metered
+amount and it throttles the cumulative-voucher commits. This is why the
+top-level `client.fetch` intentionally throws on a `session` challenge and points
+you here. It works end to end only when the resource server advertises a
+`session` challenge, not just `upto`.
+
 ---
 
 ## Vocabulary
