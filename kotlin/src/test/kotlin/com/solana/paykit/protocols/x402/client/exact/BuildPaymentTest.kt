@@ -312,6 +312,19 @@ class BuildPaymentTest {
     }
 
     @Test
+    fun originalTrailingLambdaStillSuppliesNonce() {
+        val offer = solOffer(memo = null)
+        val nonce = "00112233445566778899aabbccddeeff"
+        val expected = buildPayment(signer, offer, fixedBlockhash, nonceProvider = { nonce })
+        val actual = buildPayment(signer, offer, fixedBlockhash) { nonce }
+        assertEquals(expected.payload.transaction, actual.payload.transaction)
+        assertEquals(
+            buildPaymentHeader(signer, offer, fixedBlockhash, nonceProvider = { nonce }),
+            buildPaymentHeader(signer, offer, fixedBlockhash) { nonce },
+        )
+    }
+
+    @Test
     fun fetchesDecimalsFromProviderWhenOfferOmitsThem() {
         // Wrapped SPL carries nine decimals; a spec-compliant offer omitting
         // decimals must resolve them from the on-chain mint (via the injected
@@ -328,7 +341,7 @@ class BuildPaymentTest {
                 recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
             ),
         )
-        val envelope = buildPayment(signer, offer, fixedBlockhash, rpcDecimalsProvider = { 9.toUByte() })
+        val envelope = buildPayment(signer, offer, fixedBlockhash, mintDecimalsProvider = null, rpcDecimalsProvider = { 9.toUByte() })
         assertTrue(envelope.payload.transaction!!.isNotEmpty())
     }
 

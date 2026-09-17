@@ -242,8 +242,20 @@ fun buildPayment(
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
+): X402Envelope = buildPayment(
+    signer, requirement, rpcBlockhashProvider,
+    mintDecimalsProvider = null,
+    nonceProvider = nonceProvider,
+)
+
+/** Mint-aware overload; the original overload preserves trailing nonce lambdas. */
+fun buildPayment(
+    signer: SolanaSigner,
+    requirement: X402AcceptsEntry,
+    rpcBlockhashProvider: () -> ByteArray,
+    nonceProvider: () -> String = ::defaultMemoNonce,
+    mintDecimalsProvider: ((String) -> UByte)?,
     rpcDecimalsProvider: (() -> UByte)? = null,
-    mintDecimalsProvider: ((String) -> UByte)? = null,
 ): X402Envelope {
     val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
@@ -395,12 +407,24 @@ fun buildPaymentHeader(
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
+): String = buildPaymentHeader(
+    signer, requirement, rpcBlockhashProvider,
+    mintDecimalsProvider = null,
+    nonceProvider = nonceProvider,
+)
+
+/** Mint-aware overload; the original overload preserves trailing nonce lambdas. */
+fun buildPaymentHeader(
+    signer: SolanaSigner,
+    requirement: X402AcceptsEntry,
+    rpcBlockhashProvider: () -> ByteArray,
+    nonceProvider: () -> String = ::defaultMemoNonce,
+    mintDecimalsProvider: ((String) -> UByte)?,
     rpcDecimalsProvider: (() -> UByte)? = null,
-    mintDecimalsProvider: ((String) -> UByte)? = null,
 ): String {
     val envelope = buildPayment(
         signer, requirement, rpcBlockhashProvider, nonceProvider,
-        rpcDecimalsProvider, mintDecimalsProvider,
+        mintDecimalsProvider, rpcDecimalsProvider,
     )
     // Echo the offered object verbatim when it was parsed off the wire so the
     // rust verifier's structural match sees every server-specific field; fall
