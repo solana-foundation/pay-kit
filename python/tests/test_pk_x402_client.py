@@ -599,6 +599,27 @@ async def test_build_payment_rejects_missing_or_short_mint_with_builtin_rpc(acco
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["9", True, False, 9.5, -1, 256, [], {}])
+@pytest.mark.parametrize("nested_hint", [6, None])
+async def test_build_payment_rejects_malformed_top_level_decimals(invalid, nested_hint):
+    offer = _offer()
+    offer["decimals"] = invalid
+    offer["extra"]["decimals"] = nested_hint
+    # No RPC is provided: malformed hints must fail before a mint lookup.
+    with pytest.raises(ValueError, match="decimals must be an integer between 0 and 255"):
+        await build_payment(Signer.generate(), None, _entry(offer))
+
+
+@pytest.mark.asyncio
+async def test_build_payment_null_top_level_decimals_uses_nested_hint():
+    offer = _offer(decimals=9)
+    offer["decimals"] = None
+    envelope = await build_payment(Signer.generate(), None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(envelope)))
+    assert bytes(tx.message.instructions[2].data)[9] == 9
+
+
+@pytest.mark.asyncio
 async def test_build_payment_errors_when_mint_fetch_fails_and_no_decimals():
     signer = Signer.generate()
     offer = _offer(asset="So11111111111111111111111111111111111111112")

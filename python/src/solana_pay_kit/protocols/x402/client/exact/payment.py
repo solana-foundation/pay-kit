@@ -528,7 +528,7 @@ async def build_payment(
         # fail-closed. Defaulting blindly to 6 would silently sign a wrong
         # decimals byte / wrong divisor for any non-6-decimal mint.
         decimals_raw = req.get("decimals")
-        if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
+        if decimals_raw is None:
             decimals_raw = extra.get("decimals")
         if decimals_raw is None:
             decimals = await _fetch_mint_decimals(rpc, asset)
