@@ -566,12 +566,9 @@ struct X402PaymentBuildingTests {
             return String(data: data, encoding: .utf8) ?? ""
         }
 
-        var mintFetches = 0
-        X402StubURLProtocol.reset()
-        X402StubURLProtocol.responder = { req in
+        let stub = X402StubSession(responder: { req in
             let body = drainBody(req)
             if body.contains("getAccountInfo") {
-                mintFetches += 1
                 var raw = [UInt8](repeating: 0, count: 82)
                 raw[44] = 9
                 let b64 = Data(raw).base64EncodedString()
@@ -583,12 +580,8 @@ struct X402PaymentBuildingTests {
                 return X402StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(json.utf8))
             }
             return X402StubResponse(statusCode: 500, headers: [:], body: Data("{}".utf8))
-        }
-        defer { X402StubURLProtocol.reset() }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [X402StubURLProtocol.self]
-        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: URLSession(configuration: config))
+        })
+        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: stub.session)
 
         let signer = try! Self.makeSigner()
         let extra: [String: JSONValue] = ["recentBlockhash": .string(Self.knownBlockhash)]
@@ -603,7 +596,7 @@ struct X402PaymentBuildingTests {
         } catch {
             Issue.record("expected decimals fallback to succeed, got \(error)")
         }
-        #expect(mintFetches >= 1)
+        #expect(stub.requestCount >= 1)
     }
 
     @Test
@@ -627,19 +620,10 @@ struct X402PaymentBuildingTests {
         // A malformed present hint must be rejected, never silently wrapped
         // into a u8 and never papered over by the mint fetch.
         let signer = try! Self.makeSigner()
-        var mintFetches = 0
-        X402StubURLProtocol.reset()
-        X402StubURLProtocol.responder = { req in
-            if let body = req.httpBody, String(data: body, encoding: .utf8)?.contains("getAccountInfo") == true {
-                mintFetches += 1
-            }
+        let stub = X402StubSession(responder: { _ in
             return X402StubResponse(statusCode: 500, headers: [:], body: Data("{}".utf8))
-        }
-        defer { X402StubURLProtocol.reset() }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [X402StubURLProtocol.self]
-        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: URLSession(configuration: config))
+        })
+        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: stub.session)
 
         let extra: [String: JSONValue] = [
             "decimals": .int(300),
@@ -655,7 +639,7 @@ struct X402PaymentBuildingTests {
             _ = try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: offer)
             Issue.record("expected error for out-of-range decimals hint")
         } catch { }
-        #expect(mintFetches == 0)
+        #expect(stub.requestCount == 0)
     }
 }
 
