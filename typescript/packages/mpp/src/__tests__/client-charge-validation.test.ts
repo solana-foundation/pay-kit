@@ -440,3 +440,41 @@ test('#10 createCredential rejects a network that does not match expectedNetwork
     });
     await expect(method.createCredential({ challenge })).rejects.toThrow(/does not match the expected network/);
 });
+
+// Cross-SDK RFC 3339 conformance corpus (issue #111).
+// Vectors: harness/vectors/mpp-protocol/expires.json, operation `expires.parse`.
+
+import { readFileSync } from 'node:fs';
+
+import { parseRfc3339 } from '../shared/rfc3339.js';
+
+interface ConformanceScenario {
+    name: string;
+    description: string;
+    input: string;
+    tests: { parse: true | { success: boolean } };
+}
+
+const CORPUS_URL = new URL('../../../../../harness/vectors/mpp-protocol/expires.json', import.meta.url);
+
+const corpus = JSON.parse(readFileSync(CORPUS_URL, 'utf8')) as { scenarios: ConformanceScenario[] };
+const vectors = corpus.scenarios;
+
+const expectsAccept = (scenario: ConformanceScenario) => scenario.tests.parse === true;
+
+test('every RFC 3339 corpus scenario is exercised', () => {
+    expect(vectors.length).toBe(corpus.scenarios.length);
+    expect(vectors.length).toBeGreaterThan(0);
+});
+
+for (const scenario of vectors) {
+    test(`RFC 3339 corpus / ${scenario.name}`, () => {
+        const accepted = !Number.isNaN(parseRfc3339(scenario.input));
+        expect(
+            accepted,
+            `${scenario.name} (${scenario.description}): input ${JSON.stringify(scenario.input)} — ` +
+                `corpus expects ${expectsAccept(scenario) ? 'ACCEPT' : 'REJECT'}, ` +
+                `parseRfc3339(...) reports ${accepted ? 'ACCEPT' : 'REJECT'}`,
+        ).toBe(expectsAccept(scenario));
+    });
+}
