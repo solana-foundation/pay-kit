@@ -593,6 +593,29 @@ func TestBuildSPLTransferFetchesDecimalsFromMintWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestBuildSPLTransferRejectsOutOfRangeDecimalsHint(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	for _, bad := range []int{-1, 256, 999} {
+		entry := &x402.AcceptsEntry{
+			Protocol: "x402",
+			Scheme:   "exact",
+			Network:  mainnetCAIP2,
+			Asset:    "So11111111111111111111111111111111111111112",
+			Amount:   "1",
+			PayTo:    recipient.String(),
+		}
+		entry.Extra.Decimals, entry.Extra.DecimalsSet = bad, true
+		// The stub would answer 9; a malformed hint must be rejected before
+		// any fetch, never truncated into a u8.
+		if _, err := buildSPLTransfer(context.Background(), &stubRPC{decimals: 9}, signer, recipient, 1, entry); err == nil {
+			t.Fatalf("decimals %d: expected rejection, got nil error", bad)
+		} else if !strings.Contains(err.Error(), "extra.decimals must be between 0 and 255") {
+			t.Fatalf("decimals %d: unexpected error: %v", bad, err)
+		}
+	}
+}
+
 func TestBuildSPLTransferErrorsWhenMintFetchFailsAndNoDecimals(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()

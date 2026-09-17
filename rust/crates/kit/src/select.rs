@@ -533,7 +533,7 @@ fn x402_upto_candidate(requirement: &UptoRequirements, order: usize) -> Option<C
         amount,
         // upto no longer advertises decimals; our stablecoins are all 6-decimal,
         // and decimals only affects cost-normalized ranking among them.
-        decimals: 6,
+        decimals: Some(6),
         source: Source::X402Upto(Box::new(requirement.clone())),
         order,
     })

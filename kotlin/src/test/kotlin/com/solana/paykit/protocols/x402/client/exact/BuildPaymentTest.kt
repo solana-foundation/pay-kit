@@ -332,6 +332,32 @@ class BuildPaymentTest {
         assertTrue(envelope.payload.transaction!!.isNotEmpty())
     }
 
+    @Test
+    fun fetchesDecimalsFromMintProviderWhenOfferOmitsThem() {
+        // mintDecimalsProvider receives the resolved mint so production
+        // callers can wire it straight to RPC (X402RpcClient.fetchMintDecimals).
+        var seenMint: String? = null
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_MAINNET,
+            asset = "So11111111111111111111111111111111111111112",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                decimals = null,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        val envelope = buildPayment(
+            signer, offer, fixedBlockhash,
+            mintDecimalsProvider = { mint -> seenMint = mint; 9.toUByte() },
+        )
+        assertTrue(envelope.payload.transaction!!.isNotEmpty())
+        assertEquals("So11111111111111111111111111111111111111112", seenMint)
+    }
+
+    @Test
     fun errorsWhenDecimalsAbsentAndNoDecimalsProvider() {
         val offer = X402AcceptsEntry(
             scheme = "exact",
@@ -348,7 +374,7 @@ class BuildPaymentTest {
         val error = assertFailsWith<IllegalArgumentException> {
             buildPayment(signer, offer, fixedBlockhash)
         }
-        assertTrue(error.message!!.contains("rpcDecimalsProvider"))
+        assertTrue(error.message!!.contains("mintDecimalsProvider"))
     }
 
     @Test

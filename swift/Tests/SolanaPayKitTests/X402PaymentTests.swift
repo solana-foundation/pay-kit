@@ -622,9 +622,44 @@ struct X402PaymentBuildingTests {
             Issue.record("expected error")
         } catch { }
     }
+    @Test
+    func rejectsOutOfRangeDecimalsHintWithoutFetching() async {
+        // A malformed present hint must be rejected, never silently wrapped
+        // into a u8 and never papered over by the mint fetch.
+        let signer = try! Self.makeSigner()
+        var mintFetches = 0
+        X402StubURLProtocol.reset()
+        X402StubURLProtocol.responder = { req in
+            if let body = req.httpBody, String(data: body, encoding: .utf8)?.contains("getAccountInfo") == true {
+                mintFetches += 1
+            }
+            return X402StubResponse(statusCode: 500, headers: [:], body: Data("{}".utf8))
+        }
+        defer { X402StubURLProtocol.reset() }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [X402StubURLProtocol.self]
+        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: URLSession(configuration: config))
+
+        let extra: [String: JSONValue] = [
+            "decimals": .int(300),
+            "recentBlockhash": .string(Self.knownBlockhash),
+        ]
+        let offer = X402AcceptsEntry(
+            scheme: "exact", network: SolanaNetwork.mainnet,
+            amount: "1000", maxAmountRequired: nil,
+            asset: "So11111111111111111111111111111111111111112",
+            payTo: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", recipient: nil, extra: extra
+        )
+        do {
+            _ = try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: offer)
+            Issue.record("expected error for out-of-range decimals hint")
+        } catch { }
+        #expect(mintFetches == 0)
+    }
 }
 
-// MARK: - Mints / Network registry tests
+ // MARK: - Mints / Network registry tests
 
 @Suite("Mints and Network registry")
 struct MintsNetworkTests {

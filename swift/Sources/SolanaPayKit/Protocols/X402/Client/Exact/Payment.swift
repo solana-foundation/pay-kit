@@ -322,7 +322,10 @@ private func _buildPaymentPayload(
         // fail-closed. Defaulting blindly to six would silently sign a wrong
         // decimals byte / wrong divisor for any non-6-decimal mint.
         let decimals: UInt8
-        if let d = offer.effectiveDecimals, d >= 0, d <= 255 {
+        if let d = offer.effectiveDecimals {
+            guard d >= 0, d <= 255 else {
+                throw PayKitError.invalidTransaction("extra.decimals must be between 0 and 255")
+            }
             decimals = UInt8(d)
         } else {
             do {

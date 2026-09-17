@@ -231,6 +231,11 @@ private fun selectRequirement(
  *
  * The blockhash comes from ``requirement.extra.recentBlockhash`` when present,
  * else [rpcBlockhashProvider] (the RPC `getLatestBlockhash` fallback).
+ *
+ * Likewise, SPL ``decimals`` come from the offer hint when present, else
+ * [mintDecimalsProvider] (the RPC `getAccountInfo` mint fallback keyed by
+ * mint). The legacy [rpcDecimalsProvider] is still honored as a last resort
+ * for callers that already inject a fixed value (mainly tests).
  */
 fun buildPayment(
     signer: SolanaSigner,
@@ -238,6 +243,7 @@ fun buildPayment(
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
     rpcDecimalsProvider: (() -> UByte)? = null,
+    mintDecimalsProvider: ((String) -> UByte)? = null,
 ): X402Envelope {
     val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
@@ -284,8 +290,8 @@ fun buildPayment(
         val tokenProgramStr = requirement.effectiveTokenProgram
             ?: defaultTokenProgramForCurrency(asset, label)
         // A spec-compliant x402 offer may legally omit extra.decimals; when
-        // absent, resolve the authoritative value via rpcDecimalsProvider (the
-        // on-chain mint over the RPC connection the caller already holds).
+        // absent, resolve the authoritative value from the on-chain mint over
+        // the RPC connection the caller already holds (via mintDecimalsProvider).
         // When present, the offer value stays an RPC-saving hint. On-chain
         // transferChecked still verifies the byte against the mint, so a lying
         // hint remains fail-closed. Defaulting blindly to six would silently
@@ -293,9 +299,10 @@ fun buildPayment(
         // mint.
         val decimals: Int = requirement.effectiveDecimals?.also {
             require(it in 0..255) { "extra.decimals must be between 0 and 255" }
-        } ?: rpcDecimalsProvider?.invoke()?.toInt()
+        } ?: mintDecimalsProvider?.invoke(mintStr)?.toInt()
+            ?: rpcDecimalsProvider?.invoke()?.toInt()
             ?: throw IllegalArgumentException(
-                "extra.decimals is absent and no rpcDecimalsProvider was provided to fetch it from the mint"
+                "extra.decimals is absent and no mintDecimalsProvider was provided to fetch it from the mint"
             )
         val tokenProgramKey = PublicKey.fromBase58(tokenProgramStr)
         val mintKey = PublicKey.fromBase58(mintStr)
@@ -389,8 +396,12 @@ fun buildPaymentHeader(
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
     rpcDecimalsProvider: (() -> UByte)? = null,
+    mintDecimalsProvider: ((String) -> UByte)? = null,
 ): String {
-    val envelope = buildPayment(signer, requirement, rpcBlockhashProvider, nonceProvider, rpcDecimalsProvider)
+    val envelope = buildPayment(
+        signer, requirement, rpcBlockhashProvider, nonceProvider,
+        rpcDecimalsProvider, mintDecimalsProvider,
+    )
     // Echo the offered object verbatim when it was parsed off the wire so the
     // rust verifier's structural match sees every server-specific field; fall
     // back to the typed entry for offers built in code.

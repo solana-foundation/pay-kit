@@ -548,7 +548,9 @@ async def build_payment(
         source_ata = Pubkey.from_string(derive_ata(str(signer_pubkey), asset, token_program))
         dest_ata = Pubkey.from_string(derive_ata(pay_to, asset, token_program))
         # SPL Token TransferChecked (disc 12): amount u64 LE + decimals u8.
-        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals & 0xFF])
+        # ``decimals`` is range-checked above, so no masking is needed (and a
+        # mask here would silently wrap an invalid hint instead of failing).
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals])
         instructions.append(
             Instruction(
                 token_program_key,
