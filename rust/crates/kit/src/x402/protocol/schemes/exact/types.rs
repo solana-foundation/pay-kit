@@ -378,8 +378,7 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             .or_else(|| string_field(object, "asset"))
             .unwrap_or_else(|| "SOL".to_string());
 
-        let decimals = u8_field(object, "decimals")
-            .or_else(|| extra_object.and_then(|extra| u8_field(extra, "decimals")));
+        let decimals = parse_opt_decimals(object, extra_object).map_err(serde::de::Error::custom)?;
         let token_program = string_field(object, "tokenProgram")
             .or_else(|| extra_object.and_then(|extra| string_field(extra, "tokenProgram")));
         let recent_blockhash = string_field(object, "recentBlockhash")
@@ -451,8 +450,26 @@ fn u64_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> 
     object.get(key).and_then(|value| value.as_u64())
 }
 
-fn u8_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<u8> {
-    u64_field(object, key).and_then(|value| u8::try_from(value).ok())
+/// Parses an optional `decimals` hint (top level first, then `extra`). A present
+/// but malformed value is rejected rather than treated as absent: silently
+/// dropping it would reintroduce the blind-default path for invalid offers.
+fn parse_opt_decimals(
+    object: &serde_json::Map<String, serde_json::Value>,
+    extra_object: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<Option<u8>, String> {
+    let raw = object
+        .get("decimals")
+        .or_else(|| extra_object.and_then(|extra| extra.get("decimals")));
+    match raw {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                format!("invalid decimals {value}: must be an integer between 0 and 255")
+            }),
+    }
 }
 
 fn bool_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<bool> {
@@ -997,6 +1014,34 @@ mod tests {
 
         assert_eq!(config.rpc_url(), "https://rpc.example");
         assert_eq!(config.token_program(), programs::TOKEN_2022_PROGRAM);
+    }
+
+    #[test]
+    fn decimals_hint_absent_or_valid_parses() {
+        let empty = serde_json::Map::new();
+        assert_eq!(parse_opt_decimals(&empty, None).unwrap(), None);
+        let obj = serde_json::json!({"decimals": 6});
+        assert_eq!(
+            parse_opt_decimals(obj.as_object().unwrap(), None).unwrap(),
+            Some(6)
+        );
+        let extra = serde_json::json!({"decimals": 9});
+        assert_eq!(
+            parse_opt_decimals(&empty, extra.as_object()).unwrap(),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn decimals_hint_malformed_is_rejected_not_dropped() {
+        for value in [
+            serde_json::json!({"decimals": 256}),
+            serde_json::json!({"decimals": -1}),
+            serde_json::json!({"decimals": "6"}),
+        ] {
+            let err = parse_opt_decimals(value.as_object().unwrap(), None).unwrap_err();
+            assert!(err.contains("invalid decimals"), "{err}");
+        }
     }
 
     #[test]

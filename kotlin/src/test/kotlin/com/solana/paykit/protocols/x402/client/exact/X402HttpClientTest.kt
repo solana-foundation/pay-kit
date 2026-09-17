@@ -369,4 +369,35 @@ class X402RpcClientTest {
         )
         assertFailsWith<Exception> { client().fetchRecentBlockhash() }
     }
+
+    @Test
+    fun parsesMintDecimalsFromByte44() {
+        // 82 zero bytes with byte 44 = 9 (wrapped SOL): base64 below.
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"data":["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==","base64"],"executable":false,"lamports":1,"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","rentEpoch":10}}}""",
+            ),
+        )
+        assertEquals(9.toUByte(), client().fetchMintDecimals("So11111111111111111111111111111111111111112"))
+    }
+
+    @Test
+    fun throwsWhenMintAccountIsMissing() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":null}}""",
+            ),
+        )
+        assertFailsWith<Exception> { client().fetchMintDecimals("So11111111111111111111111111111111111111112") }
+    }
+
+    @Test
+    fun throwsWhenMintDataIsTooShort() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"data":["AA==","base64"],"executable":false,"lamports":1,"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","rentEpoch":10}}}""",
+            ),
+        )
+        assertFailsWith<Exception> { client().fetchMintDecimals("So11111111111111111111111111111111111111112") }
+    }
 }
