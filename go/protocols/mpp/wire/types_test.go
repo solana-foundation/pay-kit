@@ -200,3 +200,39 @@ func TestIntentNameNotCharge(t *testing.T) {
 		t.Fatal("subscribe should not be charge")
 	}
 }
+
+func TestUTF16LessSortsSurrogatePairBeforeBMP(t *testing.T) {
+	// RFC 8785 §3.2.3 — 😂 (U+1F602) is encoded as the surrogate pair
+	// (0xD83D, 0xDE02). 0xD83D sorts below any BMP code point, so
+	// under UTF-16 ordering 😂 < דּ (Hebrew Letter Dalet With Dagesh,
+	// precomposed U+FB33). Go's default byte-wise string comparison
+	// would put the BMP key first because the leading UTF-8 byte of
+	// U+FB33 (0xEF) is above the leading UTF-8 byte of 😂 (0xF0).
+	if !utf16Less("😂", "דּ") {
+		t.Fatal("expected 😂 to sort before דּ under UTF-16 ordering")
+	}
+	if utf16Less("דּ", "😂") {
+		t.Fatal("expected דּ to sort after 😂 under UTF-16 ordering")
+	}
+}
+
+func TestBase64URLJSONValueSurrogatePairKeyOrder(t *testing.T) {
+	// The full canonicalization path: an object with both a
+	// supplementary-plane key (surrogate pair in UTF-16) and a BMP
+	// non-ASCII key must emit the supplementary-plane key first.
+	value, err := NewBase64URLJSONValue(map[string]any{
+		"דּ": "Hebrew Letter Dalet With Dagesh",
+		"😂":     "Smiley",
+	})
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	decoded, err := Base64URLDecode(value.Raw())
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	want := `{"😂":"Smiley","דּ":"Hebrew Letter Dalet With Dagesh"}`
+	if string(decoded) != want {
+		t.Fatalf("unexpected canonical JSON:\n got %s\nwant %s", decoded, want)
+	}
+}
