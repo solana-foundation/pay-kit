@@ -646,14 +646,19 @@ async def _fetch_mint_decimals(rpc: Any, mint: str) -> int:
     """
     from solders.pubkey import Pubkey
 
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+
     try:
-        resp = await rpc.get_account_info(Pubkey.from_string(mint))
+        if isinstance(rpc, SolanaRpc):
+            account = await rpc.get_account_info(mint)
+            data = account[0] if account is not None else None
+        else:
+            # solana-py accepts a Pubkey and returns a solders response.
+            resp = await rpc.get_account_info(Pubkey.from_string(mint))
+            value = getattr(resp, "value", None)
+            data = getattr(value, "data", None) if value is not None else None
     except Exception as err:
-        raise ValueError(
-            f"extra.decimals is absent and fetching mint {mint} failed: {err}"
-        ) from err
-    value = getattr(resp, "value", None)
-    data = getattr(value, "data", None) if value is not None else None
+        raise ValueError(f"extra.decimals is absent and fetching mint {mint} failed: {err}") from err
     if data is None:
         raise ValueError(f"extra.decimals is absent and mint {mint} was not found on chain")
     raw = bytes(data)
