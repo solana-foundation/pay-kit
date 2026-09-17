@@ -1282,10 +1282,7 @@ mod tests {
     fn mint_decimals_reads_byte_44() {
         let mut data = vec![0u8; 82];
         data[MINT_DECIMALS_OFFSET] = 9;
-        assert_eq!(
-            mint_decimals_from_account_data(&data, "mint").unwrap(),
-            9
-        );
+        assert_eq!(mint_decimals_from_account_data(&data, "mint").unwrap(), 9);
     }
 
     #[test]

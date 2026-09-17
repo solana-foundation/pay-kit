@@ -440,9 +440,10 @@ fn verify_transfer_instruction(
     // verifies the byte against the mint, keeping lying payloads fail-closed.
     if let Some(expected_decimals) = requirements.decimals {
         let decimals = instruction.data[9];
-        if decimals != u8::try_from(expected_decimals).map_err(|_| Error::Other(
-            "invalid_exact_svm_payload_decimals_mismatch".into(),
-        ))? {
+        if decimals
+            != u8::try_from(expected_decimals)
+                .map_err(|_| Error::Other("invalid_exact_svm_payload_decimals_mismatch".into()))?
+        {
             return invalid("invalid_exact_svm_payload_decimals_mismatch");
         }
     }
@@ -799,7 +800,11 @@ mod tests {
 
         let mut data = vec![12u8];
         data.extend_from_slice(&amount.to_le_bytes());
-        data.push(requirements.decimals.expect("decimals required for transfer helper"));
+        data.push(
+            requirements
+                .decimals
+                .expect("decimals required for transfer helper"),
+        );
 
         Instruction {
             program_id: token_program,

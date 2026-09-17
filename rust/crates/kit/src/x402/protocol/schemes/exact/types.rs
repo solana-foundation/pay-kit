@@ -378,7 +378,8 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             .or_else(|| string_field(object, "asset"))
             .unwrap_or_else(|| "SOL".to_string());
 
-        let decimals = parse_opt_decimals(object, extra_object).map_err(serde::de::Error::custom)?;
+        let decimals =
+            parse_opt_decimals(object, extra_object).map_err(serde::de::Error::custom)?;
         let token_program = string_field(object, "tokenProgram")
             .or_else(|| extra_object.and_then(|extra| string_field(extra, "tokenProgram")));
         let recent_blockhash = string_field(object, "recentBlockhash")
