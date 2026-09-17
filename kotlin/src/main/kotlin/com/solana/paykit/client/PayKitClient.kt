@@ -173,24 +173,30 @@ class PayKitClient internal constructor(
          *
          * @param rpcBlockhashProvider supplies a recent blockhash when the
          *   offer omits ``extra.recentBlockhash``.
+         * @param mintDecimalsProvider supplies SPL decimals from the on-chain
+         *   mint when the offer omits ``extra.decimals``.
          * @param selection currency / network preferences for picking an offer.
          */
         fun x402(
             rpcBlockhashProvider: () -> ByteArray,
             selection: ChallengeSelection = ChallengeSelection(),
+            mintDecimalsProvider: ((String) -> UByte)? = null,
         ): Builder = apply {
             interceptors.add(
                 X402Interceptor(
                     signer = requireSigner(),
                     rpcBlockhashProvider = rpcBlockhashProvider,
                     selection = selection,
+                    mintDecimalsProvider = mintDecimalsProvider,
                 ),
             )
         }
 
         /**
          * Enables the x402 ``exact`` protocol against a JSON-RPC [rpc]
-         * endpoint, fetching a recent blockhash only when an offer omits one.
+         * endpoint, fetching a recent blockhash only when an offer omits one,
+         * and SPL decimals from the on-chain mint only when an offer omits
+         * ``extra.decimals``.
          *
          * @param rpc Solana JSON-RPC URL (e.g. ``https://402.surfnet.dev``).
          * @param network Solana network slug for offer selection (``null``
@@ -207,6 +213,7 @@ class PayKitClient internal constructor(
             return x402(
                 rpcBlockhashProvider = { rpcClient.fetchRecentBlockhash() },
                 selection = ChallengeSelection(network = network, currencies = currencies),
+                mintDecimalsProvider = { mint -> rpcClient.fetchMintDecimals(mint) },
             )
         }
 
