@@ -65,6 +65,40 @@ class X402HttpClientTest {
         return Base64.getEncoder().encodeToString(json.toByteArray())
     }
 
+    @Test
+    fun originalBuilderCallFormsStillPaySplOfferWithDecimalsHint() = runBlocking {
+        var blockhashCalls = 0
+        val blockhash = { blockhashCalls++; ByteArray(32) }
+        val clients = listOf(
+            PayKitClient.Builder().signer(signer)
+                .x402(rpcBlockhashProvider = blockhash).build(),
+            PayKitClient.Builder().signer(signer)
+                .x402({ blockhash() }).build(),
+        )
+        val challenge = """{"accepts":[{
+            "scheme":"exact",
+            "network":"${Network.SOLANA_MAINNET}",
+            "asset":"So11111111111111111111111111111111111111112",
+            "amount":"1000",
+            "payTo":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "extra":{"decimals":9}
+        }]}"""
+        for (client in clients) {
+            server.enqueue(MockResponse().setResponseCode(402).setBody(challenge))
+            server.enqueue(MockResponse().setResponseCode(200))
+            val result = client.get(server.url("/paid").toString())
+            try {
+                assertEquals(200, result.status)
+                assertTrue(result.paymentSent)
+            } finally {
+                result.response.close()
+            }
+            server.takeRequest()
+            assertNotNull(server.takeRequest().getHeader("Payment-Signature"))
+        }
+        assertEquals(2, blockhashCalls)
+    }
+
     // ── Non-402 passthrough ───────────────────────────────────────────────────
 
     @Test
