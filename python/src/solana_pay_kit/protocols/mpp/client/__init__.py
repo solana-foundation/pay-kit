@@ -4,12 +4,14 @@ Exposes the charge transport plus the client-only session surface: the
 :class:`ActiveSession` voucher tracker, the :class:`SessionConsumer` metered
 ack/commit helper, the challenge-driven payment-channel openers, the metered
 SSE streaming helpers, and the :func:`serialize_session_credential` /
-:func:`parse_session_challenge` credential framing free functions. The
+:func:`parse_session_challenge` credential framing free functions, and the
+subscription activation and access credential builders. The
 per-intent modules (:mod:`solana_pay_kit.protocols.mpp.client.charge`,
 :mod:`solana_pay_kit.protocols.mpp.client.session`,
 :mod:`solana_pay_kit.protocols.mpp.client.payment_channels`,
 :mod:`solana_pay_kit.protocols.mpp.client.http_stream`,
-:mod:`solana_pay_kit.protocols.mpp.client.session_consumer`) remain the canonical
+:mod:`solana_pay_kit.protocols.mpp.client.session_consumer`,
+:mod:`solana_pay_kit.protocols.mpp.client.subscription`) remain the canonical
 import path; the session types are re-exported here for convenience.
 """
 
@@ -47,6 +49,11 @@ from solana_pay_kit.protocols.mpp.client.session_consumer import (
     MeteredDelivery,
     SessionConsumer,
 )
+from solana_pay_kit.protocols.mpp.client.subscription import (
+    SubscriptionActivation,
+    build_subscription_access_credential,
+    build_subscription_activation,
+)
 from solana_pay_kit.protocols.mpp.client.transport import PaymentTransport
 
 __all__ = [
@@ -75,4 +82,7 @@ __all__ = [
     "SseDecoder",
     "SseEvent",
     "parse_metered_sse_event",
+    "SubscriptionActivation",
+    "build_subscription_access_credential",
+    "build_subscription_activation",
 ]

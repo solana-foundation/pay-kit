@@ -23,6 +23,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from solders.instruction import Instruction  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
@@ -65,6 +66,8 @@ __all__ = [
     "find_subscription_authority_pda",
     "find_subscription_pda",
     "plan_problems",
+    "sign_message",
+    "signer_pubkey",
 ]
 
 #: Canonical subscriptions program deployment.
@@ -132,6 +135,18 @@ class DelegationView:
     amount_pulled_in_period: int
     current_period_start_ts: int
     expires_at_ts: int
+
+
+def signer_pubkey(signer: Any) -> Pubkey:
+    """Return the public key of a solana_pay_kit signer (base58 ``pubkey()``) or a solders ``Keypair``."""
+    return Pubkey.from_string(str(signer.pubkey()))
+
+
+def sign_message(signer: Any, message: bytes) -> bytes:
+    """Sign ``message`` with a solana_pay_kit signer (``sign``) or a solders ``Keypair`` (``sign_message``)."""
+    if callable(getattr(signer, "sign", None)):
+        return bytes(signer.sign(message))
+    return bytes(signer.sign_message(message))
 
 
 def find_plan_pda(owner: Pubkey, plan_id: int, program: Pubkey) -> tuple[Pubkey, int]:
