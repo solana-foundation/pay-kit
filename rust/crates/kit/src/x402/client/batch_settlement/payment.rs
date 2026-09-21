@@ -75,6 +75,17 @@ pub fn resolve_terms_with_token_program(
     crate::x402::protocol::schemes::batch_settlement::check_payment_flow(
         extra.payment_flow.as_deref(),
     )?;
+    // Server mode would record the operator as the channel's onchain
+    // `authorized_signer`, able to claim up to the whole deposit without any
+    // further signature from this client. This client signs its own vouchers
+    // and never delegates that authority; a 402 cannot opt it in (spec §8).
+    if extra.voucher_signer.as_deref() == Some("server") || extra.operator.is_some() {
+        return Err(Error::Other(
+            "batch-settlement accept requires a server-signed channel (extra.voucherSigner \
+             \"server\"); this client signs its own vouchers only — pay a client-signed accept"
+                .into(),
+        ));
+    }
     check_withdraw_delay(extra.withdraw_delay, requirements.max_timeout_seconds)?;
     let declared = check_token_program(&extra.token_program)?;
     if declared != token_program {
@@ -220,11 +231,11 @@ impl BatchChannel {
 
     /// Adopt the server's confirmed state from a successful `PAYMENT-RESPONSE`.
     ///
-    /// The response must confirm the exact commitment that was sent: the same
-    /// channel and cumulative amount, and a charge equal to the advertised
-    /// price. A response that confirms something else is not evidence this
-    /// request was the one that landed, and adopting it would silently skew the
-    /// watermark.
+    /// The response must confirm the exact commitment that was sent: a
+    /// non-empty commitment identifier, a cumulative equal to the voucher this
+    /// client signed, and a charge equal to the advertised price. A response
+    /// that confirms something else is not evidence this request was the one
+    /// that landed, and adopting it would silently skew the watermark.
     pub fn apply_payment_response(
         &mut self,
         response: &BatchSettlementResponse,
@@ -246,10 +257,17 @@ impl BatchChannel {
                 "PAYMENT-RESPONSE has no extra",
             )
         })?;
-        if extra.commitment_id.as_deref() != Some(submitted.commitment_id().as_str()) {
+        // The commitment identifier is opaque to the client: the spec requires
+        // only that it be non-empty (§4.4). What the response confirms is
+        // checked below against the cumulative this client actually signed.
+        if extra
+            .commitment_id
+            .as_deref()
+            .is_none_or(|id| id.is_empty())
+        {
             return Err(batch_err(
                 codes::INVALID_CHANNEL_STATE,
-                "PAYMENT-RESPONSE confirms a different commitment",
+                "PAYMENT-RESPONSE carries no commitmentId",
             ));
         }
         if extra.charged_amount.as_deref() != Some(requirements.amount.as_str()) {
@@ -431,6 +449,8 @@ pub async fn build_deposit(
         withdraw_delay: terms.withdraw_delay,
         salt: salt.to_string(),
         open_slot,
+        // Client mode: this client keeps its own voucher-signing authority.
+        voucher_signer: None,
     };
     let voucher = sign_voucher(signer, &open.channel_id, terms.amount).await?;
     let channel = BatchChannel::new(open.channel_id, config.clone(), 0, deposit_amount);
@@ -443,6 +463,7 @@ pub async fn build_deposit(
                 amount: deposit_amount.to_string(),
                 transaction: open.transaction,
             },
+            authorization: None,
         },
     ))
 }
@@ -484,6 +505,7 @@ pub async fn build_top_up(
             amount: top_up_amount.to_string(),
             transaction,
         },
+        authorization: None,
     })
 }
 
@@ -520,6 +542,7 @@ pub async fn build_refund(
         .await?,
         voucher: None,
         close_authorization: None,
+        amount: None,
     })
 }
 
@@ -584,10 +607,11 @@ pub fn parse_challenge(
     let envelope = from_header
         .or_else(|| body.and_then(|b| serde_json::from_str::<BatchRequiredEnvelope>(b).ok()))?;
     let error = envelope.error.clone();
-    let requirement = envelope
-        .accepts
-        .into_iter()
-        .find(|r| r.scheme == BATCH_SETTLEMENT_SCHEME)?;
+    // A server offering server-signed metering is expected to list the same
+    // resource client-signed as well; this client only ever pays the latter.
+    let requirement = envelope.accepts.into_iter().find(|r| {
+        r.scheme == BATCH_SETTLEMENT_SCHEME && r.extra.voucher_signer.as_deref() != Some("server")
+    })?;
     Some((requirement, error))
 }
 
@@ -694,6 +718,9 @@ mod tests {
                 channel_state: None,
                 voucher_state: None,
                 transaction_versions: None,
+                voucher_signer: None,
+                operator: None,
+                max_idle_secs: None,
             },
         }
     }
@@ -718,6 +745,58 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains(codes::INVALID_TOKEN_PROGRAM));
+    }
+
+    #[test]
+    fn terms_refuse_a_server_signed_accept() {
+        let fee_payer = Pubkey::new_unique();
+        let mut requirements = requirements(&fee_payer);
+        requirements.extra.voucher_signer = Some("server".to_string());
+        requirements.extra.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        let err = resolve_terms_with_token_program(
+            &requirements,
+            pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("server-signed"));
+        // An operator key without the mode flag is just as much a delegation.
+        let mut operator_only = self::requirements(&fee_payer);
+        operator_only.extra.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        assert!(resolve_terms_with_token_program(
+            &operator_only,
+            pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn challenge_parsing_skips_server_signed_accepts() {
+        let fee_payer = Pubkey::new_unique();
+        let mut metered = requirements(&fee_payer);
+        metered.amount = "5000".to_string();
+        metered.extra.voucher_signer = Some("server".to_string());
+        metered.extra.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        let envelope = BatchRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![metered.clone(), requirements(&fee_payer)],
+            error: None,
+        };
+        let body = serde_json::to_string(&envelope).unwrap();
+        let (chosen, _) = parse_challenge(&[], Some(&body)).unwrap();
+        assert_eq!(chosen.amount, "1000");
+        assert!(chosen.extra.voucher_signer.is_none());
+        // Only a server-signed accept on offer: nothing this client can pay.
+        let only_metered = BatchRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![metered],
+            error: None,
+        };
+        let body = serde_json::to_string(&only_metered).unwrap();
+        assert!(parse_challenge(&[], Some(&body)).is_none());
     }
 
     #[test]
@@ -758,6 +837,7 @@ mod tests {
             channel_config,
             voucher,
             deposit,
+            ..
         } = &payload
         else {
             panic!("expected a deposit payload");
@@ -905,10 +985,17 @@ mod tests {
             }),
         };
 
-        // A response confirming a different commitment must not advance state.
-        let wrong = ok("someoneelse:1000", "1000", "1000");
+        // A response confirming a different cumulative must not advance state.
+        let wrong = ok("receipt-7f3a", "1000", "2000");
         assert!(channel
             .apply_payment_response(&wrong, &requirements, &voucher)
+            .is_err());
+        assert_eq!(channel.charged_cumulative_amount(), 0);
+
+        // Nor one with no commitment identifier at all.
+        let unconfirmed = ok("", "1000", "1000");
+        assert!(channel
+            .apply_payment_response(&unconfirmed, &requirements, &voucher)
             .is_err());
         assert_eq!(channel.charged_cumulative_amount(), 0);
 
@@ -919,7 +1006,9 @@ mod tests {
             .is_err());
         assert_eq!(channel.charged_cumulative_amount(), 0);
 
-        let good = ok(&voucher.commitment_id(), "1000", "1000");
+        // The identifier itself is opaque (spec §4.4): any non-empty value is
+        // accepted when the cumulative and charge match what was signed.
+        let good = ok("receipt-7f3a", "1000", "1000");
         channel
             .apply_payment_response(&good, &requirements, &voucher)
             .expect("matching response is adopted");

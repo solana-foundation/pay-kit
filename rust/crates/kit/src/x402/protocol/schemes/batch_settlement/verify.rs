@@ -175,6 +175,72 @@ pub fn check_channel_config(
             "channelConfig.receiverAuthorizer must match extra.receiverAuthorizer",
         ));
     }
+    // The voucher-signing mode is part of the channel's terms and MUST agree on
+    // both sides (spec §4.2). This implementation offers client-signed vouchers
+    // only: a server-mode channel would record the operator as the onchain
+    // `authorized_signer`, able to claim up to the full deposit without any
+    // further client signature — never something this server advertises.
+    let config_mode = config.voucher_signer.as_deref().unwrap_or("client");
+    let extra_mode = extra.voucher_signer.as_deref().unwrap_or("client");
+    if config_mode != extra_mode {
+        return Err(BatchError::new(
+            errors::INVALID_CHANNEL_STATE,
+            format!(
+                "channelConfig.voucherSigner {config_mode:?} does not match                  extra.voucherSigner {extra_mode:?}"
+            ),
+        ));
+    }
+    if extra_mode != "client" || extra.operator.is_some() {
+        return Err(BatchError::new(
+            errors::INVALID_CHANNEL_STATE,
+            "server-signed channels (extra.voucherSigner \"server\" / extra.operator) \
+             are not supported by this implementation; use client-signed vouchers",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse the server-mode payload variants this implementation does not serve.
+///
+/// An `authorization` payload, or a `deposit` carrying a payer proof, asks the
+/// operator to sign vouchers on the client's behalf. This server signs nothing
+/// on a client's behalf, so the request is refused by type rather than failing
+/// deeper in with a misleading channel-state code.
+pub fn check_client_signed_payload(payload: &BatchPayload) -> Result<()> {
+    let refused = match payload {
+        BatchPayload::Authorization { .. } => true,
+        BatchPayload::Deposit { authorization, .. } => authorization.is_some(),
+        BatchPayload::Voucher { .. } | BatchPayload::Refund { .. } => false,
+    };
+    if refused {
+        return Err(BatchError::new(
+            errors::INVALID_PAYLOAD_TYPE,
+            format!(
+                "{} payloads belong to server-signed channels, which this \
+                 implementation does not offer; send a client-signed voucher",
+                payload.type_name()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a `refund` that names an amount.
+///
+/// The payment-channels program returns all unused escrow or nothing, so a
+/// partial refund cannot be honored; the request is refused with the dedicated
+/// code rather than silently returning the full remainder (spec §4.3).
+pub fn check_no_refund_amount(payload: &BatchPayload) -> Result<()> {
+    if let BatchPayload::Refund {
+        amount: Some(amount),
+        ..
+    } = payload
+    {
+        return Err(BatchError::new(
+            errors::INVALID_CLOSE_AMOUNT_UNSUPPORTED,
+            format!("refund carries amount {amount:?}; this scheme returns the full unused escrow"),
+        ));
+    }
     Ok(())
 }
 
@@ -383,7 +449,9 @@ pub fn check_corrective_voucher_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::x402::protocol::schemes::batch_settlement::types::{BatchDeposit, BatchExtra};
+    use crate::x402::protocol::schemes::batch_settlement::types::{
+        BatchAuthorization, BatchDeposit, BatchExtra,
+    };
     use ed25519_dalek::{Signer, SigningKey};
 
     const PAY_TO: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
@@ -418,6 +486,9 @@ mod tests {
                 channel_state: None,
                 voucher_state: None,
                 transaction_versions: None,
+                voucher_signer: None,
+                operator: None,
+                max_idle_secs: None,
             },
         };
         let config = BatchChannelConfig {
@@ -429,6 +500,7 @@ mod tests {
             withdraw_delay: 3600,
             salt: "42".to_string(),
             open_slot: 341_000_000,
+            voucher_signer: None,
         };
         (requirements, config)
     }
@@ -547,6 +619,113 @@ mod tests {
             let err = check_channel_config(&broken, &requirements).unwrap_err();
             assert_eq!(err.code, code, "detail: {}", err.detail);
         }
+
+        // Explicit client mode is the default spelled out.
+        let mut explicit = config.clone();
+        explicit.voucher_signer = Some("client".to_string());
+        assert!(check_channel_config(&explicit, &requirements).is_ok());
+    }
+
+    #[test]
+    fn server_signed_channels_are_refused_on_either_side() {
+        let (requirements, config) = requirements(&key_b58(&key(1)));
+        // The client asks for server mode against a client-mode requirement.
+        let mut delegated = config.clone();
+        delegated.voucher_signer = Some("server".to_string());
+        let err = check_channel_config(&delegated, &requirements).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_CHANNEL_STATE);
+        assert!(err.detail.contains("voucherSigner"));
+        // A requirement advertising server mode (or an operator) is never one
+        // this implementation produced, and is refused even when echoed back
+        // consistently.
+        let mut server_terms = requirements.clone();
+        server_terms.extra.voucher_signer = Some("server".to_string());
+        server_terms.extra.operator = Some(key_b58(&key(2)));
+        let err = check_channel_config(&delegated, &server_terms).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_CHANNEL_STATE);
+        assert!(err.detail.contains("not supported"));
+        let mut operator_only = requirements;
+        operator_only.extra.operator = Some(key_b58(&key(2)));
+        assert_eq!(
+            check_channel_config(&config, &operator_only)
+                .unwrap_err()
+                .code,
+            errors::INVALID_CHANNEL_STATE
+        );
+    }
+
+    #[test]
+    fn server_mode_payloads_and_partial_refunds_are_refused_by_code() {
+        let (_, config) = requirements(&key_b58(&key(1)));
+        let proof = BatchAuthorization {
+            kind: "proof".to_string(),
+            channel_id: PAY_TO.to_string(),
+            payer: config.payer.clone(),
+            request_id: "req-1".to_string(),
+            authorized_amount: "1000".to_string(),
+            expires_at: 1_758_215_100,
+            signature: "sig".to_string(),
+        };
+        let authorization = BatchPayload::Authorization {
+            channel_config: config.clone(),
+            authorization: proof.clone(),
+        };
+        assert_eq!(
+            check_client_signed_payload(&authorization)
+                .unwrap_err()
+                .code,
+            errors::INVALID_PAYLOAD_TYPE
+        );
+        let delegated_deposit = BatchPayload::Deposit {
+            channel_config: config.clone(),
+            voucher: BatchVoucher {
+                channel_id: PAY_TO.to_string(),
+                max_claimable_amount: "1".to_string(),
+                expires_at: 0,
+                signature: "sig".to_string(),
+            },
+            deposit: BatchDeposit {
+                amount: "1".to_string(),
+                transaction: "b64".to_string(),
+            },
+            authorization: Some(proof),
+        };
+        assert_eq!(
+            check_client_signed_payload(&delegated_deposit)
+                .unwrap_err()
+                .code,
+            errors::INVALID_PAYLOAD_TYPE
+        );
+        let voucher = BatchPayload::Voucher {
+            channel_config: config.clone(),
+            voucher: BatchVoucher {
+                channel_id: PAY_TO.to_string(),
+                max_claimable_amount: "1".to_string(),
+                expires_at: 0,
+                signature: "sig".to_string(),
+            },
+        };
+        assert!(check_client_signed_payload(&voucher).is_ok());
+
+        let partial = BatchPayload::Refund {
+            channel_config: config.clone(),
+            transaction: "b64".to_string(),
+            voucher: None,
+            close_authorization: None,
+            amount: Some("1500".to_string()),
+        };
+        assert_eq!(
+            check_no_refund_amount(&partial).unwrap_err().code,
+            errors::INVALID_CLOSE_AMOUNT_UNSUPPORTED
+        );
+        let full = BatchPayload::Refund {
+            channel_config: config,
+            transaction: "b64".to_string(),
+            voucher: None,
+            close_authorization: None,
+            amount: None,
+        };
+        assert!(check_no_refund_amount(&full).is_ok());
     }
 
     #[test]
@@ -617,6 +796,7 @@ mod tests {
             transaction: "b64".to_string(),
             voucher: None,
             close_authorization: None,
+            amount: None,
         };
         assert!(check_no_cooperative_close(&plain).is_ok());
 
@@ -630,6 +810,7 @@ mod tests {
                 signature: "sig".to_string(),
             }),
             close_authorization: None,
+            amount: None,
         };
         assert_eq!(
             check_no_cooperative_close(&with_voucher).unwrap_err().code,
@@ -649,6 +830,7 @@ mod tests {
                 amount: "1".to_string(),
                 transaction: "b64".to_string(),
             },
+            authorization: None,
         };
         assert!(check_no_cooperative_close(&deposit).is_ok());
     }

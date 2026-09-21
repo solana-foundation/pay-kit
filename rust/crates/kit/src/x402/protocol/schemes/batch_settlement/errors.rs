@@ -80,6 +80,19 @@ pub const INVALID_CHANNEL_STATE: &str = "invalid_batch_settlement_svm_channel_st
 /// derived channel, or contains an unauthorized instruction.
 pub const INVALID_REFUND_TRANSACTION: &str = "invalid_batch_settlement_svm_refund_transaction";
 
+/// The payer has started a forced close, so program `settle` is unavailable:
+/// a `claim`, `voucher`, or `authorization` for the channel is refused. The
+/// server finalizes such a channel with its latest voucher inside the grace
+/// period instead (spec §4.5, `seal`).
+pub const INVALID_CHANNEL_CLOSING: &str = "invalid_batch_settlement_svm_channel_closing";
+
+/// A `settle` transaction confirmed but the receiver's token-balance delta
+/// cannot be attributed to the batch, because a sealed payout in the same
+/// transaction returned escrow to a payer or treasury that aliases `payTo`.
+/// Reported by facilitators that account payouts from balance evidence.
+pub const INVALID_PAYOUT_ATTRIBUTION_AMBIGUOUS: &str =
+    "invalid_batch_settlement_svm_payout_attribution_ambiguous";
+
 /// The same client-supplied setup or refund transaction is already settling.
 /// A standard x402 code rather than a scheme-specific one.
 pub const DUPLICATE_SETTLEMENT: &str = "duplicate_settlement";
@@ -105,6 +118,8 @@ pub const ALL_CODES: &[&str] = &[
     INVALID_SETTLEMENT_SIMULATION,
     INVALID_CHANNEL_STATE,
     INVALID_REFUND_TRANSACTION,
+    INVALID_CHANNEL_CLOSING,
+    INVALID_PAYOUT_ATTRIBUTION_AMBIGUOUS,
     DUPLICATE_SETTLEMENT,
 ];
 

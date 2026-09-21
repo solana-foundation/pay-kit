@@ -115,6 +115,24 @@ pub struct BatchExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_slot: Option<u64>,
 
+    /// Voucher-signing mode: `"client"` (default) or `"server"`. This SDK
+    /// implements client mode only — its server never advertises `"server"`
+    /// and its client refuses such an accept (spec §4.1, §8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voucher_signer: Option<String>,
+
+    /// Base58 resource-operator key; REQUIRED in server mode and MUST be absent
+    /// in client mode. Parsed for wire completeness, never produced here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+
+    /// Facilitator idle window in seconds, after which an `Open` channel with no
+    /// facilitator-visible lifecycle activity MAY be abandon-closed at its
+    /// onchain `settled` watermark. This server runs no idle policy and so
+    /// never advertises one; absent means the facilitator does not idle-close.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_idle_secs: Option<u64>,
+
     /// Corrective-only server channel snapshot, for cumulative-amount
     /// resynchronization. See [`BatchRequirements::is_corrective`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -227,6 +245,12 @@ pub struct BatchChannelConfig {
 
     /// `u64` slot encoded in `open` and used as a channel-PDA seed.
     pub open_slot: u64,
+
+    /// Optional. Omitted or `"client"` selects client mode; `"server"` selects
+    /// server mode, binds `payerAuthorizer` to `extra.operator`, and MUST equal
+    /// `extra.voucherSigner`. Only client mode is accepted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voucher_signer: Option<String>,
 }
 
 impl BatchChannelConfig {
@@ -270,12 +294,40 @@ impl BatchVoucher {
     }
 }
 
+/// The expiring payer proof of server mode (`BatchAuthorization`, spec §4.2):
+/// a bearer credential authorizing one metered request up to `authorizedAmount`
+/// on a channel whose `authorized_signer` is the operator.
+///
+/// Defined for wire completeness. This SDK neither issues nor accepts one: its
+/// server offers client-signed vouchers only and answers a server-mode payload
+/// with `invalid_batch_settlement_svm_payload_type`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchAuthorization {
+    /// MUST be `"proof"`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Channel PDA (base58).
+    pub channel_id: String,
+    /// MUST equal `channelConfig.payer`.
+    pub payer: String,
+    /// Fresh opaque single-use request identifier (1 through 256 UTF-8 bytes).
+    pub request_id: String,
+    /// Maximum charge in atomic units; MUST equal `PaymentRequirements.amount`.
+    pub authorized_amount: String,
+    /// Integer Unix seconds; the server requires `now < expiresAt`.
+    pub expires_at: i64,
+    /// Base58 payer signature over the `x402-batch-authorization-v2` message.
+    pub signature: String,
+}
+
 /// A server signature authorizing an immediate cooperative close.
 ///
 /// Defined for wire completeness. This SDK never produces one and rejects any
-/// it receives: the interoperable close path is the payer-signed
-/// `request_close`, and a facilitator must not honor a receiver-authorizer key
-/// merely because it appeared in an untrusted request.
+/// it receives: as channel `payee` it seals a closing channel directly with its
+/// own latest voucher (see the server's `finalize_close`), and a facilitator
+/// must not honor a receiver-authorizer key merely because it appeared in an
+/// untrusted request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseAuthorization {
@@ -320,12 +372,24 @@ pub enum BatchPayload {
         channel_config: BatchChannelConfig,
         voucher: BatchVoucher,
         deposit: BatchDeposit,
+        /// Server-mode payer proof, carried instead of `voucher` there. Parsed
+        /// so the refusal can name the right code; never accepted here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<BatchAuthorization>,
     },
 
     /// Steady-state paid request: a new cumulative voucher, no transaction.
     Voucher {
         channel_config: BatchChannelConfig,
         voucher: BatchVoucher,
+    },
+
+    /// Server-mode steady-state request: an expiring payer proof instead of a
+    /// client-signed voucher. Parsed for wire completeness and refused with
+    /// `invalid_batch_settlement_svm_payload_type`.
+    Authorization {
+        channel_config: BatchChannelConfig,
+        authorization: BatchAuthorization,
     },
 
     /// Start a payer-forced channel close. A payment operation, not a paid
@@ -344,6 +408,12 @@ pub enum BatchPayload {
         /// Optional server authorization for that shortcut. Rejected here.
         #[serde(skip_serializing_if = "Option::is_none")]
         close_authorization: Option<CloseAuthorization>,
+        /// A partial-refund amount, which this scheme does not support: its
+        /// presence is refused with
+        /// `invalid_batch_settlement_svm_close_amount_unsupported`. Never set
+        /// when building a payload.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        amount: Option<String>,
     },
 }
 
@@ -353,19 +423,21 @@ impl BatchPayload {
         match self {
             BatchPayload::Deposit { channel_config, .. }
             | BatchPayload::Voucher { channel_config, .. }
+            | BatchPayload::Authorization { channel_config, .. }
             | BatchPayload::Refund { channel_config, .. } => channel_config,
         }
     }
 
     /// The paid-request voucher, when this payload authorizes a charge.
     /// `refund` returns `None` — its optional voucher is a close hint, not an
-    /// authorization to serve.
+    /// authorization to serve — and so does `authorization`, which carries a
+    /// payer proof rather than a voucher.
     pub fn charge_voucher(&self) -> Option<&BatchVoucher> {
         match self {
             BatchPayload::Deposit { voucher, .. } | BatchPayload::Voucher { voucher, .. } => {
                 Some(voucher)
             }
-            BatchPayload::Refund { .. } => None,
+            BatchPayload::Authorization { .. } | BatchPayload::Refund { .. } => None,
         }
     }
 
@@ -374,6 +446,7 @@ impl BatchPayload {
         match self {
             BatchPayload::Deposit { .. } => "deposit",
             BatchPayload::Voucher { .. } => "voucher",
+            BatchPayload::Authorization { .. } => "authorization",
             BatchPayload::Refund { .. } => "refund",
         }
     }
@@ -393,25 +466,23 @@ pub struct BatchPaymentPayload {
 }
 
 // ── Server-authored redemption payloads ──
+//
+// Every server-authored entry shares one shape — `channelId` plus
+// `channelConfig`, with vouchers as [`BatchVoucher`] objects — across `claim`,
+// `settle`, and `seal` (spec §4.5). This self-facilitating server redeems
+// through its own lifecycle methods rather than over the wire, so these types
+// exist to interoperate with a standalone facilitator.
 
-/// One voucher claim in a `claim` batch.
+/// One channel in a `claim` batch: the full configuration needed to derive
+/// and validate the channel, plus the latest accepted voucher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchVoucherClaim {
-    pub voucher: BatchClaimVoucher,
-    /// Base58 Ed25519 voucher signature.
-    pub signature: String,
-}
-
-/// The voucher body inside a claim: the full channel configuration needed to
-/// derive and validate the channel, plus the cumulative amount to settle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BatchClaimVoucher {
-    pub channel_config: BatchChannelConfig,
     pub channel_id: String,
-    pub max_claimable_amount: String,
-    pub expires_at: i64,
+    pub channel_config: BatchChannelConfig,
+    /// Latest accepted voucher; its `maxClaimableAmount` becomes the new
+    /// onchain `settled` watermark. `expiresAt` MUST be `0`.
+    pub voucher: BatchVoucher,
 }
 
 /// One channel in a `settle` batch.
@@ -425,15 +496,42 @@ pub struct BatchSettleChannel {
 /// The redemption payloads a server (or its batch worker) authors.
 ///
 /// `claim` advances the onchain `settled` watermark from stored vouchers;
-/// `settle` pays the newly settled delta to `payTo`. Neither moves through the
-/// paid-request path.
+/// `settle` pays the newly settled delta to `payTo`; `seal` finalizes a
+/// `Closing` channel with the server's latest voucher during the grace period.
+/// None of them moves through the paid-request path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BatchRedemptionPayload {
-    /// One to [`MAX_CLAIMS_PER_BATCH`] voucher claims; program `settle`.
+    /// One to [`MAX_CLAIMS_PER_BATCH`] channels to claim in one transaction;
+    /// program `settle`.
     Claim { claims: Vec<BatchVoucherClaim> },
-    /// One or more channels to distribute; program `distribute`.
+    /// One to [`MAX_CLAIMS_PER_BATCH`] channels to distribute in one
+    /// transaction; program `distribute`.
     Settle { channels: Vec<BatchSettleChannel> },
+    /// Apply the server's latest voucher to a `Closing` channel with
+    /// `settle_and_seal` and pay out with a sealed `distribute`, before the
+    /// payer's grace period ends. A standalone facilitator authenticates the
+    /// server through `closeAuthorization`.
+    Seal(Box<BatchSeal>),
+}
+
+/// The single-channel body of a `seal` payload (spec §4.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSeal {
+    pub channel_id: String,
+    pub channel_config: BatchChannelConfig,
+    /// Latest accepted voucher; its `maxClaimableAmount` becomes the final
+    /// settled watermark. `expiresAt` MUST be `0`.
+    pub voucher: BatchVoucher,
+    /// Receiver-authorizer signature binding this exact close. REQUIRED unless
+    /// the facilitator authenticates the server out of band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_authorization: Option<CloseAuthorization>,
 }
 
 // ── Responses ──
@@ -573,6 +671,9 @@ mod tests {
             channel_state: None,
             voucher_state: None,
             transaction_versions: None,
+            voucher_signer: None,
+            operator: None,
+            max_idle_secs: None,
         }
     }
 
@@ -598,6 +699,7 @@ mod tests {
             withdraw_delay: 3600,
             salt: "42".to_string(),
             open_slot: 341_000_000,
+            voucher_signer: None,
         }
     }
 
@@ -669,9 +771,11 @@ mod tests {
                 amount: "100000".to_string(),
                 transaction: "b64".to_string(),
             },
+            authorization: None,
         };
         let json = serde_json::to_value(&deposit).unwrap();
         assert_eq!(json["type"], "deposit");
+        assert!(json.get("authorization").is_none());
         assert!(json.get("channelConfig").is_some());
         assert!(json.get("channel_config").is_none());
         assert_eq!(json["deposit"]["amount"], "100000");
@@ -692,17 +796,47 @@ mod tests {
             transaction: "b64".to_string(),
             voucher: None,
             close_authorization: None,
+            amount: None,
         };
         let json = serde_json::to_value(&refund).unwrap();
         assert_eq!(json["type"], "refund");
         assert!(json.get("closeAuthorization").is_none());
         assert!(json.get("voucher").is_none());
+        assert!(json.get("amount").is_none());
         // A refund's voucher is a close hint, never an authorization to serve.
         assert!(refund.charge_voucher().is_none());
         assert_eq!(refund.channel_config().salt().unwrap(), 42);
 
         let back: BatchPayload = serde_json::from_value(json).unwrap();
         assert!(matches!(back, BatchPayload::Refund { .. }));
+
+        // A server-mode request parses, so the server can refuse it by name.
+        let authorization: BatchPayload = serde_json::from_value(serde_json::json!({
+            "type": "authorization",
+            "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+            "authorization": {
+                "type": "proof",
+                "channelId": CHANNEL,
+                "payer": "Payer111111111111111111111111111111111111",
+                "requestId": "req-1",
+                "authorizedAmount": "1000",
+                "expiresAt": 1_758_215_100,
+                "signature": "sig"
+            }
+        }))
+        .unwrap();
+        assert_eq!(authorization.type_name(), "authorization");
+        assert!(authorization.charge_voucher().is_none());
+        // And a refund that names an amount keeps it, so the server can refuse
+        // it with the dedicated code instead of silently ignoring it.
+        let partial: BatchPayload = serde_json::from_value(serde_json::json!({
+            "type": "refund",
+            "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+            "transaction": "b64",
+            "amount": "1500"
+        }))
+        .unwrap();
+        assert!(matches!(partial, BatchPayload::Refund { amount: Some(ref a), .. } if a == "1500"));
     }
 
     #[test]
@@ -790,19 +924,23 @@ mod tests {
     }
 
     #[test]
-    fn redemption_payloads_tag_claim_and_settle() {
+    fn redemption_payloads_share_one_entry_shape() {
         let claim = BatchRedemptionPayload::Claim {
             claims: vec![BatchVoucherClaim {
-                voucher: BatchClaimVoucher {
-                    channel_config: channel_config(),
-                    channel_id: CHANNEL.to_string(),
-                    max_claimable_amount: "5000".to_string(),
-                    expires_at: VOUCHER_EXPIRES_AT,
-                },
-                signature: "sig".to_string(),
+                channel_id: CHANNEL.to_string(),
+                channel_config: channel_config(),
+                voucher: voucher("5000"),
             }],
         };
-        assert_eq!(serde_json::to_value(&claim).unwrap()["type"], "claim");
+        let json = serde_json::to_value(&claim).unwrap();
+        assert_eq!(json["type"], "claim");
+        // Spec 4.5: `channelId` + `channelConfig` at the entry level, and the
+        // voucher is a plain `BatchVoucher` with its signature inside.
+        assert_eq!(json["claims"][0]["channelId"], CHANNEL);
+        assert!(json["claims"][0].get("channelConfig").is_some());
+        assert_eq!(json["claims"][0]["voucher"]["signature"], "sig");
+        assert!(json["claims"][0].get("signature").is_none());
+        assert!(json["claims"][0]["voucher"].get("channelConfig").is_none());
 
         let settle = BatchRedemptionPayload::Settle {
             channels: vec![BatchSettleChannel {
@@ -813,6 +951,24 @@ mod tests {
         let json = serde_json::to_value(&settle).unwrap();
         assert_eq!(json["type"], "settle");
         assert_eq!(json["channels"][0]["channelId"], CHANNEL);
+
+        let seal = BatchRedemptionPayload::Seal(Box::new(BatchSeal {
+            channel_id: CHANNEL.to_string(),
+            channel_config: channel_config(),
+            voucher: voucher("5000"),
+            close_authorization: Some(CloseAuthorization {
+                valid_before: 1_785_341_100,
+                signature: "close-sig".to_string(),
+            }),
+        }));
+        let json = serde_json::to_value(&seal).unwrap();
+        // The tag sits beside the body's fields, matching the spec example.
+        assert_eq!(json["type"], "seal");
+        assert_eq!(json["channelId"], CHANNEL);
+        assert_eq!(json["voucher"]["maxClaimableAmount"], "5000");
+        assert_eq!(json["closeAuthorization"]["validBefore"], 1_785_341_100);
+        let back: BatchRedemptionPayload = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, BatchRedemptionPayload::Seal(body) if body.channel_id == CHANNEL));
     }
 
     #[test]

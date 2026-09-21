@@ -198,6 +198,11 @@ signs a cumulative voucher per request, which the gate (`paid_batch_get` /
 `paid_batch_post`) verifies off-chain and serves immediately. The operator
 redeems vouchers on-chain later in batches via `pay.x402_batch()` (`claim`,
 `settle`, `finalize_close`, and `reclaim`). It also needs a `fee_payer_signer`.
+Only client-signed vouchers are offered; server-signed (operator-metered)
+channels are refused on both sides. When a payer force-closes a channel,
+`finalize_close` applies the server's latest voucher with `settle_and_seal`
+during the grace period rather than forfeiting it, then finalizes
+permissionlessly once the grace period has run out.
 
 ## Client
 

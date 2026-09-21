@@ -765,6 +765,7 @@ mod tests {
             withdraw_delay: 3600,
             salt: "42".to_string(),
             open_slot: 341_000_000,
+            voucher_signer: None,
         };
         Fixture {
             payer_key,
