@@ -19,8 +19,15 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
-from solana_pay_kit.protocols.mpp._subscriptions import SUBSCRIPTIONS_PROGRAM_ID, find_plan_pda
+from solana_pay_kit.protocols.mpp._subscriptions import (
+    SUBSCRIPTIONS_PROGRAM_ID,
+    decode_authority_init_id,
+    decode_delegation,
+    find_plan_pda,
+)
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 
@@ -123,6 +130,7 @@ class FakeRpc:
         self.accounts: dict[str, tuple[bytes, str]] = {}
         self.sent: list[bytes] = []
         self.statuses: dict[str, dict[str, Any] | None] = {}
+        self.history_statuses: dict[str, dict[str, Any]] = {}  # answered only with search_history
         self.blockhash = BLOCKHASH
         self.blockhash_valid = True
         self.hidden_reads: dict[str, int] = {}
@@ -152,8 +160,9 @@ class FakeRpc:
     async def await_confirmation(self, signature: str) -> None:
         self.statuses.setdefault(signature, ok_status())
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
-        return [self.statuses.get(signature) for signature in signatures]
+    async def get_signature_statuses(self, signatures: list[str], search_history: bool = False) -> list[Any]:
+        history = self.history_statuses if search_history else {}
+        return [self.statuses.get(signature) or history.get(signature) for signature in signatures]
 
     async def is_blockhash_valid(self, blockhash: str, commitment: str = "finalized") -> bool:
         return self.blockhash_valid
@@ -209,3 +218,89 @@ def challenge_for(request: dict[str, Any], *, expires: str = "2099-01-01T00:00:0
         request=encode_json(request),
         expires=expires,
     )
+
+
+NOW = 1_750_000_000
+PERIOD_SECONDS = PERIOD_HOURS * 3600
+AUTHORITY_SLOT = 555
+
+
+def mint_bytes(decimals: int = 6, initialized: bool = True) -> bytes:
+    """An 82-byte SPL mint with ``decimals`` at 44 and ``is_initialized`` at 45."""
+    data = bytearray(82)
+    data[44] = decimals
+    data[45] = int(initialized)
+    return bytes(data)
+
+
+def install_chain(rpc: FakeRpc) -> None:
+    """The default plan, its mint and the recipient's token account."""
+    install_plan(rpc)
+    rpc.put(MINT, mint_bytes(), TOKEN)
+    rpc.put(find_associated_token_address(RECIPIENT, MINT, TOKEN)[0], bytes(165), TOKEN)
+
+
+class ChainSim:
+    """Applies subscriptions instructions to ``FakeRpc`` accounts the way the program does.
+
+    ``init`` creates the authority at ``AUTHORITY_SLOT``; ``subscribe`` creates the
+    delegation at ``clock()``; ``transfer_subscription`` rolls the period over by
+    whole periods and enforces the per-period cap (raising like a failed preflight).
+    Writes apply only when every instruction succeeds.
+    """
+
+    def __init__(self, rpc: FakeRpc, clock: Callable[[], int] = lambda: NOW) -> None:
+        self.rpc = rpc
+        self.clock = clock
+        rpc.on_send = self
+
+    def __call__(self, raw: bytes) -> None:
+        tx = VersionedTransaction.from_bytes(raw)
+        keys = list(tx.message.account_keys)
+        writes: dict[str, bytes] = {}
+
+        def current(address: Pubkey) -> tuple[bytes, str]:
+            return (writes[str(address)], PROGRAM_ID) if str(address) in writes else self.rpc.accounts[str(address)]
+
+        for ix in tx.message.instructions:
+            if keys[ix.program_id_index] != PROGRAM:
+                continue
+            data = bytes(ix.data)
+            accounts = [keys[index] for index in ix.accounts]
+            if data[0] == 0:
+                writes[str(accounts[1])] = authority_bytes(user=accounts[0], mint=accounts[2], init_id=AUTHORITY_SLOT)
+            elif data[0] == 11:
+                amount, hours, created_at = struct.unpack_from("<QQq", data, 42)
+                writes[str(accounts[3])] = delegation_bytes(
+                    subscriber=accounts[0],
+                    plan=accounts[2],
+                    init_id=decode_authority_init_id(*current(accounts[4]), PROGRAM_ID),
+                    amount=amount,
+                    period_hours=hours,
+                    created_at=created_at,
+                    amount_pulled_in_period=0,
+                    current_period_start_ts=self.clock(),
+                )
+            elif data[0] == 10:
+                state = decode_delegation(*current(accounts[0]), PROGRAM_ID)
+                start, pulled = state.current_period_start_ts, state.amount_pulled_in_period
+                period = state.period_hours * 3600
+                if self.clock() >= start + period:
+                    start += (self.clock() - start) // period * period
+                    pulled = 0
+                amount = struct.unpack_from("<Q", data, 1)[0]
+                if pulled + amount > state.amount:
+                    raise PaymentError("simulation failed: AmountExceedsPeriodLimit", code="payment_invalid")
+                writes[str(accounts[0])] = delegation_bytes(
+                    subscriber=state.subscriber,
+                    plan=state.plan,
+                    init_id=state.init_id,
+                    amount=state.amount,
+                    period_hours=state.period_hours,
+                    created_at=state.created_at,
+                    amount_pulled_in_period=pulled + amount,
+                    current_period_start_ts=start,
+                    expires_at_ts=state.expires_at_ts,
+                )
+        for address, data in writes.items():
+            self.rpc.put(address, data)

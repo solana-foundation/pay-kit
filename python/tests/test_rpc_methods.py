@@ -94,6 +94,27 @@ async def test_get_signature_statuses_returns_empty_on_null_value():
 
 
 @pytest.mark.asyncio
+async def test_get_signature_statuses_searches_history_only_when_asked():
+    client = _ScriptedClient([{"result": {"value": [None]}, "id": 1}])
+    rpc = SolanaRpc("http://localhost:9999", timeout=1.0)
+    rpc._client = client  # type: ignore[assignment]
+    await rpc.get_signature_statuses(["s"])
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [["s"], {"searchTransactionHistory": False}],
+    }
+    await rpc.get_signature_statuses(["s"], search_history=True)
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "getSignatureStatuses",
+        "params": [["s"], {"searchTransactionHistory": True}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_transaction_returns_wrapped_value():
     rpc = _rpc({"result": {"slot": 100}, "id": 1})
     resp = await rpc.get_transaction("sig")

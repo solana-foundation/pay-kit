@@ -41,6 +41,12 @@ from solana_pay_kit.protocols.mpp.server.session_stream import (
     new_metered_stream,
     new_metered_stream_writer,
 )
+from solana_pay_kit.protocols.mpp.server.subscription import (
+    SubscriptionChallengeOptions,
+    SubscriptionConfig,
+    SubscriptionGateResult,
+    SubscriptionServer,
+)
 
 __all__ = [
     "ChannelState",
@@ -63,6 +69,10 @@ __all__ = [
     "SessionRoutes",
     "SessionServer",
     "Split",
+    "SubscriptionChallengeOptions",
+    "SubscriptionConfig",
+    "SubscriptionGateResult",
+    "SubscriptionServer",
     "accepts_html",
     "challenge_to_html",
     "detect_realm",

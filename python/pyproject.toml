@@ -96,6 +96,7 @@ strict = [
     "src/solana_pay_kit/protocols/mpp/client/subscription.py",
     "src/solana_pay_kit/protocols/mpp/intents/subscription.py",
     "src/solana_pay_kit/protocols/mpp/server/_subscription_scope.py",
+    "src/solana_pay_kit/protocols/mpp/server/subscription.py",
     "src/solana_pay_kit/protocols/x402/__init__.py",
     "src/solana_pay_kit/protocols/x402/exact/__init__.py",
     "src/solana_pay_kit/protocols/x402/exact/types.py",
