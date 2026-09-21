@@ -92,6 +92,7 @@ strict = [
     "src/solana_pay_kit/_paycore/stablecoin.py",
     "src/solana_pay_kit/protocols/__init__.py",
     "src/solana_pay_kit/protocols/mpp/__init__.py",
+    "src/solana_pay_kit/protocols/mpp/_subscriptions.py",
     "src/solana_pay_kit/protocols/x402/__init__.py",
     "src/solana_pay_kit/protocols/x402/exact/__init__.py",
     "src/solana_pay_kit/protocols/x402/exact/types.py",
