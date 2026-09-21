@@ -1,11 +1,15 @@
 /**
- * Generate the pay-kit Python payment-channels client from the upstream
- * `Moonsong-Labs/solana-payment-channels` Codama IDL.
+ * Generate a pay-kit Python program client from a vendored Codama IDL.
  *
- * Mirrors generate-payment-channels-client.ts (Rust) - both scripts read the
- * vendored IDL at `<repo-root>/idl/payment-channels.json`. This one renders a
- * Python client into `python/src/solana_pay_kit/protocols/programs/paymentchannels/`
- * using the community `codama-py` renderer (Solana-ZH/codama-py).
+ * Usage: `tsx ./generate-client-py.ts <idl> <outDir>`, both paths relative to
+ * the repository root. For example the payment-channels client:
+ *
+ *   tsx ./generate-client-py.ts idl/payment-channels.json \
+ *       python/src/solana_pay_kit/protocols/programs/paymentchannels
+ *
+ * Mirrors the Rust generators - every script reads the vendored IDL under
+ * `<repo-root>/idl/`. This one renders a Python client into `<outDir>` using
+ * the community `codama-py` renderer (Solana-ZH/codama-py).
  *
  * codama-py cannot be consumed as an npm/git dependency yet: its package.json
  * ships only `dist` (not committed, and its build is currently broken
@@ -13,9 +17,6 @@
  * exists this script instead clones the repo at a pinned commit - the merge
  * of Solana-ZH/codama-py#10, which fixed PDA seed rendering - and drives its
  * own `genpy` CLI, exactly as the upstream README documents.
- *
- * Output:
- *   python/src/solana_pay_kit/protocols/programs/paymentchannels/   (rendered by codama-py)
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,23 +32,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // levels to land at the repository root.
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
-const idlPath = path.join(repoRoot, 'idl', 'payment-channels.json');
-const pyClientDir = path.join(
-    repoRoot,
-    'python',
-    'src',
-    'solana_pay_kit',
-    'protocols',
-    'programs',
-    'paymentchannels',
-);
-const cacheDir = path.join(__dirname, '.codama-py');
+const [idlArg, outArg] = process.argv.slice(2);
+if (!idlArg || !outArg) {
+    console.error('[codegen] usage: generate-client-py.ts <idl> <outDir> (paths relative to the repo root)');
+    process.exit(1);
+}
+const idlPath = path.resolve(repoRoot, idlArg);
+const pyClientDir = path.resolve(repoRoot, outArg);
 
 if (!fs.existsSync(idlPath)) {
     console.error(`[codegen] IDL not found at ${idlPath}`);
-    console.error(`[codegen] Run \`just payment-channels-pull-idl\` first to fetch it from upstream.`);
+    console.error(`[codegen] Run \`just ${path.basename(idlPath, '.json')}-pull-idl\` first to fetch it from upstream.`);
     process.exit(1);
 }
+
+const cacheDir = path.join(__dirname, '.codama-py');
 
 const run = (cmd: string, args: string[], cwd: string) =>
     execFileSync(cmd, args, { cwd, stdio: 'inherit' });

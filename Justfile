@@ -52,8 +52,14 @@ subscriptions-generate-rs: codegen-install
         -exec perl -i -pe 's/\bcrate::(?!generated::subscriptions::)/crate::generated::subscriptions::/g' {} +
     cd rust && cargo fmt -p solana-pay-kit
 
-# Full refresh: pull IDL + regenerate Rust client.
-subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs
+# Render the Python client from the vendored IDL. Wipes
+# `python/src/solana_pay_kit/protocols/programs/subscriptions/` and rewrites it
+# in place; see {{codegen_dir}}/generate-client-py.ts.
+subscriptions-generate-py: codegen-install
+    cd {{codegen_dir}} && pnpm run subscriptions:python
+
+# Full refresh: pull IDL + regenerate every client (Rust, Python).
+subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs subscriptions-generate-py
 
 # Fetch the payment-channels IDL from the pinned upstream commit into
 # `idl/payment-channels.json`.
@@ -92,7 +98,7 @@ payment-channels-generate-ts: codegen-install
 
 # Render the Python client from the vendored IDL. Wipes
 # `python/src/solana_pay_kit/protocols/programs/paymentchannels/` and rewrites
-# it in place — see {{codegen_dir}}/generate-payment-channels-client-py.ts.
+# it in place; see {{codegen_dir}}/generate-client-py.ts.
 payment-channels-generate-py: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:python
 
