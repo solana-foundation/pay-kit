@@ -107,6 +107,7 @@ strict = [
     "src/solana_pay_kit/protocols/x402/batch_settlement/types.py",
     "src/solana_pay_kit/protocols/x402/batch_settlement/signatures.py",
     "src/solana_pay_kit/protocols/x402/batch_settlement/verify.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/tx_policy.py",
     "src/solana_pay_kit/protocols/x402/client/upto/__init__.py",
     "src/solana_pay_kit/protocols/x402/client/upto/payment.py",
 ]
