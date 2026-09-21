@@ -346,3 +346,109 @@ def test_build_reclaim_instruction_accounts_and_data() -> None:
     assert accounts[1].pubkey == pk(2)
     assert accounts[1].is_writable is True
     assert accounts[1].is_signer is False
+
+
+# -- settle / request_close / seal builders and channel layout -------------------
+#
+# Imported from the shared core directly: these builders are x402
+# batch-settlement additions and are not re-exported through the MPP shim.
+
+
+def test_settle_pair_verifies_the_exact_voucher_the_program_reads() -> None:
+    from solana_pay_kit._paycore.paymentchannels import (
+        ED25519_PROGRAM_ID,
+        SYSVAR_INSTRUCTIONS,
+        build_settle_instructions,
+    )
+
+    signature = bytes(range(64))
+    verify, settle = build_settle_instructions(
+        channel=pk(9), authorized_signer=pk(4), signature=signature, cumulative=30_000, expires_at=0
+    )
+    # The precompile carries signer, signature and the 50-byte voucher for
+    # exactly this channel and cumulative; settle reads it by index.
+    assert str(verify.program_id) == ED25519_PROGRAM_ID
+    data = bytes(verify.data)
+    assert data[16:48] == bytes(pk(4))
+    assert data[48:112] == signature
+    assert data[112:] == voucher_message_bytes(pk(9), 30_000, 0)
+    assert settle.program_id == PROGRAM_ID
+    assert bytes(settle.data) == bytes([2])
+    assert [(a.pubkey, a.is_signer, a.is_writable) for a in settle.accounts] == [
+        (pk(9), False, True),
+        (Pubkey.from_string(SYSVAR_INSTRUCTIONS), False, False),
+    ]
+
+
+def test_request_close_is_payer_signed_and_writes_only_the_channel() -> None:
+    from solana_pay_kit._paycore.paymentchannels import build_request_close_instruction
+
+    ix = build_request_close_instruction(payer=pk(1), channel=pk(9))
+    assert ix.program_id == PROGRAM_ID
+    assert bytes(ix.data) == bytes([5])
+    assert [(a.pubkey, a.is_signer, a.is_writable) for a in ix.accounts] == [
+        (pk(1), True, False),
+        (pk(9), False, True),
+    ]
+
+
+def test_seal_names_only_the_channel() -> None:
+    from solana_pay_kit._paycore.paymentchannels import build_seal_instruction
+
+    ix = build_seal_instruction(channel=pk(9))
+    assert ix.program_id == PROGRAM_ID
+    assert bytes(ix.data) == bytes([6])
+    assert [(a.pubkey, a.is_signer, a.is_writable) for a in ix.accounts] == [(pk(9), False, True)]
+
+
+def test_discovery_offsets_match_the_channel_account_layout() -> None:
+    # A wrong offset makes getProgramAccounts discovery silently return
+    # nothing (or someone else's channels), so each constant is checked
+    # against the generated Borsh layout rather than restated.
+    from solana_pay_kit._paycore.paymentchannels import (
+        CHANNEL_ACCOUNT_SIZE,
+        CHANNEL_AUTHORIZED_SIGNER_OFFSET,
+        CHANNEL_PAYEE_OFFSET,
+        CHANNEL_PAYER_OFFSET,
+        CHANNEL_RENT_PAYER_OFFSET,
+    )
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    body = Channel.layout.build(
+        {
+            "version": 1,
+            "bump": 255,
+            "status": 0,
+            "salt": 0,
+            "deposit": 0,
+            "settlement": {"settled": 0, "payoutWatermark": 0},
+            "closureStartedAt": 0,
+            "payerWithdrawnAt": 0,
+            "gracePeriod": 900,
+            "distributionHash": [0] * 32,
+            "payer": pk(11),
+            "payee": pk(12),
+            "authorizedSigner": pk(13),
+            "mint": pk(14),
+            "rentPayer": pk(15),
+            "openSlot": 0,
+        }
+    )
+    account = bytes([1]) + bytes(body)  # 1-byte account discriminator first
+    assert len(account) == CHANNEL_ACCOUNT_SIZE
+    for offset, key in [
+        (CHANNEL_PAYER_OFFSET, pk(11)),
+        (CHANNEL_PAYEE_OFFSET, pk(12)),
+        (CHANNEL_AUTHORIZED_SIGNER_OFFSET, pk(13)),
+        (CHANNEL_RENT_PAYER_OFFSET, pk(15)),
+    ]:
+        assert account[offset : offset + 32] == bytes(key)
+
+
+def test_distribution_hash_matches_the_rust_golden_vector() -> None:
+    from solana_pay_kit._paycore.paymentchannels import distribution_hash
+
+    # Frozen from rust/crates/kit/src/core/payment_channels.rs
+    # (distribution_hash_matches_program_sha256_golden), not re-derived here.
+    expected = bytes.fromhex("54c8975587750e8821e93f5d4af607d20d55a58ba1b9a4b49f72a542ed874a3f")
+    assert distribution_hash([Distribution(pk(1), 7_500), Distribution(pk(2), 2_500)]) == expected

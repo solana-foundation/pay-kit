@@ -2,9 +2,9 @@
 
 Canonical home for payment-channel PDA derivation, associated-token derivation,
 voucher preimage bytes, and the convenience instruction builders (``open``,
-``topUp``, ``settleAndSeal``, ``distribute``, ``reclaim``, plus the Ed25519
-voucher precompile). Shared by the MPP session flow and the x402 ``upto``
-scheme; it
+``topUp``, ``settle``, ``settleAndSeal``, ``requestClose``, ``seal``,
+``distribute``, ``reclaim``, plus the Ed25519 voucher precompile). Shared by
+the MPP session flow and the x402 ``upto`` and ``batch-settlement`` schemes; it
 lives in :mod:`solana_pay_kit._paycore` so neither protocol package depends on the
 other, mirroring the Go ``paycore/paymentchannels`` layout.
 
@@ -27,6 +27,7 @@ generated builders encode it.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass, field
 
@@ -41,6 +42,9 @@ from solana_pay_kit._paycore.solana import (
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.distribute import Distribute
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.open import Open
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.reclaim import Reclaim
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.requestClose import RequestClose
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.seal import Seal
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.settle import Settle
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.settleAndSeal import SettleAndSeal
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.topUp import TopUp
 from solana_pay_kit.protocols.programs.paymentchannels.types.distributeArgs import DistributeArgs
@@ -57,6 +61,11 @@ from solana_pay_kit.protocols.programs.paymentchannels.types.topUpArgs import (
 from solana_pay_kit.protocols.programs.paymentchannels.types.voucherArgs import VoucherArgs
 
 __all__ = [
+    "CHANNEL_ACCOUNT_SIZE",
+    "CHANNEL_AUTHORIZED_SIGNER_OFFSET",
+    "CHANNEL_PAYEE_OFFSET",
+    "CHANNEL_PAYER_OFFSET",
+    "CHANNEL_RENT_PAYER_OFFSET",
     "ED25519_PROGRAM_ID",
     "OPEN_SLOT_WINDOW",
     "PAYMENT_CHANNELS_PROGRAM_ID",
@@ -70,8 +79,12 @@ __all__ = [
     "build_ed25519_verify_instruction",
     "build_open_instruction",
     "build_reclaim_instruction",
+    "build_request_close_instruction",
+    "build_seal_instruction",
     "build_settle_and_seal_instructions",
+    "build_settle_instructions",
     "build_top_up_instruction",
+    "distribution_hash",
     "find_associated_token_address",
     "find_channel_pda",
     "find_event_authority_pda",
@@ -137,6 +150,25 @@ OPEN_MAX_OPTIONAL_SUFFIX = 4
 #: Memo program's own limit: it is the cap the canonical x402 client enforces on
 #: ``extra.memo``, so a longer memo would only be rejected by the facilitator.
 OPEN_MAX_MEMO_BYTES = 256
+
+#: Fixed byte length of the channel account layout this SDK targets (1-byte
+#: account discriminator included). ``getProgramAccounts`` discovery filters on
+#: it; a different length is an unsupported account version whose field offsets
+#: below no longer hold.
+CHANNEL_ACCOUNT_SIZE = 256
+
+#: ``Channel.payer`` byte offset: a client discovers its own channels here.
+CHANNEL_PAYER_OFFSET = 88
+
+#: ``Channel.payee`` byte offset: the lifecycle authority seat.
+CHANNEL_PAYEE_OFFSET = 120
+
+#: ``Channel.authorized_signer`` byte offset: the voucher signer.
+CHANNEL_AUTHORIZED_SIGNER_OFFSET = 152
+
+#: ``Channel.rent_payer`` byte offset: a sponsor discovers the channels whose
+#: rent it fronted here.
+CHANNEL_RENT_PAYER_OFFSET = 216
 
 # Channel PDA seed prefix.
 _CHANNEL_SEED = b"channel"
@@ -515,6 +547,53 @@ def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes
     data[message_data_offset:] = message
 
     return Instruction(Pubkey.from_string(ED25519_PROGRAM_ID), bytes(data), [])
+
+
+def distribution_hash(recipients: list[Distribution]) -> bytes:
+    """SHA-256 over ``u32 count LE || (recipient || u16 bps LE)*``: the split the program commits at ``open``.
+
+    Mirrors the Rust ``pc::distribution_hash``; the on-chain ``Channel.distributionHash``
+    must equal it for the split a verifier expects.
+    """
+    hasher = hashlib.sha256(struct.pack("<I", len(recipients)))
+    for entry in recipients:
+        hasher.update(bytes(entry.recipient))
+        hasher.update(struct.pack("<H", entry.bps))
+    return hasher.digest()
+
+
+def build_settle_instructions(
+    *,
+    channel: Pubkey,
+    authorized_signer: Pubkey,
+    signature: bytes,
+    cumulative: int,
+    expires_at: int,
+    program_id: Pubkey = PROGRAM_ID,
+) -> list[Instruction]:
+    """Build the ``[ed25519, settle]`` pair that advances ``settled`` to a voucher's cumulative.
+
+    The program reads the voucher from the preceding Ed25519 precompile, so
+    ``settle`` itself carries only its discriminator. Mirrors the Rust
+    ``build_settle_instructions``.
+    """
+    message = voucher_message_bytes(channel, cumulative, expires_at)
+    verify = build_ed25519_verify_instruction(authorized_signer, signature, message)
+    settle = Settle(
+        {"channel": channel, "instructionsSysvar": Pubkey.from_string(SYSVAR_INSTRUCTIONS)},
+        program_id=program_id,
+    )
+    return [verify, settle]
+
+
+def build_request_close_instruction(*, payer: Pubkey, channel: Pubkey, program_id: Pubkey = PROGRAM_ID) -> Instruction:
+    """Build the payer-signed ``request_close`` that starts the forced-close grace period."""
+    return RequestClose({"payer": payer, "channel": channel}, program_id=program_id)
+
+
+def build_seal_instruction(*, channel: Pubkey, program_id: Pubkey = PROGRAM_ID) -> Instruction:
+    """Build the permissionless ``seal`` that finalizes a channel once its grace period has ended."""
+    return Seal({"channel": channel}, program_id=program_id)
 
 
 def treasury_owner() -> Pubkey:
