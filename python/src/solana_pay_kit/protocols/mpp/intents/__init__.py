@@ -1,17 +1,21 @@
-"""MPP intent layer: the charge and session intent request bodies.
+"""MPP intent layer: the charge, session and subscription intent request bodies.
 
 Carries the charge intent (:class:`~solana_pay_kit.protocols.mpp.intents.charge.ChargeRequest`,
 with string-encoded base-unit amounts so JSON consumers without ``u64`` safety
 stay correct) and the session intent (:class:`SessionRequest` plus the
 :class:`SessionAction` credential union, signed vouchers, and the metering
-types). It also re-exports the :func:`parse_units` helper that converts a
-human-readable decimal amount into base units at the SDK boundary. The wire
-format is defined by the MPP specification's charge and session intents.
+types), and the subscription intent (:class:`SubscriptionRequest`, its
+credential payloads and the reusable bearer proof). It also re-exports the
+:func:`parse_units` helper that converts a human-readable decimal amount into
+base units at the SDK boundary. The wire format is defined by the MPP
+specification's charge, session and subscription intents.
 
 The individual intent modules
 (:mod:`solana_pay_kit.protocols.mpp.intents.charge`,
-:mod:`solana_pay_kit.protocols.mpp.intents.session`) remain the canonical import path;
-the session public types are re-exported here for convenience.
+:mod:`solana_pay_kit.protocols.mpp.intents.session`,
+:mod:`solana_pay_kit.protocols.mpp.intents.subscription`) remain the canonical
+import path; the session and subscription public types are re-exported here for
+convenience.
 """
 
 from __future__ import annotations
@@ -49,6 +53,20 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     validate_idle_timeout_options,
     verify_session_authentication,
 )
+from solana_pay_kit.protocols.mpp.intents.subscription import (
+    SUBSCRIPTION_AUTHENTICATION_DOMAIN,
+    AccessPayload,
+    ActivatePayload,
+    PeriodUnit,
+    SubscriptionAuthentication,
+    SubscriptionMethodDetails,
+    SubscriptionRequest,
+    parse_positive_u64,
+    parse_subscription_payload,
+    period_hours,
+    sign_subscription_authentication,
+    verify_subscription_authentication,
+)
 
 __all__ = [
     # charge intent
@@ -82,4 +100,17 @@ __all__ = [
     "sign_session_authentication",
     "validate_idle_timeout_options",
     "verify_session_authentication",
+    # subscription intent
+    "SUBSCRIPTION_AUTHENTICATION_DOMAIN",
+    "AccessPayload",
+    "ActivatePayload",
+    "PeriodUnit",
+    "SubscriptionAuthentication",
+    "SubscriptionMethodDetails",
+    "SubscriptionRequest",
+    "parse_positive_u64",
+    "parse_subscription_payload",
+    "period_hours",
+    "sign_subscription_authentication",
+    "verify_subscription_authentication",
 ]
