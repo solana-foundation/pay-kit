@@ -154,6 +154,13 @@ class Receipt:
     idle_timeout_seconds: int | None = None
     tx_hash: str = ""
     refunded: str = ""
+    # Subscription intent: periodIndex is a JSON number, the rest are strings.
+    subscription_id: str = ""
+    subscription_delegation: str = ""
+    period_index: int | None = None
+    period_start: str = ""
+    period_end: str = ""
+    expires_at: str = ""
 
     def is_success(self) -> bool:
         """Return True if the receipt indicates success."""

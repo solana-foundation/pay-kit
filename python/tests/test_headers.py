@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from solana_pay_kit.protocols.mpp.core.base64url import encode, encode_json
+from solana_pay_kit.protocols.mpp.core.base64url import decode_json, encode, encode_json
 from solana_pay_kit.protocols.mpp.core.headers import (
     ParseError,
     format_authorization,
@@ -322,6 +322,53 @@ class TestReceipt:
         )
         with pytest.raises(ParseError, match="acceptedCumulative"):
             parse_receipt(header)
+
+
+# The Solana subscription spec draft's activation receipt, with a valid base58
+# delegation (the draft's example string is not base58) and a challengeId.
+SUBSCRIPTION_RECEIPT = {
+    "method": "solana",
+    "intent": "subscription",
+    "status": "success",
+    "reference": "5J8signature",
+    "challengeId": "ch-sub",
+    "subscriptionId": "c3ViX3NvbGFuYV8wMQ",
+    "subscriptionDelegation": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+    "externalId": "merchant-subscription-270",
+    "periodIndex": 0,
+    "periodStart": "2026-01-15T12:03:10Z",
+    "periodEnd": "2026-02-14T12:03:10Z",
+    "expiresAt": "2026-07-14T12:00:00Z",
+    "timestamp": "2026-01-15T12:03:10Z",
+}
+
+
+def test_subscription_receipt_round_trip():
+    receipt = parse_receipt(encode_json(SUBSCRIPTION_RECEIPT))
+    assert (receipt.subscription_id, receipt.period_index, receipt.expires_at) == (
+        "c3ViX3NvbGFuYV8wMQ",
+        0,
+        "2026-07-14T12:00:00Z",
+    )
+    assert decode_json(format_receipt(receipt)) == SUBSCRIPTION_RECEIPT
+
+
+@pytest.mark.parametrize(
+    "field", ["subscriptionId", "subscriptionDelegation", "periodIndex", "periodStart", "periodEnd"]
+)
+def test_subscription_receipt_requires_fields(field):
+    body = {key: value for key, value in SUBSCRIPTION_RECEIPT.items() if key != field}
+    with pytest.raises(ParseError, match=field):
+        parse_receipt(encode_json(body))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"periodIndex": True}, {"periodIndex": -1}, {"periodIndex": "0"}, {"subscriptionId": 7}, {"periodEnd": "soon"}],
+)
+def test_subscription_receipt_rejects_bad_field_types(change):
+    with pytest.raises(ParseError):
+        parse_receipt(encode_json({**SUBSCRIPTION_RECEIPT, **change}))
 
 
 class TestCRLFRejection:

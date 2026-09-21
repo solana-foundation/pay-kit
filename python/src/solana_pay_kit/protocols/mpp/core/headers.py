@@ -31,6 +31,9 @@ class ParseError(Exception):
 # forms like "Jan 29 2026 12:00".
 _ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 
+# Subscription receipt fields carried as JSON strings.
+_SUBSCRIPTION_STRING_FIELDS = ("subscriptionId", "subscriptionDelegation", "periodStart", "periodEnd", "expiresAt")
+
 
 # ---------------------------------------------------------------------------
 # WWW-Authenticate
@@ -234,6 +237,14 @@ def parse_receipt(header: str) -> Receipt:
         isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, int) or idle_timeout_seconds < 0
     ):
         raise ParseError("'idleTimeoutSeconds' in receipt must be a non-negative integer")
+    period_index = data.get("periodIndex")
+    if period_index is not None and (
+        isinstance(period_index, bool) or not isinstance(period_index, int) or period_index < 0
+    ):
+        raise ParseError("'periodIndex' in receipt must be a non-negative integer")
+    for field in _SUBSCRIPTION_STRING_FIELDS:
+        if not isinstance(data.get(field, ""), str):
+            raise ParseError(f"'{field}' in receipt must be a string")
 
     receipt = Receipt(
         status=str(data["status"]),
@@ -248,6 +259,12 @@ def parse_receipt(header: str) -> Receipt:
         idle_timeout_seconds=idle_timeout_seconds,
         tx_hash=str(data.get("txHash", "")),
         refunded=str(data.get("refunded", "")),
+        subscription_id=data.get("subscriptionId", ""),
+        subscription_delegation=data.get("subscriptionDelegation", ""),
+        period_index=period_index,
+        period_start=data.get("periodStart", ""),
+        period_end=data.get("periodEnd", ""),
+        expires_at=data.get("expiresAt", ""),
     )
     if receipt.intent == "session":
         for field, value in (
@@ -263,6 +280,13 @@ def parse_receipt(header: str) -> Receipt:
         ):
             if not value.isascii() or not value.isdigit():
                 raise ParseError(f"'{field}' in session receipt must be a decimal string")
+    if receipt.intent == "subscription":
+        for field in ("subscriptionId", "subscriptionDelegation", "periodIndex", "periodStart", "periodEnd"):
+            if data.get(field) in (None, ""):
+                raise ParseError(f"Missing '{field}' in subscription receipt")
+    for field in ("periodStart", "periodEnd", "expiresAt"):
+        if data.get(field) and not _ISO8601_RE.match(data[field]):
+            raise ParseError(f"Invalid ISO-8601 '{field}' in receipt: {data[field]!r}")
     return receipt
 
 
@@ -289,6 +313,18 @@ def format_receipt(receipt: Receipt) -> str:
         data["txHash"] = receipt.tx_hash
     if receipt.refunded:
         data["refunded"] = receipt.refunded
+    if receipt.subscription_id:
+        data["subscriptionId"] = receipt.subscription_id
+    if receipt.subscription_delegation:
+        data["subscriptionDelegation"] = receipt.subscription_delegation
+    if receipt.period_index is not None:
+        data["periodIndex"] = receipt.period_index
+    if receipt.period_start:
+        data["periodStart"] = receipt.period_start
+    if receipt.period_end:
+        data["periodEnd"] = receipt.period_end
+    if receipt.expires_at:
+        data["expiresAt"] = receipt.expires_at
     return encode_json(data)
 
 
