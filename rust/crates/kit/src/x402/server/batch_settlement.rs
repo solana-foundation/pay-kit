@@ -1518,6 +1518,8 @@ impl X402BatchSettlement {
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
         let reservation = Arc::new(Mutex::new(BatchReservation::InProgress));
         let out = Arc::clone(&reservation);
+        let closing = Arc::new(Mutex::new(false));
+        let closing_out = Arc::clone(&closing);
         // In-place reservation: the record is mutated behind the store's shard
         // guard with no clone. When no record exists yet, only an initial
         // deposit may create one (via `seed`); a plain voucher on an unknown
@@ -1528,6 +1530,17 @@ impl X402BatchSettlement {
                 &outcome.channel_id,
                 seed,
                 Box::new(move |state| {
+                    // Verification read the record before this transition. If a
+                    // close was recorded in between — by the payer's refund, a
+                    // reconciliation, or `finalize_close` on any replica — no new
+                    // charge may start: the close finalizer snapshots the
+                    // committed watermark only once nothing is reserved, and a
+                    // reservation slipping in here would be sealed out of its
+                    // charge.
+                    if state.sealed || state.close_requested_at.is_some() {
+                        *closing_out.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                        return Ok(());
+                    }
                     if let Some(setup) = setup {
                         match &state.pending_setup {
                             // Another setup transaction is already in flight for
@@ -1548,6 +1561,15 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
+        if *closing.lock().unwrap_or_else(|e| e.into_inner()) {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_CLOSING,
+                format!(
+                    "channel {} is closing; no new charge may be reserved",
+                    outcome.channel_id
+                ),
+            ));
+        }
         let reserved = reservation
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2277,6 +2299,44 @@ impl X402BatchSettlement {
         }
     }
 
+    /// Durably record that the payer has started a forced close, and return
+    /// the resulting record.
+    ///
+    /// Once written, `reserve` on every replica refuses new charges for the
+    /// channel, which is what makes the finalizer's later snapshot of the
+    /// committed watermark safe to seal at. Returns `None` when the channel
+    /// has no record in this store.
+    async fn mark_close_requested(
+        &self,
+        channel_id: &str,
+        closure_started_at: i64,
+    ) -> Result<Option<ChannelState>, Error> {
+        let closed_at = u64::try_from(closure_started_at).unwrap_or_else(|_| now_unix());
+        let known = self
+            .store
+            .get_channel(channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+            .is_some();
+        if !known {
+            return Ok(None);
+        }
+        self.store
+            .update_channel(
+                channel_id,
+                Box::new(move |current| {
+                    let mut state = current.ok_or_else(|| {
+                        crate::core::store::StoreError::Internal("channel not found".into())
+                    })?;
+                    state.close_requested_at = Some(state.close_requested_at.unwrap_or(closed_at));
+                    Ok(state)
+                }),
+            )
+            .await
+            .map(Some)
+            .map_err(|e| Error::Other(format!("store error: {e}")))
+    }
+
     async fn record_close(
         &self,
         outcome: &BatchOutcome,
@@ -2700,6 +2760,12 @@ impl X402BatchSettlement {
     /// already advanced is treated as success — the terminal onchain state is
     /// what matters, not which worker got there.
     ///
+    /// The early seal is coordinated with paid requests through the durable
+    /// record: the close is marked first, which makes every replica's
+    /// `reserve` refuse new charges, and a channel that still has a reserved
+    /// authorization in flight is deferred to a later pass rather than sealed
+    /// underneath the handler that is earning the next voucher.
+    ///
     /// A closing channel with nothing left to apply (or whose voucher record was
     /// lost) is left for the permissionless path: sealing it early would gain
     /// nothing the payer is not already owed.
@@ -2735,25 +2801,37 @@ impl X402BatchSettlement {
                 .closure_started_at
                 .saturating_add(i64::from(onchain.grace_period));
             if now < due {
+                // Record the close durably first, so every replica's `reserve`
+                // refuses new charges from here on, then take the snapshot. A
+                // request that reserved before this mark is still running its
+                // handler; sealing at the committed watermark now would leave
+                // its charge irredeemable once `finish_commit` lands, so wait
+                // for the next pass instead. Reservations are only ever removed
+                // by the request that owns them, so this converges.
                 let Some(state) = self
-                    .store
-                    .get_channel(channel_id)
-                    .await
-                    .map_err(|e| Error::Other(format!("store error: {e}")))?
+                    .mark_close_requested(channel_id, onchain.closure_started_at)
+                    .await?
                 else {
                     continue;
                 };
-                let Some(signature) = state.highest_voucher_signature.as_deref() else {
-                    continue;
+                let plan = grace_seal_plan(&state, onchain.settlement.settled);
+                let (cumulative, signature, expires_at) = match plan {
+                    GraceSealPlan::InFlight => {
+                        tracing::info!(
+                            channel = %channel_id,
+                            "channel is closing with a request in flight; deferring the seal"
+                        );
+                        continue;
+                    }
+                    GraceSealPlan::NothingToApply => continue,
+                    GraceSealPlan::Apply {
+                        cumulative,
+                        signature,
+                        expires_at,
+                    } => (cumulative, signature, expires_at),
                 };
-                if state.cumulative <= onchain.settlement.settled {
-                    continue;
-                }
                 let authorized_signer = pc::parse_pubkey(&state.authorized_signer)?;
-                let signature_bytes = decode_signature(signature)?;
-                let expires_at = state
-                    .highest_voucher_expires_at
-                    .unwrap_or(VOUCHER_EXPIRES_AT);
+                let signature_bytes = decode_signature(&signature)?;
                 // Ed25519 precompile immediately followed by `settle_and_seal`
                 // (the program reads the voucher back from the instructions
                 // sysvar), then the sealed payout.
@@ -2762,7 +2840,7 @@ impl X402BatchSettlement {
                     &channel,
                     &authorized_signer,
                     Some(&signature_bytes),
-                    state.cumulative,
+                    cumulative,
                     expires_at,
                     &program_id,
                 )?;
@@ -2771,7 +2849,7 @@ impl X402BatchSettlement {
                     channel_id: channel_id.clone(),
                     instructions,
                 });
-                applied_watermarks.push((channel_id.clone(), state.cumulative));
+                applied_watermarks.push((channel_id.clone(), cumulative));
                 continue;
             }
             groups.push(ChannelInstructionGroup {
@@ -2945,6 +3023,48 @@ impl X402BatchSettlement {
 /// slot is what identifies a client-supplied transaction across retries. The
 /// payer signs the compiled message, which commits to the blockhash and every
 /// instruction, so the signature is unique to this exact transaction.
+/// What `finalize_close` should do for a `Closing` channel that is still
+/// inside its grace period.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GraceSealPlan {
+    /// A reserved authorization has not reached its outcome yet. Sealing now
+    /// would freeze the watermark below the charge its handler is earning, so
+    /// the finalizer waits for the request to commit or release.
+    InFlight,
+    /// The committed watermark is already onchain (or there is no voucher to
+    /// apply); the permissionless `seal` after the grace period suffices.
+    NothingToApply,
+    /// Apply this voucher with `settle_and_seal` now.
+    Apply {
+        cumulative: u64,
+        signature: String,
+        expires_at: i64,
+    },
+}
+
+/// Decide the grace-period action from the durable record and the onchain
+/// `settled` watermark. Pure, so the coordination rule is testable without a
+/// chain: the caller has already recorded the close, which stops new
+/// reservations on every replica.
+fn grace_seal_plan(state: &ChannelState, onchain_settled: u64) -> GraceSealPlan {
+    if state.has_in_flight_authorization() {
+        return GraceSealPlan::InFlight;
+    }
+    let Some(signature) = state.highest_voucher_signature.as_deref() else {
+        return GraceSealPlan::NothingToApply;
+    };
+    if state.cumulative <= onchain_settled {
+        return GraceSealPlan::NothingToApply;
+    }
+    GraceSealPlan::Apply {
+        cumulative: state.cumulative,
+        signature: signature.to_string(),
+        expires_at: state
+            .highest_voucher_expires_at
+            .unwrap_or(VOUCHER_EXPIRES_AT),
+    }
+}
+
 fn payer_signature(transaction: &VersionedTransaction) -> Option<String> {
     let signature = transaction.signatures.get(1)?;
     Some(signature.to_string())
@@ -4208,6 +4328,76 @@ mod tests {
         assert_eq!(
             crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
             codes::INVALID_PAYLOAD_TYPE
+        );
+    }
+
+    /// A payer's forced close racing a request already in its handler: the
+    /// finalizer must not seal at the committed watermark while that charge
+    /// is outstanding, and once committed the higher voucher is what seals.
+    #[tokio::test]
+    async fn closing_during_a_handler_keeps_its_charge_redeemable() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+
+        // The request reserves its authorization and its handler starts.
+        let BatchAccess::Serve(outcome) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("a fresh authorization must be served");
+        };
+        let channel_id = outcome.channel_id.clone();
+
+        // The payer's request_close lands onchain meanwhile. The finalizer
+        // records the close and consults the plan: with the handler still
+        // running, sealing has to wait.
+        let state = handler
+            .mark_close_requested(&channel_id, 1_700_000_000)
+            .await
+            .unwrap()
+            .expect("known channel");
+        assert!(state.close_requested_at.is_some());
+        assert_eq!(grace_seal_plan(&state, 0), GraceSealPlan::InFlight);
+
+        // From here no replica may start another charge on the channel, even
+        // one whose verification read the record before the close was marked.
+        let authorization = handler.authorization_of(&outcome).unwrap();
+        let refused = handler.reserve(&outcome, &authorization).await.unwrap_err();
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&refused.to_string()),
+            codes::INVALID_CHANNEL_CLOSING
+        );
+
+        // The handler succeeds and its charge commits at 3000.
+        handler.mark_handler_succeeded(&outcome).await.unwrap();
+        handler.finish_commit(&outcome).await.expect("commits");
+        drop(outcome);
+        let state = store.get_channel(&channel_id).await.unwrap().unwrap();
+        assert_eq!(state.cumulative, 3_000);
+
+        // Now the finalizer seals with the 3000 voucher, not the 2000 it saw
+        // while the request was in flight.
+        match grace_seal_plan(&state, 0) {
+            GraceSealPlan::Apply {
+                cumulative,
+                signature,
+                ..
+            } => {
+                assert_eq!(cumulative, 3_000);
+                assert_eq!(
+                    Some(signature.as_str()),
+                    state.highest_voucher_signature.as_deref()
+                );
+            }
+            other => panic!("expected the committed voucher to be applied, got {other:?}"),
+        }
+        // Once the chain already carries that watermark there is nothing to
+        // apply early; the permissionless seal after the grace period suffices.
+        assert_eq!(
+            grace_seal_plan(&state, 3_000),
+            GraceSealPlan::NothingToApply
         );
     }
 
