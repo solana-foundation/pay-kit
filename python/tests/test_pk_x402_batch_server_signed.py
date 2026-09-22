@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from solders.keypair import Keypair
@@ -23,7 +23,12 @@ from solana_pay_kit.protocols.x402.batch_settlement.engine import (
 )
 from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError
 from solana_pay_kit.protocols.x402.batch_settlement.signatures import sign_authorization, verify_voucher
-from solana_pay_kit.protocols.x402.batch_settlement.store import MemoryBatchOperationStore
+from solana_pay_kit.protocols.x402.batch_settlement.store import (
+    ChannelRecord,
+    MemoryBatchChannelStore,
+    MemoryBatchOperationStore,
+    Reservation,
+)
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig, BatchRequirements
 from solana_pay_kit.signer import LocalSigner
 from tests.batch_chain import PRICE, SLOT, World, make_world
@@ -316,3 +321,27 @@ async def test_a_metered_request_past_its_lease_cannot_ride_a_tiny_top_up(world:
     assert await _code(engine.verify_and_reserve(world.gate, world.header(_server_accept(engine, world), top_up))) == (
         errors.DUPLICATE_SETTLEMENT
     )
+
+
+@pytest.mark.parametrize("kind", ["close", "client"])
+async def test_a_metered_request_is_refused_while_another_kind_holds_the_channel(world: World, kind: str) -> None:
+    # Server-signed requests share a channel only with each other. A close hold
+    # (a refund mid request_close, or a seal) and a client-signed voucher each
+    # take it alone: a charge accepted beside them would move the watermarks
+    # after the claim that precedes the close, and could never be redeemed.
+    store = MemoryBatchChannelStore()
+    engine = X402BatchSettlement(
+        world.config,
+        settings=BatchSettlementConfig(operator=OPERATOR),
+        channel_store=store,
+        rpc=world.chain,  # type: ignore[arg-type]
+        recent_state_provider=lambda: ("hint", SLOT),
+        clock=lambda: NOW,
+    )
+    await _opened(engine, world)
+    channel_id = world.channel_id(_server_config(world))
+    await store.update(
+        channel_id,
+        lambda current: replace(cast("ChannelRecord", current), reservations={"held": Reservation(0, kind, NOW + 300)}),
+    )
+    assert await _code(_verify(engine, world, _metered(world, "beside-the-hold"))) == errors.DUPLICATE_SETTLEMENT
