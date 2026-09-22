@@ -17,7 +17,7 @@ import base64
 import binascii
 import json
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
@@ -44,6 +44,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger("solana_pay_kit")
+
+#: Default cap on a streaming request body this transport will hold in memory.
+MAX_BUFFERED_BODY_BYTES = 8 * 1024 * 1024
 
 #: 402 header carrying the base64 JSON ``PaymentRequired`` envelope.
 PAYMENT_REQUIRED_HEADER = "PAYMENT-REQUIRED"
@@ -104,25 +107,35 @@ def _encode(payment: BatchPaymentPayload) -> str:
 
 
 class BatchPaymentTransport(httpx.AsyncBaseTransport):
-    """httpx transport that pays x402 ``batch-settlement`` 402s from one :class:`BatchSettlementClient`."""
+    """httpx transport that pays x402 ``batch-settlement`` 402s from one :class:`BatchSettlementClient`.
+
+    A gated request is sent twice, unpaid then paid, so its body has to be
+    replayable. Bodies httpx already holds (bytes, text, json, files) are; a
+    streaming body is read into memory once before the first send, up to
+    ``max_buffered_body_bytes``. A larger one is refused before anything is
+    sent, because paying for a request whose body cannot be repeated would
+    charge the payer for a body the server never receives.
+    """
 
     def __init__(
-        self, client: BatchSettlementClient, *, base_transport: httpx.AsyncBaseTransport | None = None
+        self,
+        client: BatchSettlementClient,
+        *,
+        base_transport: httpx.AsyncBaseTransport | None = None,
+        max_buffered_body_bytes: int = MAX_BUFFERED_BODY_BYTES,
     ) -> None:
         """Wrap ``base_transport`` (a fresh ``httpx.AsyncHTTPTransport`` by default)."""
         self._client = client
         self._inner = base_transport or httpx.AsyncHTTPTransport()
+        self._max_body = max_buffered_body_bytes
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Send ``request``; on a batch challenge pay and resend, once more after an adopted corrective.
 
-        The body is buffered before the first send: a gated request is sent
-        again once it is paid, and a one-shot stream (an async generator) would
-        be consumed by the first attempt and arrive empty on the retry. httpx
-        swaps a read stream for a replayable one, so the paid send carries the
-        same bytes.
+        A streaming body is buffered before the first send: it would otherwise
+        be consumed by the unpaid attempt and arrive empty on the paid one.
         """
-        await request.aread()
+        request = await self._replayable(request)
         response = await self._inner.handle_async_request(request)
         required = await _challenge(response)
         if required is None:
@@ -158,9 +171,42 @@ class BatchPaymentTransport(httpx.AsyncBaseTransport):
                 return response
         return response  # pragma: no cover - the loop always returns
 
+    async def _replayable(self, request: httpx.Request) -> httpx.Request:
+        """Return a request whose body can be sent again, reading a stream in once.
+
+        Nothing to do for a body httpx already holds. A stream is read up to
+        the cap and rebuilt as bytes; over the cap it raises before the first
+        send, so the server never sees half a request.
+        """
+        if hasattr(request, "_content"):
+            return request
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > self._max_body:
+            raise _too_large(int(declared), self._max_body)
+        chunks: list[bytes] = []
+        size = 0
+        stream = cast("AsyncIterable[bytes]", request.stream)
+        async for chunk in stream:
+            size += len(chunk)
+            if size > self._max_body:
+                raise _too_large(size, self._max_body)
+            chunks.append(chunk)
+        framing = {"content-length", "transfer-encoding"}
+        headers = {name: value for name, value in request.headers.items() if name.lower() not in framing}
+        return httpx.Request(
+            request.method, request.url, headers=headers, content=b"".join(chunks), extensions=request.extensions
+        )
+
     async def aclose(self) -> None:
         """Close the inner transport."""
         await self._inner.aclose()
+
+
+def _too_large(size: int, limit: int) -> ValueError:
+    return ValueError(
+        f"batch-settlement: a streaming body of {size} bytes is over max_buffered_body_bytes ({limit}); "
+        "a paid request is sent twice, so its body must fit in memory"
+    )
 
 
 @asynccontextmanager

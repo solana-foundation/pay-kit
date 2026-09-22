@@ -235,6 +235,36 @@ async def test_a_streaming_post_body_survives_the_paid_retry(world: World) -> No
     assert bodies == [b"summarize this text", b"summarize this text"]  # unpaid, then paid
 
 
+@pytest.mark.parametrize("declared", [True, False])
+async def test_a_streaming_body_over_the_buffer_limit_is_refused_before_sending(world: World, declared: bool) -> None:
+    # Buffering is what makes the paid retry possible, so it is bounded and the
+    # refusal comes before the unpaid send rather than after a silent copy.
+    server = Server(world)
+    sent: list[httpx.Request] = []
+
+    class Counting(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return await server.handle(request)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"x" * 64
+        yield b"x" * 64
+
+    async def never_read() -> AsyncIterator[bytes]:
+        raise AssertionError("a declared length over the limit is refused without reading the body")
+        yield b""  # pragma: no cover - unreachable, keeps this an async generator
+
+    client = _client(world)
+    transport = BatchPaymentTransport(client, base_transport=Counting(), max_buffered_body_bytes=100)
+    body = never_read() if declared else chunks()
+    headers = {"content-length": "128"} if declared else {}
+    async with httpx.AsyncClient(transport=transport) as http:
+        with pytest.raises(ValueError, match="max_buffered_body_bytes"):
+            await http.post(URL, content=body, headers=headers)
+    assert sent == []
+
+
 def test_challenge_parsing_surfaces_the_corrective_error_code(world: World) -> None:
     server = Server(world)
     mismatch = errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH
