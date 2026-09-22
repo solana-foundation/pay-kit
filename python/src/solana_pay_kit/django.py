@@ -23,7 +23,6 @@ WSGI/ASGI boundary on its own.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import weakref
 from collections.abc import Callable, Coroutine
@@ -32,6 +31,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, is_paid
 from solana_pay_kit._middleware import payment as _core_payment
+from solana_pay_kit._paycore.loops import run_blocking
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
@@ -455,26 +455,4 @@ def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     Uses :func:`asyncio.run` when no loop is running; spins a dedicated loop in
     a fresh thread when called from within a running loop (ASGI handlers).
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    import threading
-
-    result: dict[str, _T] = {}
-    error: dict[str, BaseException] = {}
-
-    def _runner() -> None:
-        try:
-            result["value"] = asyncio.run(coro)
-        except BaseException as exc:  # re-raised on the calling thread below
-            error["error"] = exc
-
-    thread = threading.Thread(target=_runner)
-    thread.start()
-    thread.join()
-    raised = error.get("error")
-    if raised is not None:
-        raise raised
-    return result["value"]
+    return run_blocking(coro)

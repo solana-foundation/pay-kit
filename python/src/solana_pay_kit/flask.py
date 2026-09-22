@@ -21,7 +21,6 @@ the response boundary.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import weakref
 from collections.abc import Callable, Coroutine
@@ -32,6 +31,7 @@ import flask
 from flask import abort, g, make_response
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
+from solana_pay_kit._paycore.loops import run_blocking
 from solana_pay_kit.config import config as _global_config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
@@ -390,14 +390,8 @@ def _abort_usage_outcome(
 def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     """Drive a solana_pay_kit async coroutine from Flask's synchronous view context.
 
-    Uses :func:`asyncio.run` when no loop is running; falls back to a dedicated
-    short-lived loop if one is somehow already active on this thread.
+    Catching the loop error around :func:`asyncio.run` would swallow the scheme
+    errors that subclass ``RuntimeError`` (``StoreInvariantError``) and re-await
+    a coroutine that is already consumed, so the loop is probed first.
     """
-    try:
-        return asyncio.run(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+    return run_blocking(coro)

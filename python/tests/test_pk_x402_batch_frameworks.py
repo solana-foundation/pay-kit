@@ -28,6 +28,7 @@ from solana_pay_kit.protocols.x402.batch_settlement import (  # noqa: E402  # py
     errors,  # noqa: E402
 )
 from solana_pay_kit.protocols.x402.batch_settlement.engine import X402BatchSettlement  # noqa: E402
+from solana_pay_kit.protocols.x402.batch_settlement.store import StoreInvariantError  # noqa: E402
 from solana_pay_kit.protocols.x402.batch_settlement.types import (  # noqa: E402
     MAX_WITHDRAW_DELAY_SECONDS,
     MIN_WITHDRAW_DELAY_SECONDS,
@@ -347,6 +348,34 @@ def test_a_misconfigured_route_answers_500_not_a_challenge(app: tuple[Get, list[
     get, served = app
     status, _, _ = get("/x", {})
     assert status == 500 and served == []
+
+
+def test_flask_surfaces_a_store_invariant_instead_of_a_reused_coroutine(world: World) -> None:
+    # StoreInvariantError subclasses RuntimeError. Catching RuntimeError around
+    # asyncio.run and re-running the coroutine turned a refused write into
+    # "cannot reuse already awaited coroutine", losing the real error.
+    import flask
+
+    from solana_pay_kit.flask import require_batch
+
+    engine = _engine(world)
+
+    async def refuse(channel_id: str, mutator: Any) -> Any:
+        raise StoreInvariantError(f"channel {channel_id} deposit would drop")
+
+    engine._store.update = refuse  # type: ignore[method-assign]  # noqa: SLF001
+    app = flask.Flask("invariant")
+    app.testing = True  # let the exception out instead of rendering a 500
+
+    @app.get("/r")
+    @require_batch(world.gate, config=world.config)
+    def fixed() -> Any:  # pragma: no cover - the gate refuses before the handler
+        return {"ok": True}
+
+    accept = engine.accepts_entries(world.gate, {})[0]
+    payment: Any = run(_client(world).create_payment_payload(accept))
+    with pytest.raises(StoreInvariantError, match="deposit would drop"):
+        app.test_client().get("/r", headers=_header(payment))
 
 
 def test_x402_batch_shares_the_engine_the_shims_use(world: World) -> None:
