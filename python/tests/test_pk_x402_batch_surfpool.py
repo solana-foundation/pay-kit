@@ -174,9 +174,11 @@ class Stack:
         for _ in range(times):
             self.server.refused = None
             response = await self.http.get(URL)
+            refused = self.server.refused
             if response.status_code != 200 and self._stale_blockhash():
                 response = await self.http.get(URL)  # once, on a fresh challenge and a fresh hash
-            assert response.status_code == 200, response.headers.get("payment-required")
+                refused = self.server.refused or refused
+            assert response.status_code == 200, refused or response.headers.get("payment-required")
             settled.append(json.loads(base64.b64decode(response.headers["payment-response"])))
         self.channel_id()
         return settled
