@@ -362,6 +362,14 @@ def test_subscription_receipt_requires_fields(field):
         parse_receipt(encode_json(body))
 
 
+def test_subscription_receipt_without_intent_is_still_checked():
+    # The Rust server omits `intent` and dispatches on field presence.
+    body = {key: value for key, value in SUBSCRIPTION_RECEIPT.items() if key != "intent"}
+    assert parse_receipt(encode_json(body)).period_index == 0
+    with pytest.raises(ParseError, match="periodEnd"):
+        parse_receipt(encode_json({key: value for key, value in body.items() if key != "periodEnd"}))
+
+
 @pytest.mark.parametrize(
     "change",
     [{"periodIndex": True}, {"periodIndex": -1}, {"periodIndex": "0"}, {"subscriptionId": 7}, {"periodEnd": "soon"}],

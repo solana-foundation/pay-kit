@@ -280,7 +280,10 @@ def parse_receipt(header: str) -> Receipt:
         ):
             if not value.isascii() or not value.isdigit():
                 raise ParseError(f"'{field}' in session receipt must be a decimal string")
-    if receipt.intent == "subscription":
+    # Rust receipts carry no `intent` and dispatch on field presence, so anything
+    # that names a delegation or a period is checked as a subscription receipt.
+    names_a_subscription = any(data.get(field) not in (None, "") for field in ("subscriptionDelegation", "periodIndex"))
+    if receipt.intent == "subscription" or names_a_subscription:
         for field in ("subscriptionId", "subscriptionDelegation", "periodIndex", "periodStart", "periodEnd"):
             if data.get(field) in (None, ""):
                 raise ParseError(f"Missing '{field}' in subscription receipt")
