@@ -40,7 +40,7 @@ from solana_pay_kit._paycore.rpc import SolanaRpc, read_with_replica_retry
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_PROGRAM
 from solana_pay_kit.config import BatchSettlementConfig
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
-from solana_pay_kit.protocols.x402.batch_settlement import onchain
+from solana_pay_kit.protocols.x402.batch_settlement import errors, onchain
 from solana_pay_kit.protocols.x402.batch_settlement.engine import VerifiedBatchRequest, X402BatchSettlement
 from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError
 from solana_pay_kit.protocols.x402.client.batch_settlement import (
@@ -103,6 +103,8 @@ class Server:
     def __init__(self, engine: X402BatchSettlement, gate: Gate, meter: int) -> None:
         self.engine, self.gate, self.meter = engine, gate, meter
         self.transport = httpx.MockTransport(self.handle)
+        #: The last refusal, so a test can tell the fork's blockhash window from a real failure.
+        self.refused: BatchSettlementError | None = None
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         engine = self.engine
@@ -115,6 +117,7 @@ class Server:
             settled = await engine.commit(verified, self.meter if verified.server_signed else None)
             return httpx.Response(200, headers=engine.settlement_headers(settled), text="ok")
         except BatchSettlementError as exc:
+            self.refused = exc
             accepts = getattr(exc, "accepts", None)
             return httpx.Response(
                 402, headers=engine.challenge_headers(self.gate, request, error=exc.code, accepts=accepts)
@@ -152,13 +155,41 @@ class Stack:
         assert channel is not None
         return channel
 
+    def _stale_blockhash(self) -> bool:
+        """Whether the last refusal was the surfnet's blockhash window and nothing else.
+
+        A mainnet fork advances slots in jumps, so the blockhash a challenge
+        carried can leave the validity window before the setup it signed is
+        broadcast. Every other settlement_simulation reason is a real failure.
+        """
+        refused, self.server.refused = self.server.refused, None
+        return (
+            refused is not None
+            and refused.code == errors.INVALID_SETTLEMENT_SIMULATION
+            and "Blockhash not found" in refused.detail
+        )
+
     async def pay(self, times: int) -> list[Any]:
         settled: list[Any] = []
         for _ in range(times):
+            self.server.refused = None
             response = await self.http.get(URL)
+            if response.status_code != 200 and self._stale_blockhash():
+                response = await self.http.get(URL)  # once, on a fresh challenge and a fresh hash
             assert response.status_code == 200, response.headers.get("payment-required")
             settled.append(json.loads(base64.b64decode(response.headers["payment-response"])))
         self.channel_id()
+        return settled
+
+    async def refund(self, http: httpx.AsyncClient) -> Any:
+        """Close the channel, retrying once if the fork's blockhash window closed first."""
+        self.server.refused = None
+        try:
+            (settled,) = await self.client.refund(URL, http=http)
+        except BatchSettlementError:
+            if not self._stale_blockhash():
+                raise
+            (settled,) = await self.client.refund(URL, http=http)
         return settled
 
 
@@ -241,7 +272,7 @@ async def test_claims_and_distributes_what_was_charged_to_pay_to(stack: Stack) -
 async def test_a_refund_claims_first_then_starts_the_close(stack: Stack) -> None:
     await stack.pay(2)
     async with httpx.AsyncClient(transport=stack.server.transport) as http:
-        (settled,) = await stack.client.refund(URL, http=http)
+        settled = await stack.refund(http)
     assert settled["success"]
     channel = await stack.channel()
     assert (int(channel.status), int(channel.settlement.settled)) == (CLOSING, 2 * PRICE)
@@ -303,8 +334,7 @@ async def test_after_the_grace_period_the_close_is_finalized_and_the_rent_reclai
     try:
         await stack.pay(2)
         async with httpx.AsyncClient(transport=stack.server.transport) as http:
-            (settled,) = await stack.client.refund(URL, http=http)
-            assert settled["success"]
+            assert (await stack.refund(http))["success"]
         closing = await stack.channel()
         # Past the grace period, which also clears the 1500-slot rent window (400 ms slots).
         target = int(closing.closureStartedAt) + int(closing.gracePeriod) + 5
