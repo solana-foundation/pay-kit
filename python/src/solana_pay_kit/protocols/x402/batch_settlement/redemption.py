@@ -259,7 +259,12 @@ class BatchRedemption:
         }
         if self._settings.receiver_authorizer is not None:
             config["receiverAuthorizer"] = self._settings.receiver_authorizer
-        if signer == self._settings.operator:
+        if signer != config["payer"]:
+            # Server-signed is what the chain says: a signer that is not the
+            # payer is an operator key. Matching it against the operator key
+            # configured now would rebuild a channel opened under a rotated key
+            # as client-signed, and every request for it would then be refused
+            # for a channelConfig that differs from the stored one.
             config["voucherSigner"] = "server"
         return ChannelRecord(
             channel_id=channel_id,

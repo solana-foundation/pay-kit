@@ -627,6 +627,21 @@ async def test_recover_rebuilds_sponsored_channels_at_their_settled_watermark(wo
     assert await h.worker.recover() == []  # known channels are left alone
 
 
+async def test_recover_reads_server_mode_from_the_chain_not_from_todays_operator_key(world: World) -> None:
+    # The channel was opened under the operator key in use then; this engine
+    # signs with a new one. The authorized signer on chain says the channel is
+    # server-signed, and a rebuild that disagreed would refuse every request
+    # for it as a channelConfig that differs from the stored one.
+    retired = LocalSigner.from_keypair(Keypair.from_seed(bytes([8] * 32)))
+    current = LocalSigner.from_keypair(Keypair.from_seed(bytes([9] * 32)))
+    h = _Harness(world, [NOW], operator=current)
+    config = world.channel_config(payerAuthorizer=retired.pubkey())
+    channel_id = world.put_channel(config, deposit=5 * PRICE, settled=PRICE)
+    world.chain.program_accounts.append((channel_id, world.chain.accounts[channel_id][0]))
+    assert await h.worker.recover() == [channel_id]
+    assert (await h.record(channel_id)).channel_config.get("voucherSigner") == "server"
+
+
 async def test_recover_matches_the_pay_to_of_every_route_the_engine_advertised(world: World) -> None:
     h = _Harness(world, [NOW])
     route_pay_to = str(Keypair.from_seed(bytes([9] * 32)).pubkey())
