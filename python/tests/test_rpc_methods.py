@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
+from solana_pay_kit._paycore.rpc import RpcResponseError, SolanaRpc, _RpcError, _RpcResponse
 
 
 class _FakeResponse:
@@ -255,3 +255,30 @@ async def test_get_slot_returns_integer_and_rejects_garbage():
     assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
     with pytest.raises(_RpcError):
         await _rpc({"result": "not-a-slot", "id": 1}).get_slot()
+
+
+@pytest.mark.asyncio
+async def test_is_blockhash_valid_reads_value_and_rejects_garbage():
+    client = _ScriptedClient([{"result": {"context": {"slot": 1}, "value": False}}])
+    rpc = SolanaRpc("http://localhost:9999", timeout=1.0)
+    rpc._client = client  # type: ignore[assignment]
+    assert await rpc.is_blockhash_valid("hash") is False
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "isBlockhashValid",
+        "params": ["hash", {"commitment": "confirmed"}],
+    }
+    with pytest.raises(PaymentError, match="no boolean"):
+        await _rpc({"result": {"value": "yes"}}).is_blockhash_valid("hash")
+
+
+@pytest.mark.asyncio
+async def test_send_rejection_is_a_response_error_but_a_null_signature_is_not():
+    # A JSON-RPC error means the node refused the transaction before forwarding it;
+    # a null result is ambiguous, so it must not look like a rejection.
+    with pytest.raises(RpcResponseError):
+        await _rpc({"error": {"code": -32002, "message": "Transaction simulation failed"}}).send_raw_transaction(b"x")
+    with pytest.raises(_RpcError) as exc:
+        await _rpc({"result": None}).send_raw_transaction(b"x")
+    assert not isinstance(exc.value, RpcResponseError)

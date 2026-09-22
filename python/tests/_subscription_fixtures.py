@@ -19,8 +19,8 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
+from solana_pay_kit._paycore.rpc import RpcResponseError
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.protocols.mpp._subscriptions import (
     SUBSCRIPTIONS_PROGRAM_ID,
@@ -116,6 +116,9 @@ AMOUNT = 1_000_000
 PERIOD_HOURS = 720
 CREATED_AT = 1_700_000_000
 BLOCKHASH = str(Hash(bytes([9] * 32)))
+NOW = 1_750_000_000
+CLOCK_SYSVAR = "SysvarC1ock11111111111111111111111111111111"
+SYSVAR_OWNER = "Sysvar1111111111111111111111111111111111111"
 
 
 def ok_status() -> dict[str, Any]:
@@ -136,11 +139,14 @@ class FakeRpc:
         self.hidden_reads: dict[str, int] = {}
         self.on_send: Callable[[bytes], None] | None = None
         self.send_error: Exception | None = None
+        self.chain_clock: Callable[[], int] = lambda: NOW
 
     def put(self, address: Pubkey | str, data: bytes, owner: Pubkey | str = PROGRAM_ID) -> None:
         self.accounts[str(address)] = (data, str(owner))
 
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        if address == CLOCK_SYSVAR:
+            return bytes(32) + struct.pack("<q", self.chain_clock()), SYSVAR_OWNER
         if self.hidden_reads.get(address, 0) > 0:
             self.hidden_reads[address] -= 1
             return None
@@ -220,7 +226,6 @@ def challenge_for(request: dict[str, Any], *, expires: str = "2099-01-01T00:00:0
     )
 
 
-NOW = 1_750_000_000
 PERIOD_SECONDS = PERIOD_HOURS * 3600
 AUTHORITY_SLOT = 555
 
@@ -241,11 +246,12 @@ def install_chain(rpc: FakeRpc) -> None:
 
 
 class ChainSim:
-    """Applies subscriptions instructions to ``FakeRpc`` accounts the way the program does.
+    """Applies subscriptions instructions to ``FakeRpc`` accounts the way the program does, on its own clock.
 
     ``init`` creates the authority at ``AUTHORITY_SLOT``; ``subscribe`` creates the
     delegation at ``clock()``; ``transfer_subscription`` rolls the period over by
-    whole periods and enforces the per-period cap (raising like a failed preflight).
+    whole periods and enforces the per-period cap (raising like a preflight rejection).
+    ``clock`` is the chain clock, also served as the Clock sysvar.
     Writes apply only when every instruction succeeds.
     """
 
@@ -253,6 +259,7 @@ class ChainSim:
         self.rpc = rpc
         self.clock = clock
         rpc.on_send = self
+        rpc.chain_clock = lambda: self.clock()
 
     def __call__(self, raw: bytes) -> None:
         tx = VersionedTransaction.from_bytes(raw)
@@ -290,7 +297,7 @@ class ChainSim:
                     pulled = 0
                 amount = struct.unpack_from("<Q", data, 1)[0]
                 if pulled + amount > state.amount:
-                    raise PaymentError("simulation failed: AmountExceedsPeriodLimit", code="payment_invalid")
+                    raise RpcResponseError("simulation failed: AmountExceedsPeriodLimit", code="payment_invalid")
                 writes[str(accounts[0])] = delegation_bytes(
                     subscriber=state.subscriber,
                     plan=state.plan,

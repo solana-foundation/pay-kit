@@ -277,6 +277,7 @@ _TERMS = {
         ({"amount": 999_999}, {}, "amount"),
         ({"period_hours": 24}, {}, "period"),
         ({"status": 0}, {}, "not active"),
+        ({"status": 0}, {"require_active": False}, None),
         ({"end_ts": 1_750_000_000}, {}, "ended"),
     ],
 )

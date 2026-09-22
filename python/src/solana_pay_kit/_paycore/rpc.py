@@ -33,6 +33,14 @@ class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
 
 
+class RpcResponseError(_RpcError):
+    """The node answered the call with a JSON-RPC ``error`` object.
+
+    For ``sendTransaction`` (preflight on) this means the node rejected the
+    transaction before forwarding it, so it can never land.
+    """
+
+
 class _RpcResponse:
     """Minimal value-wrapper matching the ``solana-py`` AsyncClient
     response shape that the rest of the codebase expects (``.value``
@@ -98,7 +106,7 @@ class SolanaRpc:
         data = response.json()
         if "error" in data:
             err = data["error"]
-            raise _RpcError(str(err.get("message") or err), code="payment_invalid")
+            raise RpcResponseError(str(err.get("message") or err), code="payment_invalid")
         return data.get("result")
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any:
@@ -166,6 +174,20 @@ class SolanaRpc:
         else:
             return None
         return raw, owner
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """Whether ``blockhash`` can still land a transaction (``isBlockhashValid``).
+
+        Used by subscription renewal to decide that an unseen attempt is dead:
+        once this is False at ``confirmed``, a transaction built on the hash can
+        only be in a block already visible to ``getSignatureStatuses``. A reply
+        without a boolean ``value`` raises instead of guessing.
+        """
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, bool):
+            raise _RpcError("isBlockhashValid returned no boolean value", code="payment_invalid")
+        return value
 
     async def get_signature_statuses(self, signatures: list[str], search_history: bool = False) -> list[Any]:
         """Statuses for ``signatures``; ``search_history`` also searches beyond the recent status cache."""

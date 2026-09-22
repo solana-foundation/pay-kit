@@ -7,13 +7,23 @@ replay per challenge AND per signature, co-signs it as puller (and fee payer
 when sponsored), broadcasts, then checks the resulting ``SubscriptionDelegation``
 before binding the subscriber's bearer proof. Access re-checks that proof, the
 delegation, its ``SubscriptionAuthority`` incarnation and the current period
-against the chain on every request.
+against the chain on every request, and when the current period is unpaid it
+collects it with one puller-signed ``transfer_subscription`` (``renew_on_access``).
 
 Store keys (JSON values match the Rust server where it has them):
 
 - ``solana-subscription:challenge:{challengeId}`` = ``{"signature"}``
 - ``solana-subscription:consumed:{signature}`` = ``{"challengeId"}``
 - ``solana-subscription:authentication:{delegation}`` = the bearer binding
+- ``solana-subscription:renewal:{delegation}:{anchor}:{period}:t{bucket}`` = ``{"signature", "blockhash"}``,
+  the one renewal claim of a 90 s window of chain time (plus ``...:t{bucket}:rejected`` once
+  the node refused it at preflight)
+- ``solana-subscription:renewal:{delegation}:{anchor}:{period}:err:{n}`` = ``{"signature"}`` of the
+  n-th renewal that landed with an error (it paid a fee), n in 0..4
+- ``solana-subscription:renewal:{delegation}:{anchor}:{period}`` = ``{"signature"}`` of the renewal that paid it
+
+``anchor`` is the binding's ``periodStartTs``, so a re-activated delegation at
+the same address starts a fresh set of renewal keys.
 """
 
 from __future__ import annotations
@@ -27,7 +37,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from solders.hash import Hash  # type: ignore[import-untyped]
+from solders.message import MessageV0  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import (
@@ -39,7 +52,12 @@ from solana_pay_kit._paycore.errors import (
 )
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
-from solana_pay_kit._paycore.rpc import SolanaRpc, read_with_replica_retry, resolve_channel_read_policy
+from solana_pay_kit._paycore.rpc import (
+    RpcResponseError,
+    SolanaRpc,
+    read_with_replica_retry,
+    resolve_channel_read_policy,
+)
 from solana_pay_kit._paycore.solana import (
     MIN_SECRET_KEY_BYTES,
     TOKEN_2022_PROGRAM,
@@ -54,6 +72,7 @@ from solana_pay_kit.protocols.mpp._subscriptions import (
     DelegationView,
     PlanView,
     authority_init_id,
+    build_transfer_subscription_ix,
     decode_delegation,
     decode_plan,
     find_subscription_authority_pda,
@@ -103,6 +122,21 @@ _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _CHALLENGE_KEY = "solana-subscription:challenge:{}"
 _CONSUMED_KEY = "solana-subscription:consumed:{}"
 _BINDING_KEY = "solana-subscription:authentication:{}"
+_RENEWAL_KEY = "solana-subscription:renewal:{}:{}:{}:t{}"
+_FAILED_RENEWAL_KEY = "solana-subscription:renewal:{}:{}:{}:err:{}"
+_RENEWED_KEY = "solana-subscription:renewal:{}:{}:{}"
+_REJECTED_SUFFIX = ":rejected"
+# Attempts that landed with an error paid a fee: at most this many per period.
+# Preflight rejections and attempts that expired unseen cost nothing and do not count.
+_MAX_FAILED_RENEWALS = 5
+# One renewal claim per window of chain time. A blockhash lives for about 60-90 s,
+# so a claim two windows old can no longer land: only the last window's claim can
+# still be in flight. Should one land late anyway, the program's per-period cap
+# refuses the second charge.
+_RENEWAL_BUCKET_SECONDS = 90
+_CLOCK_SYSVAR = Pubkey.from_string("SysvarC1ock11111111111111111111111111111111")
+_SYSVAR_OWNER = "Sysvar1111111111111111111111111111111111111"
+_CLOCK_TIMESTAMP_OFFSET = 32  # slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp
 _PLAN_TTL_SECONDS = 60
 # The program's TIME_DRIFT_ALLOWED_SECS: a period that started up to this far
 # in the local future still counts, so a fast chain clock does not lock users out.
@@ -169,6 +203,9 @@ class SubscriptionConfig:
     # Post-confirmation re-read policy for replica lag; unset takes the defaults.
     read_max_attempts: int | None = None
     read_backoff_step_ms: int | None = None
+    # Collect an unpaid period when a valid proof arrives. Off keeps Rust parity
+    # (an unpaid period answers 402) for operators with their own renewal worker.
+    renew_on_access: bool = True
 
 
 @dataclass
@@ -231,7 +268,7 @@ class SubscriptionServer:
                 raise _config_error(str(exc)) from exc
         self._network = "mainnet" if config.network == "mainnet-beta" else config.network
         rpc = config.rpc if config.rpc is not None else SolanaRpc(config.rpc_url or default_rpc_url(self._network))
-        for method in _RPC_METHODS:
+        for method in _RPC_METHODS + (("is_blockhash_valid",) if config.renew_on_access else ()):
             if not callable(getattr(rpc, method, None)):
                 raise _config_error(f"rpc client is missing '{method}'; use SolanaRpc or a compatible client")
         self._rpc: Any = rpc
@@ -612,29 +649,238 @@ class SubscriptionServer:
         expires_at = self._subscription_expires_at(request)
         if expires_at is not None and now >= expires_at:
             raise _invalid("subscription has expired")
-        paid = state.amount_pulled_in_period == self._config.amount
-        if (
-            not paid
-            or not state.current_period_start_ts - _CLOCK_SKEW_SECONDS <= now < state.current_period_start_ts + period
-        ):
-            raise _invalid("subscription is not paid for the current period")
         anchor = binding.get("periodStartTs")
         if isinstance(anchor, bool) or not isinstance(anchor, int):
             raise _invalid("subscription binding is malformed")
-        elapsed = state.current_period_start_ts - anchor
-        if elapsed < 0 or elapsed % period:
-            raise _invalid("subscription billing anchor does not align with the current period")
+        reference = str(binding.get("activationSignature", ""))
+        renewed = False
+        index = self._period_index(state, anchor)  # before any charge, not only after
+        if not self._paid(state, now):
+            # Renew only once the chain period has fully elapsed, so the program
+            # resets the counter and one transfer of exactly `amount` pays the
+            # period; a partly pulled current period is never topped up.
+            if not self._config.renew_on_access or now < state.current_period_start_ts + period:
+                raise _invalid("subscription is not paid for the current period")
+            # The program rolls periods over on its own clock, so the chain clock
+            # (not ours) decides whether the next period has started.
+            chain_now = await self._chain_time()
+            if chain_now < state.current_period_start_ts + period:
+                raise _invalid("subscription is not paid for the current period (the chain period has not ended)")
+            state, reference = await self._renew(delegation, payer, anchor, chain_now)
+            renewed = True
+            index = self._period_index(state, anchor)
+        if index and not renewed:
+            marker = await self._store.get(_RENEWED_KEY.format(delegation, anchor, index))
+            if isinstance(marker, dict):
+                reference = str(cast("dict[str, Any]", marker).get("signature", reference))
         return self._receipt(
             challenge_id=challenge.id,
             request=request,
-            reference=str(binding.get("activationSignature", "")),
+            reference=reference,
             delegation=delegation,
             subscription_id=str(binding.get("subscriptionId", "")),
-            period_index=elapsed // period,
+            period_index=index,
             period_start=state.current_period_start_ts,
             cancel_at=state.expires_at_ts,
             timestamp=now,
         )
+
+    def _period_index(self, state: DelegationView, anchor: int) -> int:
+        """Index of the delegation's current period from the lifecycle anchor; misalignment is refused."""
+        elapsed = state.current_period_start_ts - anchor
+        period = self._hours * 3600
+        if elapsed < 0 or elapsed % period:
+            raise _invalid("subscription billing anchor does not align with the current period")
+        return elapsed // period
+
+    def _paid(self, state: DelegationView, now: int) -> bool:
+        """The chain shows exactly ``amount`` pulled in a period that contains ``now`` (with clock skew)."""
+        start = state.current_period_start_ts
+        return (
+            state.amount_pulled_in_period == self._config.amount
+            and start - _CLOCK_SKEW_SECONDS <= now < start + self._hours * 3600
+        )
+
+    async def _chain_time(self) -> int:
+        """The cluster's ``unix_timestamp`` from the Clock sysvar."""
+        account = await self._account(_CLOCK_SYSVAR)
+        if account is None or account[1] != _SYSVAR_OWNER or len(account[0]) < _CLOCK_TIMESTAMP_OFFSET + 8:
+            raise PaymentError("the Clock sysvar is unreadable", code="transaction-not-found")
+        return int.from_bytes(account[0][_CLOCK_TIMESTAMP_OFFSET : _CLOCK_TIMESTAMP_OFFSET + 8], "little", signed=True)
+
+    async def _renewal_plan(self, chain_now: int) -> PlanView:
+        """Fresh plan read for a renewal: existing subscribers keep billing on a sunset plan until ``end_ts``."""
+        account = await self._account(self._plan)
+        if account is None:
+            raise _invalid(f"plan {self._plan} no longer exists")
+        try:
+            plan = decode_plan(account[0], account[1], str(self._program), self._plan)
+        except ValueError as exc:
+            raise _invalid(str(exc)) from exc
+        problems = plan_problems(
+            plan,
+            mint=str(self._mint),
+            amount=self._config.amount,
+            period_hours=self._hours,
+            recipient=str(self._recipient),
+            puller=str(self._puller),
+            now=chain_now,
+            require_active=False,
+        )
+        if problems:
+            raise _invalid("plan cannot be renewed: " + "; ".join(problems))
+        return plan
+
+    async def _renew(
+        self, delegation: Pubkey, payer: Pubkey, anchor: int, chain_now: int
+    ) -> tuple[DelegationView, str]:
+        """Collect the current period with one puller-signed ``transfer_subscription``; return the paid state.
+
+        Period ``k`` is claimed at most once per window of chain time, with
+        ``put_if_absent`` on ``solana-subscription:renewal:{delegation}:{anchor}:{k}:t{bucket}``
+        before anything is sent; a claim is never overwritten. An access reads a
+        bounded set of keys: the paid marker, the failure keys and the claims of
+        this window and the last one. A claim that landed grants; one still in
+        flight answers 402. One the node refused at preflight, or one that expired
+        unseen, cost nothing and only waits for the next window, so a subscriber
+        who is short of funds never locks the period. An attempt that landed with
+        an error paid a fee: it is recorded once under ``...:{k}:err:{n}`` and five
+        of them end renewal for the period. The program caps each period at
+        ``amount``, so the chain is the backstop against a second charge even if
+        the store were lost.
+        """
+        period = self._hours * 3600
+        index = (chain_now - anchor) // period
+        paid = await self._store.get(_RENEWED_KEY.format(delegation, anchor, index))
+        if isinstance(paid, dict):
+            return await self._settled_renewal(
+                delegation, str(cast("dict[str, Any]", paid).get("signature", "")), anchor
+            )
+        plan = await self._renewal_plan(chain_now)
+        failed = 0
+        while failed < _MAX_FAILED_RENEWALS:
+            if await self._store.get(_FAILED_RENEWAL_KEY.format(delegation, anchor, index, failed)) is None:
+                break
+            failed += 1
+        if failed >= _MAX_FAILED_RENEWALS:
+            raise _invalid("renewal failed too many times this period")
+        bucket = chain_now // _RENEWAL_BUCKET_SECONDS
+        current = _RENEWAL_KEY.format(delegation, anchor, index, bucket)
+        for key in (_RENEWAL_KEY.format(delegation, anchor, index, bucket - 1), current):
+            record = await self._store.get(key)
+            if record is None:
+                continue
+            if not isinstance(record, dict):
+                raise _invalid("renewal attempt record is malformed")
+            fields = cast("dict[str, Any]", record)
+            signature = str(fields.get("signature", ""))
+            outcome = await self._attempt_outcome(key, fields)
+            if outcome == "landed":
+                return await self._settled_renewal(delegation, signature, anchor)
+            if outcome == "pending":
+                raise _invalid("a renewal for this period is still in flight; retry shortly")
+            if outcome == "landed-error":
+                failed = max(failed, await self._record_failure(delegation, anchor, index, signature))
+                if failed >= _MAX_FAILED_RENEWALS:
+                    raise _invalid("renewal failed too many times this period")
+            if key == current:
+                raise _invalid("the renewal attempt of this window failed; retry later")
+        return await self._submit_renewal(current, delegation, payer, plan, anchor, index)
+
+    async def _record_failure(self, delegation: Pubkey, anchor: int, index: int, signature: str) -> int:
+        """Count an attempt that landed with an error once; return how many failures that makes at least."""
+        for n in range(_MAX_FAILED_RENEWALS):
+            key = _FAILED_RENEWAL_KEY.format(delegation, anchor, index, n)
+            if await self._store.put_if_absent(key, {"signature": signature}):
+                return n + 1
+            held = await self._store.get(key)
+            if isinstance(held, dict) and cast("dict[str, Any]", held).get("signature") == signature:
+                return n + 1
+        return _MAX_FAILED_RENEWALS
+
+    async def _attempt_outcome(self, key: str, record: dict[str, Any]) -> str:
+        """``landed``, ``landed-error`` (paid a fee), ``dead`` (preflight-rejected or expired unseen), ``pending``."""
+        # Blockhash first: once it is expired at `confirmed`, the attempt can only
+        # be in a block the status query below already sees. A preflight
+        # rejection was never forwarded, so it counts as expired straight away.
+        # The status comes from history: the cache drops it after a minute or two,
+        # and a landed error read as unseen would escape the cap.
+        expired = await self._store.get(key + _REJECTED_SUFFIX) is not None or not await self._rpc.is_blockhash_valid(
+            str(record.get("blockhash", ""))
+        )
+        status = await self._status(str(record.get("signature", "")), search_history=True)
+        if status.get("err") is not None:
+            return "landed-error"
+        if status.get("confirmationStatus") in _LANDED:
+            return "landed"
+        return "dead" if expired and not status else "pending"
+
+    async def _submit_renewal(
+        self, key: str, delegation: Pubkey, payer: Pubkey, plan: PlanView, anchor: int, index: int
+    ) -> tuple[DelegationView, str]:
+        blockhash = str((await self._rpc.get_latest_blockhash()).value.blockhash)
+        transfer = build_transfer_subscription_ix(
+            program=self._program,
+            subscriber=payer,
+            plan=plan,
+            recipient=self._recipient,
+            puller=self._puller,
+            token_program=self._token_program,
+            amount=self._config.amount,
+        )
+        fee_payer = signer_pubkey(self._fee_payer_signer)
+        message = MessageV0.try_compile(fee_payer, [transfer], [], Hash.from_string(blockhash))
+        unsigned = VersionedTransaction.populate(
+            message, [Signature.default()] * int(message.header.num_required_signatures)
+        )
+        wire, signature = cosign(
+            bytes(unsigned), [self._config.puller_signer, self._fee_payer_signer], fee_payer=fee_payer
+        )
+        record = {"signature": signature, "blockhash": blockhash}
+        if not await self._store.put_if_absent(key, record):
+            raise _invalid("a renewal for this period is already in flight; retry shortly")
+        # Never send past the period the transaction was built for; re-evaluate instead.
+        if await self._chain_time() >= anchor + (index + 1) * self._hours * 3600:
+            raise _invalid("the billing period ended before the renewal was sent; retry")
+        try:
+            await self._rpc.send_raw_transaction(wire)
+        except RpcResponseError:
+            # The node refused it at preflight and never forwarded it: the attempt
+            # is dead now and cost nothing, so the next window may try again. The
+            # claim itself is never overwritten; a separate marker records this.
+            await self._store.put_if_absent(key + _REJECTED_SUFFIX, {"rejected": True})
+            raise
+        try:
+            await self._rpc.await_confirmation(signature)
+        except PaymentError as exc:
+            if exc.code == "transaction-failed":  # it landed with an error and paid a fee
+                try:
+                    await self._record_failure(delegation, anchor, index, signature)
+                except Exception:  # noqa: BLE001 - the send happened; keep the on-chain error as the answer
+                    logger.exception(
+                        "ALERT renewal %s of %s failed on-chain and was not counted", signature, delegation
+                    )
+            raise
+        return await self._settled_renewal(delegation, signature, anchor)
+
+    async def _settled_renewal(self, delegation: Pubkey, signature: str, anchor: int) -> tuple[DelegationView, str]:
+        attempts, step_seconds = self._read_policy
+        # A replica may still serve the pre-renewal delegation (visible, so not
+        # retried). That answers 402 once; the next access sees the landed
+        # attempt or the paid period and grants without charging again.
+        state = await read_with_replica_retry(lambda: self._read_delegation(delegation), attempts, step_seconds)
+        if state is None or not self._paid(state, self._now()):
+            raise PaymentError(
+                "renewal settled but the delegation does not show the period paid yet", code="transaction-not-found"
+            )
+        try:
+            await self._store.put_if_absent(
+                _RENEWED_KEY.format(delegation, anchor, self._period_index(state, anchor)),
+                {"signature": signature},
+            )
+        except Exception:  # noqa: BLE001 - the renewal settled; a lost marker only affects later receipts
+            logger.exception("ALERT renewal %s of %s settled but its marker was not stored", signature, delegation)
+        return state, signature
 
     async def handle(
         self, authorization: str | None, options: SubscriptionChallengeOptions | None = None

@@ -378,11 +378,23 @@ def decode_authority_init_id(data: bytes, owner: str, program: str) -> int:
 
 
 def plan_problems(
-    plan: PlanView, *, mint: str, amount: int, period_hours: int, recipient: str, puller: str, now: int
+    plan: PlanView,
+    *,
+    mint: str,
+    amount: int,
+    period_hours: int,
+    recipient: str,
+    puller: str,
+    now: int,
+    require_active: bool = True,
 ) -> list[str]:
-    """List every way ``plan`` fails the challenge terms; empty means the plan is usable."""
+    """List every way ``plan`` fails the challenge terms; empty means the plan is usable.
+
+    ``require_active=False`` is for renewals: ``subscribe`` rejects a sunset plan,
+    but ``transfer_subscription`` keeps billing existing subscribers until ``end_ts``.
+    """
     problems: list[str] = []
-    if plan.status != PLAN_STATUS_ACTIVE:
+    if require_active and plan.status != PLAN_STATUS_ACTIVE:
         problems.append("plan is not active")
     if plan.end_ts != 0 and now >= plan.end_ts:
         problems.append("plan has ended")

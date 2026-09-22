@@ -233,6 +233,8 @@ def _break(rpc: FakeRpc, change: str) -> None:
         del rpc.accounts[str(PLAN)]
     elif change == "foreign-owner":
         rpc.accounts[str(PLAN)] = (rpc.accounts[str(PLAN)][0], str(pk(71)))
+    elif change == "sunset":
+        install_plan(rpc, status=0, end_ts=NOW + PERIOD_SECONDS)
     elif change == "terms":
         install_plan(rpc, amount=AMOUNT + 1)
     elif change == "destinations":
@@ -249,7 +251,17 @@ def _break(rpc: FakeRpc, change: str) -> None:
 
 @pytest.mark.parametrize(
     "change",
-    ["missing-plan", "foreign-owner", "terms", "destinations", "puller", "mint-owner", "decimals", "recipient-ata"],
+    [
+        "missing-plan",
+        "foreign-owner",
+        "sunset",
+        "terms",
+        "destinations",
+        "puller",
+        "mint-owner",
+        "decimals",
+        "recipient-ata",
+    ],
 )
 async def test_plan_preflight_rejects(h: Harness, change: str) -> None:
     _break(h.rpc, change)
@@ -602,7 +614,6 @@ async def test_proof_reusable_after_challenge_expiry(h: Harness, monkeypatch: py
 @pytest.mark.parametrize(
     ("setup", "match"),
     [
-        (lambda h: setattr(h, "now", NOW + PERIOD_SECONDS), "not paid"),
         (lambda h: setattr(h, "now", NOW - 121), "not paid"),
         (lambda h: h.set_delegation(amount_pulled_in_period=AMOUNT - 1), "not paid"),
         (lambda h: (h.set_delegation(expires_at_ts=NOW + 100), setattr(h, "now", NOW + 100)), "cancellation"),
@@ -672,7 +683,8 @@ async def test_handle_headers(h: Harness) -> None:
     ok = await h.server.handle(format_authorization(access))
     assert (ok.ok, ok.status, ok.headers["cache-control"]) == (True, 200, "private")
     assert parse_receipt(ok.headers["payment-receipt"]).period_index == 0
-    h.now = NOW + PERIOD_SECONDS
+    h.set_delegation(expires_at_ts=NOW + 1)  # cancellation takes effect
+    h.now = NOW + 1
     denied = await h.server.handle(format_authorization(access))
     assert (denied.ok, denied.status, denied.headers["cache-control"]) == (False, 402, "no-store")
     assert "payment-receipt" not in denied.headers and denied.headers["www-authenticate"].startswith("Payment ")
