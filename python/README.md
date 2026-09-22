@@ -213,13 +213,20 @@ because stock x402 facilitators settle to one address.
 |--------------------|:------:|:------:|
 | `exact`            | ✅     | ✅     |
 | `upto`             | ✅     | ✅     |
-| `batch-settlement` | —      | —      |
+| `batch-settlement` | ✅     | ✅     |
 
 `upto` charges for actual usage up to a ceiling: the client opens a payment
 channel depositing the authorized maximum, the handler meters the response and
 reports it via the `Charge` dependency, then the gate settles the actual amount
 and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
 (rather than `require_payment`) and needs an operator signer.
+
+`batch-settlement` escrows a deposit once in a payment channel, then pays each
+request with a cumulative voucher that the server verifies off-chain and
+redeems on-chain in batches. Gate routes with `require_batch` / `RequireBatch`,
+pay them with `BatchPaymentTransport` from
+`solana_pay_kit.protocols.x402.client.batch_settlement`, and run the redemption
+worker from `solana_pay_kit.x402_batch()` on a schedule.
 
 ### Client
 

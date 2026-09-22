@@ -14,6 +14,7 @@ rather than reimplements.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from solana_pay_kit import errors, kms
 from solana_pay_kit._middleware import (
@@ -29,6 +30,7 @@ from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.stablecoin import Stablecoin
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
 from solana_pay_kit.config import (
+    BatchSettlementConfig,
     Config,
     MppConfig,
     PayConfig,
@@ -60,6 +62,9 @@ from solana_pay_kit.pricing import Pricing
 from solana_pay_kit.protocols.mpp.core.expires import days, hours, minutes, seconds, weeks
 from solana_pay_kit.signer import LocalSigner, Signer
 
+if TYPE_CHECKING:
+    from solana_pay_kit.protocols.x402.batch_settlement.redemption import BatchRedemption
+
 __all__ = [
     # enums / paycore
     "Protocol",
@@ -85,6 +90,7 @@ __all__ = [
     "Config",
     "PayConfig",
     "X402Config",
+    "BatchSettlementConfig",
     "MppConfig",
     "configure",
     "configure_from",
@@ -102,6 +108,8 @@ __all__ = [
     "payment",
     # framework-agnostic umbrella core
     "PayCore",
+    # x402 batch-settlement redemption
+    "x402_batch",
     # errors
     "errors",
     "PayKitError",
@@ -135,3 +143,16 @@ def eur(amount: str | int | Decimal, *settlements: Stablecoin) -> Price:
 def gbp(amount: str | int | Decimal, *settlements: Stablecoin) -> Price:
     """Build a GBP-denominated :class:`Price` (top-level shorthand)."""
     return Price.gbp(amount, *settlements)
+
+
+def x402_batch(config: Config | None = None) -> BatchRedemption:
+    """The x402 ``batch-settlement`` redemption worker for ``config`` (default: the configured one).
+
+    It shares the channel store of the engine the framework shims use, so a
+    ``claim()``/``settle()`` here redeems what they served. Run it on a
+    schedule (``start(interval)``) or call its passes directly.
+    """
+    from solana_pay_kit.config import config as _current
+    from solana_pay_kit.protocols.x402.batch_settlement import batch_engine
+
+    return batch_engine(config if config is not None else _current()).redemption()

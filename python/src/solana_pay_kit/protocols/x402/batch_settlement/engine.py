@@ -27,16 +27,13 @@ import contextlib
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-import pydantic
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
 
@@ -44,6 +41,7 @@ from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID, treasury_owner
 from solana_pay_kit._paycore.rpc import SolanaRpc, read_with_replica_retry
+from solana_pay_kit.config import BatchSettlementConfig
 from solana_pay_kit.errors import ConfigurationError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.batch_settlement import errors, onchain, tx_policy
@@ -60,8 +58,6 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import (
 )
 from solana_pay_kit.protocols.x402.batch_settlement.types import (
     BATCH_SETTLEMENT_SCHEME,
-    MAX_WITHDRAW_DELAY_SECONDS,
-    MIN_WITHDRAW_DELAY_SECONDS,
     BatchChannelConfig,
     BatchChannelState,
     BatchDeposit,
@@ -127,8 +123,6 @@ _BOUND_EXTRA = (
 
 AlertHook = Callable[[str, Mapping[str, Any]], None]
 
-_ATOMIC = re.compile(r"[0-9]+")
-_USD = re.compile(r"\$[0-9]+(\.[0-9]+)?")
 # Multiples of the price advertised as minDeposit. Server mode stays near the
 # client's own minimum: that escrow is what the operator could take.
 _CLIENT_MIN_DEPOSIT_MULTIPLE = 10
@@ -136,62 +130,6 @@ _SERVER_MIN_DEPOSIT_MULTIPLE = 3
 # ponytail: recover() matches only the first 1024 distinct payTo values this
 # process advertised; persist them if a server settles to more.
 _MAX_REMEMBERED_PAY_TO = 1024
-
-
-def _atomic_min_deposit(value: str) -> int:
-    """Atomic units for a ``min_deposit`` of ``"123"`` or ``"$1.5"`` (USD, 6 decimals, floored)."""
-    if _ATOMIC.fullmatch(value):
-        return int(value)
-    if _USD.fullmatch(value):
-        try:
-            return int((Decimal(value[1:]) * 10**_DECIMALS).to_integral_value(rounding=ROUND_FLOOR))
-        except InvalidOperation:  # pragma: no cover - the pattern admits only plain decimals
-            pass
-    raise ConfigurationError(f"batch min_deposit {value!r} must be atomic units or a USD amount like '$1.50'")
-
-
-class BatchSettlementConfig(pydantic.BaseModel):
-    """Server knobs for ``batch-settlement``; frozen, unknown keys refused."""
-
-    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
-
-    #: Forced-close grace period advertised as ``withdrawDelay``; ``None`` = ``max(900, max_timeout_seconds)``.
-    withdraw_delay: int | None = None
-    #: HTTP completion window advertised as ``maxTimeoutSeconds``.
-    max_timeout_seconds: int = 300
-    #: Receiver-authorizer key advertised as ``extra.receiverAuthorizer``; omitted when ``None``.
-    receiver_authorizer: str | None = None
-    #: How long a channel snapshot read from chain lets vouchers verify without another read.
-    onchain_state_ttl_seconds: int = 30
-    #: Operator key that signs vouchers for metered requests; enables the server-signed accept.
-    operator: LocalSigner | None = None
-    #: ``extra.minDeposit`` override: atomic units, or ``"$x"`` (USD, floored to atomic units).
-    min_deposit: str | None = None
-    #: Refuse a ``deposit`` below the advertised ``minDeposit`` (``deposit_below_min_deposit``).
-    enforce_min_deposit: bool = False
-    #: Receiver-authorizer key that signs ``CloseAuthorization``s for a seal; ``None`` = the fee payer.
-    close_authorizer: LocalSigner | None = None
-    #: Seal an open channel idle this long (with its latest voucher), advertised as ``maxIdleSecs``; ``None`` = never.
-    max_idle_secs: int | None = None
-    #: Channels per claim or distribute transaction; clamped to ``1..=4``.
-    max_channels_per_batch: int = 4
-
-    @pydantic.model_validator(mode="after")
-    def _check_delay(self) -> BatchSettlementConfig:
-        if self.min_deposit is not None and _atomic_min_deposit(self.min_deposit) <= 0:
-            raise ConfigurationError(f"batch min_deposit {self.min_deposit!r} must be a positive amount")
-        delay = self.effective_withdraw_delay()
-        if self.max_timeout_seconds <= 0 or not MIN_WITHDRAW_DELAY_SECONDS <= delay <= MAX_WITHDRAW_DELAY_SECONDS:
-            raise ConfigurationError(f"batch withdraw_delay {delay} is outside 900..=2592000 seconds")
-        if delay < self.max_timeout_seconds:
-            raise ConfigurationError(f"batch withdraw_delay {delay} is shorter than max_timeout_seconds")
-        return self
-
-    def effective_withdraw_delay(self) -> int:
-        """The advertised grace period."""
-        if self.withdraw_delay is not None:
-            return self.withdraw_delay
-        return max(MIN_WITHDRAW_DELAY_SECONDS, self.max_timeout_seconds)
 
 
 @dataclass(frozen=True)
@@ -273,13 +211,14 @@ class X402BatchSettlement:
         if config.x402.is_delegated():
             raise NotImplementedError("solana_pay_kit: x402 batch-settlement runs self-hosted only")
         self._config = config
-        self._settings = settings or BatchSettlementConfig()
+        self._settings = settings or config.x402.batch or BatchSettlementConfig()
         self._store: BatchChannelStore = channel_store or MemoryBatchChannelStore()
         self._operations: BatchOperationStore = operation_store or MemoryBatchOperationStore()
         self._rpc = rpc
         self._recent_state_provider = recent_state_provider
         self._clock = clock
         self._on_alert = on_alert
+        self._redemption: BatchRedemption | None = None
         # Every payTo a route advertised: recover() matches rebuilt channels against them.
         self._pay_to: set[str] = set()
         # The harness points every SDK at a locally deployed program through
@@ -972,7 +911,15 @@ class X402BatchSettlement:
         )
 
     def redemption(self) -> BatchRedemption:
-        """The redemption worker over this engine's channel store (claim, distribute, seal, close, reclaim)."""
+        """The redemption worker over this engine's channel store (claim, distribute, seal, close, reclaim).
+
+        One worker per engine: its lock serializes the passes over the store.
+        """
+        if self._redemption is None:
+            self._redemption = self._new_redemption()
+        return self._redemption
+
+    def _new_redemption(self) -> BatchRedemption:
         self._pay_to.add(self._config.effective_recipient())
         return BatchRedemption(
             store=self._store,
@@ -1055,9 +1002,9 @@ class X402BatchSettlement:
         }
         if self._settings.receiver_authorizer is not None:
             requirement["extra"]["receiverAuthorizer"] = self._settings.receiver_authorizer
-        override = self._settings.min_deposit
+        override = self._settings.min_deposit_units()
         multiple = _SERVER_MIN_DEPOSIT_MULTIPLE if server_signed else _CLIENT_MIN_DEPOSIT_MULTIPLE
-        minimum = amount_units * multiple if override is None else _atomic_min_deposit(override)
+        minimum = amount_units * multiple if override is None else override
         requirement["extra"]["minDeposit"] = str(max(minimum, amount_units))
         idle = self._settings.max_idle_secs
         if idle is not None and idle > 0:
