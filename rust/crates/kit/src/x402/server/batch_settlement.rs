@@ -2760,11 +2760,12 @@ impl X402BatchSettlement {
     /// already advanced is treated as success — the terminal onchain state is
     /// what matters, not which worker got there.
     ///
-    /// The early seal is coordinated with paid requests through the durable
+    /// Both paths are coordinated with paid requests through the durable
     /// record: the close is marked first, which makes every replica's
     /// `reserve` refuse new charges, and a channel that still has a reserved
     /// authorization in flight is deferred to a later pass rather than sealed
-    /// underneath the handler that is earning the next voucher.
+    /// underneath the handler that is earning the next voucher — on either
+    /// side of the grace deadline.
     ///
     /// A closing channel with nothing left to apply (or whose voucher record was
     /// lost) is left for the permissionless path: sealing it early would gain
@@ -2800,65 +2801,81 @@ impl X402BatchSettlement {
             let due = onchain
                 .closure_started_at
                 .saturating_add(i64::from(onchain.grace_period));
-            if now < due {
-                // Record the close durably first, so every replica's `reserve`
-                // refuses new charges from here on, then take the snapshot. A
-                // request that reserved before this mark is still running its
-                // handler; sealing at the committed watermark now would leave
-                // its charge irredeemable once `finish_commit` lands, so wait
-                // for the next pass instead. Reservations are only ever removed
-                // by the request that owns them, so this converges.
-                let Some(state) = self
-                    .mark_close_requested(channel_id, onchain.closure_started_at)
-                    .await?
-                else {
-                    continue;
-                };
-                let plan = grace_seal_plan(&state, onchain.settlement.settled);
-                let (cumulative, signature, expires_at) = match plan {
-                    GraceSealPlan::InFlight => {
+            let past_deadline = now >= due;
+            // Record the close durably first, so every replica's `reserve`
+            // refuses new charges from here on, then take the snapshot. A
+            // request that reserved before this mark is still running its
+            // handler; sealing now — early with the committed voucher, or late
+            // at the frozen watermark — would leave its charge stranded once
+            // `finish_commit` lands, so wait for the next pass instead.
+            // Reservations are only ever removed by the request that owns
+            // them, so this converges. A channel this store never knew has
+            // nothing to coordinate: past the deadline it is sealed like any
+            // other crank would.
+            let plan = match self
+                .mark_close_requested(channel_id, onchain.closure_started_at)
+                .await?
+            {
+                Some(state) => Some((
+                    grace_seal_plan(&state, onchain.settlement.settled, past_deadline),
+                    state,
+                )),
+                None if past_deadline => None,
+                None => continue,
+            };
+            let seal_ix = pc::build_seal_instruction(&channel, &program_id);
+            match plan {
+                None | Some((GraceSealPlan::SealFrozen, _)) => {
+                    groups.push(ChannelInstructionGroup {
+                        channel_id: channel_id.clone(),
+                        instructions: vec![seal_ix, distribute],
+                    });
+                }
+                Some((GraceSealPlan::InFlight, _)) => {
+                    if past_deadline {
+                        tracing::warn!(
+                            channel = %channel_id,
+                            "request still in flight past the grace deadline; its charge can no \
+                             longer be applied onchain, deferring the seal until it resolves"
+                        );
+                    } else {
                         tracing::info!(
                             channel = %channel_id,
                             "channel is closing with a request in flight; deferring the seal"
                         );
-                        continue;
                     }
-                    GraceSealPlan::NothingToApply => continue,
+                }
+                Some((GraceSealPlan::NothingToApply, _)) => {}
+                Some((
                     GraceSealPlan::Apply {
                         cumulative,
                         signature,
                         expires_at,
-                    } => (cumulative, signature, expires_at),
-                };
-                let authorized_signer = pc::parse_pubkey(&state.authorized_signer)?;
-                let signature_bytes = decode_signature(&signature)?;
-                // Ed25519 precompile immediately followed by `settle_and_seal`
-                // (the program reads the voucher back from the instructions
-                // sysvar), then the sealed payout.
-                let mut instructions = pc::build_settle_and_seal_instructions(
-                    &self.fee_payer,
-                    &channel,
-                    &authorized_signer,
-                    Some(&signature_bytes),
-                    cumulative,
-                    expires_at,
-                    &program_id,
-                )?;
-                instructions.push(distribute);
-                groups.push(ChannelInstructionGroup {
-                    channel_id: channel_id.clone(),
-                    instructions,
-                });
-                applied_watermarks.push((channel_id.clone(), cumulative));
-                continue;
+                    },
+                    state,
+                )) => {
+                    let authorized_signer = pc::parse_pubkey(&state.authorized_signer)?;
+                    let signature_bytes = decode_signature(&signature)?;
+                    // Ed25519 precompile immediately followed by `settle_and_seal`
+                    // (the program reads the voucher back from the instructions
+                    // sysvar), then the sealed payout.
+                    let mut instructions = pc::build_settle_and_seal_instructions(
+                        &self.fee_payer,
+                        &channel,
+                        &authorized_signer,
+                        Some(&signature_bytes),
+                        cumulative,
+                        expires_at,
+                        &program_id,
+                    )?;
+                    instructions.push(distribute);
+                    groups.push(ChannelInstructionGroup {
+                        channel_id: channel_id.clone(),
+                        instructions,
+                    });
+                    applied_watermarks.push((channel_id.clone(), cumulative));
+                }
             }
-            groups.push(ChannelInstructionGroup {
-                channel_id: channel_id.clone(),
-                instructions: vec![
-                    pc::build_seal_instruction(&channel, &program_id),
-                    distribute,
-                ],
-            });
         }
         // One channel per transaction: a seal/distribute pair is far larger
         // than a claim, and a single failure must not strand its neighbours.
@@ -3023,32 +3040,51 @@ impl X402BatchSettlement {
 /// slot is what identifies a client-supplied transaction across retries. The
 /// payer signs the compiled message, which commits to the blockhash and every
 /// instruction, so the signature is unique to this exact transaction.
-/// What `finalize_close` should do for a `Closing` channel that is still
-/// inside its grace period.
+/// What `finalize_close` should do for a `Closing` channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GraceSealPlan {
     /// A reserved authorization has not reached its outcome yet. Sealing now
     /// would freeze the watermark below the charge its handler is earning, so
-    /// the finalizer waits for the request to commit or release.
+    /// the finalizer waits for the request to commit or release — before and
+    /// after the grace deadline alike.
     InFlight,
-    /// The committed watermark is already onchain (or there is no voucher to
-    /// apply); the permissionless `seal` after the grace period suffices.
+    /// Inside the grace period with nothing above the onchain watermark (or no
+    /// voucher to apply): leave it for the permissionless path.
     NothingToApply,
-    /// Apply this voucher with `settle_and_seal` now.
+    /// Apply this voucher with `settle_and_seal` now, inside the grace period.
     Apply {
         cumulative: u64,
         signature: String,
         expires_at: i64,
     },
+    /// The grace period has run out and nothing is in flight: `seal`
+    /// permissionlessly at the frozen onchain watermark.
+    SealFrozen,
 }
 
-/// Decide the grace-period action from the durable record and the onchain
-/// `settled` watermark. Pure, so the coordination rule is testable without a
-/// chain: the caller has already recorded the close, which stops new
-/// reservations on every replica.
-fn grace_seal_plan(state: &ChannelState, onchain_settled: u64) -> GraceSealPlan {
+/// Decide the finalization action from the durable record, the onchain
+/// `settled` watermark, and whether the grace deadline has passed. Pure, so
+/// the coordination rule is testable without a chain: the caller has already
+/// recorded the close, which stops new reservations on every replica.
+///
+/// A request still in flight defers the seal on both sides of the deadline.
+/// Past it the program refuses any further voucher, so a handler that overran
+/// the deadline has already forfeited its charge onchain; deferring still
+/// keeps this server from being the party that seals under its own request,
+/// and the request settles or releases before the next pass. The scheme's
+/// `withdrawDelay >= maxTimeoutSeconds` bound, and the reservation lease that
+/// mirrors it, are what keep a request reserved before the close from
+/// legitimately outliving the grace period.
+fn grace_seal_plan(
+    state: &ChannelState,
+    onchain_settled: u64,
+    past_deadline: bool,
+) -> GraceSealPlan {
     if state.has_in_flight_authorization() {
         return GraceSealPlan::InFlight;
+    }
+    if past_deadline {
+        return GraceSealPlan::SealFrozen;
     }
     let Some(signature) = state.highest_voucher_signature.as_deref() else {
         return GraceSealPlan::NothingToApply;
@@ -4359,7 +4395,10 @@ mod tests {
             .unwrap()
             .expect("known channel");
         assert!(state.close_requested_at.is_some());
-        assert_eq!(grace_seal_plan(&state, 0), GraceSealPlan::InFlight);
+        assert_eq!(grace_seal_plan(&state, 0, false), GraceSealPlan::InFlight);
+        // Past the deadline the request can no longer be applied onchain, but
+        // the finalizer still does not seal underneath it.
+        assert_eq!(grace_seal_plan(&state, 0, true), GraceSealPlan::InFlight);
 
         // From here no replica may start another charge on the channel, even
         // one whose verification read the record before the close was marked.
@@ -4379,7 +4418,7 @@ mod tests {
 
         // Now the finalizer seals with the 3000 voucher, not the 2000 it saw
         // while the request was in flight.
-        match grace_seal_plan(&state, 0) {
+        match grace_seal_plan(&state, 0, false) {
             GraceSealPlan::Apply {
                 cumulative,
                 signature,
@@ -4396,8 +4435,14 @@ mod tests {
         // Once the chain already carries that watermark there is nothing to
         // apply early; the permissionless seal after the grace period suffices.
         assert_eq!(
-            grace_seal_plan(&state, 3_000),
+            grace_seal_plan(&state, 3_000, false),
             GraceSealPlan::NothingToApply
+        );
+        // And with nothing in flight past the deadline, the frozen watermark is
+        // sealed permissionlessly.
+        assert_eq!(
+            grace_seal_plan(&state, 3_000, true),
+            GraceSealPlan::SealFrozen
         );
     }
 
