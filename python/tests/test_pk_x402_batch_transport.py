@@ -28,6 +28,8 @@ from solana_pay_kit.protocols.x402.client.batch_settlement import (
 from solana_pay_kit.signer import LocalSigner
 from tests.batch_chain import BLOCKHASH, CLOSING, MINT, PRICE, SLOT, World, make_world
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 NOW = 1_700_000_000.0
 OPERATOR = LocalSigner.from_keypair(Keypair.from_seed(bytes([4] * 32)))
 URL = "https://api.example/batch"
@@ -258,7 +260,7 @@ async def test_refund_raises_with_the_servers_reason(world: World) -> None:
     async with httpx.AsyncClient(transport=server.transport) as http:
         with pytest.raises(BatchSettlementError, match="refund refused") as exc:
             await client.refund(URL, http=http)
-    assert exc.value.code.startswith("invalid_batch_settlement_svm_")
+    assert exc.value.code == errors.INVALID_SETTLEMENT_SIMULATION
 
 
 @pytest.mark.parametrize(

@@ -34,6 +34,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelCon
 from solana_pay_kit.signer import LocalSigner
 from tests.batch_chain import PRICE, SLOT, World, make_world
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 NOW = 1_700_000_000.0
 OPERATOR = LocalSigner.from_keypair(Keypair.from_seed(bytes([4] * 32)))
 

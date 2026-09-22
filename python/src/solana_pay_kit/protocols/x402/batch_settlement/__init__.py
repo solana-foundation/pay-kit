@@ -28,7 +28,14 @@ _ENGINES: weakref.WeakKeyDictionary[Config, X402BatchSettlement] = weakref.WeakK
 
 
 def batch_engine(config: Config) -> X402BatchSettlement:
-    """The per-``Config`` ``batch-settlement`` engine, built on first use."""
+    """The per-``Config`` ``batch-settlement`` engine, built on first use.
+
+    Keyed by the ``Config`` value, not by object identity: two equal configs,
+    however they were built, get the same engine. That is what makes the
+    framework shims and :func:`solana_pay_kit.x402_batch` share one channel
+    store; keying on identity would hand a second ``configure()`` call its own
+    store and split the state of one server in half.
+    """
     engine = _ENGINES.get(config)
     if engine is None:
         # Imported here: the engine loads config, gate and pricing, which must

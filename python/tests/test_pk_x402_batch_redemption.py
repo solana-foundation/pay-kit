@@ -23,6 +23,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     find_channel_pda,
 )
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit.protocols.x402.batch_settlement import errors
 from solana_pay_kit.protocols.x402.batch_settlement.engine import (
     BatchSettlementConfig,
     VerifiedBatchRequest,
@@ -35,6 +36,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import ChannelRecord, 
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig
 from solana_pay_kit.signer import LocalSigner
 from tests.batch_chain import CLOSING, DISTRIBUTED, MINT, PRICE, SLOT, World, channel_account, make_world
+
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
 
 NOW = 1_700_000_000.0
 GRACE = 900
@@ -164,7 +167,8 @@ async def test_a_failed_claim_is_left_for_the_next_pass(world: World) -> None:
     channel_id = await h.seed()
     world.chain.send_error = PaymentError("node down", code="payment_invalid")
     result = await h.worker.claim()
-    assert result.claimed == [] and result.errors and (await h.record(channel_id)).settled == 0
+    assert result.claimed == [] and (await h.record(channel_id)).settled == 0
+    assert [(cid, reason.split(":")[0]) for cid, reason in result.errors] == [(channel_id, "claim failed")]
     world.chain.send_error = None
     h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE)
     assert (await h.worker.claim()).claimed == [channel_id]
@@ -172,10 +176,11 @@ async def test_a_failed_claim_is_left_for_the_next_pass(world: World) -> None:
 
 async def test_an_unconfirmed_claim_is_not_rebuilt(world: World) -> None:
     h = _Harness(world, [NOW])
-    await h.seed()
+    channel_id = await h.seed()
     world.chain.confirm_error = PaymentError("timed out", code="transaction-not-found")
     result = await h.worker.claim()
-    assert len(world.chain.sent) == 1 and result.errors and result.claimed == []
+    assert len(world.chain.sent) == 1 and result.claimed == []
+    assert [(cid, reason.split(":")[0]) for cid, reason in result.errors] == [(channel_id, "claim not confirmed")]
 
 
 async def test_only_what_was_charged_is_ever_claimed(world: World) -> None:
@@ -190,7 +195,8 @@ async def test_a_claim_is_recorded_only_once_its_settled_watermark_is_visible(wo
     channel_id = await h.seed()
     h.lands(channel_id, deposit=5 * PRICE, settled=PRICE)  # stale replica: below the claim
     result = await h.worker.claim()
-    assert result.claimed == [] and result.errors and (await h.record(channel_id)).settled == 0
+    assert result.claimed == [] and (await h.record(channel_id)).settled == 0
+    assert result.errors == [(channel_id, "claim confirmed but its settled watermark is not visible")]
 
 
 async def test_a_vanished_channel_is_skipped(world: World) -> None:
@@ -206,7 +212,8 @@ async def test_a_distribute_needs_a_sane_payout_watermark(world: World) -> None:
     channel_id = await h.seed(settled=2 * PRICE)
     h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE, payout=6 * PRICE)  # above the deposit
     result = await h.worker.settle()
-    assert result.distributed == [] and result.errors
+    assert result.distributed == []
+    assert result.errors == [(channel_id, "distribute confirmed but the payout is not visible")]
 
 
 async def test_a_store_failure_after_a_confirmed_claim_is_alerted_not_raised(world: World) -> None:
@@ -271,9 +278,10 @@ async def test_a_closing_channel_with_nothing_left_to_apply_waits_for_the_post_g
 
 async def test_a_seal_outside_the_grace_period_is_refused(world: World) -> None:
     h = _Harness(world, [NOW])
-    await h.seed(status=CLOSING, closure_started_at=int(NOW) - GRACE)
+    channel_id = await h.seed(status=CLOSING, closure_started_at=int(NOW) - GRACE)
     result = await h.worker.claim()
-    assert world.chain.sent == [] and result.sealed == [] and result.errors
+    assert world.chain.sent == [] and result.sealed == []
+    assert result.errors == [(channel_id, "channel is outside its seal window")]
 
 
 class _MisconfiguredSigner(LocalSigner):
@@ -286,9 +294,10 @@ class _MisconfiguredSigner(LocalSigner):
 async def test_a_close_authorization_that_does_not_verify_is_never_broadcast(world: World) -> None:
     wrong = _MisconfiguredSigner.from_keypair(Keypair())
     h = _Harness(world, [NOW], close_authorizer=wrong)
-    await h.seed(status=CLOSING, closure_started_at=int(NOW) - 10)
+    channel_id = await h.seed(status=CLOSING, closure_started_at=int(NOW) - 10)
     result = await h.worker.claim()
-    assert world.chain.sent == [] and result.sealed == [] and result.errors
+    assert world.chain.sent == [] and result.sealed == []
+    assert result.errors == [(channel_id, "close authorization did not verify")]
 
 
 async def test_a_claim_that_meets_a_close_splits_and_seals_the_closing_channel(world: World) -> None:
@@ -511,8 +520,9 @@ async def test_a_seal_waits_for_a_request_in_flight_until_the_grace_period_runs_
     h.lands(channel_id, deposit=5 * PRICE, settled=PRICE, payout=PRICE, status=DISTRIBUTED)
     result = await h.worker.claim()
     assert result.sealed == [channel_id] and len(world.chain.sent) == 1
-    with pytest.raises(BatchSettlementError):
+    with pytest.raises(BatchSettlementError) as exc:
         await h.engine.commit(in_flight)
+    assert exc.value.code == errors.DUPLICATE_SETTLEMENT
     record = await h.record(channel_id)
     assert (record.status, record.charged_cumulative) == ("distributed", PRICE)
 
@@ -522,7 +532,8 @@ async def test_an_unconfirmed_seal_gives_the_channel_back(world: World) -> None:
     channel_id = await h.seed(status=CLOSING, closure_started_at=int(NOW) - 10)
     world.chain.send_error = PaymentError("node down", code="payment_invalid")
     result = await h.worker.claim()
-    assert result.sealed == [] and result.errors
+    assert result.sealed == []
+    assert [(cid, reason.split(":")[0]) for cid, reason in result.errors] == [(channel_id, "close failed")]
     assert (await h.record(channel_id)).reservations == {}
 
 

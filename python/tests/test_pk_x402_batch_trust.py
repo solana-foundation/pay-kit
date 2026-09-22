@@ -26,6 +26,8 @@ from solana_pay_kit.protocols.x402.client.batch_settlement import (
 from solana_pay_kit.signer import LocalSigner
 from tests.batch_chain import BLOCKHASH, MINT, SLOT, FakeChain, channel_account, make_world
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 USDC_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 PAYER = LocalSigner.from_keypair(Keypair.from_seed(bytes([1] * 32)))

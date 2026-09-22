@@ -10,6 +10,8 @@ below.
 from __future__ import annotations
 
 import copy
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,6 +38,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.types import (
     parse_u64,
 )
 from solana_pay_kit.signer import LocalSigner
+
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
 
 PK1 = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"  # 32 x 0x01
 PK2 = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR"  # 32 x 0x02
@@ -94,13 +98,65 @@ def _envelope(payload: dict[str, Any]) -> dict[str, Any]:
 # -- error codes -----------------------------------------------------------
 
 
+#: Codes the spec lists that the Rust scheme has no constant for (pay-kit #332 adds two).
+PYTHON_ONLY_CODES = (
+    errors.INVALID_CHANNEL_CLOSING,
+    errors.INVALID_DEPOSIT_BELOW_MIN_DEPOSIT,
+    errors.INVALID_PAYOUT_ATTRIBUTION_AMBIGUOUS,
+)
+#: The wire values this scheme may answer with, frozen: each one is a promise to clients.
+FROZEN_CODES = (
+    "duplicate_settlement",
+    "invalid_batch_settlement_svm_channel_closing",
+    "invalid_batch_settlement_svm_channel_id_mismatch",
+    "invalid_batch_settlement_svm_channel_state",
+    "invalid_batch_settlement_svm_close_amount_unsupported",
+    "invalid_batch_settlement_svm_close_authorization",
+    "invalid_batch_settlement_svm_close_state",
+    "invalid_batch_settlement_svm_cumulative_amount_mismatch",
+    "invalid_batch_settlement_svm_cumulative_exceeds_deposit",
+    "invalid_batch_settlement_svm_deposit_below_min_deposit",
+    "invalid_batch_settlement_svm_fee_payer_mismatch",
+    "invalid_batch_settlement_svm_payload_type",
+    "invalid_batch_settlement_svm_payment_flow",
+    "invalid_batch_settlement_svm_payout_attribution_ambiguous",
+    "invalid_batch_settlement_svm_receiver_authorizer_mismatch",
+    "invalid_batch_settlement_svm_refund_transaction",
+    "invalid_batch_settlement_svm_settlement_simulation",
+    "invalid_batch_settlement_svm_setup_transaction",
+    "invalid_batch_settlement_svm_token_program",
+    "invalid_batch_settlement_svm_voucher_expiry",
+    "invalid_batch_settlement_svm_voucher_signature",
+    "invalid_batch_settlement_svm_withdraw_delay_mismatch",
+    "invalid_batch_settlement_svm_withdraw_delay_out_of_range",
+)
+
+
 def test_every_code_is_prefixed_and_none_shadows_another() -> None:
     # classify() returns the first code found in a message, so a code that is
     # a substring of another would be reported in its place.
     for code in errors.ALL_CODES:
         assert code.startswith("invalid_batch_settlement_svm_") or code == errors.DUPLICATE_SETTLEMENT
         assert not any(code != other and code in other for other in errors.ALL_CODES), code
-    assert len(errors.ALL_CODES) == 23
+    assert tuple(sorted(errors.ALL_CODES)) == FROZEN_CODES
+
+
+def test_the_codes_match_the_rust_scheme_plus_the_spec_only_ones() -> None:
+    # One wire vocabulary across the SDKs: Python answers with every code Rust
+    # can, and adds only the spec codes Rust has no constant for.
+    source = (
+        Path(__file__).resolve().parents[2] / "rust/crates/kit/src/x402/protocol/schemes/batch_settlement/errors.rs"
+    )
+    if not source.is_file():  # pragma: no cover - a Python-only checkout
+        pytest.skip("the Rust crate is not in this checkout")
+    text = source.read_text(encoding="utf-8")
+    listed = re.search(r"pub const ALL_CODES: &\[&str\] = &\[(.*?)\];", text, re.DOTALL)
+    assert listed is not None, "the Rust scheme no longer exposes ALL_CODES"
+    values = dict(re.findall(r'pub const (\w+): &str =\s*"([^"]+)";', text))
+    rust = {values[name.strip().rstrip(",")] for name in listed.group(1).split() if name.strip().rstrip(",")}
+    assert rust, "no Rust codes parsed"
+    assert not rust - set(errors.ALL_CODES), "Rust answers with a code Python does not know"
+    assert set(errors.ALL_CODES) - rust <= set(PYTHON_ONLY_CODES)
 
 
 def test_classify_recovers_the_code_from_a_formatted_error() -> None:
@@ -202,21 +258,23 @@ def test_payload_union_rules_are_enforced(payload: dict[str, Any], code: str) ->
 
 def test_envelope_requires_x402_version_2_and_the_scheme() -> None:
     payload = {"type": "voucher", "channelConfig": _config(), "voucher": _VOUCHER}
-    with pytest.raises(BatchSettlementError):
-        parse_payment_payload({**_envelope(payload), "x402Version": 1})
-    with pytest.raises(BatchSettlementError):
-        parse_payment_payload({**_envelope(payload), "accepted": {**_requirements(), "scheme": "upto"}})
+    for envelope in ({"x402Version": 1}, {"accepted": {**_requirements(), "scheme": "upto"}}):
+        with pytest.raises(BatchSettlementError) as exc:
+            parse_payment_payload({**_envelope(payload), **envelope})
+        assert exc.value.code == errors.INVALID_PAYLOAD_TYPE
 
 
 @pytest.mark.parametrize("value", ["+5", "-1", "1e3", " 5", "5\n", "", "18446744073709551616", "٥"])
 def test_u64_strings_are_strict(value: str) -> None:
     # "+5" is what Rust's u64::from_str would take; the wire is ^[0-9]+$.
-    with pytest.raises(BatchSettlementError):
+    with pytest.raises(BatchSettlementError) as exc:
         parse_u64(value, "amount")
+    assert exc.value.code == errors.INVALID_PAYLOAD_TYPE
     bad = _requirements()
     bad["amount"] = value
-    with pytest.raises(BatchSettlementError):
+    with pytest.raises(BatchSettlementError) as parsed:
         parse_requirements(bad)
+    assert parsed.value.code == errors.INVALID_PAYLOAD_TYPE
     assert parse_u64("18446744073709551615", "amount") == 2**64 - 1
 
 
@@ -238,8 +296,9 @@ def test_integers_are_json_integers_and_optionals_are_never_null(path: tuple[str
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = value
-    with pytest.raises(BatchSettlementError):
+    with pytest.raises(BatchSettlementError) as exc:
         parse_requirements(bad)
+    assert exc.value.code == errors.INVALID_PAYLOAD_TYPE
 
 
 def test_corrective_requirements_carry_the_snapshot_and_voucher_proof() -> None:

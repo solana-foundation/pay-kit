@@ -1,14 +1,16 @@
 """Machine-readable failure codes for the SVM x402 ``batch-settlement`` scheme.
 
 These are the strings a server puts in a corrective ``PaymentRequired.error``
-or a ``SettlementResponse.errorReason``. They are wire values shared with the
-Rust (``x402/protocol/schemes/batch_settlement/errors.rs``) and TypeScript
-implementations, so the constants below are the single source of truth. Rust
-defines ``channel_closing`` and ``payout_attribution_ambiguous`` since pay-kit
-#332, and neither side ever emits ``payout_attribution_ambiguous``: both read
-``payoutWatermark`` from the channel account instead of attributing payouts
-from token-balance deltas. ``deposit_below_min_deposit`` has no Rust constant;
-it comes from the scheme spec (section 7).
+or a ``SettlementResponse.errorReason``: wire values, so the constants below
+are the single source of truth for this SDK. The Rust scheme
+(``x402/protocol/schemes/batch_settlement/errors.rs``) lists 20 of these;
+``channel_closing``, ``deposit_below_min_deposit`` and
+``payout_attribution_ambiguous`` come from the scheme spec (section 7) and have
+no Rust constant yet, and pay-kit #332 adds the first and the last of those
+three. Nothing on either side ever answers ``payout_attribution_ambiguous``:
+both read ``payoutWatermark`` from the channel account instead of attributing
+payouts from token-balance deltas. ``tests/test_pk_x402_batch_wire.py`` checks
+this list against the Rust one.
 """
 
 from __future__ import annotations

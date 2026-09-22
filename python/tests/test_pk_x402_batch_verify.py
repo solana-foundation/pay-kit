@@ -46,6 +46,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.verify import (
 )
 from solana_pay_kit.signer import LocalSigner
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 NOW = 1_700_000_000
 

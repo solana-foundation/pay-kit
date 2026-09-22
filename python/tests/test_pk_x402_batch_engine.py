@@ -32,6 +32,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import ChannelRecord, 
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchRequirements
 from tests.batch_chain import CLOSING, MINT, PRICE, SLOT, World, make_world, token_account
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 NOW = 1_700_000_000.0
 
 
@@ -314,15 +316,40 @@ async def test_the_mint_must_be_owned_by_the_declared_token_program(world: World
     assert await _code(engine.verify_and_reserve(world.gate, request)) == errors.INVALID_TOKEN_PROGRAM
 
 
-async def test_an_unusable_settlement_account_refuses_the_escrow(world: World) -> None:
+@pytest.mark.parametrize("unusable", ["missing", "wrong-mint", "wrong-owner", "frozen", "unsupported-extension"])
+async def test_an_unusable_settlement_account_refuses_the_escrow(world: World, unusable: str) -> None:
+    # Every payout account is checked before the sponsor co-signs anything: a
+    # payTo ATA the settle cannot credit must never reach a broadcast.
     engine = _engine(world)
+    token_program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    transfer_fee = bytes([2]) + (1).to_bytes(2, "little") + (108).to_bytes(2, "little") + bytes(108)
+    replacements: dict[str, bytes | None] = {
+        "missing": None,
+        "wrong-mint": token_account(str(Pubkey.new_unique()), world.pay_to),
+        "wrong-owner": token_account(MINT, str(Pubkey.new_unique())),
+        "frozen": token_account(MINT, world.pay_to, state=2),
+        "unsupported-extension": token_account(MINT, world.pay_to, extra=transfer_fee),
+    }
     for key, (data, owner) in list(world.chain.accounts.items()):
-        if owner == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" and data[32:64] == bytes(
-            Pubkey.from_string(world.pay_to)
-        ):
-            world.chain.accounts[key] = (token_account(MINT, world.pay_to, state=2), owner)  # frozen
+        if owner == token_program and data[32:64] == bytes(Pubkey.from_string(world.pay_to)):
+            replacement = replacements[unusable]
+            if replacement is None:
+                del world.chain.accounts[key]
+            else:
+                world.chain.accounts[key] = (replacement, owner)
+    reasons = {
+        "missing": "is missing or not owned by the token program",
+        "wrong-mint": "holds mint",
+        "wrong-owner": "is owned by",
+        "frozen": "is frozen",
+        "unsupported-extension": "carries unsupported extension",
+    }
     request = world.header(_requirement(engine, world), world.deposit_payload(3 * PRICE, PRICE))
-    assert await _code(engine.verify_and_reserve(world.gate, request)) == errors.INVALID_SETTLEMENT_SIMULATION
+    with pytest.raises(BatchSettlementError) as exc:
+        await engine.verify_and_reserve(world.gate, request)
+    assert exc.value.code == errors.INVALID_SETTLEMENT_SIMULATION
+    assert reasons[unusable] in exc.value.detail  # the operator is told which account and why
+    assert world.chain.sent == []
 
 
 def test_settlement_account_decoding_rejects_unusable_token_accounts() -> None:

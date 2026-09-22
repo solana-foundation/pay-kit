@@ -52,7 +52,10 @@ from solana_pay_kit.protocols.x402.client.batch_settlement import (
 from solana_pay_kit.usage import fetch_recent_blockhash_and_slot
 
 RPC = os.environ.get("PAYKIT_SURFNET_RPC_URL", "")
-pytestmark = pytest.mark.skipif(not RPC, reason="set PAYKIT_SURFNET_RPC_URL to a surfnet forking mainnet")
+pytestmark = [
+    pytest.mark.skipif(not RPC, reason="set PAYKIT_SURFNET_RPC_URL to a surfnet forking mainnet"),
+    pytest.mark.usefixtures("reset_batch_globals"),
+]
 
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # localnet resolves USDC to the mainnet mint
 PRICE = 10_000

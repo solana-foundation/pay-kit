@@ -32,6 +32,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import (
 )
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 CONFIG = cast(
     "BatchChannelConfig",
     {

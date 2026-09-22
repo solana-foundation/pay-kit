@@ -53,6 +53,8 @@ from tests.batch_chain import (
     make_world,
 )
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 NOW = 1_700_000_000.0
 OPERATOR = LocalSigner.from_keypair(Keypair.from_seed(bytes([4] * 32)))
 STRANGER = LocalSigner.from_keypair(Keypair.from_seed(bytes([5] * 32)))
@@ -478,10 +480,13 @@ async def test_a_server_voucher_must_be_the_operators_and_within_the_request_cei
     extra = {"commitmentId": "c", "voucher": SERVER_VOUCHERS[case](channel_id)}
     response: Any = {"success": True, "transaction": "", "network": "n", "amount": "", "extra": extra}
     if case == "above the request ceiling":
+        # A valid operator voucher, but past what this request authorized: the
+        # answer is refused without an exception, and the ceiling stays unobserved.
         assert await client.handle_payment_response(opened, response=response) is False
     else:
-        with pytest.raises(BatchSettlementError):
+        with pytest.raises(BatchSettlementError) as exc:
             await client.handle_payment_response(opened, response=response)
+        assert exc.value.code == errors.INVALID_VOUCHER_SIGNATURE
     # Nothing confirmed: the open is unpaid, but it may still land, so the
     # escrow it signed is remembered against the trust grant.
     (record,) = store.records.values()
@@ -506,21 +511,35 @@ async def test_hydrates_confirmed_and_pending_records_and_ignores_unrelated_resp
     assert await second.handle_payment_response(unrelated, response={"success": False}) is False  # type: ignore[typeddict-item]
 
 
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"extra": {"paymentFlow": "upfront"}}, errors.INVALID_PAYMENT_FLOW),
+        ({"extra": {"feePayer": ""}}, errors.INVALID_PAYLOAD_TYPE),
+        ({"extra": {"withdrawDelay": 899}}, errors.INVALID_WITHDRAW_DELAY_OUT_OF_RANGE),
+        ({"extra": {"tokenProgram": "PAYER"}}, errors.INVALID_TOKEN_PROGRAM),
+        ({"extra": {"receiverAuthorizer": 1}}, errors.INVALID_PAYLOAD_TYPE),
+        ({"extra": {"memo": 1}}, errors.INVALID_PAYLOAD_TYPE),
+        ({"extra": {"voucherSigner": "other"}}, errors.INVALID_PAYLOAD_TYPE),
+        # server mode without an operator, and an operator that is the sponsor
+        ({"extra": {"voucherSigner": "server"}}, errors.INVALID_CHANNEL_STATE),
+        ({"extra": {"operator": "FEE_PAYER"}}, errors.INVALID_CHANNEL_STATE),
+        ({"extra": {"feePayer": "PAYER"}}, errors.INVALID_FEE_PAYER_MISMATCH),
+    ],
+)
+async def test_client_terms_name_the_code_they_refuse_with(world: World, overrides: dict[str, Any], code: str) -> None:
+    # "PAYER" and "FEE_PAYER" stand in for keys only the fixture knows.
+    keys = {"PAYER": world.payer.pubkey(), "FEE_PAYER": world.fee_payer.pubkey()}
+    extra = {
+        field: keys.get(value, value) if isinstance(value, str) else value
+        for field, value in overrides["extra"].items()
+    }
+    with pytest.raises(BatchSettlementError) as exc:
+        await _client(world).create_payment_payload(requirements(world, extra=extra))
+    assert exc.value.code == code
+
+
 async def test_validates_client_terms_and_configuration_boundaries(world: World) -> None:
-    for overrides in (
-        {"extra": {"paymentFlow": "upfront"}},
-        {"extra": {"feePayer": ""}},
-        {"extra": {"withdrawDelay": 899}},
-        {"extra": {"tokenProgram": world.payer.pubkey()}},
-        {"extra": {"receiverAuthorizer": 1}},
-        {"extra": {"memo": 1}},
-        {"extra": {"voucherSigner": "other"}},
-        {"extra": {"voucherSigner": "server"}},
-        {"extra": {"operator": world.fee_payer.pubkey()}},
-        {"extra": {"feePayer": world.payer.pubkey()}},  # the payer may not be the sponsor
-    ):
-        with pytest.raises(BatchSettlementError):
-            await _client(world).create_payment_payload(requirements(world, **overrides))
     world.chain.accounts[MINT] = (b"\x00" * 82, TOKEN_2022_PROGRAM)
     with pytest.raises(BatchSettlementError, match="does not own"):
         await _client(world).create_payment_payload(requirements(world))

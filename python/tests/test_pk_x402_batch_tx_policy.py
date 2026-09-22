@@ -46,6 +46,8 @@ from solana_pay_kit.protocols.x402.batch_settlement.tx_policy import (
 )
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig
 
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
+
 PAY_TO = Pubkey.from_string("CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY")
 MINT = Pubkey.from_string("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
 TOKEN = Pubkey.from_string(TOKEN_PROGRAM)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -40,6 +41,8 @@ from solana_pay_kit.protocols.x402.client.batch_settlement import (  # noqa: E40
 )
 from solana_pay_kit.signer import LocalSigner  # noqa: E402
 from tests.batch_chain import BLOCKHASH, CLOSING, PRICE, SLOT, World, make_world  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("reset_batch_globals")
 
 NOW = 1_700_000_000.0
 OPERATOR = LocalSigner.from_keypair(Keypair.from_seed(bytes([4] * 32)))
@@ -341,7 +344,7 @@ def test_an_invalid_payment_gets_a_challenge_naming_the_code(world: World, app: 
     unknown = {"x402Version": 2, "accepted": accept, "payload": world.voucher_payload(PRICE)}  # no such channel
     status, headers, body = get("/r", _header(unknown))
     required = _decode(headers, "payment-required")
-    assert status == 402 and required["error"].startswith("invalid_batch_settlement_svm_")
+    assert status == 402 and required["error"] == errors.INVALID_CHANNEL_STATE
     assert required["error"] in body.decode() and served == []
 
 
@@ -349,6 +352,86 @@ def test_a_misconfigured_route_answers_500_not_a_challenge(app: tuple[Get, list[
     get, served = app
     status, _, _ = get("/x", {})
     assert status == 500 and served == []
+
+
+def _blocking_app(world: World, framework: str, handler: Callable[[], None]) -> Get:
+    """The same gated route in Flask or Django, whose handler blocks until released."""
+    if framework == "flask":
+        import flask
+
+        from solana_pay_kit.flask import require_batch
+
+        app = flask.Flask("concurrent")
+
+        @app.get("/r")
+        @require_batch(world.gate, config=world.config)
+        def view() -> Any:
+            handler()
+            return {"ok": True}
+
+        def flask_get(path: str, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:
+            response = app.test_client().get(path, headers=headers)
+            return response.status_code, dict(response.headers), response.data
+
+        return flask_get
+
+    from django.http import HttpRequest, JsonResponse
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk
+
+    @pk.require_batch(world.gate, config=world.config)
+    def django_view(request: HttpRequest) -> Any:
+        handler()
+        return JsonResponse({"ok": True})
+
+    def django_get(path: str, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:
+        response = django_view(RequestFactory().get(path, headers=headers))
+        return response.status_code, dict(response.headers), response.content
+
+    return django_get
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_two_threads_on_one_channel_charge_it_once(world: World, framework: str) -> None:
+    # Each request thread runs its own event loop, so the channel's exclusivity
+    # rule has to hold across loops: while one request holds the channel the
+    # other is refused, and the charge moves exactly once.
+    armed, inside, release = threading.Event(), threading.Event(), threading.Event()
+
+    def handler() -> None:
+        if armed.is_set() and not inside.is_set():
+            inside.set()
+            release.wait(5)
+
+    get = _blocking_app(world, framework, handler)
+    world.lands_as_channel(deposit=10 * PRICE)
+    client = _client(world)
+    accept = _open(world, get, client)  # the open, sequential and unblocked
+    armed.set()
+    payment: Any = run(client.create_payment_payload(accept))
+    statuses: list[int] = []
+    codes: list[str] = []
+    lock = threading.Lock()
+
+    def pay() -> None:
+        status, headers, _ = get("/r", _header(payment))
+        with lock:
+            statuses.append(status)
+            if status == 402:
+                codes.append(_decode(headers, "payment-required")["error"])
+
+    threads = [threading.Thread(target=pay) for _ in range(2)]
+    threads[0].start()
+    assert inside.wait(5)  # the first request is inside the handler, holding the channel
+    threads[1].start()
+    threads[1].join(5)
+    release.set()
+    for thread in threads:
+        thread.join(5)
+    assert sorted(statuses) == [200, 402] and codes == [errors.DUPLICATE_SETTLEMENT]
+    record = run(_engine(world)._store.get(world.channel_id()))  # noqa: SLF001
+    assert record is not None and record.charged_cumulative == 2 * PRICE
 
 
 def test_django_gates_a_batch_route_through_url_resolution(world: World) -> None:
@@ -431,6 +514,14 @@ def test_flask_surfaces_a_store_invariant_instead_of_a_reused_coroutine(world: W
     payment: Any = run(_client(world).create_payment_payload(accept))
     with pytest.raises(StoreInvariantError, match="deposit would drop"):
         app.test_client().get("/r", headers=_header(payment))
+
+
+def test_two_equal_configs_share_one_engine(world: World) -> None:
+    # The engine cache is keyed by the Config value, so a config rebuilt with
+    # the same fields finds the same channel store rather than a fresh one.
+    twin = world.config.model_copy()  # a new object, the same field values
+    assert twin == world.config and twin is not world.config
+    assert batch_engine(twin) is batch_engine(world.config)
 
 
 def test_x402_batch_shares_the_engine_the_shims_use(world: World) -> None:
