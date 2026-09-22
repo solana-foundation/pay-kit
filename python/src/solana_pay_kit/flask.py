@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 import flask
 from flask import abort, g, make_response
+from werkzeug.exceptions import HTTPException
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
 from solana_pay_kit.config import config as _global_config
@@ -42,9 +43,24 @@ if TYPE_CHECKING:
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
+    from solana_pay_kit.protocols.mpp.server.subscription import (
+        SubscriptionChallengeOptions,
+        SubscriptionGateResult,
+        SubscriptionServer,
+    )
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
-__all__ = ["require_payment", "require_usage", "RequireUsage", "is_paid", "payment", "charge", "Charge"]
+__all__ = [
+    "require_payment",
+    "require_subscription",
+    "require_usage",
+    "RequireSubscription",
+    "RequireUsage",
+    "is_paid",
+    "payment",
+    "charge",
+    "Charge",
+]
 
 _F = TypeVar("_F", bound="Callable[..., Any]")
 _T = TypeVar("_T")
@@ -179,6 +195,45 @@ def require_usage(
 RequireUsage = require_usage
 
 
+def require_subscription(
+    server: SubscriptionServer,
+    options: SubscriptionChallengeOptions | None = None,
+) -> Callable[[_F], _F]:
+    """Decorate a Flask view so it serves only to a live MPP subscription.
+
+    Runs :meth:`~solana_pay_kit.protocols.mpp.server.subscription.SubscriptionServer.handle`
+    on the ``Authorization`` header, the same gate FastAPI's ``RequireSubscription``
+    uses. A missing or invalid credential aborts with the 402 the server built
+    (``WWW-Authenticate`` challenge, ``Cache-Control: no-store``, an
+    ``application/problem+json`` body); an activation or a valid bearer proof
+    merges the receipt and ``Cache-Control: private`` onto the response.
+
+    The subscriber has paid by the time the view runs, so a view that aborts
+    afterwards keeps those headers on its error response. A view that raises a
+    non-HTTP exception has no response to carry them.
+    """
+
+    def decorator(view: _F) -> _F:
+        @wraps(view)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = _run(server.handle(flask.request.headers.get("authorization"), options))
+            if not result.ok:
+                _abort_subscription_required(result)
+            try:
+                response = make_response(view(*args, **kwargs))
+            except HTTPException as exc:
+                abort(_with_headers(exc.get_response(), result.headers))
+            return _with_headers(response, result.headers)
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+#: FastAPI-parity alias; the Flask form is a view decorator, not a dependency.
+RequireSubscription = require_subscription
+
+
 def payment() -> Payment | None:
     """The verified payment attached to the current request, or ``None``."""
     value = getattr(g, PAYMENT_ATTR, None)
@@ -215,6 +270,19 @@ def is_paid(
 
 
 # -- internals --------------------------------------------------------------
+
+
+def _with_headers(response: Any, headers: dict[str, str]) -> Any:
+    """Merge the gate's headers onto a response and return it."""
+    for header, value in headers.items():
+        response.headers[header] = value
+    return response
+
+
+def _abort_subscription_required(result: SubscriptionGateResult) -> NoReturn:
+    """Render the 402 the subscription gate built, headers and problem body intact."""
+    response = make_response(flask.jsonify(result.body or {"error": "payment_required"}), result.status)
+    abort(_with_headers(response, result.headers))
 
 
 def _abort_payment_required(exc: PaymentRequiredError) -> NoReturn:

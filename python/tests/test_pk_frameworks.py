@@ -427,3 +427,67 @@ def test_require_subscription_402_then_200(monkeypatch):
     broke = TestClient(app, raise_server_exceptions=False).get("/boom", headers={"authorization": access})
     assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
     assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0
+
+
+# --- subscription gate (flask / django) ------------------------------------
+
+
+def _subscription_legs(monkeypatch):
+    """A harness plus the three credentials a gated route sees: none, activation, bearer."""
+    import asyncio
+
+    from solana_pay_kit.protocols.mpp.client.subscription import (
+        build_subscription_access_credential,
+        build_subscription_activation,
+    )
+    from solana_pay_kit.protocols.mpp.core.headers import format_authorization
+    from tests._subscription_fixtures import SUBSCRIBER
+    from tests.test_subscription_server import Harness
+
+    h = Harness(monkeypatch)
+    challenge = asyncio.run(h.server.challenge())
+    activation = asyncio.run(build_subscription_activation(SUBSCRIBER, h.rpc, challenge))
+    access = build_subscription_access_credential(
+        challenge.to_echo(), activation.subscription_delegation, activation.authentication
+    )
+    return h, format_authorization(activation.credential), format_authorization(access)
+
+
+def test_flask_require_subscription_402_then_activation_then_proof(monkeypatch):
+    import flask
+
+    import solana_pay_kit.flask as pk_flask
+    from solana_pay_kit.protocols.mpp.core.headers import parse_receipt
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    app = flask.Flask(__name__)
+
+    @app.get("/feed")
+    @pk_flask.require_subscription(h.server)
+    def feed():
+        return {"ok": True}
+
+    @app.get("/boom")
+    @pk_flask.require_subscription(h.server)
+    def boom():
+        flask.abort(500)
+
+    client = app.test_client()
+    denied = client.get("/feed")
+    assert denied.status_code == 402
+    assert denied.headers["cache-control"] == "no-store"
+    assert denied.headers["content-type"] == "application/problem+json"
+    assert denied.headers["www-authenticate"].startswith("Payment ")
+
+    activated = client.get("/feed", headers={"authorization": activation_auth})
+    assert activated.status_code == 200 and activated.headers["cache-control"] == "private"
+    assert parse_receipt(activated.headers["payment-receipt"]).period_index == 0
+
+    reused = client.get("/feed", headers={"authorization": access_auth})
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused.headers["payment-receipt"]).period_index == 0
+
+    # The subscriber paid: a view that aborts afterwards still carries the receipt.
+    broke = client.get("/boom", headers={"authorization": access_auth})
+    assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
+    assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0

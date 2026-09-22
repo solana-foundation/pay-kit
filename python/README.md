@@ -294,7 +294,8 @@ Server: `SubscriptionServer` checks the plan, mint and recipient token account
 before issuing a challenge, validates every activation instruction, co-signs as
 puller (and fee payer when sponsored), binds the proof after settlement, and on
 access renews an unpaid period with one puller-signed charge
-(`renew_on_access`). FastAPI routes gate with `RequireSubscription`.
+(`renew_on_access`). Routes gate with `RequireSubscription` on FastAPI and
+`require_subscription` on Flask and Django.
 `tests/test_subscription_e2e_surfnet.py` drives that lifecycle against the
 deployed program (plan, activation, a lazy renewal after a time jump, cancel).
 It is opt-in locally with `MPP_RUN_SUBSCRIPTION_E2E=1` against a surfpool
@@ -403,13 +404,16 @@ Boot-time validations (all raise `ConfigurationError` or a subclass):
 `solana_pay_kit` carries no web-framework dependency in the base install. The
 framework shims live in optional submodules imported on demand:
 
-- `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), a `@require_payment` view
-  decorator plus `is_paid` / `payment` request accessors.
+- `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), `@require_payment`,
+  `@require_usage` and `@require_subscription` view decorators plus `is_paid` /
+  `payment` request accessors.
 - `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a Django/DRF-style
-  paywall middleware for route metadata and default policies, plus a
-  `RequirePayment` dependency for `Depends(...)`.
-- `solana_pay_kit.django` (install `solana_pay_kit[django]`), a `require_payment` view
-  decorator and an optional `PaymentMiddleware` stack form.
+  paywall middleware for route metadata and default policies, plus
+  `RequirePayment`, `RequireUsage`, `RequireSession` and `RequireSubscription`
+  dependencies for `Depends(...)`.
+- `solana_pay_kit.django` (install `solana_pay_kit[django]`), `require_payment`,
+  `require_usage` and `require_subscription` view decorators and an optional
+  `PaymentMiddleware` stack form.
 
 Every shim delegates protocol/scheme dispatch and 402-challenge assembly to
 the host-neutral `PayCore`; the shim only translates the outcome into its
