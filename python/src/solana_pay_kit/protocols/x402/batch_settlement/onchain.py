@@ -35,6 +35,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     CHANNEL_RENT_PAYER_OFFSET,
     Distribution,
     build_distribute_instruction,
+    build_settle_instructions,
     find_associated_token_address,
     find_channel_pda,
     treasury_owner,
@@ -54,6 +55,7 @@ __all__ = [
     "broadcast_setup",
     "check_mint_owner",
     "check_settlement_accounts",
+    "claim_instructions",
     "cosign",
     "decode_token_account",
     "discover",
@@ -268,6 +270,20 @@ async def submit(rpc: SolanaRpc, signer: LocalSigner, instructions: list[Instruc
         raise BatchSettlementError("transaction_failed", f"redemption broadcast refused: {exc}") from None
     await _confirm(rpc, signature)
     return signature
+
+
+def claim_instructions(
+    *, channel_id: str, payer_authorizer: str, signature: str, cumulative: int, program_id: Pubkey
+) -> list[Instruction]:
+    """The ``[ed25519, settle]`` pair that advances ``settled`` to a stored voucher's cumulative (expiry 0)."""
+    return build_settle_instructions(
+        channel=Pubkey.from_string(channel_id),
+        authorized_signer=Pubkey.from_string(payer_authorizer),
+        signature=bytes(Signature.from_string(signature)),
+        cumulative=cumulative,
+        expires_at=0,
+        program_id=program_id,
+    )
 
 
 def distribute_instruction(

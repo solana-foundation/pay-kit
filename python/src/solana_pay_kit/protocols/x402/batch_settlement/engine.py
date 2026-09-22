@@ -306,9 +306,11 @@ class X402BatchSettlement:
 
     # -- verify and reserve (before the handler) ------------------------------------
 
-    async def verify_and_reserve(self, gate: Gate, request: Any) -> VerifiedBatchRequest:
+    async def verify_and_reserve(self, gate: Gate, request: Any) -> VerifiedBatchRequest | BatchSettlementResponse:
         """Verify the payment and reserve its ceiling against the channel deposit.
 
+        A ``refund`` is a payment operation, not a paid request: it runs here and
+        its settlement response comes back directly, so the handler is bypassed.
         Raises :class:`BatchSettlementError` (402) on rejection and
         :class:`CorrectiveRequired` when the voucher is valid but off the
         server's cumulative watermark.
@@ -321,6 +323,8 @@ class X402BatchSettlement:
         check_channel_config(config, requirements, fee_payer=fee_payer, operator=None)
         check_no_cooperative_close(payload)
         channel_id = derive_channel_id(config, fee_payer, self._program_id)
+        if payload["type"] == "refund":
+            return await self._refund(payload["transaction"], config, requirements, channel_id)
         ceiling = parse_u64(requirements["amount"], "amount")
         # The signature is checked before any RPC read, so an unsigned request
         # cannot make the server read the chain.
@@ -477,8 +481,7 @@ class X402BatchSettlement:
             if current is None and setup is None:
                 raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, f"no channel {channel_id}")
             record = current or self._new_record(channel_id, config, requirements)
-            if record.channel_config != config:
-                raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, "channelConfig differs from the stored one")
+            _require_config(record, config)
             _require_open(record)
             live = record.live_reservations(now)
             # A client-signed (or close) request needs the channel to itself;
@@ -579,11 +582,10 @@ class X402BatchSettlement:
             # Nothing irreversible happened: a failed write must not serve.
             record = await self._store.update(verified.channel_id, charge)
             return self._accepted(verified, _snapshot(record))
-        try:
-            record = await self._store.update(verified.channel_id, charge)
+        record = await self._record_after_broadcast("commit_after_deposit", verified.channel_id, charge)
+        if record is not None:
             state = _snapshot(record)
-        except Exception as exc:  # noqa: BLE001 - the escrow already landed: alert, never re-raise
-            self._alert("commit_after_deposit", verified.channel_id, exc)
+        else:
             state: BatchChannelState = {
                 "channelId": verified.channel_id,
                 "balance": str(int(channel.deposit)),
@@ -632,13 +634,7 @@ class X402BatchSettlement:
     async def release(self, verified: VerifiedBatchRequest) -> None:
         """Drop the request's reservation (handler failed or was cancelled); idempotent."""
 
-        def drop(current: ChannelRecord | None) -> ChannelRecord:
-            if current is None:
-                raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, "channel vanished")
-            reservations = {k: v for k, v in current.reservations.items() if k != verified.reservation_id}
-            return replace(current, reservations=reservations)
-
-        await self._store.update(verified.channel_id, drop)
+        await self._store.update(verified.channel_id, lambda current: _without(current, verified.reservation_id))
 
     def _accepted(self, verified: VerifiedBatchRequest, state: BatchChannelState) -> BatchSettlementResponse:
         voucher = verified.voucher
@@ -656,6 +652,136 @@ class X402BatchSettlement:
                 "channelState": state,
             },
         }
+
+    # -- refund (handler bypassed) ------------------------------------------------------
+
+    async def _refund(
+        self, transaction: str, config: BatchChannelConfig, requirements: BatchRequirements, channel_id: str
+    ) -> BatchSettlementResponse:
+        """Co-sign the payer's ``request_close``, claiming the latest charged voucher first.
+
+        A channel already ``Closing`` returns its observed state without a
+        rebroadcast, so a retried refund is idempotent. The close holds the
+        channel to itself: no paid request can be in flight.
+        """
+        fee_payer = self._fee_payer()
+        validated = tx_policy.validate_request_close(
+            transaction,
+            tx_policy.TransactionExpectations(
+                fee_payer=fee_payer.pubkey(),
+                config=config,
+                channel_id=channel_id,
+                token_program=requirements["extra"]["tokenProgram"],
+                receiver=requirements["payTo"],
+                memo=requirements["extra"].get("memo"),
+                program_id=self._program_id,
+            ),
+        )
+        now = self._clock()
+        hold = uuid.uuid4().hex
+        async with self._rpc_scope() as rpc:
+            channel = await onchain.read_channel(rpc, channel_id, self._program_id)
+            if channel is None:
+                raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, f"channel {channel_id} does not exist")
+            if int(channel.status) not in (CHANNEL_STATUS_OPEN, CHANNEL_STATUS_CLOSING):
+                raise BatchSettlementError(errors.INVALID_CLOSE_STATE, f"channel status {channel.status} cannot close")
+            check_channel_binding(channel, config, requirements, statuses=(CHANNEL_STATUS_OPEN, CHANNEL_STATUS_CLOSING))
+            # The close pays out through these accounts once the grace period ends.
+            await onchain.check_settlement_accounts(
+                rpc,
+                mint=requirements["asset"],
+                token_program=requirements["extra"]["tokenProgram"],
+                owners={
+                    "payee": fee_payer.pubkey(),
+                    "treasury": str(treasury_owner()),
+                    "receiver": requirements["payTo"],
+                    "payer": validated.payer,
+                },
+            )
+
+            seen = channel
+
+            def hold_close(current: ChannelRecord | None) -> ChannelRecord:
+                record = _advance(current or self._new_record(channel_id, config, requirements), seen, now)
+                _require_config(record, config)
+                if record.live_reservations(now):
+                    raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, f"channel {channel_id} is busy")
+                expires_at = now + max(_MIN_RESERVATION_SECONDS, requirements["maxTimeoutSeconds"])
+                return replace(record, reservations={hold: Reservation(0, "close", expires_at)})
+
+            record = await self._store.update(channel_id, hold_close)
+            signature = ""
+            try:
+                if int(channel.status) == CHANNEL_STATUS_OPEN:
+                    await self._claim_before_close(rpc, record, fee_payer)
+                    close = onchain.cosign(validated.transaction, fee_payer)
+                    await onchain.simulate(rpc, close)
+                    signature = await onchain.broadcast_setup(rpc, close)
+                    observed = await read_with_replica_retry(
+                        lambda: onchain.read_channel(rpc, channel_id, self._program_id)
+                    )
+                    if observed is None or int(observed.status) != CHANNEL_STATUS_CLOSING:
+                        raise BatchSettlementError(
+                            errors.INVALID_CLOSE_STATE, "request_close did not move the channel to Closing"
+                        )
+                    channel = observed
+            except onchain.UnconfirmedBroadcast as exc:
+                await self._store.update(channel_id, lambda current: _without(current, hold))
+                raise BatchSettlementError(
+                    errors.INVALID_SETTLEMENT_SIMULATION, f"refund not confirmed; retry the same request_close: {exc}"
+                ) from None
+            except BaseException:
+                await self._store.update(channel_id, lambda current: _without(current, hold))
+                raise
+        closed = channel
+
+        def mark_closing(current: ChannelRecord | None) -> ChannelRecord:
+            record = _advance(_without(current, hold), closed, self._clock())
+            return replace(record, close_signature=signature or record.close_signature)
+
+        if signature:
+            record = await self._record_after_broadcast("refund", channel_id, mark_closing) or record
+        else:
+            record = await self._store.update(channel_id, mark_closing)
+        return {
+            "success": True,
+            # The grace period may still be running: nothing has moved back to
+            # the payer yet, so no amount is claimed.
+            "transaction": signature,
+            "network": requirements["network"],
+            "amount": "",
+            "payer": config["payer"],
+            "extra": {"channelState": _snapshot(record)},
+        }
+
+    async def _claim_before_close(self, rpc: SolanaRpc, record: ChannelRecord, fee_payer: LocalSigner) -> None:
+        """Redeem the latest charged voucher before the payer's close freezes ``settled``."""
+        signature = record.voucher_signature
+        signed = record.signed_max_claimable
+        if signature is None or signed <= record.settled:
+            return
+        if signed > record.charged_cumulative:
+            # Never claim what was not charged.
+            self._alert("claim_above_charged", record.channel_id, ValueError(f"{signed} > {record.charged_cumulative}"))
+            return
+        instructions = onchain.claim_instructions(
+            channel_id=record.channel_id,
+            payer_authorizer=record.channel_config["payerAuthorizer"],
+            signature=signature,
+            cumulative=signed,
+            program_id=self._program_id,
+        )
+        await onchain.submit(rpc, fee_payer, instructions)
+
+    async def _record_after_broadcast(
+        self, event: str, channel_id: str, mutator: Callable[[ChannelRecord | None], ChannelRecord]
+    ) -> ChannelRecord | None:
+        """Write after an irreversible broadcast: a failure is logged and alerted, never re-raised."""
+        try:
+            return await self._store.update(channel_id, mutator)
+        except Exception as exc:  # noqa: BLE001 - the broadcast already landed
+            self._alert(event, channel_id, exc)
+            return None
 
     # -- internals -------------------------------------------------------------------
 
@@ -765,6 +891,17 @@ class X402BatchSettlement:
                 self._on_alert(event, details)
             except Exception:  # noqa: BLE001 - an alert hook must never break settlement
                 logger.exception("x402 batch-settlement alert hook failed")
+
+
+def _without(current: ChannelRecord | None, reservation_id: str) -> ChannelRecord:
+    if current is None:
+        raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, "channel vanished")
+    return replace(current, reservations={k: v for k, v in current.reservations.items() if k != reservation_id})
+
+
+def _require_config(record: ChannelRecord, config: BatchChannelConfig) -> None:
+    if record.channel_config != config:
+        raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, "channelConfig differs from the stored one")
 
 
 def _require_open(record: ChannelRecord) -> None:
