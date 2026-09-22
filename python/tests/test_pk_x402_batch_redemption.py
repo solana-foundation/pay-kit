@@ -108,6 +108,12 @@ class _Harness:
         return record
 
 
+def _signed_cumulative(tx: VersionedTransaction) -> int:
+    """The cumulative in the Ed25519 voucher message the transaction carries."""
+    message = bytes(tx.message.instructions[0].data)
+    return int.from_bytes(message[146:154], "little")
+
+
 def _programs(tx: VersionedTransaction) -> list[str]:
     keys = [str(k) for k in tx.message.account_keys]
     return [keys[ix.program_id_index] for ix in tx.message.instructions]
@@ -226,11 +232,15 @@ async def test_a_store_failure_after_a_confirmed_claim_is_alerted_not_raised(wor
 
 async def test_a_closing_channel_is_sealed_with_its_latest_voucher(world: World) -> None:
     h = _Harness(world, [NOW])
-    channel_id = await h.seed(status=CLOSING, closure_started_at=int(NOW) - 10)
+    # Charged above the voucher it holds signed: only the signed amount is redeemable.
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, status=CLOSING, closure_started_at=int(NOW) - 10)
     h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE, payout=2 * PRICE, status=DISTRIBUTED)
     result = await h.worker.claim()
     (tx,) = world.chain.sent
     assert _programs(tx)[0] == ED25519_PROGRAM_ID and _data(tx) == [SETTLE_AND_SEAL, DISTRIBUTE]
+    # Sealed at exactly the voucher the store holds signed, never at the
+    # charge watermark or anything below it: the program takes the signature.
+    assert _signed_cumulative(tx) == (await h.record(channel_id)).signed_max_claimable == 2 * PRICE
     assert result.sealed == [channel_id]
     record = await h.record(channel_id)
     assert (record.status, record.settled, record.payout_watermark) == ("distributed", 2 * PRICE, 2 * PRICE)
@@ -348,13 +358,14 @@ async def test_idle_close_is_off_by_default_and_advertised_only_when_on(world: W
 async def test_idle_close_seals_with_the_latest_voucher_at_the_window(world: World) -> None:
     clock = [NOW]
     h = _Harness(world, clock, max_idle_secs=3600)
-    channel_id = await h.seed(last=NOW - 3599)
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, last=NOW - 3599)
     assert (await h.worker.close_idle()).idle_closed == [] and world.chain.sent == []
     clock[0] += 1
     result = await h.worker.close_idle()
     (tx,) = world.chain.sent
     # Sealed at the charged voucher, not at the on-chain settled watermark.
     assert _programs(tx)[0] == ED25519_PROGRAM_ID and _data(tx) == [SETTLE_AND_SEAL, DISTRIBUTE]
+    assert _signed_cumulative(tx) == (await h.record(channel_id)).signed_max_claimable == 2 * PRICE
     assert result.idle_closed == [channel_id] and (await h.record(channel_id)).status == "distributed"
 
 
