@@ -639,3 +639,20 @@ async def test_recover_matches_the_pay_to_of_every_route_the_engine_advertised(w
     h.engine.accepts_entries(world.gate.model_copy(update={"pay_to": route_pay_to}), {})
     assert await h.worker.recover() == [channel_id]
     assert (await h.record(channel_id)).channel_config == config
+
+
+async def test_one_invisible_account_read_does_not_drop_an_opened_channel(world: World) -> None:
+    # A replica that lags, or a forked validator refetching the account from
+    # its datasource, answers one read as absent for a channel still on chain.
+    h = _Harness(world, [NOW])
+    channel_id = await h.seed(status=CLOSING, closure_started_at=int(NOW) - GRACE)
+    account = world.chain.accounts.pop(channel_id)
+    original = world.chain.get_account_info
+
+    async def visible_on_the_re_read(address: str, commitment: str = "confirmed") -> Any:
+        world.chain.accounts[channel_id] = account
+        return await original(address, commitment)
+
+    world.chain.get_account_info = visible_on_the_re_read  # type: ignore[method-assign]
+    await h.worker.finalize_close()
+    assert await h.store.get(channel_id) is not None and h.alerts == []

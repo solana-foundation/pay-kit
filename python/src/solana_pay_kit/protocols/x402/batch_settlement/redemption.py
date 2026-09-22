@@ -523,7 +523,7 @@ class BatchRedemption:
         for chunk in _chunks(records, _READ_CHUNK):
             for record, channel in zip(chunk, await self._read(rpc, chunk), strict=True):
                 if channel is None:
-                    await self._vanished(record)
+                    await self._vanished(rpc, record)
                     continue
                 record = await self._sync(record, channel)
                 status = int(channel.status)
@@ -696,14 +696,33 @@ class BatchRedemption:
                 channels.append(None)
         return channels
 
-    async def _vanished(self, record: ChannelRecord) -> None:
-        """A stored channel whose account is gone: a failed open, or one already reclaimed."""
+    async def _vanished(self, rpc: SolanaRpc, record: ChannelRecord) -> None:
+        """A stored channel whose account is gone: a failed open, or one already reclaimed.
+
+        A record that was really opened holds the voucher this server redeems,
+        so it is dropped only after the account stays invisible through a
+        second, bounded read: a replica that lags behind the write can answer
+        one read as absent for a channel that is still there.
+        """
         opened = record.deposit > 0 or record.onchain_synced_at is not None or record.processed_setup_signatures
         if opened and record.live_reservations(self._clock()):
             return  # an open or a request is still in flight
         if opened:
+            if await self._visible_again(rpc, record.channel_id):
+                return  # the next pass sees it
             self._alert("channel_account_vanished", record.channel_id, ValueError(f"status {record.status}"))
         await self._record_after_broadcast("vanished", record.channel_id, None)
+
+    async def _visible_again(self, rpc: SolanaRpc, channel_id: str) -> bool:
+        """Re-read an account that looked absent; short, because the next pass reads it again anyway."""
+        try:
+            account = await read_with_replica_retry(
+                lambda: rpc.get_account_info(channel_id), attempts=3, backoff_step_seconds=0.1
+            )
+        except MalformedAccountError as exc:
+            self._alert("channel_account_unreadable", channel_id, exc)
+            return False
+        return account is not None
 
     async def _drop_operations(self, channel_id: str) -> None:
         if self._operations is None:
