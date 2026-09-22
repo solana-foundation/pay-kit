@@ -273,7 +273,15 @@ class MemoryBatchChannelStore:
 
 
 class StoreBackedBatchChannelStore:
-    """:class:`BatchChannelStore` persisted through a replay :class:`Store` (e.g. ``FileReplayStore``)."""
+    """:class:`BatchChannelStore` persisted through a replay :class:`Store`, for one process.
+
+    Durability across restarts, not across processes: the read-modify-write
+    above is serialized by this instance's lock, and neither shipped
+    :class:`Store` helps. ``MemoryReplayStore`` is process-local, and
+    ``FileReplayStore`` caches the whole file in memory and rewrites it whole,
+    so two processes overwrite each other's keys. Serving from more than one
+    process needs a ``Store`` with compare-and-set.
+    """
 
     def __init__(self, store: Store) -> None:
         self._store = store
@@ -482,10 +490,13 @@ class MemoryBatchOperationStore:
 
 
 class StoreBackedBatchOperationStore:
-    """:class:`BatchOperationStore` over a replay :class:`Store`.
+    """:class:`BatchOperationStore` over a replay :class:`Store`, for one process.
 
-    ``reserve`` is ``put_if_absent``, so one-operation-per-request holds across
-    processes whenever the underlying store's ``put_if_absent`` is atomic.
+    ``reserve`` is ``put_if_absent``, which keeps one operation per request id
+    within this process. It is not a cross-process guarantee with the shipped
+    stores: ``FileReplayStore`` answers from its in-memory copy of the file, so
+    two processes can both be told the key was absent. Serving from more than
+    one process needs a ``Store`` with compare-and-set.
     """
 
     def __init__(self, store: Store) -> None:

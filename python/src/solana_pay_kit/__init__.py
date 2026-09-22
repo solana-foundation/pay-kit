@@ -151,6 +151,11 @@ def x402_batch(config: Config | None = None) -> BatchRedemption:
     It shares the channel store of the engine the framework shims use, so a
     ``claim()``/``settle()`` here redeems what they served. Run it on a
     schedule (``start(interval)``) or call its passes directly.
+
+    One process and one worker per store: the shipped stores keep their state
+    (and their locks) inside this process, so a second server process or a
+    second worker works on its own copy. See the batch-settlement section of
+    the Python README.
     """
     from solana_pay_kit.config import config as _current
     from solana_pay_kit.protocols.x402.batch_settlement import batch_engine

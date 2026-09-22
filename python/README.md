@@ -228,6 +228,18 @@ pay them with `BatchPaymentTransport` from
 `solana_pay_kit.protocols.x402.client.batch_settlement`, and run the redemption
 worker from `solana_pay_kit.x402_batch()` on a schedule.
 
+Run the gated server in **one process, with one redemption worker**. The
+shipped channel and operation stores hold their state in that process (the
+`Store`-backed variants persist it across restarts, but their locks and their
+read-modify-write index are process-local), and the worker's lock covers one
+worker instance. Under `uvicorn --workers 4` you get four disjoint channel
+stores and four workers: a request that lands on another worker rebuilds the
+channel from its on-chain watermark and answers a corrective 402, so clients
+resync instead of being served. No funds are lost (the program caps
+`totalClaimed` at the escrow, and a voucher is only worth what the chain lets
+it claim), but the gate degrades to that ping-pong. Multi-process serving needs
+a `Store` with compare-and-set, which is not shipped yet.
+
 ### Client
 
 Pay an x402-gated endpoint with the auto-pay transport (the Go `NewClient`
