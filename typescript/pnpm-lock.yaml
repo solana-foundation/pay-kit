@@ -6,7 +6,7 @@ settings:
 
 overrides:
   ws: ^8.21.0
-  '@x402/core': file:.x402-vendor/x402-core-2.23.0.tgz
+  '@x402/core': file:.x402-vendor/x402-core-2.26.0.tgz
   '@hono/node-server': '>=2.0.10'
   fast-uri: '>=4.1.4'
   hono: '>=4.13.5'
@@ -127,11 +127,11 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
       '@x402/core':
-        specifier: file:../../.x402-vendor/x402-core-2.23.0.tgz
-        version: file:.x402-vendor/x402-core-2.23.0.tgz
+        specifier: file:../../.x402-vendor/x402-core-2.26.0.tgz
+        version: file:.x402-vendor/x402-core-2.26.0.tgz
       '@x402/svm':
-        specifier: file:../../.x402-vendor/x402-svm-2.23.0.tgz
-        version: file:.x402-vendor/x402-svm-2.23.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
+        specifier: file:../../.x402-vendor/x402-svm-2.26.0.tgz
+        version: file:.x402-vendor/x402-svm-2.26.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -2305,13 +2305,13 @@ packages:
   '@vitest/utils@4.1.0':
     resolution: {integrity: sha512-XfPXT6a8TZY3dcGY8EdwsBulFCIw+BeeX0RZn2x/BtiY/75YGh8FeWGG8QISN/WhaqSrE2OrlDgtF8q5uhOTmw==}
 
-  '@x402/core@file:.x402-vendor/x402-core-2.23.0.tgz':
-    resolution: {integrity: sha512-kSM3DS13hiUMhXSA05GPDLl0PMRCPse12aC48W8TQ3c0sfrTjRH+NEbqargb5wvyT00QY/+Sce8aL2e90dUp0Q==, tarball: file:.x402-vendor/x402-core-2.23.0.tgz}
-    version: 2.23.0
+  '@x402/core@file:.x402-vendor/x402-core-2.26.0.tgz':
+    resolution: {integrity: sha512-ZbdBfsnze0M4GOx1vnNsPp37qz6UtzLtLVEmEmlJJeiUueVPnm5nCiGd8j8pJWP+UH004IpMmHo/j63YKKlYuQ==, tarball: file:.x402-vendor/x402-core-2.26.0.tgz}
+    version: 2.26.0
 
-  '@x402/svm@file:.x402-vendor/x402-svm-2.23.0.tgz':
-    resolution: {integrity: sha512-ILNx2D/NQdW22NGoICFH+OwA/mIdQHpFRvUuw0HihDYTL/uwsvZqYBHowlR24hKyrhShYKneUOb/kl+MoT0BJw==, tarball: file:.x402-vendor/x402-svm-2.23.0.tgz}
-    version: 2.23.0
+  '@x402/svm@file:.x402-vendor/x402-svm-2.26.0.tgz':
+    resolution: {integrity: sha512-bZEXDTX5kmff3A2t9BfNv7CRtdVdDdkMM/uB6QVlmqqlUXgkV6nI7cbA/hiUv9In0Tlfz7nP2+AjgvNczUgWEg==, tarball: file:.x402-vendor/x402-svm-2.26.0.tgz}
+    version: 2.26.0
     peerDependencies:
       '@solana/kit': '>=5.1.0'
 
@@ -6651,19 +6651,23 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  '@x402/core@file:.x402-vendor/x402-core-2.23.0.tgz':
+  '@x402/core@file:.x402-vendor/x402-core-2.26.0.tgz':
     dependencies:
       zod: 3.25.76
 
-  '@x402/svm@file:.x402-vendor/x402-svm-2.23.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
+  '@x402/svm@file:.x402-vendor/x402-svm-2.26.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)':
     dependencies:
+      '@noble/hashes': 1.8.0
       '@solana-program/compute-budget': 0.11.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana-program/token': 0.9.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana-program/token-2022': 0.6.1(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
       '@solana/kit': 6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)
-      '@x402/core': file:.x402-vendor/x402-core-2.23.0.tgz
+      '@solana/program-client-core': 6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)
+      '@x402/core': file:.x402-vendor/x402-core-2.26.0.tgz
     transitivePeerDependencies:
       - '@solana/sysvars'
+      - fastestsmallesttextencoderdecoder
+      - typescript
 
   abitype@1.2.3(typescript@5.9.3)(zod@4.4.3):
     optionalDependencies:

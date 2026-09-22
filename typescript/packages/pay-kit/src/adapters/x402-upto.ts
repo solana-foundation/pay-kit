@@ -104,9 +104,10 @@ export class X402Upto {
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
+            // The facilitator reads and broadcasts through the signer's RPC
+            // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
             new UptoSvmFacilitator(
                 toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
-                { rpcUrl: config.rpcUrl },
             ),
         );
     }
