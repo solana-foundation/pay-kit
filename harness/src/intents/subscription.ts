@@ -16,6 +16,6 @@ export const subscriptionScenarios: readonly HarnessScenario[] = [
     settlementHeader: "x-subscription-reference",
     expectedStatus: 200,
     clientIds: ["python-subscription"],
-    serverIds: ["python"],
+    serverIds: ["python", "rust-subscription"],
   },
 ] as const;

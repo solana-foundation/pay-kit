@@ -423,6 +423,26 @@ export const serverImplementations: ImplementationDefinition[] = [
     intents: ["charge", "x402-exact", "session", "subscription"],
   },
   {
+    id: "rust-subscription",
+    label: "Rust MPP subscription server",
+    role: "server",
+    // Publishes its own plan before ready and runs the Rust SubscriptionServer
+    // with fee_payer = puller (the Rust server signs only the fee-payer slot).
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "mpp_harness_subscription_server",
+    ],
+    enabled: isEnabled("rust-subscription", "MPP_HARNESS_SERVERS", false),
+    intents: ["subscription"],
+  },
+  {
     id: "go",
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",
