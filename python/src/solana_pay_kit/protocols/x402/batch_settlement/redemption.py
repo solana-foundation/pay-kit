@@ -150,8 +150,8 @@ class BatchRedemption:
         self._program_id = program_id
         self._clock = clock
         self._alert = alert
-        # ponytail: one lock per worker instance; a second worker process over
-        # the same store needs a store-level lease.
+        # One lock per worker instance; a second worker process over the same
+        # store needs a store-level lease.
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._interval = 0.0

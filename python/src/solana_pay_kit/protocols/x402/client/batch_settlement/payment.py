@@ -268,8 +268,8 @@ class BatchSettlementClient:
         self._pending: dict[str, _Pending] = {}
         # Server mode: opens that failed but may still land, keyed like _channels.
         self._unlanded: dict[str, _Channel] = {}
-        # ponytail: per-process locks; two processes paying one channel still
-        # race (the server's duplicate/corrective answers resync them).
+        # Per-process locks: two processes paying one channel still race (the
+        # server's duplicate and corrective answers resync them).
         self._locks: dict[str, asyncio.Lock] = {}
         self._resolved: dict[str, asyncio.Event] = {}
 

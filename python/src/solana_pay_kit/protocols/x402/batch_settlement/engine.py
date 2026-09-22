@@ -127,8 +127,8 @@ AlertHook = Callable[[str, Mapping[str, Any]], None]
 # client's own minimum: that escrow is what the operator could take.
 _CLIENT_MIN_DEPOSIT_MULTIPLE = 10
 _SERVER_MIN_DEPOSIT_MULTIPLE = 3
-# ponytail: recover() matches only the first 1024 distinct payTo values this
-# process advertised; persist them if a server settles to more.
+# recover() matches only the first 1024 distinct payTo values this process
+# advertised; persist them if a server settles to more.
 _MAX_REMEMBERED_PAY_TO = 1024
 
 

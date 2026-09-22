@@ -240,8 +240,8 @@ class MemoryBatchChannelStore:
             return None if record is None else record.clone()
 
     async def update(self, channel_id: str, mutator: ChannelMutator) -> ChannelRecord:
-        # ponytail: one lock for every channel, held only while the synchronous
-        # mutator runs; per-channel locks if mutators ever get slow.
+        # One lock for every channel, held only while the synchronous mutator
+        # runs; per-channel locks if mutators ever get slow.
         with self._lock:
             before = self._data.get(channel_id)
             after = _checked(channel_id, before, mutator(None if before is None else before.clone()))
@@ -270,18 +270,18 @@ class StoreBackedBatchChannelStore:
 
     def __init__(self, store: Store) -> None:
         self._store = store
-        # ponytail: single-process CAS. The lock serializes this process only;
-        # multi-replica needs a compare-and-set Store (Store has put_if_absent
-        # but no conditional put).
+        # Single-process CAS: the lock serializes this process only; a
+        # multi-replica deployment needs a compare-and-set Store (Store has
+        # put_if_absent but no conditional put).
         self._lock = asyncio.Lock()
 
     @staticmethod
     def _key(channel_id: str) -> str:
         return f"{_KEY_PREFIX}channel:{channel_id}"
 
-    # ponytail: the channel index is a read-modify-write list, so concurrent
-    # updates from several processes are last-writer-wins and can drop an id;
-    # a Store with list or compare-and-set is the upgrade path.
+    # The channel index is a read-modify-write list, so concurrent updates from
+    # several processes are last-writer-wins and can drop an id; a Store with a
+    # list or compare-and-set primitive is the upgrade path.
     _INDEX = f"{_KEY_PREFIX}channels"
 
     async def _read(self, channel_id: str) -> ChannelRecord | None:
@@ -473,8 +473,8 @@ class StoreBackedBatchOperationStore:
 
     def __init__(self, store: Store) -> None:
         self._store = store
-        # ponytail: complete/release are get-then-put under a process-local
-        # lock; multi-replica needs a compare-and-set Store.
+        # complete/release are get-then-put under a process-local lock; a
+        # multi-replica deployment needs a compare-and-set Store.
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -500,8 +500,8 @@ class StoreBackedBatchOperationStore:
             if existing is None:
                 raise StoreInvariantError(f"operation {request_id} vanished during reserve")
             return _existing(existing, ceiling)
-        # ponytail: the per-channel index is read-modify-write under a
-        # process-local lock; a compare-and-set Store is the multi-replica fix.
+        # The per-channel index is read-modify-write under a process-local
+        # lock; a compare-and-set Store is the multi-replica fix.
         async with self._lock:
             index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
             for expired in [rid for rid, at in index.items() if at < now and rid != request_id]:
