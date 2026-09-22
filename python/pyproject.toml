@@ -116,6 +116,7 @@ strict = [
     "src/solana_pay_kit/protocols/x402/client/upto/payment.py",
     "src/solana_pay_kit/protocols/x402/client/batch_settlement/__init__.py",
     "src/solana_pay_kit/protocols/x402/client/batch_settlement/payment.py",
+    "src/solana_pay_kit/protocols/x402/client/batch_settlement/transport.py",
     "src/solana_pay_kit/protocols/x402/client/batch_settlement/trust.py",
 ]
 reportMissingTypeStubs = false

@@ -36,6 +36,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, cast
 
+import httpx
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.instruction import Instruction  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
@@ -76,6 +77,10 @@ from solana_pay_kit.protocols.x402.batch_settlement.types import (
     parse_u64,
 )
 from solana_pay_kit.protocols.x402.batch_settlement.verify import CHANNEL_STATUS_OPEN, check_withdraw_delay
+from solana_pay_kit.protocols.x402.client.batch_settlement.transport import (
+    probe_batch_requirements,
+    refund_batch_channel,
+)
 from solana_pay_kit.protocols.x402.client.batch_settlement.trust import (
     ServerSignedChannelsPolicy,
     ServerSignedGrant,
@@ -672,6 +677,38 @@ class BatchSettlementClient:
         return cast(
             "BatchPaymentPayload", {"x402Version": _X402_VERSION, "accepted": dict(requirements), "payload": payload}
         )
+
+    async def refund(
+        self, url: str, *, requirements: Mapping[str, Any] | None = None, http: httpx.AsyncClient | None = None
+    ) -> list[BatchSettlementResponse]:
+        """Close every channel this client holds behind ``url`` and start its refund.
+
+        Without ``requirements`` the route is probed and each ``batch-settlement``
+        accept (filtered by the trust policy, when one is set) whose terms have
+        a cached or discovered channel is closed. A successful response means
+        the close started: the unused escrow comes back after the grace period
+        (see :func:`~.transport.refund_batch_channel`), and the channel is
+        forgotten here.
+        """
+        async with contextlib.AsyncExitStack() as stack:
+            session = http if http is not None else await stack.enter_async_context(httpx.AsyncClient())
+            accepts: list[Mapping[str, Any]]
+            if requirements is not None:
+                accepts = [requirements]
+            else:
+                accepts = list(await probe_batch_requirements(url, session))
+                if self._trusts_operators:
+                    accepts = self.payment_policy(accepts)
+            closing = [(accept, key) for accept in accepts if (key := await self._key_with_channel(accept))]
+            if not closing:
+                raise ValueError("no batch-settlement channel to refund")
+            results: list[BatchSettlementResponse] = []
+            for accept, key in closing:
+                settled = await refund_batch_channel(self.create_refund_payload, url, requirements=accept, http=session)
+                if settled.get("success"):
+                    await self._forget(key)
+                results.append(settled)
+            return results
 
     # -- terms, sizing, transactions --------------------------------------------------------------
 
