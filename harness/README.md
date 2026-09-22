@@ -151,13 +151,14 @@ What the harness exercises today:
 | x402 `exact` | TS, Rust (+ adapters as they land) | ✅ |
 | x402 `upto` | — | ✅ (TS/pay-kit) |
 | MPP `session` | Python (limited) | — |
-| MPP `subscription` | — | — |
+| MPP `subscription` | Python client × Python, Rust servers | ✅ (activation + access) |
 | x402 `batch-settlement` | — | — |
 
 **Known gaps** (tracked, not yet covered):
 
 - x402 `upto` / `batch-settlement` clients in Go and Python (Rust + TS only).
-- MPP `subscription` outside Rust (needs plan bootstrap).
+- MPP `subscription` with the Rust or TypeScript client against the Python
+  server: both clients add an ATA create the spec-strict Python server rejects.
 - MPP `session` servers outside Python/Rust.
 
 Per-language on-chain coverage lands by registering process adapters for these

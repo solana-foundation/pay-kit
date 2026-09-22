@@ -270,7 +270,7 @@ Use MPP when:
 | `charge/pull`  | ✅     | ✅     |
 | `charge/push`  | —      | ✅     |
 | `session`      | ✅     | ✅     |
-| `subscription` | —      | —      |
+| `subscription` | ✅     | ✅     |
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =
@@ -284,6 +284,17 @@ broadcasts the open), the reserve/commit metering side channel
 on-chain settle-at-close (when a signer and RPC are configured, a closed
 channel's `settledSignature` carries the real on-chain signature; without them
 the close is a state-flip and the signature stays `null`).
+
+`subscription` ships both sides for the Solana profile. Client:
+`build_subscription_activation` checks the on-chain `Plan` against the
+challenge, then signs one activation transaction (authority init only when
+missing, `subscribe`, the first `transfer_subscription`) plus a reusable bearer
+proof; `build_subscription_access_credential` presents that proof later.
+Server: `SubscriptionServer` checks the plan, mint and recipient token account
+before issuing a challenge, validates every activation instruction, co-signs as
+puller (and fee payer when sponsored), binds the proof after settlement, and on
+access renews an unpaid period with one puller-signed charge
+(`renew_on_access`). FastAPI routes gate with `RequireSubscription`.
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`

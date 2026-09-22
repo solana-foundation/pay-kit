@@ -69,7 +69,7 @@ jobs:
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,mpp_harness_subscription_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: python
       # x402 upto settles on the canonical payment-channels program; the upto
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
@@ -108,6 +108,29 @@ jobs:
       - name: Build payment channels program
         working-directory: _payment-channels/program/payment_channels
         run: cargo build-sbf --tools-version v1.52 --arch v1
+      # The subscription leg runs the canonical subscriptions program built from
+      # the ref pinned as `subscriptions_ref` in the root Justfile (keep the two
+      # in sync), deployed at De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44.
+      # Platform tools v1.52 ship rustc 1.89.0, the highest rust-version in the
+      # program's dependency closure (pinocchio 0.11, solana-address 2.6,
+      # wincode 0.5), so the same pin as payment channels builds it.
+      - name: Checkout subscriptions program
+        uses: actions/checkout@v5
+        with:
+          repository: solana-foundation/subscriptions
+          ref: 5a347ffaa969036061d274d3c91e0277962e2b51
+          path: _subscriptions
+          fetch-depth: 1
+      - name: Cache subscriptions program build
+        id: subscriptions-so
+        uses: actions/cache@v5
+        with:
+          path: _subscriptions/target/deploy/subscriptions_program.so
+          key: subscriptions-program-5a347ffaa969036061d274d3c91e0277962e2b51-tools-v1.52-arch-v1
+      - name: Build subscriptions program
+        if: steps.subscriptions-so.outputs.cache-hit != 'true'
+        working-directory: _subscriptions/program
+        run: cargo build-sbf --tools-version v1.52 --arch v1
       # Sync the uv environment the conformance runner (runners/python.json:
       # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
       # vectors - including the frozen 48-byte session voucher preimage - run
@@ -115,9 +138,9 @@ jobs:
       - name: Sync Python uv environment
         working-directory: python
         run: uv sync --extra dev
-      # Cross-SDK conformance vectors for Python: charge, x402-exact, and the
-      # session voucher-preimage byte-vector (runners/python.json declares the
-      # session intent). Pins the Python session wire bytes against the frozen
+      # Cross-SDK conformance vectors for Python: charge, x402-exact, the
+      # session voucher-preimage byte-vector and the subscription wire vectors
+      # (runners/python.json declares the session and subscription intents). Pins the Python session wire bytes against the frozen
       # cross-SDK vector rather than only the charge path.
       - name: Run Python cross-SDK conformance vectors
         working-directory: harness
@@ -132,6 +155,19 @@ jobs:
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
+      # Subscription: the Python client activates (same-tx authority init) and
+      # accesses with its bearer proof against the Python server and the Rust
+      # server leg. Each server publishes its own plan on the embedded surfnet,
+      # which runs the subscriptions .so built above.
+      - name: Focused Python subscription harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: subscription
+          MPP_HARNESS_SCENARIOS: subscription-activate-access
+          MPP_HARNESS_CLIENTS: python-subscription
+          MPP_HARNESS_SERVERS: python,rust-subscription
+          SUBSCRIPTIONS_PROGRAM_SO: ../_subscriptions/target/deploy/subscriptions_program.so
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

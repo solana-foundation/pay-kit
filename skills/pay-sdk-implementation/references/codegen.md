@@ -60,7 +60,16 @@ whatever `main` happens to be the day someone runs the recipe.
 | `just codegen-install` | `pnpm install` inside the codegen dir. Idempotent. |
 | `just subscriptions-pull-idl` | Fetches `idl/subscriptions.json` at the pinned `subscriptions_ref`. |
 | `just subscriptions-generate-rs` | Runs Codama with `@codama/renderers-rust`, then `cargo fmt -p solana-pay-kit`. |
-| `just subscriptions-sync` | Both of the above. Use this on a clean checkout. |
+| `just subscriptions-generate-py` | Renders the Python client with codama-py (`codegen/generate-client-py.ts`) into `python/src/solana_pay_kit/protocols/programs/subscriptions/`. |
+| `just subscriptions-sync` | Pulls the IDL and regenerates the Rust and Python clients. Use this on a clean checkout. |
+
+The Python generator (`generate-client-py.ts <idl> <outDir>`) serves every
+program; it clones codama-py at a pinned commit and patches each account
+decoder to skip the one-byte discriminator codama-py drops. The IDL declares no
+account discriminators and codama-py ignores `isOptional`, so the hand-written
+glue (`python/src/solana_pay_kit/protocols/mpp/_subscriptions.py`) checks owner,
+length and discriminator itself and drops the always-emitted optional `payer`
+meta.
 
 `subscriptions-generate-rs` is idempotent: it wipes
 `rust/crates/kit/src/generated/subscriptions/generated/` before
