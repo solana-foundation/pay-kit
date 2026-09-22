@@ -437,8 +437,11 @@ class BatchOperationStore(Protocol):
     ) -> tuple[bool, OperationRecord]:
         """Create a reservation unless one exists; ``(created, record)``. A changed ceiling raises.
 
-        Records of this channel whose proof expired before ``now`` are pruned:
-        verification refuses an expired proof, so their ids cannot come back.
+        Reservations of this channel whose proof expired before ``now`` are
+        pruned first, this request id included: an expired proof buys nothing
+        (verification refuses it, and a commit refuses its reservation), so the
+        id is free again. A completed or released record is a permanent
+        tombstone and is never pruned, whatever its expiry.
         """
         ...
 
@@ -479,13 +482,14 @@ class MemoryBatchOperationStore:
     async def reserve(
         self, channel_id: str, request_id: str, ceiling: int, *, expires_at: float, now: float
     ) -> tuple[bool, OperationRecord]:
-        """Reserve ``request_id`` unless it exists, first pruning this channel's expired records."""
+        """Reserve ``request_id``, after this channel's expired reservations (this id included) are pruned."""
         with self._lock:
+            for key, stale in [(k, r) for k, r in self._data.items() if k[0] == channel_id]:
+                if stale.expires_at < now and stale.status == "reserved":
+                    del self._data[key]
             existing = self._data.get((channel_id, request_id))
             if existing is not None:
                 return _existing(deepcopy(existing), ceiling)
-            for key in [k for k, r in self._data.items() if k[0] == channel_id and r.expires_at < now]:
-                del self._data[key]
             record = OperationRecord(channel_id, request_id, ceiling, expires_at=expires_at)
             self._data[(channel_id, request_id)] = record
             return True, deepcopy(record)
@@ -550,24 +554,37 @@ class StoreBackedBatchOperationStore:
     async def reserve(
         self, channel_id: str, request_id: str, ceiling: int, *, expires_at: float, now: float
     ) -> tuple[bool, OperationRecord]:
-        """Reserve ``request_id`` with ``put_if_absent``, then prune this channel's expired records."""
+        """Reserve ``request_id``, after this channel's expired reservations (this id included) are pruned."""
         record = OperationRecord(channel_id, request_id, ceiling, expires_at=expires_at)
-        # The whole reserve, the claim on the id and the per-channel index,
-        # runs under one lock: a Store whose own put_if_absent is not atomic
-        # across this process's event loops must not decide the race.
+        # The whole reserve, the prune, the claim on the id and the per-channel
+        # index, runs under one lock: a Store whose own put_if_absent is not
+        # atomic across this process's event loops must not decide the race.
         async with _held(self._lock):
+            index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
+            if await self._prune(channel_id, index, now):
+                await self._store.put(self._index_key(channel_id), index)
             if not await self._store.put_if_absent(self._key(channel_id, request_id), record.to_dict()):
                 existing = await self.get(channel_id, request_id)
                 if existing is None:
                     raise StoreInvariantError(f"operation {request_id} vanished during reserve")
                 return _existing(existing, ceiling)
-            index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
-            for expired in [rid for rid, at in index.items() if at < now and rid != request_id]:
-                await self._store.delete(self._key(channel_id, expired))
-                del index[expired]
             index[request_id] = expires_at
             await self._store.put(self._index_key(channel_id), index)
         return True, record
+
+    async def _prune(self, channel_id: str, index: dict[str, float], now: float) -> bool:
+        """Drop expired reservations of ``channel_id`` from the store and ``index``; ``True`` when it changed.
+
+        A completed or released record outlives its expiry: its id stays
+        consumed, so only the index entry goes.
+        """
+        expired = [request_id for request_id, at in index.items() if at < now]
+        for request_id in expired:
+            stale = await self.get(channel_id, request_id)
+            if stale is None or stale.status == "reserved":
+                await self._store.delete(self._key(channel_id, request_id))
+            del index[request_id]
+        return bool(expired)
 
     async def complete(
         self, channel_id: str, request_id: str, *, ceiling: int, actual: int, cumulative: int

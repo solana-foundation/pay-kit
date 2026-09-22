@@ -92,6 +92,27 @@ async def test_atomically_reserves_one_operation_per_request_id(operations: Batc
     assert (await operations.reserve("other", "request", 1_000, expires_at=LATER, now=NOW))[0] is True
 
 
+async def test_an_expired_reservation_frees_its_request_id(operations: BatchOperationStore) -> None:
+    # An expired proof buys nothing: verification refuses it and a commit
+    # refuses its reservation, so a client that retries the same requestId with
+    # a fresh proof must not be answered duplicate_settlement forever.
+    created, _ = await operations.reserve("chan", "request", 1_000, expires_at=LATER, now=NOW)
+    assert created
+    again, record = await operations.reserve("chan", "request", 1_000, expires_at=LATER + 300, now=LATER + 1)
+    assert (again, record.status, record.expires_at) == (True, "reserved", LATER + 300)
+
+
+async def test_an_expired_tombstone_keeps_its_request_id_consumed(operations: BatchOperationStore) -> None:
+    # Expiry frees a reservation, never a record of work that was done.
+    await operations.reserve("chan", "done", 1_000, expires_at=LATER, now=NOW)
+    await operations.complete("chan", "done", ceiling=1_000, actual=500, cumulative=500)
+    await operations.reserve("chan", "failed", 1_000, expires_at=LATER, now=NOW)
+    await operations.release("chan", "failed")
+    for request_id, status in (("done", "completed"), ("failed", "released")):
+        created, tombstone = await operations.reserve("chan", request_id, 1_000, expires_at=LATER + 300, now=LATER + 1)
+        assert (created, tombstone.status) == (False, status), request_id
+
+
 async def test_permanently_rejects_failed_and_completed_request_ids(operations: BatchOperationStore) -> None:
     await operations.reserve("chan", "failed", 1_000, expires_at=LATER, now=NOW)
     await operations.release("chan", "failed")
