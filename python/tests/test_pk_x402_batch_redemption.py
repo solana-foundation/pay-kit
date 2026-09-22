@@ -55,13 +55,14 @@ class _Harness:
         self.world = world
         self.store = MemoryBatchChannelStore()
         self.alerts: list[str] = []
+        self.details: list[str] = []
         self.engine = X402BatchSettlement(
             world.config,
             settings=BatchSettlementConfig(**settings),
             channel_store=self.store,
             rpc=world.chain,  # type: ignore[arg-type]
             clock=lambda: clock[0],
-            on_alert=lambda event, _details: self.alerts.append(event),
+            on_alert=lambda event, details: (self.alerts.append(event), self.details.append(str(details)))[0],
         )
         self.worker: BatchRedemption = self.engine.redemption()
 
@@ -608,6 +609,44 @@ async def test_an_absent_account_drops_a_failed_open_but_keeps_an_opened_channel
     world.put_channel(deposit=5 * PRICE)
     h.lands(opened, deposit=5 * PRICE, settled=2 * PRICE)
     assert (await h.worker.claim()).claimed == [opened]
+
+
+async def test_an_account_absent_past_the_reclaim_horizon_is_written_off(world: World) -> None:
+    # reclaim is permissionless: a channel someone else sealed, distributed and
+    # reclaimed never comes back, so the record goes once no read could still
+    # be lag, with the voucher amount that was forfeited.
+    clock = [NOW]
+    h = _Harness(world, clock)
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+    del world.chain.accounts[channel_id]
+    await h.worker.finalize_close()
+    clock[0] += GRACE + 1_500 * 0.8  # the withdraw delay plus the reclaim window
+    await h.worker.finalize_close()
+    assert await h.store.get(channel_id) is not None  # not a second past the horizon
+    clock[0] += 1
+    await h.worker.finalize_close()
+    assert await h.store.get(channel_id) is None
+    assert h.alerts == ["channel_account_absent", "channel_account_forfeited"]
+    assert str(PRICE) in h.details[-1]  # signed 2 x PRICE minus the PRICE already settled
+
+
+async def test_an_account_that_comes_back_restarts_the_horizon(world: World) -> None:
+    horizon = GRACE + 1_500 * 0.8
+    clock = [NOW]
+    h = _Harness(world, clock)
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+    account = world.chain.accounts.pop(channel_id)
+    await h.worker.finalize_close()
+    clock[0] += horizon - 10  # nearly written off
+    world.chain.accounts[channel_id] = account
+    await h.worker.finalize_close()  # seen again: the count starts over
+    del world.chain.accounts[channel_id]
+    clock[0] += 10
+    await h.worker.finalize_close()
+    clock[0] += horizon - 10  # long past the first absence, short of this one
+    await h.worker.finalize_close()
+    assert await h.store.get(channel_id) is not None
+    assert h.alerts == ["channel_account_absent", "channel_account_absent"]
 
 
 async def test_reclaim_forgets_a_distributed_channel_whose_account_is_already_gone(world: World) -> None:

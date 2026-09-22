@@ -78,6 +78,10 @@ _READ_CHUNK = 100  # getMultipleAccounts address cap
 _HOLD = "redemption"
 _RECOVER_EVERY = 10  # passes between two recovery scans in the loop
 _FULL_SHARE_BPS = 10_000
+# Slots the program makes a distributed channel wait before its rent can be
+# reclaimed, at a generous 800ms per slot: how long after the last sighting
+# someone else's reclaim can still be the reason an account is not there.
+_RECLAIM_WINDOW_SECONDS = OPEN_SLOT_WINDOW * 0.8
 
 AlertFn = Callable[[str, str, BaseException], None]
 _T = TypeVar("_T")
@@ -157,8 +161,9 @@ class BatchRedemption:
         self._interval = 0.0
         # Sponsored channels with no known payTo: never charged here, only reclaimed.
         self._reclaim_only: set[str] = set()
-        # Channels whose account did not read back; alerted once, kept, re-read next pass.
-        self._absent: set[str] = set()
+        # Channels whose account did not read back, and when that started:
+        # alerted once, kept, re-read next pass, given up on after the horizon.
+        self._absent: dict[str, float] = {}
 
     # -- passes ---------------------------------------------------------------------------
 
@@ -713,6 +718,13 @@ class BatchRedemption:
         nothing can be lost: a failed open that never confirmed a setup, or a
         channel ``reclaim`` itself freed, which it drops there. Anything else is
         kept and alerted once, for the next pass to read again.
+
+        A record is not kept forever: ``reclaim`` is permissionless, so a
+        channel someone else sealed, distributed and reclaimed leaves a record
+        no read will ever satisfy. Once the account has been absent for longer
+        than the payer's withdraw delay plus the reclaim window, that is the
+        only story left, and the record goes with an alert naming the voucher
+        amount that was never claimed.
         """
         opened = record.deposit > 0 or record.onchain_synced_at is not None or record.processed_setup_signatures
         if not opened:
@@ -720,12 +732,26 @@ class BatchRedemption:
             return
         if record.live_reservations(self._clock()):
             return  # an open or a request is still in flight
+        now = self._clock()
         if await self._visible_again(rpc, record.channel_id):
-            self._absent.discard(record.channel_id)
+            self._absent.pop(record.channel_id, None)
             return
-        if record.channel_id not in self._absent:
-            self._absent.add(record.channel_id)
+        since = self._absent.get(record.channel_id)
+        if since is None:
+            self._absent[record.channel_id] = now
             self._alert("channel_account_absent", record.channel_id, ValueError(f"status {record.status}"))
+            return
+        horizon = int(record.channel_config["withdrawDelay"]) + _RECLAIM_WINDOW_SECONDS
+        if now - since <= horizon:
+            return
+        unclaimed = max(0, record.signed_max_claimable - record.settled)
+        self._alert(
+            "channel_account_forfeited",
+            record.channel_id,
+            ValueError(f"absent for {int(now - since)}s; {unclaimed} never claimed"),
+        )
+        self._absent.pop(record.channel_id, None)
+        await self._record_after_broadcast("vanished", record.channel_id, None)
 
     async def _visible_again(self, rpc: SolanaRpc, channel_id: str) -> bool:
         """Re-read an account that looked absent; short, because the next pass reads it again anyway."""
@@ -758,6 +784,7 @@ class BatchRedemption:
     async def _sync(self, record: ChannelRecord, channel: Channel) -> ChannelRecord:
         """Fold a fresh read into the record (not after a broadcast: a failure skips this channel)."""
         now = self._clock()
+        self._absent.pop(record.channel_id, None)  # seen: any earlier absence was lag, not the end
         try:
             return await self._store.update(record.channel_id, lambda current: _fold(current, channel, now))
         except Exception as exc:  # noqa: BLE001 - leave this channel for the next pass
