@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -50,25 +51,31 @@ class MemoryStore:
 
     State lives in this process only. A restart drops every consumed-signature
     record, which is fine for single-process tests but unsafe in production.
+
+    The lock is a ``threading.Lock``, not an ``asyncio.Lock``: the Flask and
+    Django shims call ``asyncio.run`` per request, so one store is used from
+    several short-lived loops and a lock bound to the first one would raise
+    "bound to a different event loop" for the next caller. Every critical
+    section here is synchronous dict work, so nothing awaits while it is held.
     """
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def get(self, key: str) -> Any | None:
         return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
-        async with self._lock:
+        with self._lock:
             self._data[key] = value
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
+        with self._lock:
             self._data.pop(key, None)
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
+        with self._lock:
             if key in self._data:
                 return False
             self._data[key] = value
@@ -103,7 +110,11 @@ class FileReplayStore:
             raise RuntimeError("FileReplayStore needs POSIX fcntl.flock; pass another Store on this platform")
         self._path = Path(path)
         self._lock_path = self._path.with_name(self._path.name + ".lock")
-        self._lock = asyncio.Lock()  # serializes this process; flock serializes the rest
+        # A threading.Lock, not an asyncio.Lock: the Flask and Django shims run
+        # one asyncio.run per request, and a lock bound to the first loop breaks
+        # the next caller. It is taken inside the worker thread, never across an
+        # await, so holding it can never block a loop.
+        self._lock = threading.Lock()  # serializes this process; flock serializes the rest
         self._load()  # fail closed at boot on a corrupted or non-object file
 
     def _load(self) -> dict[str, Any]:
@@ -183,7 +194,7 @@ class FileReplayStore:
         what other processes have already committed, and ``_flush`` renames the
         replacement into place before the lock is released.
         """
-        with self._flocked():
+        with self._lock, self._flocked():
             data = self._load()
             if only_if_absent and key in data:
                 return False
@@ -192,7 +203,7 @@ class FileReplayStore:
 
     def _remove(self, key: str) -> None:
         """Drop ``key`` under the lock, keeping every key another process added."""
-        with self._flocked():
+        with self._lock, self._flocked():
             data = self._load()
             if key in data:
                 self._flush({k: v for k, v in data.items() if k != key})
@@ -202,13 +213,10 @@ class FileReplayStore:
         return (await asyncio.to_thread(self._load)).get(key)
 
     async def put(self, key: str, value: Any) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._write, key, value, only_if_absent=False)
+        await asyncio.to_thread(self._write, key, value, only_if_absent=False)
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._remove, key)
+        await asyncio.to_thread(self._remove, key)
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
-            return await asyncio.to_thread(self._write, key, value, only_if_absent=True)
+        return await asyncio.to_thread(self._write, key, value, only_if_absent=True)

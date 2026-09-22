@@ -12,11 +12,14 @@ import asyncio
 import json
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from solana_pay_kit._paycore.store import FileReplayStore
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -69,4 +72,29 @@ async def test_processes_racing_one_key_produce_one_winner(tmp_path: Path) -> No
 async def test_concurrent_coroutines_in_one_process_still_serialize(tmp_path: Path) -> None:
     store = FileReplayStore(tmp_path / "replay.json")
     results = await asyncio.gather(*(store.put_if_absent("claim", {"winner": n}) for n in range(8)))
+    assert results.count(True) == 1
+
+
+@pytest.mark.parametrize("kind", ["memory", "file"])
+def test_threads_with_their_own_event_loops_do_not_deadlock(tmp_path: Path, kind: str) -> None:
+    # The Flask and Django shims run one asyncio.run per request, so one store
+    # is driven from several loops at once. A lock bound to a loop would raise
+    # or hang here; the timeout turns a hang into a failure instead of a stall.
+    store: Any = MemoryStore() if kind == "memory" else FileReplayStore(tmp_path / "replay.json")
+
+    start = threading.Barrier(8)
+
+    async def claims(index: int) -> bool:
+        # Contend inside each loop first: an uncontended asyncio.Lock never binds
+        # itself to a loop, so a single quick call would not show the break.
+        await asyncio.gather(*(store.put_if_absent(f"key-{n}", {"winner": index}) for n in range(50)))
+        return await store.put_if_absent("claim", {"winner": index})
+
+    def claim(index: int) -> bool:
+        start.wait(timeout=30)
+        return asyncio.run(claims(index))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(claim, index) for index in range(8)]
+        results = [future.result(timeout=60) for future in futures]
     assert results.count(True) == 1
