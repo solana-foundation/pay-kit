@@ -36,7 +36,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     find_associated_token_address,
     treasury_owner,
 )
-from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.rpc import SolanaRpc, read_with_replica_retry
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_PROGRAM
 from solana_pay_kit.config import BatchSettlementConfig
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
@@ -140,7 +140,10 @@ class Stack:
     async def channel(self) -> Channel:
         rpc = SolanaRpc(RPC)
         try:
-            channel = await onchain.read_channel(rpc, self.channel_id(), PROGRAM)
+            # Right after a confirmed transaction, and again after a time
+            # travel, the surfnet can answer one read before the account is
+            # visible: the same lag the SDK absorbs on a replica.
+            channel = await read_with_replica_retry(lambda: onchain.read_channel(rpc, self.channel_id(), PROGRAM))
         finally:
             await rpc.aclose()
         assert channel is not None
@@ -287,16 +290,21 @@ async def test_after_the_grace_period_the_close_is_finalized_and_the_rent_reclai
         assert await _chain_now() >= target - 1
         skew[0] = target - time.time()
         worker = stack.engine.redemption()
+        rent_payer = worker._fee_payer.pubkey()  # noqa: SLF001
+        lamports_before = (await _rpc("getBalance", [rent_payer]))["value"]
         finalized = await worker.finalize_close()
         assert (finalized.finalized, finalized.errors) == ([stack.channel_id()], [])
-        channel = await stack.channel()
-        assert (int(channel.status), int(channel.settlement.settled)) == (DISTRIBUTED, 2 * PRICE)
         assert await _usdc(stack.pay_to) == 2 * PRICE
         assert await _usdc(stack.payer.pubkey()) == 1_000_000 - 2 * PRICE  # the unused escrow went back
-        rent_payer = stack.engine.redemption()._fee_payer.pubkey()  # noqa: SLF001
-        lamports_before = (await _rpc("getBalance", [rent_payer]))["value"]
+        # The sealed ``distribute`` frees the PDA in place once the channel is
+        # past its 1500-slot open window, and marks it Distributed for
+        # ``reclaim`` otherwise. The time travel can land on either side.
+        distributed = (await _rpc("getAccountInfo", [stack.channel_id(), {"encoding": "base64"}]))["value"] is not None
+        if distributed:
+            channel = await stack.channel()
+            assert (int(channel.status), int(channel.settlement.settled)) == (DISTRIBUTED, 2 * PRICE)
         reclaimed = await worker.reclaim()
-        assert (reclaimed.reclaimed, reclaimed.errors) == ([stack.channel_id()], [])
+        assert (reclaimed.reclaimed, reclaimed.errors) == ([stack.channel_id()] if distributed else [], [])
         assert (await _rpc("getAccountInfo", [stack.channel_id(), {"encoding": "base64"}]))["value"] is None
         assert (await _rpc("getBalance", [rent_payer]))["value"] > lamports_before  # the rent came back
     finally:
