@@ -615,6 +615,15 @@ async def test_a_lost_binding_cannot_be_rebuilt(h: Harness) -> None:
     assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is None
 
 
+async def test_weekly_plan_activates_and_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    # period_hours is period_unit x period_count: a weekly plan must line up with
+    # the chain plan's 168 hours, not only the default 30-day one.
+    h = Harness(monkeypatch, period_unit="week", period_count=1)
+    install_plan(h.rpc, period_hours=168)
+    _, _, receipt = await h.activate()
+    assert (receipt.period_index, receipt.period_end) == (0, _rfc3339(NOW + 168 * 3600))
+
+
 async def test_aclose_closes_only_a_server_owned_rpc(h: Harness) -> None:
     owned = SubscriptionServer(replace(h.config, rpc=None, rpc_url="http://127.0.0.1:1"))
     await owned.aclose()
