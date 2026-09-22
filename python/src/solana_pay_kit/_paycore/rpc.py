@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import itertools
+import threading
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
@@ -87,7 +90,16 @@ class SolanaRpc:
     def __init__(self, endpoint: str, timeout: float = 30.0) -> None:
         self._endpoint = endpoint
         self._timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # One HTTP client per event loop. An httpx.AsyncClient pins its pooled
+        # connections to the loop that opened them, and the Flask and Django
+        # shims run one asyncio.run per request, so a single shared client
+        # raises "Event loop is closed" on the second request that reuses a
+        # kept-alive connection. The loops are weak keys, so a finished loop
+        # drops its client with it.
+        self._clients: weakref.WeakKeyDictionary[Any, httpx.AsyncClient] = weakref.WeakKeyDictionary()
+        self._loopless_client: httpx.AsyncClient | None = None
+        self._injected: Any = None  # tests assign SolanaRpc._client directly
+        self._clients_lock = threading.Lock()
         # ``itertools.count`` returns unique integers atomically at the C
         # level under the GIL, so concurrent ``_call`` invocations on
         # different event loops never collide on the same JSON-RPC id.
@@ -95,8 +107,42 @@ class SolanaRpc:
         # its own lock state; the GIL-backed counter is loop-agnostic.
         self._id_counter = itertools.count(1)
 
+    @property
+    def _client(self) -> Any:
+        """The HTTP client for the running loop, opened on first use."""
+        if self._injected is not None:
+            return self._injected
+        loop = None
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+        with self._clients_lock:
+            if loop is None:
+                if self._loopless_client is None or self._loopless_client.is_closed:
+                    self._loopless_client = httpx.AsyncClient(timeout=self._timeout)
+                return self._loopless_client
+            client = self._clients.get(loop)
+            if client is None or client.is_closed or loop.is_closed():
+                client = httpx.AsyncClient(timeout=self._timeout)
+                self._clients[loop] = client
+            return client
+
+    @_client.setter
+    def _client(self, client: Any) -> None:
+        self._injected = client
+
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """Close every HTTP client this RPC opened, for this loop and any other."""
+        with self._clients_lock:
+            clients = [*self._clients.values(), self._loopless_client, self._injected]
+            self._clients.clear()
+            self._loopless_client = None
+        for client in clients:
+            if client is None:
+                continue
+            # A client whose loop has already closed cannot be awaited; dropping
+            # it is all that is left, and its sockets go with it.
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def _call(self, method: str, params: list[Any]) -> Any:
         rpc_id = next(self._id_counter)

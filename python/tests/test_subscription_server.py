@@ -641,8 +641,9 @@ async def test_weekly_plan_activates_and_grants(monkeypatch: pytest.MonkeyPatch)
 
 async def test_aclose_closes_only_a_server_owned_rpc(h: Harness) -> None:
     owned = SubscriptionServer(replace(h.config, rpc=None, rpc_url="http://127.0.0.1:1"))
+    client = owned._rpc._client  # pyright: ignore[reportPrivateUsage]  # opened for this loop
     await owned.aclose()
-    assert owned._rpc._client.is_closed  # pyright: ignore[reportPrivateUsage]
+    assert client.is_closed
 
     closed: list[str] = []
 

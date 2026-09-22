@@ -9,6 +9,8 @@ host-quirk translation these tests assert on.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 import solana_pay_kit._middleware as mw
@@ -591,3 +593,133 @@ def test_require_subscription_renews_once_under_two_threads(monkeypatch, framewo
     # Exactly one renewal transaction, whatever the two requests were told.
     assert len(h.rpc.sent) == 2  # the activation plus one renewal
     assert statuses.count(200) >= 1 and set(statuses) <= {200, 402}
+
+
+class _ChainServer:
+    """A keep-alive JSON-RPC server serving the reads a subscription challenge makes.
+
+    A real ``SolanaRpc`` against it pools a connection, which is what makes the
+    second request in a second event loop meaningful.
+    """
+
+    def __init__(self, accounts: dict[str, tuple[bytes, str]], blockhash: str) -> None:
+        import base64
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's name
+                request = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+                method, params = request.get("method"), request.get("params") or []
+                if method == "getLatestBlockhash":
+                    result: Any = {"context": {"slot": 1}, "value": {"blockhash": blockhash}}
+                elif method == "getAccountInfo":
+                    found = accounts.get(str(params[0]))
+                    result = {
+                        "context": {"slot": 1},
+                        "value": None
+                        if found is None
+                        else {"data": [base64.b64encode(found[0]).decode(), "base64"], "owner": found[1]},
+                    }
+                else:
+                    result = {"context": {"slot": 1}, "value": None}
+                body = json.dumps({"jsonrpc": "2.0", "id": request.get("id", 1), "result": result}).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - the base signature
+                return  # keep the test output clean
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework):
+    """Each shim runs its own asyncio.run per request, so request two must still work.
+
+    A shared SolanaRpc used to keep one httpx client (and its pooled socket)
+    from the first loop, and the second request died on "Event loop is closed".
+    """
+    from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+    from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate
+    from tests._subscription_fixtures import (
+        BLOCKHASH,
+        MINT,
+        PLAN,
+        PROGRAM_ID,
+        RECIPIENT,
+        SERVER,
+        TOKEN,
+        mint_bytes,
+        plan_bytes,
+    )
+    from tests.test_subscription_server import Harness
+
+    chain = _ChainServer(
+        {
+            str(PLAN): (
+                plan_bytes(owner=SERVER.pubkey(), mint=MINT, destinations=[RECIPIENT], pullers=[SERVER.pubkey()]),
+                PROGRAM_ID,
+            ),
+            str(MINT): (mint_bytes(), TOKEN_PROGRAM),
+            str(find_associated_token_address(RECIPIENT, MINT, TOKEN)[0]): (bytes(165), TOKEN_PROGRAM),
+        },
+        BLOCKHASH,
+    )
+    try:
+        h = Harness(monkeypatch, rpc=SolanaRpc(chain.url))
+
+        if framework == "flask":
+            import flask
+
+            import solana_pay_kit.flask as pk_flask
+
+            app = flask.Flask(__name__)
+
+            @app.get("/feed")
+            @pk_flask.require_subscription(h.server)
+            def feed():
+                return {"ok": True}
+
+            client = app.test_client()
+            answers = [client.get("/feed") for _ in range(2)]
+            statuses = [answer.status_code for answer in answers]
+            challenges = [answer.headers.get("www-authenticate", "") for answer in answers]
+        else:
+            from django.http import JsonResponse
+            from django.test import RequestFactory
+
+            import solana_pay_kit.django as pk_django
+
+            @pk_django.require_subscription(h.server)
+            def view(request):
+                return JsonResponse({"ok": True})
+
+            factory = RequestFactory()
+            answers = [view(factory.get("/feed")) for _ in range(2)]
+            statuses = [answer.status_code for answer in answers]
+            challenges = [answer["www-authenticate"] for answer in answers]
+
+        # Both requests answered with a challenge, and both reached the RPC: the
+        # pre-fetched blockhash is only in the challenge when the fetch worked,
+        # and a client stuck on the first loop cannot fetch it a second time.
+        assert statuses == [402, 402]
+        for header in challenges:
+            request = parse_www_authenticate(header).decode_request()
+            assert request["methodDetails"]["recentBlockhash"] == BLOCKHASH
+    finally:
+        chain.close()
