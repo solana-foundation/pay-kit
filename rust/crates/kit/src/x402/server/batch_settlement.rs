@@ -3075,9 +3075,9 @@ enum GraceSealPlan {
 /// from being the party that seals under its own live request, and the
 /// request settles or releases before the next pass. A reservation whose
 /// lease is dead — its owner crashed or overran — never blocks the seal
-/// forever: nobody else can release it, so it is treated as gone (except,
-/// before the deadline, one whose handler already succeeded, which a retry
-/// can still resume and apply). The scheme's `withdrawDelay >=
+/// forever: nobody else can release it, so it is treated as gone, and
+/// `commit_authorization` refuses it once the close is recorded so it cannot
+/// land a charge behind the seal either. The scheme's `withdrawDelay >=
 /// maxTimeoutSeconds` bound, and the reservation lease that mirrors it, are
 /// what keep a request reserved before the close from legitimately outliving
 /// the grace period.
@@ -3087,7 +3087,7 @@ fn grace_seal_plan(
     past_deadline: bool,
     now: i64,
 ) -> GraceSealPlan {
-    if state.has_blocking_authorization(now, past_deadline) {
+    if state.has_blocking_authorization(now) {
         return GraceSealPlan::InFlight;
     }
     if past_deadline {
@@ -4463,9 +4463,9 @@ mod tests {
     /// A replica that crashed after reserving leaves a reservation nobody else
     /// can release. Once its lease is dead it must not hold the seal hostage:
     /// past the grace deadline the channel is sealed at the frozen watermark,
-    /// and before it the committed voucher is applied — unless the dead
-    /// reservation already served its handler, which a retry can still resume
-    /// and commit while the deadline allows it.
+    /// and before it the committed voucher is applied. The commit side agrees:
+    /// a request that outlived its lease while the channel was closing can no
+    /// longer land its charge, so the seal never strands one.
     #[test]
     fn a_dead_reservation_does_not_block_the_seal() {
         let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
@@ -4510,18 +4510,75 @@ mod tests {
             GraceSealPlan::SealFrozen
         );
 
-        // A dead lease whose handler did succeed can still be resumed and its
-        // voucher applied before the deadline, so the early seal waits; past
-        // the deadline nothing can be applied, so it no longer blocks.
+        // A dead lease is gone whether or not its handler reported success:
+        // the commit side refuses it (below), so waiting on it would only hold
+        // the seal for a charge that can never be written.
         state.pending_deliveries = vec![reservation(now - 1, true)];
-        assert_eq!(
+        assert!(matches!(
             grace_seal_plan(&state, 0, false, now),
-            GraceSealPlan::InFlight
-        );
+            GraceSealPlan::Apply {
+                cumulative: 2_000,
+                ..
+            }
+        ));
         assert_eq!(
             grace_seal_plan(&state, 0, true, now),
             GraceSealPlan::SealFrozen
         );
+
+        // Once the close is recorded, that dead-lease request can no longer
+        // land its charge: the finalizer may already have sealed past it.
+        state.close_requested_at = Some(now as u64);
+        let refused = state
+            .commit_authorization(
+                "access:test:3000",
+                "digest",
+                3_000,
+                "sig-3000",
+                0,
+                now,
+                |_| None,
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("lease"), "{refused}");
+        assert_eq!(state.cumulative, 2_000, "a refused commit writes nothing");
+        // A live lease commits while the channel is merely closing: the
+        // finalizer waits for exactly this.
+        state.pending_deliveries = vec![reservation(now + 60, true)];
+        state
+            .commit_authorization(
+                "access:test:3000",
+                "digest",
+                3_000,
+                "sig-3000",
+                0,
+                now,
+                |_| None,
+            )
+            .expect("live lease commits");
+        assert_eq!(state.cumulative, 3_000);
+        // But never under a seal, however live the lease. (A replay of the
+        // charge already committed above stays idempotent, so this is a new
+        // authorization.)
+        state.pending_deliveries = vec![crate::core::store::PendingDelivery {
+            delivery_id: "access:test:4000".to_string(),
+            ..reservation(now + 60, true)
+        }];
+        state.sealed = true;
+        let refused = state
+            .commit_authorization(
+                "access:test:4000",
+                "digest",
+                4_000,
+                "sig-4000",
+                0,
+                now,
+                |_| None,
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("sealed"), "{refused}");
+        state.sealed = false;
+        state.close_requested_at = None;
 
         // A dead opening setup is likewise not waited for.
         state.pending_deliveries.clear();

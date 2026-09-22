@@ -950,6 +950,24 @@ impl ChannelState {
                     "authorization {authorization_id} is no longer reserved"
                 ))
             })?;
+        // The counterpart of `has_blocking_authorization`: a sealed channel's
+        // watermark is frozen onchain, and once a close is recorded the
+        // finalizer may already have sealed past a reservation whose lease had
+        // run out. A charge recorded in either state could never be redeemed,
+        // so it is refused rather than written. The request was served and
+        // the operator forfeits it — the reservation lease exists to keep a
+        // handler inside the window where its charge can still be applied.
+        if self.sealed {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} cannot be charged: the channel is sealed"
+            )));
+        }
+        if self.close_requested_at.is_some() && self.pending_deliveries[index].expires_at <= now {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} cannot be charged: its reservation lease \
+                 expired while the channel was closing"
+            )));
+        }
         if cumulative < self.cumulative {
             return Err(StoreError::Internal(format!(
                 "authorization {authorization_id} would lower the watermark from {} to {cumulative}",
@@ -1038,23 +1056,20 @@ impl ChannelState {
     /// sealing under it would strand that charge. A lease that has run out
     /// belongs to a request whose owner crashed or overran; nobody else ever
     /// takes it over or releases it (see [`Self::reserve_authorization`]), so
-    /// waiting on it would block the seal forever. Before the grace deadline a
-    /// dead lease whose handler already succeeded still blocks: a retry can
-    /// resume and commit it, and the voucher it commits can still be applied.
-    /// Past the deadline the program refuses every further voucher, so only a
-    /// live lease is worth waiting for.
-    pub fn has_blocking_authorization(&self, now: i64, past_deadline: bool) -> bool {
+    /// waiting on it would block the seal forever. Once a close is recorded,
+    /// such a reservation is treated as gone here and refused at
+    /// [`Self::commit_authorization`], so the two sides agree: the finalizer
+    /// never seals under a charge that can still land, and no charge lands
+    /// under a seal.
+    pub fn has_blocking_authorization(&self, now: i64) -> bool {
         let live = |expires_at: i64| expires_at > now;
-        if self
-            .pending_setup
+        self.pending_setup
             .as_ref()
             .is_some_and(|setup| live(setup.expires_at))
-        {
-            return true;
-        }
-        self.pending_deliveries.iter().any(|delivery| {
-            live(delivery.expires_at) || (!past_deadline && delivery.handler_succeeded)
-        })
+            || self
+                .pending_deliveries
+                .iter()
+                .any(|delivery| live(delivery.expires_at))
     }
 
     /// Drop the expired committed prefix, then bound the committed tail to
