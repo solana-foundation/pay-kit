@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,6 +21,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     ReplayError,
 )
+from solana_pay_kit._paycore.rpc import RpcResponseError
 from solana_pay_kit._paycore.solana import SYSTEM_PROGRAM
 from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp._subscriptions import (
@@ -41,6 +41,7 @@ from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCre
 from solana_pay_kit.protocols.mpp.intents import sign_subscription_authentication
 from solana_pay_kit.protocols.mpp.server._subscription_scope import cosign
 from solana_pay_kit.protocols.mpp.server.subscription import (
+    _CLOCK_SKEW_SECONDS,  # pyright: ignore[reportPrivateUsage]
     SubscriptionChallengeOptions,
     SubscriptionConfig,
     SubscriptionServer,
@@ -52,6 +53,8 @@ from tests._subscription_fixtures import (
     NOW,
     PERIOD_SECONDS,
     PLAN,
+    PLAN_BUMP,
+    PLAN_ID,
     PROGRAM,
     PROGRAM_ID,
     RECIPIENT,
@@ -104,7 +107,7 @@ class Harness:
         self.server = SubscriptionServer(self.config)
         monkeypatch.setattr(self.server, "_now", lambda: self.now)
         # The client checks subscriptionExpires and plan end on the same simulated clock.
-        monkeypatch.setattr(client_subscription, "time", SimpleNamespace(time=lambda: self.now))
+        monkeypatch.setattr(client_subscription.time, "time", lambda: self.now)
 
     async def activation(
         self, options: SubscriptionChallengeOptions | None = None, signer: Keypair = SUBSCRIBER
@@ -207,8 +210,8 @@ async def test_challenge_method_details(monkeypatch: pytest.MonkeyPatch) -> None
         "merchant": str(SERVER.pubkey()),
         "recipient": str(RECIPIENT),
         "amount": str(AMOUNT),
-        "planIdNumeric": 7,
-        "planBump": request["methodDetails"]["planBump"],
+        "planIdNumeric": PLAN_ID,
+        "planBump": PLAN_BUMP,
         "expectedPeriodHours": 720,
         "expectedCreatedAt": 1_700_000_000,
     }
@@ -542,6 +545,7 @@ def _after_send(h: Harness, mutate: Any) -> None:
     [
         ("first-charge-not-executed", "first period"),
         ("delegation-wrong-plan", "does not match"),
+        ("delegation-already-cancelled", "does not match"),
         ("delegation-absent", "not visible"),
     ],
 )
@@ -551,6 +555,10 @@ async def test_post_settle_checks(h: Harness, mutation: str, match: str) -> None
         _after_send(h, lambda: h.set_delegation(amount_pulled_in_period=0))
     elif mutation == "delegation-wrong-plan":
         _after_send(h, lambda: h.set_delegation(plan=pk(80)))
+    elif mutation == "delegation-already-cancelled":
+        # A delegation that settled with a cancellation already scheduled is not
+        # the activation this challenge asked for.
+        _after_send(h, lambda: h.set_delegation(expires_at_ts=NOW + PERIOD_SECONDS))
     else:
         _after_send(h, lambda: h.rpc.accounts.pop(str(DELEGATION)))
     with pytest.raises(PaymentError, match=match):
@@ -593,6 +601,20 @@ async def test_reactivation_rotates_binding(h: Harness) -> None:
     assert (await h.access(new_challenge, new)).period_index == 0
 
 
+async def test_a_lost_binding_cannot_be_rebuilt(h: Harness) -> None:
+    # Losing the binding (a store restart on a store that does not persist) is
+    # not recoverable while the delegation lives: access has no bound proof, and
+    # a fresh activation cannot be sent because the delegation already exists.
+    challenge, activation, _ = await h.activate()
+    await h.store.delete(f"solana-subscription:authentication:{DELEGATION}")
+    with pytest.raises(PaymentError, match="bound at activation"):
+        await h.access(challenge, activation)
+    _, again = await h.activation()
+    with pytest.raises(RpcResponseError, match="already in use"):
+        await h.server.verify_credential(again.credential)
+    assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is None
+
+
 # -- access ----------------------------------------------------------------------
 
 
@@ -614,7 +636,7 @@ async def test_proof_reusable_after_challenge_expiry(h: Harness, monkeypatch: py
 @pytest.mark.parametrize(
     ("setup", "match"),
     [
-        (lambda h: setattr(h, "now", NOW - 121), "not paid"),
+        (lambda h: setattr(h, "now", NOW - _CLOCK_SKEW_SECONDS - 1), "not paid"),
         (lambda h: h.set_delegation(amount_pulled_in_period=AMOUNT - 1), "not paid"),
         (lambda h: (h.set_delegation(expires_at_ts=NOW + 100), setattr(h, "now", NOW + 100)), "cancellation"),
         (lambda h: h.rpc.put(AUTHORITY, authority_bytes(user=SUB, mint=MINT, init_id=999)), "re-initialized"),

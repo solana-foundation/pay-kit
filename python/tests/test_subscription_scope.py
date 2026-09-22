@@ -291,13 +291,19 @@ def test_sponsored_activation_passes() -> None:
 
 
 @pytest.mark.parametrize("forgery", ["foreign-signature", "unsigned"])
-def test_rejects_an_unverified_subscriber_signature(forgery: str) -> None:
-    # Unsponsored, slot 0 is the transaction id: a client must not be able to
-    # name another confirmed transaction (or nothing) as its activation.
-    raw = bytearray(base64.b64decode(compile_b64(good())))
-    raw[1:65] = bytes(Keypair().sign_message(b"another transaction")) if forgery == "foreign-signature" else bytes(64)
+@pytest.mark.parametrize("sponsored", [False, True], ids=["unsponsored", "sponsored"])
+def test_rejects_an_unverified_subscriber_signature(forgery: str, sponsored: bool) -> None:
+    # Unsponsored, slot 0 is the transaction id: a client must not be able to name
+    # another confirmed transaction (or nothing) as its activation. Sponsored, the
+    # server signs slot 0 itself, so an unsigned subscriber slot must not ride along.
+    changes = {"fee_payer": SPONSOR.pubkey()} if sponsored else {}
+    encoded = compile_b64(good(payer=SPONSOR.pubkey()) if sponsored else good(), SPONSOR.pubkey() if sponsored else SUB)
+    raw = bytearray(base64.b64decode(encoded))
+    slot = list(VersionedTransaction.from_bytes(bytes(raw)).message.account_keys).index(SUB)
+    forged = Keypair().sign_message(b"another transaction") if forgery == "foreign-signature" else Signature.default()
+    raw[1 + 64 * slot : 65 + 64 * slot] = bytes(forged)
     with pytest.raises(PaymentError, match="does not verify"):
-        validate_activation(base64.b64encode(bytes(raw)).decode(), expect())
+        validate_activation(base64.b64encode(bytes(raw)).decode(), expect(**changes))
 
 
 def test_rejects_alt() -> None:

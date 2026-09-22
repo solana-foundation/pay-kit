@@ -374,11 +374,14 @@ def test_django_middleware_402_when_unpaid(monkeypatch):
 def test_require_subscription_402_then_200(monkeypatch):
     import asyncio
 
-    from fastapi import Depends, FastAPI
+    from fastapi import Depends, FastAPI, HTTPException
     from starlette.testclient import TestClient
 
     from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
-    from solana_pay_kit.protocols.mpp.client.subscription import build_subscription_activation
+    from solana_pay_kit.protocols.mpp.client.subscription import (
+        build_subscription_access_credential,
+        build_subscription_activation,
+    )
     from solana_pay_kit.protocols.mpp.core.headers import (
         format_authorization,
         parse_receipt,
@@ -405,3 +408,22 @@ def test_require_subscription_402_then_200(monkeypatch):
     assert ok.status_code == 200 and ok.json() == {"ok": True}
     assert ok.headers["cache-control"] == "private"
     assert parse_receipt(ok.headers["payment-receipt"]).period_index == 0
+
+    # The bearer proof grants the same period again without a second charge.
+    access = format_authorization(
+        build_subscription_access_credential(
+            challenge.to_echo(), activation.subscription_delegation, activation.authentication
+        )
+    )
+    reused = client.get("/feed", headers={"authorization": access})
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused.headers["payment-receipt"]).period_index == 0
+
+    @app.get("/boom")
+    async def boom(receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+        raise HTTPException(status_code=500, detail={"error": "handler"})
+
+    # The subscriber paid: a handler that fails afterwards still returns the receipt.
+    broke = TestClient(app, raise_server_exceptions=False).get("/boom", headers={"authorization": access})
+    assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
+    assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0

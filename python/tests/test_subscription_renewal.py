@@ -22,6 +22,10 @@ from solana_pay_kit._paycore.rpc import RpcResponseError
 from solana_pay_kit.protocols.mpp._subscriptions import decode_delegation
 from solana_pay_kit.protocols.mpp.client.subscription import SubscriptionActivation
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, Receipt
+from solana_pay_kit.protocols.mpp.server.subscription import (
+    _MAX_FAILED_RENEWALS,  # pyright: ignore[reportPrivateUsage]
+    _RENEWAL_BUCKET_SECONDS,  # pyright: ignore[reportPrivateUsage]
+)
 from tests._subscription_fixtures import (
     AMOUNT,
     NOW,
@@ -35,7 +39,7 @@ from tests._subscription_fixtures import (
 from tests.test_subscription_server import DELEGATION, Harness
 
 DUE = NOW + PERIOD_SECONDS + 10
-WINDOW = 90  # seconds of chain time per renewal claim
+WINDOW = _RENEWAL_BUCKET_SECONDS
 BUCKET = DUE // WINDOW
 CLAIM = f"solana-subscription:renewal:{DELEGATION}:{NOW}:1:t{{}}"  # delegation, anchor, period, bucket
 FAILED = f"solana-subscription:renewal:{DELEGATION}:{NOW}:1:err:{{}}"
@@ -213,6 +217,18 @@ async def test_dead_claim_of_the_last_window_allows_a_submit(h: Harness, death: 
     assert await h.store.get(CLAIM.format(BUCKET)) == {"signature": receipt.reference, "blockhash": h.rpc.blockhash}
 
 
+async def test_processed_claim_is_in_flight_not_dead(h: Harness) -> None:
+    # The blockhash is gone but the cluster has the transaction: it can still be
+    # confirmed, so the period must not be charged a second time.
+    challenge, activation = await due(h)
+    await h.store.put(CLAIM.format(BUCKET - 1), {"signature": SEEDED_SIGNATURE, "blockhash": "old"})
+    h.rpc.expired_blockhashes.add("old")
+    h.rpc.statuses[SEEDED_SIGNATURE] = {"err": None, "confirmationStatus": "processed"}
+    with pytest.raises(PaymentError, match="in flight"):
+        await h.access(challenge, activation)
+    assert renewals(h) == []
+
+
 async def test_landed_claim_of_the_last_window_grants_without_a_new_send(h: Harness) -> None:
     challenge, activation = await due(h)
     await h.store.put(CLAIM.format(BUCKET - 1), {"signature": SEEDED_SIGNATURE, "blockhash": h.rpc.blockhash})
@@ -242,18 +258,21 @@ async def test_paid_marker_grants_without_a_new_send(h: Harness) -> None:
 
 async def test_concurrent_accesses_submit_once(h: Harness) -> None:
     challenge, activation = await due(h)
-    fetch, send = h.rpc.get_latest_blockhash, h.rpc.send_raw_transaction
+    fetch = h.rpc.get_latest_blockhash
+    both_read_the_claim = asyncio.Event()
+    waiting = 0
 
-    async def slow_fetch(commitment: str = "confirmed") -> Any:
-        await asyncio.sleep(0)  # both requests have read "no attempt yet" before either claims one
+    async def barrier(commitment: str = "confirmed") -> Any:
+        # Hold each request here until both have read "no claim for this window",
+        # so the claim is the only thing that can serialize them.
+        nonlocal waiting
+        waiting += 1
+        if waiting == 2:
+            both_read_the_claim.set()
+        await both_read_the_claim.wait()
         return await fetch(commitment)
 
-    async def slow_send(raw: bytes) -> Any:
-        await asyncio.sleep(0)
-        return await send(raw)
-
-    h.rpc.get_latest_blockhash = slow_fetch  # type: ignore[method-assign]
-    h.rpc.send_raw_transaction = slow_send  # type: ignore[method-assign]
+    h.rpc.get_latest_blockhash = barrier  # type: ignore[method-assign]
     results = await asyncio.gather(
         h.access(challenge, activation), h.access(challenge, activation), return_exceptions=True
     )
@@ -285,29 +304,31 @@ async def test_landed_errors_are_capped_per_period(h: Harness) -> None:
         raise PaymentError(f"transaction {signature} failed on-chain", code="transaction-failed")
 
     h.rpc.await_confirmation = lands_with_error  # type: ignore[method-assign]
-    for n in range(5):
+    for n in range(_MAX_FAILED_RENEWALS):
         h.rpc.blockhash = str(Hash(bytes([30 + n] * 32)))  # each window signs over its own blockhash
         with pytest.raises(PaymentError, match="failed on-chain"):
             await h.access(challenge, activation)
         h.now += WINDOW
     sent = [str(tx.signatures[0]) for tx in renewals(h)]
-    assert [(await h.store.get(FAILED.format(n)) or {}).get("signature") for n in range(5)] == sent
+    recorded = [(await h.store.get(FAILED.format(n)) or {}).get("signature") for n in range(_MAX_FAILED_RENEWALS)]
+    assert recorded == sent
     h.now += WINDOW  # no claim in the last window: only the recorded failures can refuse this
     with pytest.raises(PaymentError, match="too many times"):
         await h.access(challenge, activation)
-    assert len(renewals(h)) == 5
+    assert len(renewals(h)) == _MAX_FAILED_RENEWALS
 
 
 async def test_landed_error_seen_only_in_history_still_counts(h: Harness) -> None:
     challenge, activation = await due(h)
-    for n in range(4):
+    for n in range(_MAX_FAILED_RENEWALS - 1):
         await h.store.put(FAILED.format(n), {"signature": str(n + 1) * 88})
     await h.store.put(CLAIM.format(BUCKET - 1), {"signature": SEEDED_SIGNATURE, "blockhash": "old"})
     h.rpc.history_statuses[SEEDED_SIGNATURE] = {"err": {"Custom": 1}, "confirmationStatus": "finalized"}
     h.rpc.blockhash_valid = False  # the status cache dropped it long after its blockhash expired
     with pytest.raises(PaymentError, match="too many times"):
         await h.access(challenge, activation)
-    assert renewals(h) == [] and await h.store.get(FAILED.format(4)) == {"signature": SEEDED_SIGNATURE}
+    last = await h.store.get(FAILED.format(_MAX_FAILED_RENEWALS - 1))
+    assert renewals(h) == [] and last == {"signature": SEEDED_SIGNATURE}
 
 
 async def test_marker_store_failure_still_grants(h: Harness, caplog: pytest.LogCaptureFixture) -> None:
@@ -328,7 +349,8 @@ async def test_marker_store_failure_still_grants(h: Harness, caplog: pytest.LogC
 async def test_misaligned_binding_is_refused_before_charging(h: Harness) -> None:
     challenge, activation = await due(h)
     key = f"solana-subscription:authentication:{DELEGATION}"
-    await h.store.put(key, {**await h.store.get(key), "periodStartTs": NOW + 7})  # type: ignore[dict-item]
+    # Off by less than a period: the anchor no longer divides the billing periods.
+    await h.store.put(key, {**await h.store.get(key), "periodStartTs": NOW - 7})  # type: ignore[dict-item]
     with pytest.raises(PaymentError, match="align"):
         await h.access(challenge, activation)
     assert renewals(h) == []

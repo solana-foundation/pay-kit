@@ -136,6 +136,7 @@ class FakeRpc:
         self.history_statuses: dict[str, dict[str, Any]] = {}  # answered only with search_history
         self.blockhash = BLOCKHASH
         self.blockhash_valid = True
+        self.expired_blockhashes: set[str] = set()  # blockhashes the cluster no longer accepts
         self.hidden_reads: dict[str, int] = {}
         self.on_send: Callable[[bytes], None] | None = None
         self.send_error: Exception | None = None
@@ -171,7 +172,7 @@ class FakeRpc:
         return [self.statuses.get(signature) or history.get(signature) for signature in signatures]
 
     async def is_blockhash_valid(self, blockhash: str, commitment: str = "finalized") -> bool:
-        return self.blockhash_valid
+        return self.blockhash_valid and blockhash not in self.expired_blockhashes
 
 
 def install_plan(rpc: FakeRpc, **overrides: Any) -> None:
@@ -274,6 +275,10 @@ class ChainSim:
                 continue
             data = bytes(ix.data)
             accounts = [keys[index] for index in ix.accounts]
+            if data[0] == 11 and str(accounts[3]) in self.rpc.accounts:
+                # The program creates the delegation account, so a second
+                # subscribe for a live delegation fails in preflight.
+                raise RpcResponseError("simulation failed: account already in use", code="payment_invalid")
             if data[0] == 0:
                 writes[str(accounts[1])] = authority_bytes(user=accounts[0], mint=accounts[2], init_id=AUTHORITY_SLOT)
             elif data[0] == 11:
