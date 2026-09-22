@@ -10,16 +10,50 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Iterator
+from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from solders.pubkey import Pubkey
 
+import solana_pay_kit
 from examples.playground_api import app as app_module
 from examples.playground_api import sessions, subscriptions
 from examples.playground_api.app import app
+from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
+from solana_pay_kit.protocols.mpp.server import subscription as server_subscription
+from tests._subscription_fixtures import FakeRpc, mint_bytes, plan_bytes
 
 #: A valid base58 pubkey standing in for an on-chain Plan PDA.
 PLAN = "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT"
+
+
+def _playground_rpc() -> FakeRpc:
+    """A fake chain holding the plan the playground's own config asks for."""
+    cfg = solana_pay_kit.config()
+    signer = cfg.operator.signer
+    assert signer is not None  # the playground always resolves a signer (the demo one)
+    operator = Pubkey.from_string(str(signer.pubkey()))
+    recipient = Pubkey.from_string(cfg.effective_recipient())
+    mint = Pubkey.from_string(resolve_mint("USDC", cfg.network.mints_label()))
+    token = Pubkey.from_string(TOKEN_PROGRAM)
+    rpc = FakeRpc()
+    rpc.put(
+        Pubkey.from_string(PLAN),
+        plan_bytes(
+            owner=operator,
+            mint=mint,
+            destinations=[recipient],
+            pullers=[operator],
+            amount=subscriptions.PRICE_BASE_UNITS,
+            period_hours=24,
+        ),
+    )
+    rpc.put(mint, mint_bytes(), TOKEN_PROGRAM)
+    rpc.put(find_associated_token_address(recipient, mint, token)[0], bytes(165), TOKEN_PROGRAM)
+    return rpc
 
 
 @pytest.fixture
@@ -97,11 +131,13 @@ def test_feed_without_a_plan_names_the_variable(client: TestClient) -> None:
     assert "PAY_KIT_PLAYGROUND_PLAN_ID" in resp.json()["error"]
 
 
-@pytest.fixture
-def subscribed() -> Iterator[TestClient]:
-    """The playground booted with a plan configured, then restored."""
+def _booted(rpc: Any) -> Iterator[TestClient]:
+    """The playground booted with a plan configured and that RPC, then restored."""
     with pytest.MonkeyPatch.context() as env:
         env.setenv("PAY_KIT_PLAYGROUND_PLAN_ID", PLAN)
+        # The server builds its own SolanaRpc from the config; hand it the fake
+        # instead so no test ever reaches for the network.
+        env.setattr(server_subscription, "SolanaRpc", lambda *_args, **_kwargs: rpc)
         importlib.reload(subscriptions)
         importlib.reload(app_module)
         yield TestClient(app_module.app, raise_server_exceptions=False)
@@ -109,11 +145,36 @@ def subscribed() -> Iterator[TestClient]:
     importlib.reload(app_module)
 
 
+@pytest.fixture
+def subscribed() -> Iterator[TestClient]:
+    yield from _booted(_playground_rpc())
+
+
+@pytest.fixture
+def unreachable() -> Iterator[TestClient]:
+    rpc = _playground_rpc()
+
+    async def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise httpx.ConnectError("connection refused")
+
+    rpc.get_account_info = refuse  # type: ignore[method-assign]
+    yield from _booted(rpc)
+
+
+def test_feed_answers_503_when_the_rpc_is_unreachable(unreachable: TestClient) -> None:
+    # Issuing the challenge reads the plan: a dead RPC is an operator failure,
+    # so the caller sees 503 with the reason, not a 500.
+    resp = unreachable.get("/api/v1/feed")
+    assert resp.status_code == 503
+    assert PLAN in resp.json()["error"] and "connection refused" in resp.json()["error"]
+
+
 def test_feed_is_gated_and_advertised(subscribed: TestClient) -> None:
-    # The plan does not exist on the unreachable sandbox RPC, so the gate stops
-    # the request before the handler instead of serving the feed.
+    # With the plan readable, the gate answers the real 402 challenge.
     resp = subscribed.get("/api/v1/feed")
-    assert resp.status_code == 503 and PLAN in resp.json()["error"]
+    assert resp.status_code == 402
+    assert resp.headers["www-authenticate"].startswith("Payment ")
+    assert resp.headers["cache-control"] == "no-store"
 
     offers = subscribed.get("/openapi.json").json()["paths"]["/api/v1/feed"]["get"]["x-payment-info"]["offers"]
     assert len(offers) == 1

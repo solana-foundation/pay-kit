@@ -19,6 +19,7 @@ import os
 import random
 from datetime import UTC, datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import solana_pay_kit
@@ -82,9 +83,10 @@ async def _subscription(request: Request) -> dict[str, str]:
         )
     try:
         return await _gate(request)
-    except PaymentError as exc:
-        # Issuing the challenge reads the plan: a missing plan or an unreachable
-        # RPC is the operator's problem, not the caller's.
+    except (PaymentError, httpx.HTTPError) as exc:
+        # Issuing the challenge reads the plan, so a missing plan (PaymentError)
+        # and an RPC that is down or slow (httpx transport or timeout error) are
+        # both the operator's problem, not the caller's.
         raise HTTPException(503, {"error": f"subscription plan {PLAN_ID} is unavailable: {exc}"}) from exc
 
 
