@@ -30,6 +30,7 @@ from solana_pay_kit.protocols.x402.batch_settlement import (  # noqa: E402  # py
     errors,  # noqa: E402
 )
 from solana_pay_kit.protocols.x402.batch_settlement.engine import X402BatchSettlement  # noqa: E402
+from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError  # noqa: E402
 from solana_pay_kit.protocols.x402.batch_settlement.store import StoreInvariantError  # noqa: E402
 from solana_pay_kit.protocols.x402.batch_settlement.types import (  # noqa: E402
     MAX_WITHDRAW_DELAY_SECONDS,
@@ -517,6 +518,25 @@ def test_the_shim_bridge_runs_a_coroutine_from_inside_a_running_loop() -> None:
 
     with pytest.raises(StoreInvariantError, match="refused"):
         run(inside_failing())
+
+
+def test_a_refusal_names_its_code_without_repeating_its_reason(world: World, app: tuple[Get, list[str]]) -> None:
+    # A scheme refusal can quote an RPC or a simulation, so the 402 carries the
+    # code a client acts on and nothing else; the detail goes to the log.
+    get, served = app
+    engine = _engine(world)
+    accept = engine.accepts_entries(world.gate, {})[0]
+    payment: Any = run(_client(world).create_payment_payload(accept))
+
+    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, f"{_SECRET} from the rpc")
+
+    engine.verify_and_reserve = refuse  # type: ignore[method-assign]
+    status, headers, body = get("/r", _header(payment))
+    assert (status, served) == (402, [])
+    assert _SECRET.encode() not in body
+    assert json.loads(body)["code"] == errors.INVALID_CHANNEL_STATE
+    assert _decode(headers, "payment-required")["error"] == errors.INVALID_CHANNEL_STATE
 
 
 def test_flask_surfaces_a_store_invariant_instead_of_a_reused_coroutine(world: World) -> None:

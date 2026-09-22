@@ -24,12 +24,15 @@ app-layer policy, exactly the two-layer split the spec allows.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from solana_pay_kit.errors import InvalidProofError
+
+logger = logging.getLogger("solana_pay_kit")
 
 __all__ = [
     "Charge",
@@ -176,14 +179,30 @@ def batch_challenge(
 
     ``error`` adds its code to both; ``accepts`` replaces the route's accepts
     with a corrective's (they carry the channel state the client resyncs from).
+
+    The body carries the wire contract only: the code is what a client acts on
+    (the Rust and Python clients read the header envelope's ``error`` and the
+    ``accepts``, never a message), while the refusal's own text can quote an
+    RPC or a simulation, so it is logged here instead of served.
     """
     offered = accepts if accepts is not None else engine.accepts_entries(gate, request, voucher_signer=voucher_signer)
     code = None if error is None else error.code
     body: dict[str, Any] = {"error": "payment_required", "resource": resource, "accepts": offered}
     if error is not None:
         body["code"] = code
-        body["message"] = str(error)
+        logger.warning(
+            "solana_pay_kit: refusing %s on channel %s with %s: %s", resource, _challenge_channel(offered), code, error
+        )
     return engine.challenge_headers(gate, request, error=code, accepts=offered), body
+
+
+def _challenge_channel(offered: list[Any]) -> str:
+    """The channel a corrective's accepts name, for the log line; ``"-"`` when they name none."""
+    for accept in offered:
+        state = cast("Mapping[str, Any]", accept).get("extra", {}).get("channelState")
+        if isinstance(state, Mapping):
+            return str(cast("Mapping[str, Any]", state).get("channelId", "-"))
+    return "-"
 
 
 def charge_from(request: Any) -> Charge | None:
