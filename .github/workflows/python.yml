@@ -168,6 +168,36 @@ jobs:
           MPP_HARNESS_SERVERS: python,rust-subscription
           SUBSCRIPTIONS_PROGRAM_SO: ../_subscriptions/target/deploy/subscriptions_program.so
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+      # The subscription e2e talks to the DEPLOYED program on a mainnet fork
+      # (no .so): it creates a plan, activates with the same-tx authority init,
+      # time-travels past the period for one lazy renewal, then cancels. That
+      # also proves the pinned program id is live on mainnet. Needs the
+      # datasource secret, so it skips on fork PRs.
+      - name: Subscription on-chain e2e (mainnet fork)
+        env:
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+          SURFPOOL_STREAM_PROGRAMS: De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44
+        run: |
+          if [ -z "${SURFPOOL_DATASOURCE_RPC_URL}" ]; then
+            echo "::notice::SURFPOOL_DATASOURCE_RPC_URL is unset; skipping the subscription on-chain e2e"
+            exit 0
+          fi
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 120); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["'"$SURFPOOL_STREAM_PROGRAMS"'",{"encoding":"base64","dataSlice":{"offset":0,"length":0}}]}' \
+              | grep -q '"executable":true'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          cd python
+          MPP_RUN_SUBSCRIPTION_E2E=1 MPP_SUBSCRIPTION_E2E_RPC_URL=http://localhost:8899 \
+            python -m pytest -q tests/test_subscription_e2e_surfnet.py
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

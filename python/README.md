@@ -295,6 +295,11 @@ before issuing a challenge, validates every activation instruction, co-signs as
 puller (and fee payer when sponsored), binds the proof after settlement, and on
 access renews an unpaid period with one puller-signed charge
 (`renew_on_access`). FastAPI routes gate with `RequireSubscription`.
+`tests/test_subscription_e2e_surfnet.py` drives that lifecycle against the
+deployed program (plan, activation, a lazy renewal after a time jump, cancel).
+It is opt-in locally with `MPP_RUN_SUBSCRIPTION_E2E=1` against a surfpool
+mainnet fork, and CI runs it on the same fork, which also proves the pinned
+program id is live on mainnet.
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`
