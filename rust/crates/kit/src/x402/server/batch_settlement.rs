@@ -2817,7 +2817,7 @@ impl X402BatchSettlement {
                 .await?
             {
                 Some(state) => Some((
-                    grace_seal_plan(&state, onchain.settlement.settled, past_deadline),
+                    grace_seal_plan(&state, onchain.settlement.settled, past_deadline, now),
                     state,
                 )),
                 None if past_deadline => None,
@@ -3067,20 +3067,27 @@ enum GraceSealPlan {
 /// the coordination rule is testable without a chain: the caller has already
 /// recorded the close, which stops new reservations on every replica.
 ///
-/// A request still in flight defers the seal on both sides of the deadline.
-/// Past it the program refuses any further voucher, so a handler that overran
-/// the deadline has already forfeited its charge onchain; deferring still
-/// keeps this server from being the party that seals under its own request,
-/// and the request settles or releases before the next pass. The scheme's
-/// `withdrawDelay >= maxTimeoutSeconds` bound, and the reservation lease that
-/// mirrors it, are what keep a request reserved before the close from
-/// legitimately outliving the grace period.
+/// A request still in flight defers the seal on both sides of the deadline,
+/// for as long as its reservation lease runs (see
+/// [`ChannelState::has_blocking_authorization`]). Past the deadline the
+/// program refuses any further voucher, so a handler that overran it has
+/// already forfeited its charge onchain; deferring still keeps this server
+/// from being the party that seals under its own live request, and the
+/// request settles or releases before the next pass. A reservation whose
+/// lease is dead — its owner crashed or overran — never blocks the seal
+/// forever: nobody else can release it, so it is treated as gone (except,
+/// before the deadline, one whose handler already succeeded, which a retry
+/// can still resume and apply). The scheme's `withdrawDelay >=
+/// maxTimeoutSeconds` bound, and the reservation lease that mirrors it, are
+/// what keep a request reserved before the close from legitimately outliving
+/// the grace period.
 fn grace_seal_plan(
     state: &ChannelState,
     onchain_settled: u64,
     past_deadline: bool,
+    now: i64,
 ) -> GraceSealPlan {
-    if state.has_in_flight_authorization() {
+    if state.has_blocking_authorization(now, past_deadline) {
         return GraceSealPlan::InFlight;
     }
     if past_deadline {
@@ -4385,6 +4392,7 @@ mod tests {
             panic!("a fresh authorization must be served");
         };
         let channel_id = outcome.channel_id.clone();
+        let now = now_unix() as i64;
 
         // The payer's request_close lands onchain meanwhile. The finalizer
         // records the close and consults the plan: with the handler still
@@ -4395,10 +4403,16 @@ mod tests {
             .unwrap()
             .expect("known channel");
         assert!(state.close_requested_at.is_some());
-        assert_eq!(grace_seal_plan(&state, 0, false), GraceSealPlan::InFlight);
+        assert_eq!(
+            grace_seal_plan(&state, 0, false, now),
+            GraceSealPlan::InFlight
+        );
         // Past the deadline the request can no longer be applied onchain, but
         // the finalizer still does not seal underneath it.
-        assert_eq!(grace_seal_plan(&state, 0, true), GraceSealPlan::InFlight);
+        assert_eq!(
+            grace_seal_plan(&state, 0, true, now),
+            GraceSealPlan::InFlight
+        );
 
         // From here no replica may start another charge on the channel, even
         // one whose verification read the record before the close was marked.
@@ -4418,7 +4432,7 @@ mod tests {
 
         // Now the finalizer seals with the 3000 voucher, not the 2000 it saw
         // while the request was in flight.
-        match grace_seal_plan(&state, 0, false) {
+        match grace_seal_plan(&state, 0, false, now) {
             GraceSealPlan::Apply {
                 cumulative,
                 signature,
@@ -4435,13 +4449,90 @@ mod tests {
         // Once the chain already carries that watermark there is nothing to
         // apply early; the permissionless seal after the grace period suffices.
         assert_eq!(
-            grace_seal_plan(&state, 3_000, false),
+            grace_seal_plan(&state, 3_000, false, now),
             GraceSealPlan::NothingToApply
         );
         // And with nothing in flight past the deadline, the frozen watermark is
         // sealed permissionlessly.
         assert_eq!(
-            grace_seal_plan(&state, 3_000, true),
+            grace_seal_plan(&state, 3_000, true, now),
+            GraceSealPlan::SealFrozen
+        );
+    }
+
+    /// A replica that crashed after reserving leaves a reservation nobody else
+    /// can release. Once its lease is dead it must not hold the seal hostage:
+    /// past the grace deadline the channel is sealed at the frozen watermark,
+    /// and before it the committed voucher is applied — unless the dead
+    /// reservation already served its handler, which a retry can still resume
+    /// and commit while the deadline allows it.
+    #[test]
+    fn a_dead_reservation_does_not_block_the_seal() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let now = 1_700_000_000_i64;
+        let reservation =
+            |expires_at: i64, handler_succeeded: bool| crate::core::store::PendingDelivery {
+                delivery_id: "access:test:3000".to_string(),
+                amount: 1_000,
+                sequence: 1,
+                expires_at,
+                request_fingerprint: Some("digest".to_string()),
+                handler_succeeded,
+            };
+        let mut state = seeded(&channel, &config, 5_000, 2_000);
+        state.highest_voucher_signature = Some("sig-2000".to_string());
+
+        // A live lease blocks on both sides of the deadline.
+        state.pending_deliveries = vec![reservation(now + 60, false)];
+        assert_eq!(
+            grace_seal_plan(&state, 0, false, now),
+            GraceSealPlan::InFlight
+        );
+        assert_eq!(
+            grace_seal_plan(&state, 0, true, now),
+            GraceSealPlan::InFlight
+        );
+
+        // A dead lease whose handler never reported is gone for good: apply
+        // the committed voucher early, or seal frozen once the deadline passed.
+        state.pending_deliveries = vec![reservation(now - 1, false)];
+        assert!(matches!(
+            grace_seal_plan(&state, 0, false, now),
+            GraceSealPlan::Apply {
+                cumulative: 2_000,
+                ..
+            }
+        ));
+        assert_eq!(
+            grace_seal_plan(&state, 0, true, now),
+            GraceSealPlan::SealFrozen
+        );
+
+        // A dead lease whose handler did succeed can still be resumed and its
+        // voucher applied before the deadline, so the early seal waits; past
+        // the deadline nothing can be applied, so it no longer blocks.
+        state.pending_deliveries = vec![reservation(now - 1, true)];
+        assert_eq!(
+            grace_seal_plan(&state, 0, false, now),
+            GraceSealPlan::InFlight
+        );
+        assert_eq!(
+            grace_seal_plan(&state, 0, true, now),
+            GraceSealPlan::SealFrozen
+        );
+
+        // A dead opening setup is likewise not waited for.
+        state.pending_deliveries.clear();
+        state.pending_setup = Some(PendingSetup {
+            payer_signature: "sig".to_string(),
+            deposit: 5_000,
+            opens_channel: true,
+            expires_at: now - 1,
+        });
+        assert_eq!(
+            grace_seal_plan(&state, 0, true, now),
             GraceSealPlan::SealFrozen
         );
     }

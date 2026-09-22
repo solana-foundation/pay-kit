@@ -1031,6 +1031,32 @@ impl ChannelState {
         self.pending_setup.is_some() || !self.pending_deliveries.is_empty()
     }
 
+    /// Whether reserved work could still reach an outcome a close finalizer
+    /// should wait for before sealing the channel.
+    ///
+    /// A reservation whose lease is still running may commit its charge, so
+    /// sealing under it would strand that charge. A lease that has run out
+    /// belongs to a request whose owner crashed or overran; nobody else ever
+    /// takes it over or releases it (see [`Self::reserve_authorization`]), so
+    /// waiting on it would block the seal forever. Before the grace deadline a
+    /// dead lease whose handler already succeeded still blocks: a retry can
+    /// resume and commit it, and the voucher it commits can still be applied.
+    /// Past the deadline the program refuses every further voucher, so only a
+    /// live lease is worth waiting for.
+    pub fn has_blocking_authorization(&self, now: i64, past_deadline: bool) -> bool {
+        let live = |expires_at: i64| expires_at > now;
+        if self
+            .pending_setup
+            .as_ref()
+            .is_some_and(|setup| live(setup.expires_at))
+        {
+            return true;
+        }
+        self.pending_deliveries.iter().any(|delivery| {
+            live(delivery.expires_at) || (!past_deadline && delivery.handler_succeeded)
+        })
+    }
+
     /// Drop the expired committed prefix, then bound the committed tail to
     /// [`MAX_COMMITTED_AUTHORIZATIONS`].
     ///
