@@ -32,6 +32,11 @@ const DEFAULT_PAYMENT_CHANNEL_PROGRAM =
   "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
 const PAYMENT_CHANNEL_PROGRAM =
   process.env.PAYMENT_CHANNELS_PROGRAM_ID ?? DEFAULT_PAYMENT_CHANNEL_PROGRAM;
+// The canonical subscriptions program. CI deploys a build of the pinned
+// `subscriptions_ref` here (SUBSCRIPTIONS_PROGRAM_SO); without it the harness
+// forks mainnet and runs the deployed program.
+const SUBSCRIPTIONS_PROGRAM = "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44";
+const SUBSCRIPTION_TRANSFER_DISCRIMINATOR = 10;
 const MINT_ACCOUNT_SIZE = 82;
 const SOL_NATIVE_DECIMALS = 9;
 const DEFAULT_SPL_DECIMALS = 6;
@@ -167,33 +172,42 @@ function createSplMintAccountData(decimals: number): Uint8Array {
 function startSurfnetForScenarios(
   scenarios: readonly HarnessScenario[],
 ): Surfnet {
-  const needsPaymentChannels = scenarios.some(
-    (scenario) => scenario.intent === "x402-upto",
-  );
-  if (!needsPaymentChannels) {
+  // Programs the active scenarios execute: deploy a local SBF build when one
+  // is supplied, otherwise fork mainnet and stream the deployed program.
+  const programs: { programId: string; soPath?: string }[] = [];
+  if (scenarios.some((scenario) => scenario.intent === "x402-upto")) {
+    programs.push({
+      programId: PAYMENT_CHANNEL_PROGRAM,
+      soPath: process.env.PAYMENT_CHANNELS_PROGRAM_SO?.trim() || undefined,
+    });
+  }
+  if (scenarios.some((scenario) => scenario.intent === "subscription")) {
+    programs.push({
+      programId: SUBSCRIPTIONS_PROGRAM,
+      soPath: process.env.SUBSCRIPTIONS_PROGRAM_SO?.trim() || undefined,
+    });
+  }
+  if (programs.length === 0) {
     return Surfnet.start();
   }
 
-  const programSoPath = process.env.PAYMENT_CHANNELS_PROGRAM_SO?.trim();
-  if (programSoPath) {
-    const started = Surfnet.start();
-    started.deploy({
-      programId: PAYMENT_CHANNEL_PROGRAM,
-      soPath: programSoPath,
-    });
-    return started;
+  const started = programs.every((program) => program.soPath)
+    ? Surfnet.start()
+    : Surfnet.startWithConfig({
+        offline: false,
+        remoteRpcUrl:
+          process.env.SURFPOOL_DATASOURCE_RPC_URL ??
+          DEFAULT_SURFPOOL_DATASOURCE_RPC_URL,
+      });
+  for (const { programId, soPath } of programs) {
+    if (soPath) {
+      started.deploy({ programId, soPath });
+    } else {
+      started.streamAccount(programId, {
+        includeOwnedAccounts: programId === PAYMENT_CHANNEL_PROGRAM,
+      });
+    }
   }
-
-  const started = Surfnet.startWithConfig({
-    offline: false,
-    remoteRpcUrl:
-      process.env.SURFPOOL_DATASOURCE_RPC_URL ??
-      DEFAULT_SURFPOOL_DATASOURCE_RPC_URL,
-  });
-  started.streamAccount(PAYMENT_CHANNEL_PROGRAM, {
-    includeOwnedAccounts: true,
-  });
-
   return started;
 }
 
@@ -302,6 +316,11 @@ beforeAll(async () => {
     // x402-upto opens a payment-channel account. The fee payer sponsors the
     // transaction fee and channel rent.
     if (scenario.intent === "x402-upto") {
+      needsSolFunding = true;
+    }
+    // A subscription activation initializes the subscriber's
+    // SubscriptionAuthority, whose rent the subscriber always funds.
+    if (scenario.intent === "subscription") {
       needsSolFunding = true;
     }
     if (isSolNative(scenario)) {
@@ -914,6 +933,8 @@ function environmentForScenario(
     }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
+  } else if (scenario.intent === "subscription") {
+    env.PAY_KIT_HARNESS_PROTOCOL = "subscription";
   } else {
     env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
@@ -951,6 +972,11 @@ async function expectSettledTransactionShape(
 
   if (scenario.intent === "x402-upto") {
     expectPaymentChannelSettlement(surfnet, message, scenario, scenarioEnv);
+    return;
+  }
+
+  if (scenario.intent === "subscription") {
+    expectSubscriptionActivation(surfnet, message, scenario, scenarioEnv);
     return;
   }
 
@@ -1027,6 +1053,41 @@ async function expectSettledTransactionShape(
     onChainMint,
     expectedTransferCount,
     tokenProgram,
+  );
+}
+
+// The settlement signature is the activation transaction: exactly one
+// transfer_subscription on the subscriptions program, moving `amount` into the
+// payTo ATA (account 4), and no associated-token-program instruction.
+function expectSubscriptionActivation(
+  surfnet: Surfnet,
+  message: CompiledMessage,
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+): void {
+  const programs = message.instructions.map((instruction) =>
+    accountAt(message, instruction.programAddressIndex),
+  );
+  expect(programs).not.toContain(ASSOCIATED_TOKEN_PROGRAM);
+  const transfers = message.instructions.filter(
+    (instruction) =>
+      accountAt(message, instruction.programAddressIndex) ===
+        SUBSCRIPTIONS_PROGRAM &&
+      instruction.data[0] === SUBSCRIPTION_TRANSFER_DISCRIMINATOR,
+  );
+  expect(transfers, "transfer_subscription count").toHaveLength(1);
+  const [transfer] = transfers;
+  expect(readU64Le(transfer.data, 1)).toBe(primaryDelta(scenario));
+  const mint = onChainMintFor(scenario);
+  if (!mint) {
+    throw new Error(`Scenario ${scenario.id} has no on-chain mint`);
+  }
+  expect(accountAt(message, transfer.accountIndices[4])).toBe(
+    surfnet.getAta(
+      scenarioEnv.MPP_HARNESS_PAY_TO,
+      mint,
+      tokenProgramAddress(scenario.tokenProgram),
+    ),
   );
 }
 
