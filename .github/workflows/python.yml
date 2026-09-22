@@ -69,7 +69,7 @@ jobs:
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server,x402_harness_batch_client,x402_harness_batch_server"
           cargo-cache-key: python
       # x402 upto settles on the canonical payment-channels program; the upto
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
@@ -183,4 +183,22 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+      # x402 batch-settlement: basic, top-up, redeem and refund run every
+      # python/rust client x server pair; server-signed and untrusted-fallback
+      # are pinned to the Python adapters (intents/x402-batch-settlement.ts).
+      # Settles on the same payment-channels .so as the upto step and checks
+      # the channel account, payTo's delta and the Closing state on chain. The
+      # opt-in surfpool pytest suite (tests/test_pk_x402_batch_surfpool.py)
+      # stays local: it needs a surfnet forking mainnet and its USDC mint.
+      - name: Focused python/rust x402 batch-settlement matrix
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: x402-batch-settlement
+          MPP_HARNESS_CLIENTS: python-x402-batch,rust-x402-batch
+          MPP_HARNESS_SERVERS: python-x402-batch,rust-x402-batch
+          X402_HARNESS_CLIENTS: python-x402-batch,rust-x402-batch
+          X402_HARNESS_SERVERS: python-x402-batch,rust-x402-batch
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

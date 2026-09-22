@@ -152,11 +152,12 @@ What the harness exercises today:
 | x402 `upto` | — | ✅ (TS/pay-kit) |
 | MPP `session` | Python (limited) | — |
 | MPP `subscription` | — | — |
-| x402 `batch-settlement` | — | — |
+| x402 `batch-settlement` | Python, Rust (server-signed: Python only) | ✅ (Python, Rust) |
 
 **Known gaps** (tracked, not yet covered):
 
-- x402 `upto` / `batch-settlement` clients in Go and Python (Rust + TS only).
+- x402 `upto` clients in Go (Rust + TS + Python only).
+- x402 `batch-settlement` outside Python and Rust.
 - MPP `subscription` outside Rust (needs plan bootstrap).
 - MPP `session` servers outside Python/Rust.
 

@@ -518,7 +518,18 @@ harness commands:
 cd harness
 MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=python pnpm test
 MPP_HARNESS_CLIENTS=rust       MPP_HARNESS_SERVERS=python pnpm test
+# x402 batch-settlement: every python/rust pair, plus the Python-only
+# server-signed and untrusted-fallback flows (needs the payment-channels program)
+MPP_HARNESS_INTENTS=x402-batch-settlement \
+  X402_HARNESS_CLIENTS=python-x402-batch,rust-x402-batch \
+  X402_HARNESS_SERVERS=python-x402-batch,rust-x402-batch \
+  pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
 ```
+
+The batch-settlement lifecycle also runs against a surfpool fork of mainnet
+from pytest (opt-in, local only): start `surfpool start --network mainnet
+--no-tui`, then `PAYKIT_SURFNET_RPC_URL=http://127.0.0.1:8899 uv run pytest
+tests/test_pk_x402_batch_surfpool.py`.
 
 ## Spec
 
