@@ -164,8 +164,8 @@ class SolanaRpc:
     async def simulate_transaction(self, raw_tx: bytes, commitment: str = "confirmed") -> dict[str, Any]:
         """Simulate the exact wire bytes and return the RPC ``value`` object.
 
-        Mirrors the Rust ``core::rpc::simulate_transaction``: base64 encoding,
-        signatures unchecked, the transaction's own blockhash kept. Callers
+        Base64 encoding, signatures unchecked, the transaction's own blockhash
+        kept, as in the Rust ``core::rpc::simulate_transaction``. Callers
         read ``value["err"]`` (``None`` on success) and ``value["logs"]``.
         """
         encoded = base64.b64encode(raw_tx).decode("ascii")

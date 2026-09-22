@@ -4,7 +4,10 @@ In server-signed mode the channel's on-chain ``authorized_signer`` is the
 resource operator, so the operator can sign a voucher for the whole unspent
 deposit without another client signature. A client therefore never enters that
 mode because a 402 asked for it: only for operator keys it trusts out of band,
-and only up to an escrow it chose. Mirrors the x402 PR #23 ``client/trust.ts``.
+and only up to an escrow it chose. That is what the SVM ``batch-settlement``
+spec requires of a client in server-signed mode (sections 4.1 and 8); the cap
+itself is a client-side policy, shaped like the one in x402 PR #23
+``client/trust.ts``.
 
 The cap is a USD amount for known stablecoins (floored to atomic units with
 ``Decimal``), ``False`` to lift it, or an integer atomic cap per opted-in asset.

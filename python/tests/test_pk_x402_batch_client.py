@@ -1,9 +1,10 @@
 """x402 ``batch-settlement`` client lifecycle, and its output against the server policy.
 
-The first part mirrors the x402 PR #23 ``batch.client.lifecycle.test.ts`` cases;
-the second mirrors the Rust client tests (``client/batch_settlement/payment.rs``)
-that prove the client's transactions pass the sponsor policy, here by paying
-the Python server engine end to end over the fake chain.
+The first part covers the cases of the x402 PR #23
+``batch.client.lifecycle.test.ts``; the second proves the client's transactions
+pass the sponsor policy, as the Rust client tests
+(``client/batch_settlement/payment.rs``) do, here by paying the Python server
+engine end to end over the fake chain.
 """
 
 from __future__ import annotations

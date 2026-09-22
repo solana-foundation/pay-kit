@@ -10,10 +10,14 @@ with a valid payer signature, a bounded ComputeBudget prefix, exactly one
 canonical payment-channels instruction with a pinned account table and fully
 decoded arguments, and a Memo/Lighthouse suffix that never names the fee payer.
 
-Port of the Rust ``protocol/schemes/batch_settlement/tx_policy.rs`` and the
-``core::payment_channels::scan_channel_tx_layout`` allowlist it uses. The
-refund suffix follows the spec (at most one Memo) rather than Rust (exactly
-one); a Memo that is present is held to the same content rule either way.
+The rules are the ones the SVM ``batch-settlement`` spec puts on the setup and
+refund transactions (spec section 5, phase 1): the instruction shape, the
+signer set, the ComputeBudget bound and the Memo requirement. Cross-check for
+byte parity: the Rust ``protocol/schemes/batch_settlement/tx_policy.rs`` and
+the ``core::payment_channels::scan_channel_tx_layout`` allowlist it uses. Where
+the two differ on the refund suffix, the spec wins (at most one Memo, not
+exactly one); a Memo that is present is held to the same content rule either
+way.
 """
 
 from __future__ import annotations

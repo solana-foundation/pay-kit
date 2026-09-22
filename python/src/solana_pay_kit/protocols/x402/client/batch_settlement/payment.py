@@ -3,8 +3,11 @@
 The client opens one escrow channel per server terms, then pays each request
 with a cumulative voucher it signs (client-signed mode) or an expiring payer
 proof the operator meters against (server-signed mode, only for operators the
-:class:`~.trust.ServerSignedChannelsPolicy` trusts). Mirrors the x402 PR #23
-``client/scheme.ts`` and stays byte-compatible with the pay-kit Rust server.
+:class:`~.trust.ServerSignedChannelsPolicy` trusts). The flow is the client
+half of the SVM ``batch-settlement`` spec, sections 4.3 and 5 (phases 1 to 3);
+server-signed payer proofs are specified only in x402 PR #23, whose
+``client/scheme.ts`` is the reference for them. The bytes are the ones the
+pay-kit Rust client and server exchange.
 
 The local watermark advances only on a confirmed ``PAYMENT-RESPONSE``: a payment
 payload is an authorization, not a receipt. Payments on one channel run one at

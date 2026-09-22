@@ -3,7 +3,9 @@
 ``batch-settlement`` is stateful: per channel the server tracks the escrow it
 has seen confirmed, the charge watermark it accepted, the voucher it can
 redeem, and the ceilings reserved by requests still being served. Server-signed
-requests additionally get a single-use operation record per ``requestId``.
+requests additionally get a single-use operation record per ``requestId``. That
+is the state the SVM ``batch-settlement`` spec requires a server to hold
+(section 6.3, reference storage boundaries).
 
 Every write goes through ``update(channel_id, mutator)``, an atomic
 read-modify-write, and every write is checked: the watermarks ``deposit``,

@@ -552,8 +552,8 @@ def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes
 def distribution_hash(recipients: list[Distribution]) -> bytes:
     """SHA-256 over ``u32 count LE || (recipient || u16 bps LE)*``: the split the program commits at ``open``.
 
-    Mirrors the Rust ``pc::distribution_hash``; the on-chain ``Channel.distributionHash``
-    must equal it for the split a verifier expects.
+    The on-chain ``Channel.distributionHash`` must equal it for the split a
+    verifier expects; the Rust ``pc::distribution_hash`` computes the same bytes.
     """
     hasher = hashlib.sha256(struct.pack("<I", len(recipients)))
     for entry in recipients:
@@ -574,8 +574,8 @@ def build_settle_instructions(
     """Build the ``[ed25519, settle]`` pair that advances ``settled`` to a voucher's cumulative.
 
     The program reads the voucher from the preceding Ed25519 precompile, so
-    ``settle`` itself carries only its discriminator. Mirrors the Rust
-    ``build_settle_instructions``.
+    ``settle`` itself carries only its discriminator. The Rust
+    ``build_settle_instructions`` builds the same pair.
     """
     message = voucher_message_bytes(channel, cumulative, expires_at)
     verify = build_ed25519_verify_instruction(authorized_signer, signature, message)
@@ -598,8 +598,8 @@ def build_seal_instruction(*, channel: Pubkey, program_id: Pubkey = PROGRAM_ID) 
 
 def treasury_owner() -> Pubkey:
     """Treasury owner baked into the deployed (mainnet-build) payment-channels
-    program; the treasury ATA is ATA(treasury_owner, mint, token_program).
-    Mirrors the Rust/Go ``TreasuryOwner``."""
+    program; the treasury ATA is ATA(treasury_owner, mint, token_program). The
+    Rust and Go ``TreasuryOwner`` hold the same key."""
     return Pubkey.from_string("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
 
 

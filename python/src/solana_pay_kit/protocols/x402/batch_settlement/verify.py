@@ -2,10 +2,13 @@
 
 No RPC and no store: every function takes already-parsed values and raises
 :class:`~.errors.BatchSettlementError` with the spec code on rejection. The
-stateless half mirrors the Rust ``protocol/schemes/batch_settlement/verify.rs``
-(terms, channel config, PDA, voucher); the server-signed payer proof, the
-confirmed on-chain binding and the cumulative/capacity arithmetic follow the
-x402 PR #23 server and facilitator.
+obligations come from the SVM ``batch-settlement`` spec: the terms and channel
+config of section 4, the PDA derivation of section 4.2, and the voucher
+acceptance steps of section 5, phase 3. The server-signed payer proof and the
+capacity arithmetic are only written down in x402 PR #23 (its server and
+facilitator), which the checks here follow. The Rust
+``protocol/schemes/batch_settlement/verify.rs`` covers the same stateless half
+and is the file to diff against for byte parity.
 """
 
 from __future__ import annotations

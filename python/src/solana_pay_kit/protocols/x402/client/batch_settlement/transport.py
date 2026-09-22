@@ -4,7 +4,10 @@
 a payment from a :class:`~.payment.BatchSettlementClient`, reconciles the
 client's channel with the ``PAYMENT-RESPONSE``, and retries once after a
 corrective 402 the client adopted. :func:`refund_batch_channel` drives the
-payer's forced close. Mirrors ``client/exact/transport.py`` and the x402 PR #23
+payer's forced close. The retry rule is the corrective ``PaymentRequired`` of
+the SVM ``batch-settlement`` spec (section 4.6); the refund flow is its
+payer-forced close (section 5). Shaped like this SDK's
+``client/exact/transport.py``, and comparable with the x402 PR #23
 ``client/refund.ts``.
 """
 
