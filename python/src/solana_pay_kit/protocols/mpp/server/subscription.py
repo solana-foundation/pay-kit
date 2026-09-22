@@ -272,12 +272,18 @@ class SubscriptionServer:
             if not callable(getattr(rpc, method, None)):
                 raise _config_error(f"rpc client is missing '{method}'; use SolanaRpc or a compatible client")
         self._rpc: Any = rpc
+        self._owns_rpc = config.rpc is None  # only a client this server opened is ours to close
         self._config = config
         self._store: Store = config.store
         self._secret_key = secret_key
         self._realm = config.realm if config.realm else derive_default_realm(config.recipient)
         self._read_policy = resolve_channel_read_policy(config.read_max_attempts, config.read_backoff_step_ms)
         self._plan_cache: tuple[PlanView, float] | None = None
+
+    async def aclose(self) -> None:
+        """Close the RPC client this server opened. A caller-supplied client is left alone."""
+        if self._owns_rpc:
+            await self._rpc.aclose()
 
     @property
     def realm(self) -> str:

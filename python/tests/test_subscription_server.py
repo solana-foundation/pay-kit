@@ -615,6 +615,21 @@ async def test_a_lost_binding_cannot_be_rebuilt(h: Harness) -> None:
     assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is None
 
 
+async def test_aclose_closes_only_a_server_owned_rpc(h: Harness) -> None:
+    owned = SubscriptionServer(replace(h.config, rpc=None, rpc_url="http://127.0.0.1:1"))
+    await owned.aclose()
+    assert owned._rpc._client.is_closed  # pyright: ignore[reportPrivateUsage]
+
+    closed: list[str] = []
+
+    async def record() -> None:
+        closed.append("closed")
+
+    h.rpc.aclose = record  # type: ignore[attr-defined]
+    await h.server.aclose()
+    assert closed == []
+
+
 # -- access ----------------------------------------------------------------------
 
 
