@@ -5,7 +5,18 @@ import { Surfnet } from "@solana/surfpool";
 
 const rpcPort = Number(process.env.SURFPOOL_PROXY_RPC_PORT ?? 8899);
 const wsPort = Number(process.env.SURFPOOL_PROXY_WS_PORT ?? 8900);
-const surfnet = Surfnet.start();
+// SURFPOOL_FORK=1 forks mainnet account state from the datasource RPC, so the
+// suite behind the proxy sees deployed programs and real mints. The default
+// stays an offline localnet with the stablecoin mints faked in below.
+const fork = process.env.SURFPOOL_FORK === "1";
+const surfnet = fork
+  ? Surfnet.startWithConfig({
+      offline: false,
+      remoteRpcUrl:
+        process.env.SURFPOOL_DATASOURCE_RPC_URL ??
+        "https://api.mainnet-beta.solana.com",
+    })
+  : Surfnet.start();
 const rpcTarget = new URL(surfnet.rpcUrl);
 const wsTarget = new URL(surfnet.wsUrl);
 
@@ -48,13 +59,15 @@ function createSplMintAccountData(decimals) {
   return data;
 }
 
-for (const { mint, tokenProgram } of STABLECOIN_MINTS) {
-  surfnet.setAccount(
-    mint,
-    1_461_600,
-    createSplMintAccountData(6),
-    tokenProgram,
-  );
+if (!fork) {
+  for (const { mint, tokenProgram } of STABLECOIN_MINTS) {
+    surfnet.setAccount(
+      mint,
+      1_461_600,
+      createSplMintAccountData(6),
+      tokenProgram,
+    );
+  }
 }
 
 function createProxyServer(target) {

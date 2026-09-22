@@ -527,9 +527,12 @@ MPP_HARNESS_INTENTS=x402-batch-settlement \
 ```
 
 The batch-settlement lifecycle also runs against a surfpool fork of mainnet
-from pytest (opt-in, local only): start `surfpool start --network mainnet
---no-tui`, then `PAYKIT_SURFNET_RPC_URL=http://127.0.0.1:8899 uv run pytest
-tests/test_pk_x402_batch_surfpool.py`.
+from pytest. CI runs it in the Python harness job (skipped when the datasource
+secret is unavailable, as on fork PRs); locally, start `surfpool start
+--network mainnet --no-tui`, then `PAYKIT_SURFNET_RPC_URL=http://127.0.0.1:8899
+uv run pytest tests/test_pk_x402_batch_surfpool.py`. Give it a fresh surfnet:
+the suite time-travels past a channel's grace period, so a second run against
+the same instance sees expired blockhashes.
 
 ## Spec
 
