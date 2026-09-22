@@ -28,6 +28,7 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import (
     MemoryBatchChannelStore,
     MemoryBatchOperationStore,
     Reservation,
+    ReservationKind,
 )
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig, BatchRequirements
 from solana_pay_kit.signer import LocalSigner
@@ -324,7 +325,9 @@ async def test_a_metered_request_past_its_lease_cannot_ride_a_tiny_top_up(world:
 
 
 @pytest.mark.parametrize("kind", ["close", "client"])
-async def test_a_metered_request_is_refused_while_another_kind_holds_the_channel(world: World, kind: str) -> None:
+async def test_a_metered_request_is_refused_while_another_kind_holds_the_channel(
+    world: World, kind: ReservationKind
+) -> None:
     # Server-signed requests share a channel only with each other. A close hold
     # (a refund mid request_close, or a seal) and a client-signed voucher each
     # take it alone: a charge accepted beside them would move the watermarks

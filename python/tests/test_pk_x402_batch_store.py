@@ -179,12 +179,19 @@ async def test_concurrent_updates_to_one_channel_are_serialized(channels: BatchC
     assert stored is not None and stored.charged_cumulative == 25
 
 
-def test_memory_store_serializes_updates_from_separate_event_loops() -> None:
-    # The Flask and Django shims run one event loop per request thread, so an
-    # asyncio lock would not serialize them. The mutator yields the GIL to
-    # widen the read-modify-write window a missing lock would lose updates in.
-    store = MemoryBatchChannelStore()
+def _in_threads(work: Callable[[], None], count: int = 4) -> None:
+    threads = [threading.Thread(target=work) for _ in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
+
+def test_updates_from_separate_event_loops_are_serialized(channels: BatchChannelStore) -> None:
+    # The Flask and Django shims run one event loop per request thread, so an
+    # asyncio lock would not serialize them: it binds to the first loop that
+    # contends it and refuses the second. The mutator yields the GIL to widen
+    # the read-modify-write window a missing lock would lose updates in.
     def charge(current: ChannelRecord | None) -> ChannelRecord:
         record = current or _record()
         time.sleep(0.0005)
@@ -192,15 +199,28 @@ def test_memory_store_serializes_updates_from_separate_event_loops() -> None:
 
     def worker() -> None:
         for _ in range(25):
-            asyncio.run(store.update("chan", charge))
+            asyncio.run(channels.update("chan", charge))
 
-    threads = [threading.Thread(target=worker) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    stored = asyncio.run(store.get("chan"))
+    _in_threads(worker)
+    stored = asyncio.run(channels.get("chan"))
     assert stored is not None and stored.charged_cumulative == 100
+
+
+def test_one_reservation_per_request_id_across_event_loops(operations: BatchOperationStore) -> None:
+    # Same shims, same race, on the single-use record a server-signed request
+    # depends on: exactly one thread may be told it created the reservation.
+    created: list[str] = []
+    tally = threading.Lock()
+
+    def worker() -> None:
+        for index in range(10):
+            fresh, _ = asyncio.run(operations.reserve("chan", f"req-{index}", 10_000, expires_at=LATER, now=NOW))
+            if fresh:
+                with tally:
+                    created.append(f"req-{index}")
+
+    _in_threads(worker)
+    assert sorted(created) == sorted(f"req-{index}" for index in range(10))
 
 
 async def test_records_are_copies_and_round_trip_through_a_durable_store(tmp_path: Path) -> None:

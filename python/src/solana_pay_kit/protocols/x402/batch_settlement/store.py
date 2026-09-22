@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol, cast
@@ -57,6 +58,8 @@ ReservationKind = Literal["client", "server", "close"]
 OperationStatus = Literal["reserved", "completed", "released"]
 
 _KEY_PREFIX = "x402-batch:"
+#: How long a coroutine waiting for the process-local store lock sleeps between tries.
+_LOCK_POLL_SECONDS = 0.0005
 _MONOTONIC = ("deposit", "settled", "payout_watermark", "charged_cumulative", "signed_max_claimable")
 _IMMUTABLE = ("channel_id", "channel_config", "network", "fee_payer", "token_program")
 
@@ -205,6 +208,29 @@ def _checked(channel_id: str, before: ChannelRecord | None, after: ChannelRecord
     return after
 
 
+@asynccontextmanager
+async def _held(lock: threading.Lock) -> AsyncGenerator[None]:
+    """Hold ``lock`` across awaits without blocking this event loop.
+
+    The Flask and Django shims run one event loop per request thread, so an
+    ``asyncio.Lock`` would not serialize them: it only touches a loop once it
+    is contended, and then it refuses the second loop outright. A thread lock
+    serializes every loop in the process, and a waiter here polls instead of
+    blocking, both to keep this loop answering and because the holder needs the
+    worker threads for its own store IO.
+
+    Polling costs a short sleep per contended attempt, which is nothing beside
+    the store write it is waiting for; a cross-loop async primitive would be
+    the upgrade if a store ever holds this lock for long.
+    """
+    while not lock.acquire(blocking=False):
+        await asyncio.sleep(_LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 class BatchChannelStore(Protocol):
     """Per-channel server state with an atomic, invariant-checked read-modify-write."""
 
@@ -285,10 +311,10 @@ class StoreBackedBatchChannelStore:
 
     def __init__(self, store: Store) -> None:
         self._store = store
-        # Single-process CAS: the lock serializes this process only; a
-        # multi-replica deployment needs a compare-and-set Store (Store has
-        # put_if_absent but no conditional put).
-        self._lock = asyncio.Lock()
+        # Single-process CAS: the lock serializes this process only (every
+        # event loop in it, see _held); a multi-replica deployment needs a
+        # compare-and-set Store (Store has put_if_absent but no conditional put).
+        self._lock = threading.Lock()
 
     @staticmethod
     def _key(channel_id: str) -> str:
@@ -312,7 +338,7 @@ class StoreBackedBatchChannelStore:
 
     async def update(self, channel_id: str, mutator: ChannelMutator) -> ChannelRecord:
         """Read, apply ``mutator`` and write the record back, holding this process's lock."""
-        async with self._lock:
+        async with _held(self._lock):
             before = await self._read(channel_id)
             after = _checked(channel_id, before, mutator(None if before is None else before.clone()))
             # Index first, idempotently: a retry after a failed record write
@@ -325,7 +351,7 @@ class StoreBackedBatchChannelStore:
 
     async def delete(self, channel_id: str) -> None:
         """Forget ``channel_id`` and drop it from the channel index."""
-        async with self._lock:
+        async with _held(self._lock):
             await self._delete(channel_id)
 
     async def _delete(self, channel_id: str) -> None:
@@ -334,7 +360,7 @@ class StoreBackedBatchChannelStore:
 
     async def delete_if(self, channel_id: str, predicate: Callable[[ChannelRecord], bool]) -> bool:
         """Forget ``channel_id`` when ``predicate`` accepts its record; ``True`` when it was deleted."""
-        async with self._lock:
+        async with _held(self._lock):
             record = await self._read(channel_id)
             if record is None or not predicate(record):
                 return False
@@ -501,9 +527,10 @@ class StoreBackedBatchOperationStore:
 
     def __init__(self, store: Store) -> None:
         self._store = store
-        # complete/release are get-then-put under a process-local lock; a
-        # multi-replica deployment needs a compare-and-set Store.
-        self._lock = asyncio.Lock()
+        # reserve/complete/release are read-modify-write under a process-local
+        # lock (every event loop in the process, see _held); a multi-replica
+        # deployment needs a compare-and-set Store.
+        self._lock = threading.Lock()
 
     @staticmethod
     def _key(channel_id: str, request_id: str) -> str:
@@ -525,14 +552,15 @@ class StoreBackedBatchOperationStore:
     ) -> tuple[bool, OperationRecord]:
         """Reserve ``request_id`` with ``put_if_absent``, then prune this channel's expired records."""
         record = OperationRecord(channel_id, request_id, ceiling, expires_at=expires_at)
-        if not await self._store.put_if_absent(self._key(channel_id, request_id), record.to_dict()):
-            existing = await self.get(channel_id, request_id)
-            if existing is None:
-                raise StoreInvariantError(f"operation {request_id} vanished during reserve")
-            return _existing(existing, ceiling)
-        # The per-channel index is read-modify-write under a process-local
-        # lock; a compare-and-set Store is the multi-replica fix.
-        async with self._lock:
+        # The whole reserve, the claim on the id and the per-channel index,
+        # runs under one lock: a Store whose own put_if_absent is not atomic
+        # across this process's event loops must not decide the race.
+        async with _held(self._lock):
+            if not await self._store.put_if_absent(self._key(channel_id, request_id), record.to_dict()):
+                existing = await self.get(channel_id, request_id)
+                if existing is None:
+                    raise StoreInvariantError(f"operation {request_id} vanished during reserve")
+                return _existing(existing, ceiling)
             index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
             for expired in [rid for rid, at in index.items() if at < now and rid != request_id]:
                 await self._store.delete(self._key(channel_id, expired))
@@ -545,7 +573,7 @@ class StoreBackedBatchOperationStore:
         self, channel_id: str, request_id: str, *, ceiling: int, actual: int, cumulative: int
     ) -> OperationRecord:
         """Mark the reservation completed with the metered ``actual``."""
-        async with self._lock:
+        async with _held(self._lock):
             record = await self.get(channel_id, request_id)
             if record is None:
                 raise StoreInvariantError(f"operation {request_id} was never reserved")
@@ -555,7 +583,7 @@ class StoreBackedBatchOperationStore:
 
     async def drop_channel(self, channel_id: str) -> None:
         """Forget every operation of ``channel_id``, index included."""
-        async with self._lock:
+        async with _held(self._lock):
             index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
             for request_id in index:
                 await self._store.delete(self._key(channel_id, request_id))
@@ -563,7 +591,7 @@ class StoreBackedBatchOperationStore:
 
     async def release(self, channel_id: str, request_id: str) -> None:
         """Tombstone a failed reservation, keeping the request id consumed."""
-        async with self._lock:
+        async with _held(self._lock):
             record = await self.get(channel_id, request_id)
             if record is not None and record.status == "reserved":
                 await self._store.put(self._key(channel_id, request_id), _released(record).to_dict())
