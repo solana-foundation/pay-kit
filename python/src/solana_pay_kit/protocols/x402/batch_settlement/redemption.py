@@ -157,6 +157,8 @@ class BatchRedemption:
         self._interval = 0.0
         # Sponsored channels with no known payTo: never charged here, only reclaimed.
         self._reclaim_only: set[str] = set()
+        # Channels whose account did not read back; alerted once, kept, re-read next pass.
+        self._absent: set[str] = set()
 
     # -- passes ---------------------------------------------------------------------------
 
@@ -702,21 +704,28 @@ class BatchRedemption:
         return channels
 
     async def _vanished(self, rpc: SolanaRpc, record: ChannelRecord) -> None:
-        """A stored channel whose account is gone: a failed open, or one already reclaimed.
+        """A stored channel whose account did not read back.
 
-        A record that was really opened holds the voucher this server redeems,
-        so it is dropped only after the account stays invisible through a
-        second, bounded read: a replica that lags behind the write can answer
-        one read as absent for a channel that is still there.
+        An absent read is not evidence that the channel is gone: a lagging
+        replica, an outage or a rate limit answers null for a channel that is
+        still open, and this record holds the voucher and the charge watermark
+        this server has yet to redeem. So a record is dropped only where
+        nothing can be lost: a failed open that never confirmed a setup, or a
+        channel ``reclaim`` itself freed, which it drops there. Anything else is
+        kept and alerted once, for the next pass to read again.
         """
         opened = record.deposit > 0 or record.onchain_synced_at is not None or record.processed_setup_signatures
-        if opened and record.live_reservations(self._clock()):
+        if not opened:
+            await self._record_after_broadcast("vanished", record.channel_id, None)
+            return
+        if record.live_reservations(self._clock()):
             return  # an open or a request is still in flight
-        if opened:
-            if await self._visible_again(rpc, record.channel_id):
-                return  # the next pass sees it
-            self._alert("channel_account_vanished", record.channel_id, ValueError(f"status {record.status}"))
-        await self._record_after_broadcast("vanished", record.channel_id, None)
+        if await self._visible_again(rpc, record.channel_id):
+            self._absent.discard(record.channel_id)
+            return
+        if record.channel_id not in self._absent:
+            self._absent.add(record.channel_id)
+            self._alert("channel_account_absent", record.channel_id, ValueError(f"status {record.status}"))
 
     async def _visible_again(self, rpc: SolanaRpc, channel_id: str) -> bool:
         """Re-read an account that looked absent; short, because the next pass reads it again anyway."""

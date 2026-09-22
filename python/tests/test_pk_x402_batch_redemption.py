@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from solders.keypair import Keypair
@@ -580,7 +580,10 @@ async def test_a_foreign_account_at_a_stored_address_does_not_stop_the_pass(worl
     assert "channel_account_unreadable" in h.alerts
 
 
-async def test_a_vanished_account_drops_a_failed_open_and_alerts_for_an_opened_channel(world: World) -> None:
+async def test_an_absent_account_drops_a_failed_open_but_keeps_an_opened_channel(world: World) -> None:
+    # An account that does not read back is not proof the channel is gone, and
+    # an opened record still holds the voucher this server has to redeem. A
+    # failed open, which confirmed no setup, has nothing to lose.
     h = _Harness(world, [NOW])
     opened = await h.seed(0)
     del world.chain.accounts[opened]
@@ -595,9 +598,28 @@ async def test_a_vanished_account_drops_a_failed_open_and_alerts_for_an_opened_c
             TOKEN_PROGRAM,
         ),
     )
-    await h.worker.finalize_close()
-    assert await h.store.get(provisional) is None and await h.store.get(opened) is None
-    assert h.alerts == ["channel_account_vanished"]
+    for _ in range(3):  # a pass after a pass: absence never becomes evidence
+        await h.worker.finalize_close()
+    assert await h.store.get(provisional) is None
+    record = await h.store.get(opened)
+    assert record is not None and record.signed_max_claimable == 2 * PRICE
+    assert h.alerts == ["channel_account_absent"]  # once, not once per pass
+    # Visible again: the next pass claims it as if nothing had happened.
+    world.put_channel(deposit=5 * PRICE)
+    h.lands(opened, deposit=5 * PRICE, settled=2 * PRICE)
+    assert (await h.worker.claim()).claimed == [opened]
+
+
+async def test_reclaim_forgets_a_distributed_channel_whose_account_is_already_gone(world: World) -> None:
+    # The only record the worker drops on an absent account: distributed, so
+    # nothing is left to redeem, and reclaim is what frees that account.
+    h = _Harness(world, [NOW])
+    channel_id = await h.seed(settled=2 * PRICE, payout=2 * PRICE)
+    await h.store.update(channel_id, lambda current: replace(cast("ChannelRecord", current), status="distributed"))
+    del world.chain.accounts[channel_id]
+    result = await h.worker.reclaim()
+    assert (result.reclaimed, result.errors) == ([], []) and world.chain.sent == []
+    assert await h.store.get(channel_id) is None and h.alerts == []
 
 
 async def test_a_reclaimed_channel_forgets_its_operations(world: World) -> None:
