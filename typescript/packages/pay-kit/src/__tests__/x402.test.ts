@@ -17,6 +17,7 @@ expectTypeOf<Immutable<ExactSvmSchemeOptions>>().toEqualTypeOf<X402Options>();
 // no-bare-offer failure path.
 const rpcState = vi.hoisted(() => ({ fail: false, slot: 314n }));
 const ctorCalls = vi.hoisted(() => [] as unknown[][]);
+const uptoCtorCalls = vi.hoisted(() => [] as unknown[][]);
 const uptoSettleCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
     const actual = await importOriginal<typeof import('@solana/kit')>();
@@ -62,6 +63,10 @@ vi.mock('@x402/svm/upto/facilitator', async importOriginal => {
     return {
         ...actual,
         UptoSvmScheme: class extends actual.UptoSvmScheme {
+            constructor(...args: ConstructorParameters<typeof actual.UptoSvmScheme>) {
+                uptoCtorCalls.push(args);
+                super(...args);
+            }
             settle(...args: Parameters<InstanceType<typeof actual.UptoSvmScheme>['settle']>) {
                 uptoSettleCalls.push(args);
                 return super.settle(...args);
@@ -203,6 +208,36 @@ describe('x402 smart-wallet options', () => {
         createX402ExactAdapter(config);
         expect(ctorCalls.length).toBeGreaterThan(0);
         expect(ctorCalls.at(-1)?.[2]).toEqual(config.x402);
+    });
+
+    it('shares a configured pending-settlement store with both facilitators', async () => {
+        const store = {
+            delete: async () => undefined,
+            get: async () => undefined,
+            set: async () => undefined,
+        };
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { pendingSettlementStore: store },
+        });
+        uptoCtorCalls.length = 0;
+        createX402ExactAdapter(config);
+        new X402Upto(config);
+        // The same instance reaches both, so a settle retry landing on another
+        // replica reconciles for `exact` and `upto` alike.
+        expect((ctorCalls.at(-1)?.[2] as { pendingSettlementStore?: unknown }).pendingSettlementStore).toBe(store);
+        expect((uptoCtorCalls.at(-1)?.[1] as { pendingSettlementStore?: unknown }).pendingSettlementStore).toBe(store);
+
+        // Without one, neither facilitator is handed an explicit store and
+        // each falls back to its own in-memory default.
+        const bare = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+        });
+        uptoCtorCalls.length = 0;
+        new X402Upto(bare);
+        expect(uptoCtorCalls.at(-1)?.[1]).toEqual({});
     });
 
     it('copies the allowlist so callers cannot mutate verification policy', async () => {

@@ -106,8 +106,16 @@ export class X402Upto {
             this.#network,
             // The facilitator reads and broadcasts through the signer's RPC
             // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
+            // A configured pending-settlement store is shared with the exact
+            // adapter so a settle retry on another replica reconciles for
+            // both schemes.
             new UptoSvmFacilitator(
                 toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+                {
+                    ...(config.x402.pendingSettlementStore && {
+                        pendingSettlementStore: config.x402.pendingSettlementStore,
+                    }),
+                },
             ),
         );
     }
