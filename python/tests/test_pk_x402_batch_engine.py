@@ -63,9 +63,13 @@ async def _verify(engine: X402BatchSettlement, gate: Any, request: Any) -> Verif
 
 
 async def _code(coro: Any) -> str:
+    return (await _refusal(coro)).code
+
+
+async def _refusal(coro: Any) -> BatchSettlementError:
     with pytest.raises(BatchSettlementError) as exc:
         await coro
-    return exc.value.code
+    return exc.value
 
 
 async def _open(engine: X402BatchSettlement, world: World, deposit: int = 3 * PRICE) -> Any:
@@ -127,10 +131,11 @@ def test_payment_headers_must_name_this_scheme(world: World) -> None:
 
 
 def test_settlement_headers_round_trip_the_payment_response(world: World) -> None:
-    response: Any = {"success": True, "transaction": "", "network": "n", "amount": ""}
+    signature = "5" * 88  # what a confirmed settle leaves in the response
+    response: Any = {"success": True, "transaction": signature, "network": "n", "amount": str(PRICE)}
     headers = _engine(world).settlement_headers(response)
     assert json.loads(base64.b64decode(headers["payment-response"])) == response
-    assert headers["x-payment-settlement-signature"] == ""
+    assert headers["x-payment-settlement-signature"] == signature
 
 
 # -- deposit -----------------------------------------------------------------------------
@@ -173,10 +178,12 @@ async def test_fixed_pricing_binds_the_next_voucher_and_the_deposit_ceiling(worl
     # Skipping ahead is a mismatch, and the next price no longer fits the escrow.
     with pytest.raises(CorrectiveRequired):
         await _verify(engine, world.gate, world.header(requirement, world.voucher_payload(4 * PRICE)))
-    code = await _code(
+    refused = await _refusal(
         engine.verify_and_reserve(world.gate, world.header(requirement, world.voucher_payload(3 * PRICE)))
     )
-    assert code == errors.INVALID_CUMULATIVE_EXCEEDS_DEPOSIT
+    # A plain refusal: there is no corrective state that would make this voucher payable.
+    assert refused.code == errors.INVALID_CUMULATIVE_EXCEEDS_DEPOSIT
+    assert not isinstance(refused, CorrectiveRequired)
 
 
 async def test_an_exact_replay_is_refused_as_duplicate_settlement(world: World) -> None:
@@ -259,7 +266,9 @@ async def test_a_channel_admits_one_client_request_at_a_time(world: World) -> No
     await _open(engine, world)
     request = world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
     await _verify(engine, world.gate, request)
-    assert await _code(engine.verify_and_reserve(world.gate, request)) == errors.DUPLICATE_SETTLEMENT
+    busy = await _refusal(engine.verify_and_reserve(world.gate, request))
+    # Busy, not a corrective: the channel state has not moved, the caller retries.
+    assert busy.code == errors.DUPLICATE_SETTLEMENT and not isinstance(busy, CorrectiveRequired)
 
 
 async def test_a_payload_built_for_other_requirements_is_refused(world: World) -> None:
@@ -432,8 +441,9 @@ async def test_a_store_failure_after_a_confirmed_deposit_still_answers_and_alert
 
 
 async def test_a_store_failure_on_a_plain_voucher_is_not_served(world: World) -> None:
+    alerts: list[str] = []
     store = _FailingCommitStore()
-    engine = _engine(world, channel_store=store)
+    engine = _engine(world, channel_store=store, on_alert=lambda event, _details: alerts.append(event))
     await _open(engine, world)
     request = world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
     verified = await _verify(engine, world.gate, request)
@@ -442,8 +452,11 @@ async def test_a_store_failure_on_a_plain_voucher_is_not_served(world: World) ->
         raise RuntimeError("disk full")
 
     store.update = broken  # type: ignore[method-assign]
+    sent = len(world.chain.sent)
     with pytest.raises(RuntimeError):
         await engine.commit(verified)
+    # Nothing irreversible happened, so the failure is raised, not alerted.
+    assert len(world.chain.sent) == sent and alerts == []
 
 
 async def test_a_client_signed_commit_charges_exactly_its_price(world: World) -> None:

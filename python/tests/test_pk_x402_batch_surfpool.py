@@ -276,6 +276,25 @@ async def test_a_payer_forced_close_is_sealed_in_grace_with_the_latest_voucher(s
     assert await _usdc(stack.pay_to) == 3 * PRICE
 
 
+async def test_a_trusted_operator_meters_and_redeems_its_own_vouchers(monkeypatch: pytest.MonkeyPatch) -> None:
+    operator = LocalSigner.from_keypair(Keypair())
+    trust = ServerSignedChannelsPolicy(allowed_operators=(operator.pubkey(),))
+    stack = await _stack(monkeypatch, operator=operator, server_signed_channels_policy=trust)
+    try:
+        receipts = await stack.pay(2)
+        assert [r["extra"]["voucher"]["maxClaimableAmount"] for r in receipts] == ["4000", "8000"]
+        channel = await stack.channel()
+        assert str(channel.authorizedSigner) == operator.pubkey()
+        worker = stack.engine.redemption()
+        assert (await worker.claim()).errors == [] and (await worker.settle()).errors == []
+        assert int((await stack.channel()).settlement.settled) == 8_000
+        assert await _usdc(stack.pay_to) == 8_000
+    finally:
+        await stack.http.aclose()
+
+
+# Last on purpose: this one time-travels the surfnet past a grace period, and
+# the slots it jumps are shared by everything that runs after it.
 async def test_after_the_grace_period_the_close_is_finalized_and_the_rent_reclaimed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -310,22 +329,5 @@ async def test_after_the_grace_period_the_close_is_finalized_and_the_rent_reclai
         assert (reclaimed.reclaimed, reclaimed.errors) == ([stack.channel_id()] if distributed else [], [])
         assert (await _rpc("getAccountInfo", [stack.channel_id(), {"encoding": "base64"}]))["value"] is None
         assert (await _rpc("getBalance", [rent_payer]))["value"] > lamports_before  # the rent came back
-    finally:
-        await stack.http.aclose()
-
-
-async def test_a_trusted_operator_meters_and_redeems_its_own_vouchers(monkeypatch: pytest.MonkeyPatch) -> None:
-    operator = LocalSigner.from_keypair(Keypair())
-    trust = ServerSignedChannelsPolicy(allowed_operators=(operator.pubkey(),))
-    stack = await _stack(monkeypatch, operator=operator, server_signed_channels_policy=trust)
-    try:
-        receipts = await stack.pay(2)
-        assert [r["extra"]["voucher"]["maxClaimableAmount"] for r in receipts] == ["4000", "8000"]
-        channel = await stack.channel()
-        assert str(channel.authorizedSigner) == operator.pubkey()
-        worker = stack.engine.redemption()
-        assert (await worker.claim()).errors == [] and (await worker.settle()).errors == []
-        assert int((await stack.channel()).settlement.settled) == 8_000
-        assert await _usdc(stack.pay_to) == 8_000
     finally:
         await stack.http.aclose()

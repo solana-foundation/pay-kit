@@ -25,7 +25,6 @@ from solders.transaction import VersionedTransaction
 from solana_pay_kit._paycore.paymentchannels import (
     LIGHTHOUSE_PROGRAM,
     OPEN_SLOT_WINDOW,
-    PROGRAM_ID,
     Distribution,
     OpenChannelParams,
     TopUpParams,
@@ -414,7 +413,12 @@ def test_rejects_a_memo_that_is_neither_declared_nor_a_nonce() -> None:
 
 
 def test_rejects_a_transaction_whose_fee_payer_slot_is_not_the_sponsor() -> None:
-    assert _close_code(_v0([_close(), _memo()], fee_payer=PAYER.pubkey())) == errors.INVALID_REFUND_TRANSACTION
+    # Everything else is in order: two required signatures, the channel payer
+    # in the second slot and its signature valid. Only slot 0 is wrong, and
+    # that alone costs the sponsor the fee for a transaction it did not choose.
+    stranger = Keypair.from_seed(bytes([9] * 32)).pubkey()
+    close = _v0([_close(), _memo(accounts=[AccountMeta(PAYER.pubkey(), True, False)])], fee_payer=stranger)
+    assert _close_code(close) == errors.INVALID_REFUND_TRANSACTION
 
 
 def test_rejects_a_missing_or_forged_payer_signature() -> None:
@@ -446,5 +450,9 @@ def test_request_close_binds_the_derived_channel_and_payer_privileges() -> None:
     assert _close_code(_v0([with_args, _memo()])) == errors.INVALID_REFUND_TRANSACTION
 
 
-def test_program_id_is_the_canonical_deployment_by_default() -> None:
-    assert _expected().program_id == PROGRAM_ID
+def test_a_setup_for_another_program_id_is_refused() -> None:
+    # The program id is an expectation, not something the transaction declares:
+    # an open against a different deployment must not validate here.
+    tx = _v0([_open(), _memo()])
+    other = _expected(program_id=Keypair.from_seed(bytes([11] * 32)).pubkey())
+    assert _setup_code(tx, expected=other) == errors.INVALID_SETUP_TRANSACTION

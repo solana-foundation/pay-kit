@@ -41,6 +41,8 @@ pytestmark = pytest.mark.usefixtures("reset_batch_globals")
 
 NOW = 1_700_000_000.0
 GRACE = 900
+#: 10ms polls while the worker loop does a pass; generous, because a loaded CI runner is slow.
+_POLL_ATTEMPTS = 500
 
 
 @pytest.fixture
@@ -430,7 +432,7 @@ async def test_the_worker_loop_runs_passes_until_stopped(world: World) -> None:
     channel_id = await h.seed(settled=2 * PRICE)
     h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE, payout=2 * PRICE)
     h.worker.start(0.01)
-    for _ in range(50):
+    for _ in range(_POLL_ATTEMPTS):
         if world.chain.sent:
             break
         await asyncio.sleep(0.01)
@@ -448,7 +450,7 @@ async def test_a_failing_recovery_scan_does_not_skip_the_loops_pass(world: World
 
     world.chain.get_program_accounts = scan_down  # type: ignore[method-assign]
     h.worker.start(60)  # the first pass runs at once, the next only a minute later
-    for _ in range(50):
+    for _ in range(_POLL_ATTEMPTS):
         if world.chain.sent:
             break
         await asyncio.sleep(0.01)

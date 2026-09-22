@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from dataclasses import asdict
 from typing import Any, cast
 
 import pytest
@@ -37,6 +38,7 @@ from solana_pay_kit.protocols.x402.client.batch_settlement import (
     BatchSettlementClient,
     ClientChannelRecord,
     MemoryClientChannelStore,
+    PendingAllocation,
     ServerSignedChannelsPolicy,
 )
 from solana_pay_kit.signer import LocalSigner
@@ -842,6 +844,63 @@ async def test_a_lost_answer_at_deposit_exhaustion_tops_up_instead_of_stalling(w
     assert await client.handle_payment_response(nxt, response=await _serve(engine, world, nxt, actual=PRICE)) is False
     paid: Any = await client.create_payment_payload(accept)
     assert paid["payload"]["type"] == "authorization"  # resynced at 4 x PRICE, with room again
+
+
+class _JsonClientStore:
+    """A client channel store that serializes, the way a durable one has to."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, str] = {}
+
+    async def get(self, key: str) -> ClientChannelRecord | None:
+        raw = self.rows.get(key)
+        if raw is None:
+            return None
+        fields = json.loads(raw)
+        fields["pending"] = [PendingAllocation(**item) for item in fields["pending"]]
+        return ClientChannelRecord(**fields)
+
+    async def set(self, key: str, record: ClientChannelRecord) -> None:
+        self.rows[key] = json.dumps(asdict(record))
+
+    async def delete(self, key: str) -> None:
+        self.rows.pop(key, None)
+
+
+async def test_a_serializing_store_round_trips_what_a_restart_needs(world: World) -> None:
+    # signed_deposit, unobserved and open_blockhash are what the client cannot
+    # rebuild from the chain, so they have to survive the store.
+    store = _JsonClientStore()
+    trust = ServerSignedChannelsPolicy(allowed_operators=(OPERATOR.pubkey(),), max_deposit="$0.003")
+    req = requirements(world, extra={"operator": OPERATOR.pubkey(), "voucherSigner": "server"})
+
+    def paying() -> BatchSettlementClient:
+        return _client(world, channel_store=store, server_signed_channels_policy=trust, deposit_amount=2000)  # type: ignore[arg-type]
+
+    opened: Any = await paying().create_payment_payload(req)
+    await paying().handle_payment_response(opened, response=None)  # broadcast, then nothing
+    (row,) = [json.loads(value) for value in store.rows.values()]
+    assert (row["signed_deposit"], row["unobserved"], row["open_blockhash"]) == (2000, 1000, BLOCKHASH)
+    # A restart reads all three back: the open may still land, so no second one.
+    with pytest.raises(ValueError, match="may still land"):
+        await paying().create_payment_payload(req)
+
+
+async def test_a_stored_record_without_the_newer_fields_still_counts_its_escrow(world: World) -> None:
+    # A record written before signed_deposit existed (or by a store that drops
+    # unknown fields) reads back as 0. The escrow on chain is the floor.
+    store = MemoryClientChannelStore()
+    trust = ServerSignedChannelsPolicy(allowed_operators=(OPERATOR.pubkey(),), max_deposit="$0.003")
+    req = requirements(world, extra={"operator": OPERATOR.pubkey(), "voucherSigner": "server"})
+    client = _client(world, channel_store=store, server_signed_channels_policy=trust)
+    config = world.channel_config(payerAuthorizer=OPERATOR.pubkey(), voucherSigner="server")
+    key = _key(client, world, req)
+    store.records[key] = ClientChannelRecord(world.channel_id(config), config, 2000, 2000)  # signed_deposit 0
+    top_up: Any = await client.create_payment_payload(req)
+    assert top_up["payload"]["deposit"]["amount"] == "1000"  # 2000 escrowed of the 3000 granted
+    await client.handle_payment_response(top_up, response=None)  # broadcast, then a 5xx
+    with pytest.raises(ValueError, match="3000 total, 3000 already escrowed"):
+        await client.create_payment_payload(req)
 
 
 async def test_concurrent_first_payments_fund_one_channel(world: World) -> None:
