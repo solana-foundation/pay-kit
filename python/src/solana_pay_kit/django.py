@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, is_paid
 from solana_pay_kit._middleware import payment as _core_payment
+from solana_pay_kit._paycore.rpc import aclose_loop_clients
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
@@ -419,10 +420,19 @@ def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     Uses :func:`asyncio.run` when no loop is running; spins a dedicated loop in
     a fresh thread when called from within a running loop (ASGI handlers).
     """
+
+    async def drive() -> _T:
+        # One loop per request means one HTTP client per request: close what this
+        # loop opened before it goes away, or the fds pile up per request.
+        try:
+            return await coro
+        finally:
+            await aclose_loop_clients()
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(drive())
 
     import threading
 
@@ -431,7 +441,7 @@ def _run(coro: Coroutine[Any, Any, _T]) -> _T:
 
     def _runner() -> None:
         try:
-            result["value"] = asyncio.run(coro)
+            result["value"] = asyncio.run(drive())
         except BaseException as exc:  # re-raised on the calling thread below
             error["error"] = exc
 

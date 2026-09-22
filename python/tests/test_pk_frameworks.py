@@ -645,17 +645,10 @@ class _ChainServer:
         self._server.server_close()
 
 
-@pytest.mark.parametrize("framework", ["flask", "django"])
-def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework):
-    """Each shim runs its own asyncio.run per request, so request two must still work.
-
-    A shared SolanaRpc used to keep one httpx client (and its pooled socket)
-    from the first loop, and the second request died on "Event loop is closed".
-    """
+def _subscription_chain() -> tuple[dict[str, tuple[bytes, str]], str]:
+    """The accounts a subscription challenge reads, and the blockhash to serve."""
     from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
-    from solana_pay_kit._paycore.rpc import SolanaRpc
     from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
-    from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate
     from tests._subscription_fixtures import (
         BLOCKHASH,
         MINT,
@@ -667,19 +660,30 @@ def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework)
         mint_bytes,
         plan_bytes,
     )
+
+    return {
+        str(PLAN): (
+            plan_bytes(owner=SERVER.pubkey(), mint=MINT, destinations=[RECIPIENT], pullers=[SERVER.pubkey()]),
+            PROGRAM_ID,
+        ),
+        str(MINT): (mint_bytes(), TOKEN_PROGRAM),
+        str(find_associated_token_address(RECIPIENT, MINT, TOKEN)[0]): (bytes(165), TOKEN_PROGRAM),
+    }, BLOCKHASH
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework):
+    """Each shim runs its own asyncio.run per request, so request two must still work.
+
+    A shared SolanaRpc used to keep one httpx client (and its pooled socket)
+    from the first loop, and the second request died on "Event loop is closed".
+    """
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+    from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate
+    from tests._subscription_fixtures import BLOCKHASH
     from tests.test_subscription_server import Harness
 
-    chain = _ChainServer(
-        {
-            str(PLAN): (
-                plan_bytes(owner=SERVER.pubkey(), mint=MINT, destinations=[RECIPIENT], pullers=[SERVER.pubkey()]),
-                PROGRAM_ID,
-            ),
-            str(MINT): (mint_bytes(), TOKEN_PROGRAM),
-            str(find_associated_token_address(RECIPIENT, MINT, TOKEN)[0]): (bytes(165), TOKEN_PROGRAM),
-        },
-        BLOCKHASH,
-    )
+    chain = _ChainServer(*_subscription_chain())
     try:
         h = Harness(monkeypatch, rpc=SolanaRpc(chain.url))
 
@@ -803,3 +807,66 @@ def test_django_subscription_view_error_is_not_echoed(monkeypatch, caplog):
     assert answer.status_code == 404
     assert "secret detail" not in answer.content.decode()
     assert "payment-receipt" in {key.lower() for key in answer.headers}
+
+
+@pytest.mark.parametrize("framework", ["flask", "fastapi"])
+def test_per_request_loops_do_not_leak_http_clients(monkeypatch, framework):
+    """A loop per request must not leave a client behind; a long-lived loop keeps one.
+
+    Each closed loop used to strand an httpx.AsyncClient (and its sockets) that
+    could never be closed again, growing with the request count.
+    """
+    import httpx
+
+    from solana_pay_kit._paycore import rpc as rpc_module
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+    from tests.test_subscription_server import Harness
+
+    opened: list[Any] = []
+
+    class _Counting(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            opened.append(self)
+
+    monkeypatch.setattr(rpc_module.httpx, "AsyncClient", _Counting)
+    chain = _ChainServer(*_subscription_chain())
+    try:
+        h = Harness(monkeypatch, rpc=SolanaRpc(chain.url))
+
+        if framework == "flask":
+            import flask
+
+            import solana_pay_kit.flask as pk_flask
+
+            app = flask.Flask(__name__)
+
+            @app.get("/feed")
+            @pk_flask.require_subscription(h.server)
+            def feed():
+                return {"ok": True}
+
+            client = app.test_client()
+            statuses = [client.get("/feed").status_code for _ in range(3)]
+            assert statuses == [402, 402, 402]
+            assert len(opened) == 3  # one loop, one client, per request
+            assert [c for c in opened if not c.is_closed] == []  # and all closed again
+        else:
+            from fastapi import Depends, FastAPI
+            from starlette.testclient import TestClient
+
+            from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+
+            app = FastAPI()
+            install_exception_handler(app)
+
+            @app.get("/feed")
+            async def served(_receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+                return {"ok": True}
+
+            with TestClient(app) as client:
+                statuses = [client.get("/feed").status_code for _ in range(3)]
+            assert statuses == [402, 402, 402]
+            assert len(opened) == 1  # one long-lived loop, one client, reused
+    finally:
+        chain.close()

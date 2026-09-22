@@ -33,6 +33,7 @@ from flask import abort, g, make_response
 from werkzeug.exceptions import HTTPException
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
+from solana_pay_kit._paycore.rpc import aclose_loop_clients
 from solana_pay_kit.config import config as _global_config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
@@ -351,11 +352,20 @@ def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     Uses :func:`asyncio.run` when no loop is running; falls back to a dedicated
     short-lived loop if one is somehow already active on this thread.
     """
+
+    async def drive() -> _T:
+        # One loop per request means one HTTP client per request: close what this
+        # loop opened before it goes away, or the fds pile up per request.
+        try:
+            return await coro
+        finally:
+            await aclose_loop_clients()
+
     try:
-        return asyncio.run(coro)
+        return asyncio.run(drive())
     except RuntimeError:
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(coro)
+            return loop.run_until_complete(drive())
         finally:
             loop.close()

@@ -84,6 +84,30 @@ class _BlockhashValue:
         self.blockhash = blockhash
 
 
+#: Every HTTP client opened on a given event loop, so a caller that owns the
+#: loop can close them before it goes away. Keyed weakly: a loop that is simply
+#: dropped takes its entry with it.
+_LOOP_CLIENTS: weakref.WeakKeyDictionary[Any, list[httpx.AsyncClient]] = weakref.WeakKeyDictionary()
+_LOOP_CLIENTS_LOCK = threading.Lock()
+
+
+async def aclose_loop_clients() -> None:
+    """Close every RPC HTTP client opened on the running loop.
+
+    The Flask and Django bridges run one ``asyncio.run`` per request, so each
+    request would otherwise leave a client (and its sockets) bound to a loop
+    that is about to close and can never be closed again. They call this on the
+    way out, inside that loop, which is the only place the close can happen. A
+    long-lived loop (FastAPI, a worker) never calls it and keeps its one client.
+    """
+    loop = asyncio.get_running_loop()
+    with _LOOP_CLIENTS_LOCK:
+        clients = _LOOP_CLIENTS.pop(loop, [])
+    for client in clients:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 class SolanaRpc:
     """Minimal async JSON-RPC client for the Solana RPC API."""
 
@@ -124,6 +148,8 @@ class SolanaRpc:
             if client is None or client.is_closed or loop.is_closed():
                 client = httpx.AsyncClient(timeout=self._timeout)
                 self._clients[loop] = client
+                with _LOOP_CLIENTS_LOCK:
+                    _LOOP_CLIENTS.setdefault(loop, []).append(client)
             return client
 
     @_client.setter
