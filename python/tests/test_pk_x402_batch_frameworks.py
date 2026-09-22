@@ -20,6 +20,7 @@ pytest.importorskip("flask")
 pytest.importorskip("django")
 
 from solana_pay_kit import X402Config, configure, x402_batch  # noqa: E402
+from solana_pay_kit._paycore.loops import run_blocking  # noqa: E402
 from solana_pay_kit.config import BatchSettlementConfig  # noqa: E402
 from solana_pay_kit.errors import ConfigurationError  # noqa: E402
 from solana_pay_kit.protocols.x402.batch_settlement import (  # noqa: E402  # pyright: ignore[reportPrivateUsage]
@@ -348,6 +349,60 @@ def test_a_misconfigured_route_answers_500_not_a_challenge(app: tuple[Get, list[
     get, served = app
     status, _, _ = get("/x", {})
     assert status == 500 and served == []
+
+
+def test_django_gates_a_batch_route_through_url_resolution(world: World) -> None:
+    # The other Django cases call the decorated view directly; this one goes
+    # through the URLconf and the test client, so the request the shim reads is
+    # the one Django builds.
+    import types
+
+    from django.http import HttpRequest, JsonResponse
+    from django.test import Client, override_settings
+    from django.urls import path
+
+    import solana_pay_kit.django as pk
+
+    @pk.require_batch(world.gate, config=world.config)
+    def view(request: HttpRequest) -> Any:
+        return JsonResponse({"ok": True})
+
+    urlconf = types.ModuleType("batch_urls")
+    urlconf.urlpatterns = [path("r", view)]  # type: ignore[attr-defined]
+    with override_settings(ROOT_URLCONF=urlconf):
+        client: Any = Client()  # the Django stubs type get() as its request
+        unpaid: Any = client.get("/r")
+        assert unpaid.status_code == 402
+        assert _decode(dict(unpaid.headers), "payment-required")["accepts"][0]["scheme"] == "batch-settlement"
+        world.lands_as_channel(deposit=10 * PRICE)
+        accept = _engine(world).accepts_entries(world.gate, {})[0]
+        payment: Any = run(_client(world).create_payment_payload(accept))
+        paid: Any = client.get("/r", **{"HTTP_PAYMENT_SIGNATURE": _header(payment)["payment-signature"]})
+    assert (paid.status_code, json.loads(paid.content)) == (200, {"ok": True})
+    assert _decode(dict(paid.headers), "payment-response")["success"]
+
+
+def test_the_shim_bridge_runs_a_coroutine_from_inside_a_running_loop() -> None:
+    # The ASGI case: a synchronous view is called while a loop is running, so
+    # the coroutine gets a fresh loop on a fresh thread, and an error from it
+    # still reaches the caller as itself.
+    async def value() -> str:
+        return "ok"
+
+    async def fails() -> str:
+        raise StoreInvariantError("refused")
+
+    async def inside() -> str:
+        return run_blocking(value())
+
+    assert run(inside()) == "ok"
+    assert run_blocking(value()) == "ok"  # and with no loop running
+
+    async def inside_failing() -> str:
+        return run_blocking(fails())
+
+    with pytest.raises(StoreInvariantError, match="refused"):
+        run(inside_failing())
 
 
 def test_flask_surfaces_a_store_invariant_instead_of_a_reused_coroutine(world: World) -> None:
