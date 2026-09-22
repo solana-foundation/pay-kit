@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -73,6 +74,22 @@ async def test_concurrent_coroutines_in_one_process_still_serialize(tmp_path: Pa
     store = FileReplayStore(tmp_path / "replay.json")
     results = await asyncio.gather(*(store.put_if_absent("claim", {"winner": n}) for n in range(8)))
     assert results.count(True) == 1
+
+
+async def test_a_write_fsyncs_the_directory_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The rename has to reach disk too, or a crash can restore the file without
+    # the key the caller was told was stored.
+    store = FileReplayStore(tmp_path / "replay.json")
+    synced: list[bool] = []
+    real_fsync = os.fsync
+
+    def record(fd: int) -> None:
+        synced.append(os.fstat(fd).st_mode & 0o170000 == 0o040000)  # S_IFDIR
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record)
+    await store.put("signature", {"challengeId": "ch-1"})
+    assert synced == [False, True]  # the temp file, then its directory
 
 
 @pytest.mark.parametrize("kind", ["memory", "file"])

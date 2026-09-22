@@ -82,6 +82,27 @@ class MemoryStore:
             return True
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Flush the rename itself to disk, not just the file's bytes.
+
+    ``os.replace`` is atomic, but the directory entry it rewrites can still sit
+    in the page cache: a crash right after an acknowledged write could bring the
+    file back without its newest key. Opening a directory for fsync is POSIX; on
+    a platform that refuses it, the rename is as durable as that platform makes
+    it.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:  # pragma: no cover - not exercised on the POSIX CI matrix
+        return
+    try:
+        os.fsync(fd)
+    except OSError:  # pragma: no cover - directory fsync unsupported on this filesystem
+        pass
+    finally:
+        os.close(fd)
+
+
 class FileReplayStore:
     """File-backed replay store.
 
@@ -166,6 +187,7 @@ class FileReplayStore:
             finally:
                 tmp.close()
             os.replace(tmp.name, self._path)
+            _fsync_directory(self._path.parent)
         except Exception:
             # Best-effort cleanup of the temp file on any IO failure so a
             # failed flush does not litter the parent directory.
