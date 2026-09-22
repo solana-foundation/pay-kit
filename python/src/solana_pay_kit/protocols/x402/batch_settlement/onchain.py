@@ -19,7 +19,7 @@ Two rules hold for every broadcast here:
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -45,10 +45,18 @@ from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transa
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.batch_settlement import errors
 from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError
-from solana_pay_kit.protocols.x402.batch_settlement.verify import decode_channel
+from solana_pay_kit.protocols.x402.batch_settlement.store import ChannelRecord, ChannelStatus
+from solana_pay_kit.protocols.x402.batch_settlement.verify import (
+    CHANNEL_STATUS_CLOSING,
+    CHANNEL_STATUS_DISTRIBUTED,
+    CHANNEL_STATUS_OPEN,
+    CHANNEL_STATUS_SEALED,
+    decode_channel,
+)
 from solana_pay_kit.signer import LocalSigner
 
 __all__ = [
+    "CHANNEL_STATUSES",
     "SignatureStatus",
     "TokenAccount",
     "UnconfirmedBroadcast",
@@ -60,6 +68,7 @@ __all__ = [
     "decode_token_account",
     "discover",
     "distribute_instruction",
+    "fold",
     "read_channel",
     "read_channels",
     "signature_status",
@@ -68,6 +77,15 @@ __all__ = [
 ]
 
 SignatureStatus = Literal["confirmed", "failed", "pending"]
+
+#: ``Channel.status`` to the record status it maps to.
+CHANNEL_STATUSES: dict[int, ChannelStatus] = {
+    CHANNEL_STATUS_OPEN: "open",
+    CHANNEL_STATUS_CLOSING: "closing",
+    CHANNEL_STATUS_SEALED: "sealed",
+    CHANNEL_STATUS_DISTRIBUTED: "distributed",
+}
+_STATUS_ORDER: dict[ChannelStatus, int] = {"open": 0, "closing": 1, "sealed": 2, "distributed": 3}
 
 # SPL token account layout: 165 base bytes; Token-2022 appends an account-type
 # byte (2) and a TLV extension list.
@@ -132,6 +150,26 @@ def _unsupported_extension(data: bytes) -> int | None:
         if cursor > len(data):
             return 0xFFFF
     return None
+
+
+def fold(record: ChannelRecord, channel: Channel, now: float) -> ChannelRecord:
+    """Fold a confirmed channel read into ``record``: watermarks max-merged, status only forward."""
+    status = CHANNEL_STATUSES.get(int(channel.status), record.status)
+    if _STATUS_ORDER[status] < _STATUS_ORDER[record.status]:
+        status = record.status
+    settled = int(channel.settlement.settled)
+    return replace(
+        record,
+        status=status,
+        deposit=max(record.deposit, int(channel.deposit)),
+        settled=max(record.settled, settled),
+        payout_watermark=max(record.payout_watermark, int(channel.settlement.payoutWatermark)),
+        closure_started_at=max(record.closure_started_at, int(channel.closureStartedAt)),
+        # Nothing was charged below what the chain already settled.
+        charged_cumulative=max(record.charged_cumulative, settled),
+        signed_max_claimable=max(record.signed_max_claimable, settled),
+        onchain_synced_at=now,
+    )
 
 
 async def read_channel(rpc: SolanaRpc, channel_id: str, program_id: Pubkey) -> Channel | None:

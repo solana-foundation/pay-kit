@@ -48,12 +48,12 @@ from solana_pay_kit.errors import ConfigurationError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.batch_settlement import errors, onchain, tx_policy
 from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError
+from solana_pay_kit.protocols.x402.batch_settlement.redemption import BatchRedemption, RedemptionSettings
 from solana_pay_kit.protocols.x402.batch_settlement.signatures import sign_voucher
 from solana_pay_kit.protocols.x402.batch_settlement.store import (
     BatchChannelStore,
     BatchOperationStore,
     ChannelRecord,
-    ChannelStatus,
     MemoryBatchChannelStore,
     MemoryBatchOperationStore,
     Reservation,
@@ -77,9 +77,7 @@ from solana_pay_kit.protocols.x402.batch_settlement.types import (
 )
 from solana_pay_kit.protocols.x402.batch_settlement.verify import (
     CHANNEL_STATUS_CLOSING,
-    CHANNEL_STATUS_DISTRIBUTED,
     CHANNEL_STATUS_OPEN,
-    CHANNEL_STATUS_SEALED,
     check_authorization,
     check_capacity,
     check_channel_binding,
@@ -112,13 +110,6 @@ _SETTLEMENT_HEADER = "x-payment-settlement-signature"
 _PAYMENT_HEADERS = ("payment-signature", "x-payment")
 _DECIMALS = 6
 _MIN_RESERVATION_SECONDS = 5
-_STATUS_ORDER: dict[ChannelStatus, int] = {"open": 0, "closing": 1, "sealed": 2, "distributed": 3}
-_ONCHAIN_STATUS: dict[int, ChannelStatus] = {
-    CHANNEL_STATUS_OPEN: "open",
-    CHANNEL_STATUS_CLOSING: "closing",
-    CHANNEL_STATUS_SEALED: "sealed",
-    CHANNEL_STATUS_DISTRIBUTED: "distributed",
-}
 # Accept fields a client must echo unchanged. Hints (blockhash, slot), the
 # advisory minDeposit/maxIdleSecs and corrective snapshots are left out: a Rust
 # client drops the fields it does not know when it echoes ``accepted``.
@@ -142,6 +133,9 @@ _USD = re.compile(r"\$[0-9]+(\.[0-9]+)?")
 # client's own minimum: that escrow is what the operator could take.
 _CLIENT_MIN_DEPOSIT_MULTIPLE = 10
 _SERVER_MIN_DEPOSIT_MULTIPLE = 3
+# ponytail: recover() matches only the first 1024 distinct payTo values this
+# process advertised; persist them if a server settles to more.
+_MAX_REMEMBERED_PAY_TO = 1024
 
 
 def _atomic_min_deposit(value: str) -> int:
@@ -175,6 +169,12 @@ class BatchSettlementConfig(pydantic.BaseModel):
     min_deposit: str | None = None
     #: Refuse a ``deposit`` below the advertised ``minDeposit`` (``deposit_below_min_deposit``).
     enforce_min_deposit: bool = False
+    #: Receiver-authorizer key that signs ``CloseAuthorization``s for a seal; ``None`` = the fee payer.
+    close_authorizer: LocalSigner | None = None
+    #: Seal an open channel idle this long (with its latest voucher), advertised as ``maxIdleSecs``; ``None`` = never.
+    max_idle_secs: int | None = None
+    #: Channels per claim or distribute transaction; clamped to ``1..=4``.
+    max_channels_per_batch: int = 4
 
     @pydantic.model_validator(mode="after")
     def _check_delay(self) -> BatchSettlementConfig:
@@ -253,26 +253,6 @@ def _snapshot(record: ChannelRecord) -> BatchChannelState:
     }
 
 
-def _advance(record: ChannelRecord, channel: Channel, now: float) -> ChannelRecord:
-    """Fold a confirmed channel read into ``record``: watermarks max-merged, status only forward."""
-    status = _ONCHAIN_STATUS.get(int(channel.status), record.status)
-    if _STATUS_ORDER[status] < _STATUS_ORDER[record.status]:
-        status = record.status
-    settled = int(channel.settlement.settled)
-    return replace(
-        record,
-        status=status,
-        deposit=max(record.deposit, int(channel.deposit)),
-        settled=max(record.settled, settled),
-        payout_watermark=max(record.payout_watermark, int(channel.settlement.payoutWatermark)),
-        closure_started_at=max(record.closure_started_at, int(channel.closureStartedAt)),
-        # Nothing was charged below what the chain already settled.
-        charged_cumulative=max(record.charged_cumulative, settled),
-        signed_max_claimable=max(record.signed_max_claimable, settled),
-        onchain_synced_at=now,
-    )
-
-
 class X402BatchSettlement:
     """Server-side x402 ``batch-settlement`` engine (self-facilitated)."""
 
@@ -300,6 +280,8 @@ class X402BatchSettlement:
         self._recent_state_provider = recent_state_provider
         self._clock = clock
         self._on_alert = on_alert
+        # Every payTo a route advertised: recover() matches rebuilt channels against them.
+        self._pay_to: set[str] = set()
         # The harness points every SDK at a locally deployed program through
         # this env var; it is never a wire field.
         self._program_id = Pubkey.from_string(
@@ -308,6 +290,9 @@ class X402BatchSettlement:
         operator = self._settings.operator
         if operator is not None and operator.pubkey() == self._fee_payer().pubkey():
             raise ConfigurationError("solana_pay_kit: the batch operator must not be the fee payer")
+        advertised = self._settings.receiver_authorizer
+        if advertised is not None and advertised != self._close_authorizer().pubkey():
+            raise ConfigurationError("solana_pay_kit: receiver_authorizer must be the close authorizer's key")
 
     # -- challenge -------------------------------------------------------------
 
@@ -486,11 +471,14 @@ class X402BatchSettlement:
                     errors.INVALID_CHANNEL_STATE, f"no channel {channel_id}; open one with a deposit"
                 )
             return False
-        check_channel_binding(channel, config, requirements, statuses=tuple(_ONCHAIN_STATUS))
-        await self._store.update(
-            channel_id,
-            lambda current: _advance(current or self._new_record(channel_id, config, requirements), channel, now),
-        )
+        check_channel_binding(channel, config, requirements, statuses=tuple(onchain.CHANNEL_STATUSES))
+
+        def sync(current: ChannelRecord | None) -> ChannelRecord:
+            # A channel rebuilt from chain starts its idle clock now; an existing one keeps its own.
+            base = current or replace(self._new_record(channel_id, config, requirements), last_activity_at=now)
+            return onchain.fold(base, channel, now)
+
+        await self._store.update(channel_id, sync)
         return True
 
     async def _validate_setup(
@@ -757,7 +745,7 @@ class X402BatchSettlement:
     ) -> ChannelRecord:
         """Fold a confirmed setup into the record: the chain's escrow, the payer signature, the open signature."""
         base = current or self._new_record(verified.channel_id, verified.channel_config, verified.requirements)
-        record = _advance(base, channel, self._clock())
+        record = onchain.fold(base, channel, self._clock())
         setup = verified.setup
         assert setup is not None
         processed = record.processed_setup_signatures
@@ -883,7 +871,7 @@ class X402BatchSettlement:
             seen = channel
 
             def hold_close(current: ChannelRecord | None) -> ChannelRecord:
-                record = _advance(current or self._new_record(channel_id, config, requirements), seen, now)
+                record = onchain.fold(current or self._new_record(channel_id, config, requirements), seen, now)
                 _require_config(record, config)
                 if record.live_reservations(now):
                     raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, f"channel {channel_id} is busy")
@@ -917,7 +905,7 @@ class X402BatchSettlement:
         closed = channel
 
         def mark_closing(current: ChannelRecord | None) -> ChannelRecord:
-            record = _advance(_without(current, hold), closed, self._clock())
+            record = onchain.fold(_without(current, hold), closed, self._clock())
             return replace(record, close_signature=signature or record.close_signature)
 
         if signature:
@@ -983,6 +971,32 @@ class X402BatchSettlement:
             token_program=requirements["extra"]["tokenProgram"],
         )
 
+    def redemption(self) -> BatchRedemption:
+        """The redemption worker over this engine's channel store (claim, distribute, seal, close, reclaim)."""
+        self._pay_to.add(self._config.effective_recipient())
+        return BatchRedemption(
+            store=self._store,
+            rpc_scope=self._rpc_scope,
+            fee_payer=self._fee_payer(),
+            close_authorizer=self._close_authorizer(),
+            settings=RedemptionSettings(
+                max_timeout_seconds=self._settings.max_timeout_seconds,
+                max_idle_secs=self._settings.max_idle_secs,
+                batch_size=self._settings.max_channels_per_batch,
+                network=self._config.network.caip2(),
+                pay_to=self._pay_to,  # live: grows as routes advertise their payTo
+                operator=None if self._settings.operator is None else self._settings.operator.pubkey(),
+                receiver_authorizer=self._settings.receiver_authorizer,
+            ),
+            program_id=self._program_id,
+            clock=self._clock,
+            alert=self._alert,
+            operations=self._operations,
+        )
+
+    def _close_authorizer(self) -> LocalSigner:
+        return self._settings.close_authorizer or self._fee_payer()
+
     def _operator(self) -> LocalSigner:
         operator = self._settings.operator
         if operator is None:
@@ -1023,12 +1037,15 @@ class X402BatchSettlement:
             amount_units = int(amount)
         except ValueError as exc:
             raise ConfigurationError(f"solana_pay_kit: batch price exceeds {_DECIMALS}-decimal precision") from exc
+        pay_to = gate.pay_to or self._config.effective_recipient()
+        if len(self._pay_to) < _MAX_REMEMBERED_PAY_TO:
+            self._pay_to.add(pay_to)
         requirement: BatchRequirements = {
             "scheme": BATCH_SETTLEMENT_SCHEME,
             "network": self._config.network.caip2(),
             "amount": str(amount),
             "asset": asset,
-            "payTo": gate.pay_to or self._config.effective_recipient(),
+            "payTo": pay_to,
             "maxTimeoutSeconds": self._settings.max_timeout_seconds,
             "extra": {
                 "feePayer": self._fee_payer().pubkey(),
@@ -1042,6 +1059,10 @@ class X402BatchSettlement:
         multiple = _SERVER_MIN_DEPOSIT_MULTIPLE if server_signed else _CLIENT_MIN_DEPOSIT_MULTIPLE
         minimum = amount_units * multiple if override is None else _atomic_min_deposit(override)
         requirement["extra"]["minDeposit"] = str(max(minimum, amount_units))
+        idle = self._settings.max_idle_secs
+        if idle is not None and idle > 0:
+            # Clients learn how long an unused channel stays open.
+            requirement["extra"]["maxIdleSecs"] = idle
         return requirement
 
     def _match_accepted(self, envelope: BatchPaymentPayload, accepts: list[BatchRequirements]) -> BatchRequirements:

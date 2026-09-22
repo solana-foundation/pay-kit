@@ -796,3 +796,21 @@ async def test_an_exact_replay_proves_the_charge_the_client_lost(world: World) -
         )
     assert busy.value.code == errors.DUPLICATE_SETTLEMENT and not isinstance(busy.value, CorrectiveRequired)
     await engine.release(held)
+
+
+async def test_a_channel_rebuilt_from_chain_starts_its_idle_clock(world: World) -> None:
+    clock = [NOW]
+    engine = _engine(world, clock=lambda: clock[0])
+    world.put_channel(deposit=3 * PRICE, settled=PRICE)
+    await _pay(engine, world, 2 * PRICE)
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and record.last_activity_at == NOW
+    # A later chain read never moves an existing clock.
+    clock[0] += 1_000
+    await engine._store.update(world.channel_id(), lambda current: replace(current, onchain_synced_at=None))  # type: ignore[arg-type]  # noqa: SLF001
+    verified = await _verify(
+        engine, world.gate, world.header(_requirement(engine, world), world.voucher_payload(3 * PRICE))
+    )
+    await engine.release(verified)
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and record.last_activity_at == NOW
