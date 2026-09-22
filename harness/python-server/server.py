@@ -656,7 +656,11 @@ class HarnessHandler(BaseHTTPRequestHandler):
         if not result.ok:
             self._send_json(result.status, result.body or {"error": "payment_required"}, extra_headers=result.headers)
             return
-        reference = parse_receipt(result.headers["payment-receipt"]).reference
+        receipt_header = result.headers.get("payment-receipt", "")
+        if not receipt_header:
+            self._send_json(500, {"error": "subscription gate granted without a payment-receipt header"})
+            return
+        reference = parse_receipt(receipt_header).reference
         body = {"ok": True, "paid": True, "protocol": "subscription", "reference": reference}
         self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
 

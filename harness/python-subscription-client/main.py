@@ -108,6 +108,9 @@ def main() -> None:
     if status != 200:
         _result(status, headers, _json(raw))
         return
+    if "payment-receipt" not in headers:
+        _result(500, headers, {"error": "activation granted without a payment-receipt header", "body": _json(raw)})
+        return
     activated = parse_receipt(headers["payment-receipt"])
 
     access = build_subscription_access_credential(
@@ -115,16 +118,21 @@ def main() -> None:
     )
     status, headers, raw = _request(target, format_authorization(access))
     body = _json(raw)
-    if status == 200:
-        receipt = parse_receipt(headers["payment-receipt"])
-        same = (receipt.reference, receipt.subscription_id, receipt.period_index) == (
-            activated.reference,
-            activated.subscription_id,
-            0,
-        )
-        if not same:
-            _result(500, headers, {"error": "access receipt does not match the activation", "receipt": body})
-            return
+    if status != 200:
+        _result(status, headers, body)
+        return
+    if "payment-receipt" not in headers:
+        _result(500, headers, {"error": "access granted without a payment-receipt header", "body": body})
+        return
+    receipt = parse_receipt(headers["payment-receipt"])
+    same = (receipt.reference, receipt.subscription_id, receipt.period_index) == (
+        activated.reference,
+        activated.subscription_id,
+        0,
+    )
+    if not same:
+        _result(500, headers, {"error": "access receipt does not match the activation", "receipt": body})
+        return
     _result(status, headers, body, activated.reference)
 
 
