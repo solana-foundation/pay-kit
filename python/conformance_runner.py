@@ -44,13 +44,20 @@ from solana_pay_kit._paycore.solana import (
 )
 from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from solana_pay_kit.protocols.mpp.core import json as wire_json
+from solana_pay_kit.protocols.mpp.core.base64url import decode_json, encode_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
+from solana_pay_kit.protocols.mpp.core.headers import format_receipt, parse_receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.intents.session import (
     SessionAction,
     SessionAuthentication,
     SessionRequest,
     VoucherData,
+)
+from solana_pay_kit.protocols.mpp.intents.subscription import (
+    SubscriptionAuthentication,
+    SubscriptionRequest,
+    parse_subscription_payload,
 )
 from solana_pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
 from solana_pay_kit.protocols.x402.client.exact.payment import (
@@ -427,6 +434,38 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"unknown sessionWire shape {sw['shape']!r}")
         except Exception as exc:
             raise ValueError(f"invalid session payload: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
+
+    sub_auth = inp.get("subscriptionAuthenticationMessage")
+    if sub_auth:
+        # The JCS message a subscriber signs for the reusable bearer proof,
+        # built by the PRODUCTION SDK (SubscriptionAuthentication.message_bytes).
+        message = SubscriptionAuthentication(
+            challenge_id=sub_auth["challengeId"],
+            payer=sub_auth["payer"],
+            signature="",
+        ).message_bytes(sub_auth["subscriptionDelegation"])
+        exact["canonicalJson"] = message.decode("utf-8")
+        exact["base64Url"] = base64url_encode(message)
+
+    sub_wire = inp.get("subscriptionWire")
+    if sub_wire:
+        # Round-trip a subscription wire shape through the PRODUCTION parser and
+        # serializer: the challenge request, the credential payload, or the
+        # Payment-Receipt (periodIndex stays a JSON number).
+        try:
+            if sub_wire["shape"] == "request":
+                decoded = SubscriptionRequest.from_dict(sub_wire["value"]).to_dict()
+            elif sub_wire["shape"] == "payload":
+                decoded = parse_subscription_payload(sub_wire["value"]).to_dict()
+            elif sub_wire["shape"] == "receipt":
+                decoded = decode_json(format_receipt(parse_receipt(encode_json(sub_wire["value"]))))
+            else:
+                raise ValueError(f"unknown subscriptionWire shape {sub_wire['shape']!r}")
+        except Exception as exc:
+            raise ValueError(f"invalid subscription payload: {exc}") from exc
         canonical = wire_json.encode_canonical(decoded)
         exact["canonicalJson"] = canonical.decode("utf-8")
         exact["base64Url"] = base64url_encode(canonical)

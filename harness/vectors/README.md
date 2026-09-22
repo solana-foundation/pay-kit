@@ -204,6 +204,24 @@ Only the TS reference runner implements the x402 path today; the per-SDK
 x402 runners are the tracked follow-up (each drives its own production
 x402 SDK and is validated against this oracle).
 
+## Subscription intent
+
+`subscription-wire.json` holds pay-kit-owned `canonical-bytes` vectors for
+the Solana `subscription` intent (mpp-specs #310). It is separate from the
+upstream-copied `mpp-protocol/` tree, which must not be hand-edited.
+
+- `subscriptionWire` round-trips a `request`, a credential `payload`
+  (`transaction` or `proof`) or a Payment-Receipt (`receipt`, where
+  `periodIndex` is a JSON number) through the production parser and
+  serializer, then JCS-canonicalizes it.
+- `subscriptionAuthenticationMessage` emits the JCS bytes a subscriber signs
+  for the reusable bearer proof (`domain` `mpp-subscription-auth-v1`).
+- Reject vectors pin `periodUnit=month` and a non-canonical `amount`
+  (`invalid-payload`).
+
+Only runners that list `subscription` in their manifest run these (Python
+today); the others skip them.
+
 ## Runner contract
 
 One CLI per SDK, identical stdin/stdout contract:
