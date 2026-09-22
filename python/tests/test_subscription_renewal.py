@@ -15,10 +15,13 @@ from typing import Any
 import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
 from solana_pay_kit._paycore.rpc import RpcResponseError
+from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM
 from solana_pay_kit.protocols.mpp._subscriptions import decode_delegation
 from solana_pay_kit.protocols.mpp.client.subscription import SubscriptionActivation
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, Receipt
@@ -28,12 +31,15 @@ from solana_pay_kit.protocols.mpp.server.subscription import (
 )
 from tests._subscription_fixtures import (
     AMOUNT,
+    MINT,
     NOW,
     PERIOD_SECONDS,
     PLAN,
     PROGRAM_ID,
+    RECIPIENT,
     SERVER,
     install_plan,
+    mint_bytes,
     ok_status,
 )
 from tests.test_subscription_server import DELEGATION, Harness
@@ -94,6 +100,19 @@ async def test_renews_unpaid_period_once(monkeypatch: pytest.MonkeyPatch, sponso
     again = await h.access(challenge, activation)
     assert len(renewals(h)) == 1
     assert (again.reference, again.period_index) == (receipt.reference, 1)
+
+
+async def test_renews_a_token_2022_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The renewal transfer must follow the plan's token program, not the default.
+    h = Harness(monkeypatch, token_program=TOKEN_2022_PROGRAM)
+    token_2022 = Pubkey.from_string(TOKEN_2022_PROGRAM)
+    h.rpc.put(MINT, mint_bytes(), TOKEN_2022_PROGRAM)
+    h.rpc.put(find_associated_token_address(RECIPIENT, MINT, token_2022)[0], bytes(165), TOKEN_2022_PROGRAM)
+    challenge, activation = await due(h)
+    receipt = await h.access(challenge, activation)
+    [renewal] = renewals(h)
+    assert receipt.period_index == 1
+    assert token_2022 in list(renewal.message.account_keys)
 
 
 async def test_missed_periods_charge_only_the_current_one(h: Harness) -> None:

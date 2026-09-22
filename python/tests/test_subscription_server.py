@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import (
@@ -21,8 +22,9 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     ReplayError,
 )
+from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
 from solana_pay_kit._paycore.rpc import RpcResponseError
-from solana_pay_kit._paycore.solana import SYSTEM_PROGRAM
+from solana_pay_kit._paycore.solana import SYSTEM_PROGRAM, TOKEN_2022_PROGRAM
 from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp._subscriptions import (
     decode_delegation,
@@ -613,6 +615,19 @@ async def test_a_lost_binding_cannot_be_rebuilt(h: Harness) -> None:
     with pytest.raises(RpcResponseError, match="already in use"):
         await h.server.verify_credential(again.credential)
     assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is None
+
+
+async def test_token_2022_plan_activates_and_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The mint, the recipient's account and every instruction have to follow the
+    # plan's token program, so run one activation entirely on Token-2022.
+    h = Harness(monkeypatch, token_program=TOKEN_2022_PROGRAM)
+    token_2022 = Pubkey.from_string(TOKEN_2022_PROGRAM)
+    h.rpc.put(MINT, mint_bytes(), TOKEN_2022_PROGRAM)
+    h.rpc.put(find_associated_token_address(RECIPIENT, MINT, token_2022)[0], bytes(165), TOKEN_2022_PROGRAM)
+    _, activation, receipt = await h.activate()
+    assert receipt.period_index == 0
+    tx = VersionedTransaction.from_bytes(h.rpc.sent[0])
+    assert str(token_2022) in [str(key) for key in tx.message.account_keys]
 
 
 async def test_weekly_plan_activates_and_grants(monkeypatch: pytest.MonkeyPatch) -> None:
