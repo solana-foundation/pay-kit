@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import httpx
@@ -204,6 +205,34 @@ async def test_a_lost_answer_releases_the_channel_and_the_next_request_resyncs(w
         resumed = await asyncio.wait_for(http.get(URL), 2)
     assert resumed.status_code == 200
     assert _settlement(resumed)["extra"]["channelState"]["chargedCumulativeAmount"] == str(3 * PRICE)
+
+
+async def test_a_streaming_post_body_survives_the_paid_retry(world: World) -> None:
+    # The 402 costs the body: an async-generator body is consumed by the first
+    # send, and the paid request would carry nothing without buffering.
+    server = Server(world)
+    world.lands_as_channel(deposit=10 * PRICE)
+    bodies: list[bytes] = []
+
+    class Draining(httpx.AsyncBaseTransport):
+        """Consumes the request stream, the way a real transport does.
+
+        ``httpx.MockTransport`` buffers every request it is handed, which would
+        hide the bug this test is about.
+        """
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            bodies.append(b"".join([chunk async for chunk in request.stream]))  # type: ignore[union-attr]
+            return await server.handle(request)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"summarize "
+        yield b"this text"
+
+    async with _http(_client(world), Draining()) as http:
+        paid = await http.post(URL, content=chunks())
+    assert paid.status_code == 200
+    assert bodies == [b"summarize this text", b"summarize this text"]  # unpaid, then paid
 
 
 def test_challenge_parsing_surfaces_the_corrective_error_code(world: World) -> None:

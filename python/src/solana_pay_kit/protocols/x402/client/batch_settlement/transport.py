@@ -114,7 +114,15 @@ class BatchPaymentTransport(httpx.AsyncBaseTransport):
         self._inner = base_transport or httpx.AsyncHTTPTransport()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        """Send ``request``; on a batch challenge pay and resend, once more after an adopted corrective."""
+        """Send ``request``; on a batch challenge pay and resend, once more after an adopted corrective.
+
+        The body is buffered before the first send: a gated request is sent
+        again once it is paid, and a one-shot stream (an async generator) would
+        be consumed by the first attempt and arrive empty on the retry. httpx
+        swaps a read stream for a replayable one, so the paid send carries the
+        same bytes.
+        """
+        await request.aread()
         response = await self._inner.handle_async_request(request)
         required = await _challenge(response)
         if required is None:
