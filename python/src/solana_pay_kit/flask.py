@@ -22,6 +22,7 @@ the response boundary.
 from __future__ import annotations
 
 import contextlib
+import logging
 import weakref
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -67,6 +68,8 @@ __all__ = [
 
 _F = TypeVar("_F", bound="Callable[..., Any]")
 _T = TypeVar("_T")
+logger = logging.getLogger("solana_pay_kit")
+
 
 #: One x402 ``upto`` engine per Config - it owns the per-channel in-flight
 #: reservation set, so it must be a singleton (a fresh engine per request would
@@ -255,7 +258,8 @@ def require_batch(
                 return response
             outcome = _run(finalize_batch(engine, verified, meter))
             if not outcome.ok:
-                body = {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""}
+                logger.warning("solana_pay_kit: withholding a batch-settlement body: %s", outcome.detail)
+                body = {"error": "payment_required", "code": outcome.code}
                 withheld = make_response(flask.jsonify(body), outcome.status)
                 withheld.headers.update(engine.challenge_headers(gate, request, error=outcome.code))
                 abort(withheld)
@@ -324,7 +328,8 @@ def _abort_pay_kit_error(exc: PayKitError) -> NoReturn:
     """Render a non-402-challenge PayKitError at its declared http_status."""
     status = getattr(exc, "http_status", 402)
     code = getattr(exc, "code", None)
-    body: dict[str, Any] = {"error": str(exc)}
+    logger.warning("solana_pay_kit: refusing a request: %s", exc)
+    body: dict[str, Any] = {"error": code if isinstance(code, str) else "payment_error"}
     if isinstance(code, str):
         body["code"] = code
     response = make_response(flask.jsonify(body), status)
@@ -345,7 +350,7 @@ def _abort_usage_required(
     }
     if exc is not None:
         body["code"] = exc.code or "invalid_proof"
-        body["message"] = str(exc)
+        logger.warning("solana_pay_kit: refused an x402 upto credential: %s", exc)
     response = make_response(flask.jsonify(body), 402)
     for header, value in engine.challenge_headers(gate, request).items():
         response.headers[header] = value
@@ -376,11 +381,8 @@ def _abort_usage_outcome(
     outcome: Any,
 ) -> NoReturn:
     """Withhold the body with a 402 upto challenge when settlement fails closed."""
-    body: dict[str, Any] = {
-        "error": "payment_required",
-        "code": outcome.code,
-        "message": outcome.detail or "",
-    }
+    logger.warning("solana_pay_kit: withholding an x402 upto body: %s", outcome.detail)
+    body: dict[str, Any] = {"error": "payment_required", "code": outcome.code}
     response = make_response(flask.jsonify(body), outcome.status)
     for header, value in engine.challenge_headers(gate, request).items():
         response.headers[header] = value

@@ -36,6 +36,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError("solana_pay_kit.fastapi requires FastAPI; install with 'solana_pay_kit[fastapi]'") from exc
 
+import logging
 import weakref
 
 from starlette.routing import Match
@@ -121,6 +122,8 @@ def _upto_engine(config: Config) -> X402Upto:
 
 #: Header that carries each settlement header's name through the response hook.
 _SETTLEMENT_STATE_ATTR = "paykit_settlement_headers"
+logger = logging.getLogger("solana_pay_kit")
+
 
 GateRef = "Gate | DynamicGate | Price | str | Callable[[Request], Gate]"
 
@@ -387,7 +390,7 @@ def _usage_challenge(
     }
     if exc is not None:
         body["code"] = exc.code or "invalid_proof"
-        body["message"] = str(exc)
+        logger.warning("solana_pay_kit: refused an x402 upto credential: %s", exc)
     err.challenge_headers = engine.challenge_headers(gate, request)  # type: ignore[attr-defined]
     err.body = body  # type: ignore[attr-defined]
     return err
@@ -612,8 +615,9 @@ def install_exception_handler(app: Any) -> None:
         engine, verified, charge, gate = pending
         outcome = await finalize_usage(engine, verified, charge)
         if not outcome.ok:
+            logger.warning("solana_pay_kit: withholding an x402 upto body: %s", outcome.detail)
             return JSONResponse(
-                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                {"error": "payment_required", "code": outcome.code},
                 status_code=outcome.status,
                 headers=engine.challenge_headers(gate, request),
             )
@@ -649,8 +653,9 @@ def install_exception_handler(app: Any) -> None:
             return response
         outcome = await finalize_batch(engine, verified, charge)
         if not outcome.ok:
+            logger.warning("solana_pay_kit: withholding a batch-settlement body: %s", outcome.detail)
             return JSONResponse(
-                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                {"error": "payment_required", "code": outcome.code},
                 status_code=outcome.status,
                 headers=engine.challenge_headers(gate, request, error=outcome.code),
             )
@@ -756,7 +761,8 @@ def _http_exception(exc: PayKitError) -> HTTPException:
         detail = cast("dict[str, Any]", body)
     else:
         code = getattr(exc, "code", None)
-        detail = {"error": code or "payment_error", "message": str(exc)}
+        logger.warning("solana_pay_kit: refusing a request: %s", exc)
+        detail = {"error": code or "payment_error"}
 
     return HTTPException(
         status_code=status,

@@ -45,6 +45,8 @@ from tests.batch_chain import BLOCKHASH, CLOSING, PRICE, SLOT, World, make_world
 pytestmark = pytest.mark.usefixtures("reset_batch_globals")
 
 NOW = 1_700_000_000.0
+#: What a failing handler says; no response may repeat it.
+_SECRET = "secret detail from the handler"
 OPERATOR = LocalSigner.from_keypair(Keypair.from_seed(bytes([4] * 32)))
 
 Get = Callable[[str, dict[str, str]], tuple[int, dict[str, str], bytes]]
@@ -92,7 +94,7 @@ def _fastapi(world: World, served: list[str]) -> Get:
     async def fixed(act: str = "ok", _: Charge = Depends(RequireBatch(world.gate, config=world.config))) -> Any:  # noqa: B008
         served.append("r")
         if act == "raise":
-            raise RuntimeError("boom")
+            raise RuntimeError(_SECRET)
         return {"ok": True} if act == "ok" else JSONResponse({"ok": False}, status_code=500)
 
     @app.get("/m")
@@ -135,7 +137,7 @@ def _flask(world: World, served: list[str]) -> Get:
         served.append("r")
         act = flask.request.args.get("act", "ok")
         if act == "raise":
-            raise RuntimeError("boom")
+            raise RuntimeError(_SECRET)
         return {"ok": True} if act == "ok" else ({"ok": False}, 500)
 
     @app.get("/m")
@@ -176,7 +178,7 @@ def _django(world: World, served: list[str]) -> Get:
         served.append("r")
         act = request.GET.get("act", "ok")
         if act == "raise":
-            raise RuntimeError("boom")
+            raise RuntimeError(_SECRET)
         return JsonResponse({"ok": act == "ok"}, status=200 if act == "ok" else 500)
 
     @pk.require_batch(world.gate, config=world.config, voucher_signer="server")
@@ -270,8 +272,9 @@ def test_a_failed_handler_charges_nothing_and_frees_the_reservation(
     world.lands_as_channel(deposit=10 * PRICE)
     accept = _engine(world).accepts_entries(world.gate, {})[0]
     payment: Any = run(_client(world).create_payment_payload(accept))
-    status, _, _ = get(f"/r?act={act}", _header(payment))
+    status, _, body = get(f"/r?act={act}", _header(payment))
     assert status == 500 and world.chain.sent == []  # the open was never broadcast
+    assert _SECRET.encode() not in body  # the handler's own words stay server-side
     # Released, not held: the same payment serves now.
     status, headers, _ = get("/r", _header(payment))
     assert status == 200 and _decode(headers, "payment-response")["success"]
@@ -463,6 +466,34 @@ def test_django_gates_a_batch_route_through_url_resolution(world: World) -> None
         paid: Any = client.get("/r", **{"HTTP_PAYMENT_SIGNATURE": _header(payment)["payment-signature"]})
     assert (paid.status_code, json.loads(paid.content)) == (200, {"ok": True})
     assert _decode(dict(paid.headers), "payment-response")["success"]
+
+
+def test_django_renders_a_failed_handler_without_its_words(world: World) -> None:
+    # The other Django cases call the view directly, so the 500 is the test's.
+    # This one lets Django render it, with DEBUG off as a deployment has it.
+    import types
+
+    from django.http import HttpRequest, JsonResponse
+    from django.test import Client, override_settings
+    from django.urls import path
+
+    import solana_pay_kit.django as pk
+
+    @pk.require_batch(world.gate, config=world.config)
+    def view(request: HttpRequest) -> Any:
+        raise RuntimeError(_SECRET)
+        return JsonResponse({"ok": True})  # pragma: no cover - unreachable
+
+    urlconf = types.ModuleType("failing_urls")
+    urlconf.urlpatterns = [path("r", view)]  # type: ignore[attr-defined]
+    world.lands_as_channel(deposit=10 * PRICE)
+    accept = _engine(world).accepts_entries(world.gate, {})[0]
+    payment: Any = run(_client(world).create_payment_payload(accept))
+    with override_settings(ROOT_URLCONF=urlconf, DEBUG=False):
+        client: Any = Client(raise_request_exception=False)
+        response: Any = client.get("/r", **{"HTTP_PAYMENT_SIGNATURE": _header(payment)["payment-signature"]})
+    assert response.status_code == 500 and _SECRET.encode() not in response.content
+    assert world.chain.sent == []  # nothing was broadcast for a request that failed
 
 
 def test_the_shim_bridge_runs_a_coroutine_from_inside_a_running_loop() -> None:

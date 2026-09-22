@@ -24,6 +24,7 @@ WSGI/ASGI boundary on its own.
 from __future__ import annotations
 
 import contextlib
+import logging
 import weakref
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -80,6 +81,8 @@ _T = TypeVar("_T")
 #: Request attribute a URLconf wrapper or middleware may set to bind a gate to
 #: a view when the :class:`PaymentMiddleware` stack form is used.
 GATE_ATTR = "paykit_gate"
+logger = logging.getLogger("solana_pay_kit")
+
 
 #: One x402 ``upto`` engine per Config - it owns the per-channel in-flight
 #: reservation set, so it must be a singleton (a fresh engine per request would
@@ -261,7 +264,8 @@ def require_batch(
                 return response
             outcome = _run(finalize_batch(engine, verified, meter))
             if not outcome.ok:
-                body = {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""}
+                logger.warning("solana_pay_kit: withholding a batch-settlement body: %s", outcome.detail)
+                body = {"error": "payment_required", "code": outcome.code}
                 withheld = JsonResponse(body, status=outcome.status)
                 for key, value in engine.challenge_headers(gate, request, error=outcome.code).items():
                     withheld[key] = value
@@ -369,7 +373,7 @@ def _error_response(exc: PayKitError) -> JsonResponse:
     body: dict[str, Any] = (
         cast("dict[str, Any]", raw_body)
         if isinstance(raw_body, dict)
-        else {"error": getattr(exc, "code", "payment_error"), "message": str(exc)}
+        else {"error": getattr(exc, "code", "payment_error")}
     )
 
     response = JsonResponse(body, status=status)
@@ -396,7 +400,7 @@ def _usage_challenge_response(
     }
     if exc is not None:
         body["code"] = exc.code or "invalid_proof"
-        body["message"] = str(exc)
+        logger.warning("solana_pay_kit: refused an x402 upto credential: %s", exc)
     response = JsonResponse(body, status=402)
     for key, value in engine.challenge_headers(gate, request).items():
         response[key] = value
@@ -432,11 +436,8 @@ def _usage_outcome_response(
     """Withhold the body with a 402 upto challenge when settlement fails closed."""
     from django.http import JsonResponse  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
 
-    body: dict[str, Any] = {
-        "error": "payment_required",
-        "code": outcome.code,
-        "message": outcome.detail or "",
-    }
+    logger.warning("solana_pay_kit: withholding an x402 upto body: %s", outcome.detail)
+    body: dict[str, Any] = {"error": "payment_required", "code": outcome.code}
     response = JsonResponse(body, status=outcome.status)
     for key, value in engine.challenge_headers(gate, request).items():
         response[key] = value
