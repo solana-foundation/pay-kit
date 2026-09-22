@@ -16,7 +16,12 @@ from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.paymentchannels import ED25519_PROGRAM_ID, PAYMENT_CHANNELS_PROGRAM_ID
+from solana_pay_kit._paycore.paymentchannels import (
+    CHANNEL_RENT_PAYER_OFFSET,
+    ED25519_PROGRAM_ID,
+    PAYMENT_CHANNELS_PROGRAM_ID,
+    find_channel_pda,
+)
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.protocols.x402.batch_settlement.engine import (
     BatchSettlementConfig,
@@ -29,7 +34,7 @@ from solana_pay_kit.protocols.x402.batch_settlement.signatures import sign_vouch
 from solana_pay_kit.protocols.x402.batch_settlement.store import ChannelRecord, MemoryBatchChannelStore, Reservation
 from solana_pay_kit.protocols.x402.batch_settlement.types import BatchChannelConfig
 from solana_pay_kit.signer import LocalSigner
-from tests.batch_chain import CLOSING, DISTRIBUTED, PRICE, SLOT, World, channel_account, make_world
+from tests.batch_chain import CLOSING, DISTRIBUTED, MINT, PRICE, SLOT, World, channel_account, make_world
 
 NOW = 1_700_000_000.0
 GRACE = 900
@@ -381,6 +386,22 @@ async def test_discovery_trusts_only_channels_that_rederive_to_their_address(wor
     good = world.channel_id(config)
     data = channel_account(config, world.fee_payer.pubkey(), world.pay_to, deposit=PRICE)
     world.chain.program_accounts = [(good, data), (str(Pubkey.new_unique()), data), (good, b"\x00" * 256)]
+    # Correctly derived, but the sponsor holds only one of its two seats.
+    stranger, sponsor = Pubkey.new_unique(), bytes(Pubkey.from_string(world.fee_payer.pubkey()))
+    foreign_config = world.channel_config(salt="1")
+    foreign_id = find_channel_pda(
+        Pubkey.from_string(world.payer.pubkey()),
+        stranger,
+        Pubkey.from_string(MINT),
+        Pubkey.from_string(world.payer.pubkey()),
+        1,
+        SLOT,
+    )[0]
+    foreign_payee = bytearray(channel_account(foreign_config, str(stranger), world.pay_to, deposit=PRICE))
+    foreign_payee[CHANNEL_RENT_PAYER_OFFSET : CHANNEL_RENT_PAYER_OFFSET + 32] = sponsor
+    foreign_rent = bytearray(data)
+    foreign_rent[CHANNEL_RENT_PAYER_OFFSET : CHANNEL_RENT_PAYER_OFFSET + 32] = bytes(stranger)
+    world.chain.program_accounts += [(str(foreign_id), bytes(foreign_payee)), (good, bytes(foreign_rent))]
     assert await h.worker.discover() == [good]
 
 

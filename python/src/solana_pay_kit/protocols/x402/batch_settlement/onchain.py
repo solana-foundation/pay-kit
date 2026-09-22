@@ -342,15 +342,16 @@ def distribute_instruction(
     )
 
 
-async def discover(rpc: SolanaRpc, program_id: Pubkey, fee_payer: str) -> list[tuple[str, Channel]]:
-    """Every channel whose rent ``fee_payer`` fronted, each re-derived to its PDA before it is trusted.
+async def discover(
+    rpc: SolanaRpc, program_id: Pubkey, key: str, *, offset: int = CHANNEL_RENT_PAYER_OFFSET
+) -> list[tuple[str, Channel]]:
+    """Channels holding ``key`` at byte ``offset`` (rent payer by default, payer at 88), each re-derived to its PDA.
 
-    Rebuilds the lifecycle work queue after a lost store. It never recovers a
-    charge watermark or voucher: those exist only in the store.
+    A ``getProgramAccounts`` filter result is never trusted on its own. This
+    recovers channels after a lost store; it never recovers a charge
+    watermark or voucher, which exist only in the store.
     """
-    rows = await rpc.get_program_accounts(
-        str(program_id), data_size=CHANNEL_ACCOUNT_SIZE, memcmp=[(CHANNEL_RENT_PAYER_OFFSET, fee_payer)]
-    )
+    rows = await rpc.get_program_accounts(str(program_id), data_size=CHANNEL_ACCOUNT_SIZE, memcmp=[(offset, key)])
     found: list[tuple[str, Channel]] = []
     for address, data in rows:
         try:
@@ -366,6 +367,6 @@ async def discover(rpc: SolanaRpc, program_id: Pubkey, fee_payer: str) -> list[t
             int(channel.openSlot),
             program_id,
         )
-        if str(derived) == address and str(channel.rentPayer) == fee_payer and str(channel.payee) == fee_payer:
+        if str(derived) == address:
             found.append((address, channel))
     return found

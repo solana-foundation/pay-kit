@@ -249,6 +249,14 @@ class SolanaRpc:
             raise _RpcError("getSlot returned a non-integer slot", code="payment_invalid")
         return result
 
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """Whether a transaction built on ``blockhash`` can still land (``isBlockhashValid``)."""
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, bool):
+            raise _RpcError("isBlockhashValid returned a non-boolean value", code="payment_invalid")
+        return value
+
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
         """Fetch an account's raw data bytes and owner (base58), or ``None`` when
         the account is missing. Used to read on-chain payment-channel state

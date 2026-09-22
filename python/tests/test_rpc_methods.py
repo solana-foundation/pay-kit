@@ -381,3 +381,11 @@ def test_resolve_channel_read_policy_defaults_on_unset_or_non_positive() -> None
     assert resolve_channel_read_policy(0, 0) == (6, 0.2)
     assert resolve_channel_read_policy(-1, -5) == (6, 0.2)
     assert resolve_channel_read_policy(3, 50) == (3, 0.05)
+
+
+async def test_is_blockhash_valid_reads_the_value_and_rejects_garbage() -> None:
+    rpc = _rpc([{"result": {"context": {"slot": 1}, "value": False}}, {"result": {"value": "yes"}}])
+    assert await rpc.is_blockhash_valid("hash") is False
+    assert rpc._client.last_body["method"] == "isBlockhashValid"  # type: ignore[attr-defined]
+    with pytest.raises(_RpcError):
+        await rpc.is_blockhash_valid("hash")

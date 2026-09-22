@@ -210,7 +210,9 @@ class BatchRedemption:
         """Every channel whose rent the fee payer fronted, re-derived to its PDA (for use after a lost store)."""
         async with self._rpc_scope() as rpc:
             found = await onchain.discover(rpc, self._program_id, self._fee_payer.pubkey())
-        return [channel_id for channel_id, _ in found]
+        sponsor = self._fee_payer.pubkey()
+        # The sponsor holds both the rent-payer and the zero-share payee seat.
+        return [cid for cid, channel in found if str(channel.rentPayer) == sponsor and str(channel.payee) == sponsor]
 
     async def recover(self) -> list[str]:
         """Rebuild the records of sponsored channels the store does not know (after a lost store).

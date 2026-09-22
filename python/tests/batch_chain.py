@@ -116,6 +116,8 @@ class FakeChain:
     program_accounts: list[tuple[str, bytes]] = field(default_factory=lambda: [])
     # The getLatestBlockhash context slot, when it differs from ``slot`` (getSlot).
     blockhash_slot: int | None = None
+    # What isBlockhashValid answers.
+    blockhash_valid: bool = True
 
     def _read(self, address: str) -> tuple[bytes, str] | None:
         self.account_reads += 1
@@ -170,6 +172,9 @@ class FakeChain:
 
         _Response.context.slot = slot  # type: ignore[attr-defined]
         return _Response()
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        return self.blockhash_valid
 
     async def get_program_accounts(self, program_id: str, **_: Any) -> list[tuple[str, bytes]]:
         return self.program_accounts
