@@ -62,8 +62,9 @@ CHANNEL_STATUS_SEALED = 1
 CHANNEL_STATUS_CLOSING = 2
 CHANNEL_STATUS_DISTRIBUTED = 3
 
-# IDL ``accountDiscriminator.channel``. The codama-py enum renders it as 0; the
-# IDL and the TypeScript client say 1, which is what the program writes.
+# Program source (Moonsong-Labs/solana-payment-channels@0c07d57,
+# program/payment_channels/src/state/common.rs:20) sets Channel = 1; the
+# generated Rust/TS/Python enums are ordinal (0) and wrong.
 _CHANNEL_ACCOUNT_DISCRIMINATOR = 1
 _FULL_SHARE_BPS = 10_000
 

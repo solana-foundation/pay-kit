@@ -279,6 +279,9 @@ class StoreBackedBatchChannelStore:
     def _key(channel_id: str) -> str:
         return f"{_KEY_PREFIX}channel:{channel_id}"
 
+    # ponytail: the channel index is a read-modify-write list, so concurrent
+    # updates from several processes are last-writer-wins and can drop an id;
+    # a Store with list or compare-and-set is the upgrade path.
     _INDEX = f"{_KEY_PREFIX}channels"
 
     async def _read(self, channel_id: str) -> ChannelRecord | None:
