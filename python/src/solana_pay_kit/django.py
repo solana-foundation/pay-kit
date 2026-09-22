@@ -48,6 +48,11 @@ if TYPE_CHECKING:
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
+    from solana_pay_kit.protocols.mpp.server.subscription import (
+        SubscriptionChallengeOptions,
+        SubscriptionGateResult,
+        SubscriptionServer,
+    )
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
     GateRef = Gate | DynamicGate | Price | str | Callable[[HttpRequest], Gate]
@@ -55,7 +60,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "require_payment",
+    "require_subscription",
     "require_usage",
+    "RequireSubscription",
     "RequireUsage",
     "PaymentMiddleware",
     "is_paid",
@@ -189,6 +196,56 @@ def require_usage(
 RequireUsage = require_usage
 
 
+def require_subscription(
+    server: SubscriptionServer,
+    options: SubscriptionChallengeOptions | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate a Django view to require a live MPP subscription.
+
+    Runs :meth:`~solana_pay_kit.protocols.mpp.server.subscription.SubscriptionServer.handle`
+    on the ``Authorization`` header, the same gate FastAPI's ``RequireSubscription``
+    uses. A missing or invalid credential returns the 402 the server built
+    (``WWW-Authenticate`` challenge, ``Cache-Control: no-store``, an
+    ``application/problem+json`` body); an activation or a valid bearer proof
+    merges the receipt and ``Cache-Control: private`` onto the response.
+
+    The subscriber has paid by the time the view runs, so a view that raises
+    ``Http404`` or ``PermissionDenied`` afterwards still answers with those
+    headers. Any other exception propagates to Django's handler, which builds
+    its response without them.
+    """
+
+    def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(view)
+        def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+            from django.core.exceptions import PermissionDenied  # pyright: ignore[reportMissingTypeStubs]
+            from django.http import Http404  # pyright: ignore[reportMissingTypeStubs]
+
+            # Django ships no type stubs; META is the canonical WSGI/ASGI source
+            # for the header and is always present on a request.
+            meta = cast("dict[str, str]", cast("Any", request).META)
+            result = _run(server.handle(meta.get("HTTP_AUTHORIZATION") or None, options))
+            if not result.ok:
+                return _subscription_response(result.status, result.body or {"error": "payment_required"}, result)
+            try:
+                response = view(request, *args, **kwargs)
+            except Http404 as exc:
+                return _subscription_response(404, {"error": "not_found", "message": str(exc)}, result)
+            except PermissionDenied as exc:
+                return _subscription_response(403, {"error": "forbidden", "message": str(exc)}, result)
+            for key, value in result.headers.items():
+                response[key] = value
+            return response
+
+        return wrapper
+
+    return decorator
+
+
+#: FastAPI-parity alias; the Django form is a view decorator, not a dependency.
+RequireSubscription = require_subscription
+
+
 class PaymentMiddleware:
     """Django MIDDLEWARE-stack form gating views that declare a gate.
 
@@ -260,6 +317,16 @@ def _attach_charge(request: HttpRequest, meter: Charge) -> None:
 def _merge_settlement_headers(response: HttpResponse, payment: Payment) -> HttpResponse:
     """Echo the payment's settlement headers onto the framework response."""
     for key, value in payment.settlement_headers.items():
+        response[key] = value
+    return response
+
+
+def _subscription_response(status: int, body: dict[str, Any], result: SubscriptionGateResult) -> JsonResponse:
+    """A JsonResponse at ``status`` carrying the subscription gate's headers."""
+    from django.http import JsonResponse  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
+
+    response = JsonResponse(body, status=status)
+    for key, value in result.headers.items():
         response[key] = value
     return response
 

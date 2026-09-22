@@ -491,3 +491,103 @@ def test_flask_require_subscription_402_then_activation_then_proof(monkeypatch):
     broke = client.get("/boom", headers={"authorization": access_auth})
     assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
     assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0
+
+
+def test_django_require_subscription_402_then_activation_then_proof(monkeypatch):
+    from django.http import Http404, JsonResponse
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk_django
+    from solana_pay_kit.protocols.mpp.core.headers import parse_receipt
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+
+    @pk_django.require_subscription(h.server)
+    def feed(request):
+        return JsonResponse({"ok": True})
+
+    @pk_django.require_subscription(h.server)
+    def boom(request):
+        raise Http404("gone")
+
+    factory = RequestFactory()
+    denied = feed(factory.get("/feed"))
+    assert denied.status_code == 402
+    assert denied["cache-control"] == "no-store" and denied["content-type"] == "application/problem+json"
+    assert denied["www-authenticate"].startswith("Payment ")
+
+    activated = feed(factory.get("/feed", headers={"authorization": activation_auth}))
+    assert activated.status_code == 200 and activated["cache-control"] == "private"
+    assert parse_receipt(activated["payment-receipt"]).period_index == 0
+
+    reused = feed(factory.get("/feed", headers={"authorization": access_auth}))
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused["payment-receipt"]).period_index == 0
+
+    broke = boom(factory.get("/boom", headers={"authorization": access_auth}))
+    assert broke.status_code == 404 and broke["cache-control"] == "private"
+    assert parse_receipt(broke["payment-receipt"]).period_index == 0
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_require_subscription_renews_once_under_two_threads(monkeypatch, framework):
+    """Two requests in their own loops and threads must produce one renewal charge.
+
+    Each shim drives the gate with its own asyncio.run, so the store locks have
+    to be loop-independent; the renewal claim is what keeps the second request
+    from charging the period twice.
+    """
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from solana_pay_kit.protocols.mpp.core.headers import parse_authorization
+    from tests._subscription_fixtures import NOW, PERIOD_SECONDS
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    asyncio.run(h.server.verify_credential(parse_authorization(activation_auth)))
+    h.now = NOW + PERIOD_SECONDS + 10  # the period has rolled over: access renews
+
+    if framework == "flask":
+        import flask
+
+        import solana_pay_kit.flask as pk_flask
+
+        app = flask.Flask(__name__)
+
+        @app.get("/feed")
+        @pk_flask.require_subscription(h.server)
+        def feed():
+            return {"ok": True}
+
+        client = app.test_client()
+
+        def call() -> int:
+            return client.get("/feed", headers={"authorization": access_auth}).status_code
+    else:
+        from django.http import JsonResponse
+        from django.test import RequestFactory
+
+        import solana_pay_kit.django as pk_django
+
+        @pk_django.require_subscription(h.server)
+        def view(request):
+            return JsonResponse({"ok": True})
+
+        factory = RequestFactory()
+
+        def call() -> int:
+            return view(factory.get("/feed", headers={"authorization": access_auth})).status_code
+
+    start = threading.Barrier(2, timeout=30)
+
+    def request() -> int:
+        start.wait()  # both threads leave at the same instant
+        return call()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = [future.result(timeout=30) for future in [pool.submit(request) for _ in range(2)]]
+
+    # Exactly one renewal transaction, whatever the two requests were told.
+    assert len(h.rpc.sent) == 2  # the activation plus one renewal
+    assert statuses.count(200) >= 1 and set(statuses) <= {200, 402}
