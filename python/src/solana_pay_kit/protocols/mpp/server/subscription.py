@@ -935,8 +935,11 @@ class SubscriptionServer:
                 )
             except PaymentError as err:
                 error = err
-            except Exception as err:  # noqa: BLE001 - parse and framework errors map to 402
-                error = _invalid(str(err))
+            except Exception:  # noqa: BLE001 - parse and framework errors map to 402
+                # The detail stays in the log: an arbitrary exception string can
+                # carry internal state, and the client only needs the class.
+                logger.exception("subscription credential could not be verified")
+                error = _invalid("subscription credential could not be verified")
         problem = cast(
             "dict[str, Any]",
             payment_required_response(

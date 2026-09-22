@@ -15,6 +15,7 @@ the renewal itself. Mirrors the TS playground's ``GET /api/v1/feed``.
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 from datetime import UTC, datetime
@@ -86,8 +87,10 @@ async def _subscription(request: Request) -> dict[str, str]:
     except (PaymentError, httpx.HTTPError) as exc:
         # Issuing the challenge reads the plan, so a missing plan (PaymentError)
         # and an RPC that is down or slow (httpx transport or timeout error) are
-        # both the operator's problem, not the caller's.
-        raise HTTPException(503, {"error": f"subscription plan {PLAN_ID} is unavailable: {exc}"}) from exc
+        # both the operator's problem, not the caller's. The reason goes to the
+        # log; the body names the plan and nothing from the exception.
+        logging.getLogger("playground.subscription").warning("plan %s is unavailable", PLAN_ID, exc_info=True)
+        raise HTTPException(503, {"error": f"subscription plan {PLAN_ID} is unavailable"}) from exc
 
 
 @router.get("/api/v1/feed")

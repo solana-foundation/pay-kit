@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import weakref
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -70,6 +71,8 @@ __all__ = [
     "charge",
     "Charge",
 ]
+
+logger = logging.getLogger("solana_pay_kit.django")
 
 _T = TypeVar("_T")
 
@@ -229,10 +232,14 @@ def require_subscription(
                 return _subscription_response(result.status, result.body or {"error": "payment_required"}, result)
             try:
                 response = view(request, *args, **kwargs)
-            except Http404 as exc:
-                return _subscription_response(404, {"error": "not_found", "message": str(exc)}, result)
-            except PermissionDenied as exc:
-                return _subscription_response(403, {"error": "forbidden", "message": str(exc)}, result)
+            except Http404:
+                # The view's own message stays in the log: an exception string can
+                # carry internal detail, so the response says only what happened.
+                logger.info("subscription view raised Http404", exc_info=True)
+                return _subscription_response(404, {"error": "not_found"}, result)
+            except PermissionDenied:
+                logger.info("subscription view raised PermissionDenied", exc_info=True)
+                return _subscription_response(403, {"error": "forbidden"}, result)
             for key, value in result.headers.items():
                 response[key] = value
             return response

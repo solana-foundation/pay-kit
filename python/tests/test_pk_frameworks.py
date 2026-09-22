@@ -723,3 +723,83 @@ def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework)
             assert request["methodDetails"]["recentBlockhash"] == BLOCKHASH
     finally:
         chain.close()
+
+
+@pytest.mark.parametrize("framework", ["flask", "django", "fastapi"])
+def test_require_subscription_never_echoes_exception_text(monkeypatch, framework, caplog):
+    """An exception's text is log material, never response material (CodeQL: information exposure)."""
+    h, _activation_auth, access_auth = _subscription_legs(monkeypatch)
+
+    async def boom(_credential):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(h.server, "verify_credential", boom)
+    headers = {"authorization": access_auth}
+
+    if framework == "flask":
+        import flask
+
+        import solana_pay_kit.flask as pk_flask
+
+        app = flask.Flask(__name__)
+
+        @app.get("/feed")
+        @pk_flask.require_subscription(h.server)
+        def feed():
+            return {"ok": True}
+
+        answer = app.test_client().get("/feed", headers=headers)
+        status, text = answer.status_code, answer.get_data(as_text=True)
+    elif framework == "django":
+        from django.http import JsonResponse
+        from django.test import RequestFactory
+
+        import solana_pay_kit.django as pk_django
+
+        @pk_django.require_subscription(h.server)
+        def view(request):
+            return JsonResponse({"ok": True})
+
+        answer = view(RequestFactory().get("/feed", headers=headers))
+        status, text = answer.status_code, answer.content.decode()
+    else:
+        from fastapi import Depends, FastAPI
+        from starlette.testclient import TestClient
+
+        from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+
+        app = FastAPI()
+        install_exception_handler(app)
+
+        @app.get("/feed")
+        async def served(_receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+            return {"ok": True}
+
+        answer = TestClient(app, raise_server_exceptions=False).get("/feed", headers=headers)
+        status, text = answer.status_code, answer.text
+
+    assert status == 402  # the gate still answers a challenge
+    assert "secret detail" not in text
+
+
+def test_django_subscription_view_error_is_not_echoed(monkeypatch, caplog):
+    """A view's Http404 message is internal too: the body says only what happened."""
+    import asyncio
+
+    from django.http import Http404
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk_django
+    from solana_pay_kit.protocols.mpp.core.headers import parse_authorization
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    asyncio.run(h.server.verify_credential(parse_authorization(activation_auth)))
+
+    @pk_django.require_subscription(h.server)
+    def view(request):
+        raise Http404("secret detail")
+
+    answer = view(RequestFactory().get("/feed", headers={"authorization": access_auth}))
+    assert answer.status_code == 404
+    assert "secret detail" not in answer.content.decode()
+    assert "payment-receipt" in {key.lower() for key in answer.headers}

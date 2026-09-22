@@ -161,12 +161,17 @@ def unreachable() -> Iterator[TestClient]:
     yield from _booted(rpc)
 
 
-def test_feed_answers_503_when_the_rpc_is_unreachable(unreachable: TestClient) -> None:
+def test_feed_answers_503_when_the_rpc_is_unreachable(
+    unreachable: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
     # Issuing the challenge reads the plan: a dead RPC is an operator failure,
-    # so the caller sees 503 with the reason, not a 500.
-    resp = unreachable.get("/api/v1/feed")
-    assert resp.status_code == 503
-    assert PLAN in resp.json()["error"] and "connection refused" in resp.json()["error"]
+    # so the caller sees a 503 naming the plan, not a 500 and not the
+    # exception's text. The reason belongs in the log.
+    with caplog.at_level("WARNING"):
+        resp = unreachable.get("/api/v1/feed")
+    assert resp.status_code == 503 and PLAN in resp.json()["error"]
+    assert "connection refused" not in resp.text
+    assert "connection refused" in caplog.text
 
 
 def test_feed_is_gated_and_advertised(subscribed: TestClient) -> None:
