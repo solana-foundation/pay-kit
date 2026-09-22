@@ -145,6 +145,20 @@ async def test_rejects_bad_plan(
     assert rpc.sent == []
 
 
+async def test_accepts_a_plan_id_rounded_by_canonical_json() -> None:
+    # A 63-bit plan id cannot survive RFC 8785 (numbers are ECMAScript doubles),
+    # so a canonicalizing server advertises it rounded. The rounded value still
+    # has to name this plan; a different one two ulps away does not.
+    plan_id = 1790059647986039839
+    rpc = chain(authority_init_id=1)
+    install_plan(rpc, plan_id=plan_id)
+    rounded = int(float(plan_id))
+    assert rounded != plan_id
+    await activate(rpc, request_dict(methodDetails={"planIdNumeric": rounded}))
+    with pytest.raises(ValueError, match="planIdNumeric"):
+        await activate(rpc, request_dict(methodDetails={"planIdNumeric": rounded + 1024}))
+
+
 async def test_rejects_plan_owned_by_another_program() -> None:
     rpc = chain()
     rpc.accounts[str(PLAN)] = (rpc.accounts[str(PLAN)][0], str(pk(41)))

@@ -71,6 +71,20 @@ class SubscriptionActivation:
     subscription_delegation: str
 
 
+def _same_on_the_wire(advertised: object, actual: object) -> bool:
+    """Compare a methodDetails field with the chain at the precision canonical JSON keeps.
+
+    RFC 8785 renders every JSON number as an ECMAScript double (ECMA-262 7.1.12.1),
+    so a ``planIdNumeric`` above 2**53 reaches the client rounded from any server
+    that canonicalizes the request. Comparing the digits would refuse those plans;
+    comparing the doubles still pins about 16 significant digits, and the
+    activation itself is built from the plan account, never from this number.
+    """
+    if isinstance(advertised, int) and isinstance(actual, int):
+        return float(advertised) == float(actual)
+    return advertised == actual
+
+
 def _extension_problems(details: SubscriptionMethodDetails, request: SubscriptionRequest, plan: PlanView) -> list[str]:
     """Cross-check the optional Rust plan extensions against the chain; absent fields are skipped."""
     checks: list[tuple[str, object, object]] = [
@@ -85,7 +99,7 @@ def _extension_problems(details: SubscriptionMethodDetails, request: Subscriptio
     return [
         f"methodDetails.{name} is {advertised!r} but the on-chain plan has {actual!r}"
         for name, advertised, actual in checks
-        if advertised not in ("", None) and advertised != actual
+        if advertised not in ("", None) and not _same_on_the_wire(advertised, actual)
     ]
 
 
