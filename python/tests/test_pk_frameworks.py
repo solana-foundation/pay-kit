@@ -369,3 +369,39 @@ def test_django_middleware_402_when_unpaid(monkeypatch):
     request.paykit_gate = Price.usd("0.10", Stablecoin.USDC)  # type: ignore[attr-defined]
     resp = middleware(request)
     assert resp.status_code == 402
+
+
+def test_require_subscription_402_then_200(monkeypatch):
+    import asyncio
+
+    from fastapi import Depends, FastAPI
+    from starlette.testclient import TestClient
+
+    from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+    from solana_pay_kit.protocols.mpp.client.subscription import build_subscription_activation
+    from solana_pay_kit.protocols.mpp.core.headers import (
+        format_authorization,
+        parse_receipt,
+        parse_www_authenticate,
+    )
+    from tests._subscription_fixtures import SUBSCRIBER
+    from tests.test_subscription_server import Harness
+
+    h = Harness(monkeypatch)
+    app = FastAPI()
+    install_exception_handler(app)
+
+    @app.get("/feed")
+    async def feed(receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+        return {"ok": True}
+
+    client = TestClient(app)
+    denied = client.get("/feed")
+    assert denied.status_code == 402
+    assert denied.headers["cache-control"] == "no-store" and "payment-receipt" not in denied.headers
+    challenge = parse_www_authenticate(denied.headers["www-authenticate"])
+    activation = asyncio.run(build_subscription_activation(SUBSCRIBER, h.rpc, challenge))
+    ok = client.get("/feed", headers={"authorization": format_authorization(activation.credential)})
+    assert ok.status_code == 200 and ok.json() == {"ok": True}
+    assert ok.headers["cache-control"] == "private"
+    assert parse_receipt(ok.headers["payment-receipt"]).period_index == 0

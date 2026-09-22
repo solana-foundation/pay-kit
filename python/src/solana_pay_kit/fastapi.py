@@ -51,12 +51,18 @@ if TYPE_CHECKING:
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
-    from solana_pay_kit.protocols.mpp.server import Session, SessionChallengeOptions
+    from solana_pay_kit.protocols.mpp.server import (
+        Session,
+        SessionChallengeOptions,
+        SubscriptionChallengeOptions,
+        SubscriptionServer,
+    )
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
 __all__ = [
     "RequirePayment",
     "RequireSession",
+    "RequireSubscription",
     "RequireUsage",
     "PaywallConfig",
     "install_exception_handler",
@@ -232,6 +238,31 @@ def RequireSession(  # noqa: N802 - factory reads as a dependency constructor
     async def dependency(request: Request) -> dict[str, str]:
         auth = request.headers.get(AUTHORIZATION_HEADER)
         result = await session.handle(auth, challenge_options)
+        if not result.ok:
+            raise HTTPException(result.status, detail=result.body, headers=result.headers)
+        setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(result.headers))
+        return result.headers
+
+    return dependency
+
+
+def RequireSubscription(  # noqa: N802 - factory reads as a dependency constructor
+    server: SubscriptionServer,
+    options: SubscriptionChallengeOptions | None = None,
+) -> Callable[..., Any]:
+    """Build a FastAPI dependency that gates a route behind an MPP subscription.
+
+    Runs :meth:`~solana_pay_kit.protocols.mpp.server.SubscriptionServer.handle`
+    on the ``Authorization`` header. A missing or invalid credential raises
+    ``HTTPException`` with the 402 challenge headers (``Cache-Control:
+    no-store``) and problem body; an activation or a valid bearer proof
+    schedules the receipt and ``Cache-Control: private`` onto the response
+    (needs :func:`install_exception_handler`) and returns those headers.
+    """
+    from solana_pay_kit.protocols.mpp.core.headers import AUTHORIZATION_HEADER
+
+    async def dependency(request: Request) -> dict[str, str]:
+        result = await server.handle(request.headers.get(AUTHORIZATION_HEADER), options)
         if not result.ok:
             raise HTTPException(result.status, detail=result.body, headers=result.headers)
         setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(result.headers))
