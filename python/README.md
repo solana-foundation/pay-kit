@@ -527,7 +527,22 @@ harness commands:
 cd harness
 MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=python pnpm test
 MPP_HARNESS_CLIENTS=rust       MPP_HARNESS_SERVERS=python pnpm test
+# subscription: the Python client activates and accesses against the Python
+# server and the Rust server leg (needs the subscriptions program, so either
+# SUBSCRIPTIONS_PROGRAM_SO or a surfpool datasource for the mainnet fork)
+MPP_HARNESS_INTENTS=subscription \
+  MPP_HARNESS_CLIENTS=python-subscription \
+  MPP_HARNESS_SERVERS=python,rust-subscription \
+  pnpm exec vitest run test/e2e.test.ts --testTimeout 300000
 ```
+
+The subscription lifecycle also runs against a surfpool fork of mainnet from
+pytest, where the deployed program executes. CI runs it in the Python harness
+job (skipped when the datasource secret is unavailable, as on fork PRs);
+locally, start `surfpool start --network mainnet --ci --no-deploy`, then
+`MPP_RUN_SUBSCRIPTION_E2E=1 MPP_SUBSCRIPTION_E2E_RPC_URL=http://127.0.0.1:8899
+uv run pytest tests/test_subscription_e2e_surfnet.py`. Give it a fresh surfnet:
+the suite time-travels past a billing period.
 
 ## Spec
 
