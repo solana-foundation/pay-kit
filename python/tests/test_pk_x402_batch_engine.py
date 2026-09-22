@@ -351,8 +351,8 @@ async def test_a_confirmed_deposit_below_the_reservation_is_refused_and_released
     request = world.header(_requirement(engine, world), world.deposit_payload(3 * PRICE, PRICE))
     verified = await _verify(engine, world.gate, request)
     assert await _code(engine.commit(verified)) == errors.INVALID_CHANNEL_STATE
-    record = await engine._store.get(world.channel_id())  # noqa: SLF001
-    assert record is not None and record.reservations == {} and record.charged_cumulative == 0
+    # Released, nothing charged; the provisional record held nothing, so it is gone.
+    assert await engine._store.get(world.channel_id()) is None  # noqa: SLF001
 
 
 async def test_an_ambiguous_deposit_is_released_and_never_rebuilt(world: World) -> None:
@@ -400,7 +400,8 @@ async def test_a_store_failure_after_a_confirmed_deposit_still_answers_and_alert
     store.armed = True
     response: Any = await engine.commit(verified)
     assert response["success"] and response["extra"]["channelState"]["chargedCumulativeAmount"] == str(PRICE)
-    assert [event for event, _ in alerts] == ["commit_after_deposit"]
+    # Both writes after the broadcast fail: the setup record and the charge.
+    assert [event for event, _ in alerts] == ["setup_after_broadcast", "commit_after_deposit"]
 
 
 async def test_a_store_failure_on_a_plain_voucher_is_not_served(world: World) -> None:
@@ -683,3 +684,115 @@ async def test_a_store_failure_after_request_close_still_answers_and_alerts(worl
     store.update = fail_after_hold  # type: ignore[method-assign]
     response = await _refund_response(engine, world, _refund(world))
     assert response["success"] and response["transaction"] and alerts == ["refund"]
+
+
+async def test_an_expired_reservation_cannot_be_charged_twice(world: World) -> None:
+    # A handler outlived its reservation window; the retry of the same voucher
+    # took the channel and charged it. The late commit must not charge again.
+    clock = [NOW]
+    engine = _engine(world, clock=lambda: clock[0])
+    await _open(engine, world)
+    request = world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
+    late = await _verify(engine, world.gate, request)
+    clock[0] += 301
+    world.put_channel(deposit=3 * PRICE)
+    await engine.commit(await _verify(engine, world.gate, request))
+    assert await _code(engine.commit(late)) == errors.DUPLICATE_SETTLEMENT
+
+
+async def test_a_late_deposit_commit_neither_broadcasts_nor_serves_twice(world: World) -> None:
+    # A top-up request outlived its lease; its retry took the channel, landed
+    # the same top-up and was charged. The late commit must not serve again.
+    clock = [NOW]
+    engine = _engine(world, clock=lambda: clock[0])
+    await _open(engine, world, deposit=PRICE)
+    top_up = world.deposit_payload(PRICE, 2 * PRICE, transaction=world.top_up_tx(PRICE))
+    request = world.header(_requirement(engine, world), top_up)
+    late = await _verify(engine, world.gate, request)
+    clock[0] += 301
+    world.lands_as_channel(deposit=2 * PRICE)
+    await engine.commit(await _verify(engine, world.gate, request))
+    sent = len(world.chain.sent)
+    assert await _code(engine.commit(late)) == errors.DUPLICATE_SETTLEMENT
+    assert len(world.chain.sent) == sent  # nothing re-broadcast for the late request
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and record.charged_cumulative == 2 * PRICE
+
+
+async def test_a_deposit_whose_charge_fails_after_landing_keeps_the_escrow_and_withholds(world: World) -> None:
+    # The lease runs out while the top-up confirms: the escrow is recorded,
+    # the request is not charged and nothing is served.
+    clock = [NOW]
+    engine = _engine(world, clock=lambda: clock[0])
+    await _open(engine, world, deposit=PRICE)
+    request = world.header(
+        _requirement(engine, world), world.deposit_payload(PRICE, 2 * PRICE, transaction=world.top_up_tx(PRICE))
+    )
+    verified = await _verify(engine, world.gate, request)
+
+    def land_late(_tx: Any) -> None:
+        world.put_channel(deposit=2 * PRICE)
+        clock[0] += 301
+
+    world.chain.effects.append(land_late)
+    assert await _code(engine.commit(verified)) == errors.DUPLICATE_SETTLEMENT
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and (record.deposit, record.charged_cumulative) == (2 * PRICE, PRICE)
+    assert verified.setup is not None and verified.setup.payer_signature in record.processed_setup_signatures
+
+
+async def test_a_charge_is_refused_once_the_channel_is_sealed(world: World) -> None:
+    engine = _engine(world)
+    await _open(engine, world)
+    verified = await _verify(
+        engine, world.gate, world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
+    )
+    await engine._store.update(world.channel_id(), lambda current: replace(current, status="sealed"))  # type: ignore[arg-type]  # noqa: SLF001
+    assert await _code(engine.commit(verified)) == errors.INVALID_CLOSE_STATE
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and (record.charged_cumulative, record.reservations) == (PRICE, {})
+
+
+async def test_a_failed_open_forgets_its_provisional_record(world: World) -> None:
+    engine = _engine(world)
+    world.chain.send_error = PaymentError("node down", code="payment_invalid")
+    request = world.header(_requirement(engine, world), world.deposit_payload(3 * PRICE, PRICE))
+    verified = await _verify(engine, world.gate, request)
+    assert await engine._store.get(world.channel_id()) is not None  # noqa: SLF001
+    assert await _code(engine.commit(verified)) == errors.INVALID_SETTLEMENT_SIMULATION
+    assert await engine._store.get(world.channel_id()) is None  # noqa: SLF001
+    # A record that holds anything is kept on release.
+    world.chain.send_error = None
+    await _open(engine, world)
+    held = await _verify(
+        engine, world.gate, world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
+    )
+    await engine.release(held)
+    assert await engine._store.get(world.channel_id()) is not None  # noqa: SLF001
+
+
+async def test_an_exact_replay_proves_the_charge_the_client_lost(world: World) -> None:
+    engine = _engine(world)
+    await _open(engine, world)
+    replay = world.header(_requirement(engine, world), world.voucher_payload(PRICE))
+    with pytest.raises(CorrectiveRequired) as exc:
+        await engine.verify_and_reserve(world.gate, replay)
+    assert exc.value.code == errors.DUPLICATE_SETTLEMENT
+    extra = exc.value.accepts[0]["extra"]
+    assert extra.get("channelState", {}).get("chargedCumulativeAmount") == str(PRICE)
+    voucher = world.voucher_payload(PRICE)["voucher"]
+    assert extra.get("voucherState") == {
+        "signedMaxClaimable": str(PRICE),
+        "expiresAt": 0,
+        "signature": voucher["signature"],
+    }
+    # A busy duplicate carries no state.
+    held = await _verify(
+        engine, world.gate, world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
+    )
+    with pytest.raises(BatchSettlementError) as busy:
+        await engine.verify_and_reserve(
+            world.gate, world.header(_requirement(engine, world), world.voucher_payload(3 * PRICE))
+        )
+    assert busy.value.code == errors.DUPLICATE_SETTLEMENT and not isinstance(busy.value, CorrectiveRequired)
+    await engine.release(held)

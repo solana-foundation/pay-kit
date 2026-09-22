@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pydantic
@@ -45,11 +48,14 @@ from solana_pay_kit.errors import ConfigurationError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.batch_settlement import errors, onchain, tx_policy
 from solana_pay_kit.protocols.x402.batch_settlement.errors import BatchSettlementError
+from solana_pay_kit.protocols.x402.batch_settlement.signatures import sign_voucher
 from solana_pay_kit.protocols.x402.batch_settlement.store import (
     BatchChannelStore,
+    BatchOperationStore,
     ChannelRecord,
     ChannelStatus,
     MemoryBatchChannelStore,
+    MemoryBatchOperationStore,
     Reservation,
 )
 from solana_pay_kit.protocols.x402.batch_settlement.types import (
@@ -61,6 +67,7 @@ from solana_pay_kit.protocols.x402.batch_settlement.types import (
     BatchDeposit,
     BatchPaymentPayload,
     BatchRequirements,
+    BatchSettlementExtra,
     BatchSettlementResponse,
     BatchVoucher,
     VoucherSigner,
@@ -73,6 +80,7 @@ from solana_pay_kit.protocols.x402.batch_settlement.verify import (
     CHANNEL_STATUS_DISTRIBUTED,
     CHANNEL_STATUS_OPEN,
     CHANNEL_STATUS_SEALED,
+    check_authorization,
     check_capacity,
     check_channel_binding,
     check_channel_config,
@@ -81,11 +89,11 @@ from solana_pay_kit.protocols.x402.batch_settlement.verify import (
     check_voucher,
     derive_channel_id,
 )
+from solana_pay_kit.signer import LocalSigner
 
 if TYPE_CHECKING:
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import Gate
-    from solana_pay_kit.signer import LocalSigner
 
 __all__ = [
     "BatchSettlementConfig",
@@ -128,6 +136,25 @@ _BOUND_EXTRA = (
 
 AlertHook = Callable[[str, Mapping[str, Any]], None]
 
+_ATOMIC = re.compile(r"[0-9]+")
+_USD = re.compile(r"\$[0-9]+(\.[0-9]+)?")
+# Multiples of the price advertised as minDeposit. Server mode stays near the
+# client's own minimum: that escrow is what the operator could take.
+_CLIENT_MIN_DEPOSIT_MULTIPLE = 10
+_SERVER_MIN_DEPOSIT_MULTIPLE = 3
+
+
+def _atomic_min_deposit(value: str) -> int:
+    """Atomic units for a ``min_deposit`` of ``"123"`` or ``"$1.5"`` (USD, 6 decimals, floored)."""
+    if _ATOMIC.fullmatch(value):
+        return int(value)
+    if _USD.fullmatch(value):
+        try:
+            return int((Decimal(value[1:]) * 10**_DECIMALS).to_integral_value(rounding=ROUND_FLOOR))
+        except InvalidOperation:  # pragma: no cover - the pattern admits only plain decimals
+            pass
+    raise ConfigurationError(f"batch min_deposit {value!r} must be atomic units or a USD amount like '$1.50'")
+
 
 class BatchSettlementConfig(pydantic.BaseModel):
     """Server knobs for ``batch-settlement``; frozen, unknown keys refused."""
@@ -142,9 +169,17 @@ class BatchSettlementConfig(pydantic.BaseModel):
     receiver_authorizer: str | None = None
     #: How long a channel snapshot read from chain lets vouchers verify without another read.
     onchain_state_ttl_seconds: int = 30
+    #: Operator key that signs vouchers for metered requests; enables the server-signed accept.
+    operator: LocalSigner | None = None
+    #: ``extra.minDeposit`` override: atomic units, or ``"$x"`` (USD, floored to atomic units).
+    min_deposit: str | None = None
+    #: Refuse a ``deposit`` below the advertised ``minDeposit`` (``deposit_below_min_deposit``).
+    enforce_min_deposit: bool = False
 
     @pydantic.model_validator(mode="after")
     def _check_delay(self) -> BatchSettlementConfig:
+        if self.min_deposit is not None and _atomic_min_deposit(self.min_deposit) <= 0:
+            raise ConfigurationError(f"batch min_deposit {self.min_deposit!r} must be a positive amount")
         delay = self.effective_withdraw_delay()
         if self.max_timeout_seconds <= 0 or not MIN_WITHDRAW_DELAY_SECONDS <= delay <= MAX_WITHDRAW_DELAY_SECONDS:
             raise ConfigurationError(f"batch withdraw_delay {delay} is outside 900..=2592000 seconds")
@@ -190,11 +225,22 @@ class VerifiedBatchRequest:
 
 
 class CorrectiveRequired(BatchSettlementError):
-    """``cumulative_amount_mismatch`` on a validated payload; ``accepts`` carry the server's snapshot."""
+    """A 402 whose ``accepts`` carry the server's channel snapshot for the client to resync from.
 
-    def __init__(self, detail: str, accepts: list[BatchRequirements]) -> None:
-        super().__init__(errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH, detail)
+    ``cumulative_amount_mismatch`` on a validated voucher off the watermark, or
+    ``duplicate_settlement`` on an exact replay of the voucher last charged
+    (its response was lost), with the voucher proof attached.
+    """
+
+    def __init__(
+        self, detail: str, accepts: list[BatchRequirements], code: str = errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH
+    ) -> None:
+        super().__init__(code, detail)
         self.accepts = accepts
+
+
+class _ReplayedVoucher(BatchSettlementError):
+    """The exact voucher already charged at the watermark came back."""
 
 
 def _snapshot(record: ChannelRecord) -> BatchChannelState:
@@ -236,6 +282,7 @@ class X402BatchSettlement:
         *,
         settings: BatchSettlementConfig | None = None,
         channel_store: BatchChannelStore | None = None,
+        operation_store: BatchOperationStore | None = None,
         rpc: SolanaRpc | None = None,
         recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None,
         clock: Callable[[], float] = time.time,
@@ -248,6 +295,7 @@ class X402BatchSettlement:
         self._config = config
         self._settings = settings or BatchSettlementConfig()
         self._store: BatchChannelStore = channel_store or MemoryBatchChannelStore()
+        self._operations: BatchOperationStore = operation_store or MemoryBatchOperationStore()
         self._rpc = rpc
         self._recent_state_provider = recent_state_provider
         self._clock = clock
@@ -257,21 +305,30 @@ class X402BatchSettlement:
         self._program_id = Pubkey.from_string(
             program_id or os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or PAYMENT_CHANNELS_PROGRAM_ID
         )
+        operator = self._settings.operator
+        if operator is not None and operator.pubkey() == self._fee_payer().pubkey():
+            raise ConfigurationError("solana_pay_kit: the batch operator must not be the fee payer")
 
     # -- challenge -------------------------------------------------------------
 
     def accepts_entries(
         self, gate: Gate, request: Any, *, voucher_signer: VoucherSigner | None = None
     ) -> list[BatchRequirements]:
-        """The route's ``batch-settlement`` accepts, client-signed first, with fresh blockhash/slot hints."""
-        del request, voucher_signer
-        requirement = self._requirement(gate)
+        """The route's accepts with fresh blockhash/slot hints, client-signed first.
+
+        With an operator configured the route also offers a server-signed
+        accept after the client one: a Rust client takes the first accept and
+        signs its own vouchers. ``voucher_signer`` pins the route to one mode.
+        """
+        del request
+        accepts = self._accepts(gate, voucher_signer)
         blockhash, slot = self._recent_state()
-        if blockhash is not None:
-            requirement["extra"]["recentBlockhash"] = blockhash
-        if slot is not None:
-            requirement["extra"]["recentSlot"] = slot
-        return [requirement]
+        for requirement in accepts:
+            if blockhash is not None:
+                requirement["extra"]["recentBlockhash"] = blockhash
+            if slot is not None:
+                requirement["extra"]["recentSlot"] = slot
+        return accepts
 
     def challenge_headers(
         self,
@@ -306,7 +363,9 @@ class X402BatchSettlement:
 
     # -- verify and reserve (before the handler) ------------------------------------
 
-    async def verify_and_reserve(self, gate: Gate, request: Any) -> VerifiedBatchRequest | BatchSettlementResponse:
+    async def verify_and_reserve(
+        self, gate: Gate, request: Any, *, voucher_signer: VoucherSigner | None = None
+    ) -> VerifiedBatchRequest | BatchSettlementResponse:
         """Verify the payment and reserve its ceiling against the channel deposit.
 
         A ``refund`` is a payment operation, not a paid request: it runs here and
@@ -316,56 +375,88 @@ class X402BatchSettlement:
         server's cumulative watermark.
         """
         envelope = parse_payment_payload(_decode_header(_payment_header(request)))
-        requirements = self._match_accepted(envelope, [self._requirement(gate)])
+        requirements = self._match_accepted(envelope, self._accepts(gate, voucher_signer))
         payload = envelope["payload"]
         config = payload["channelConfig"]
         fee_payer = self._fee_payer().pubkey()
-        check_channel_config(config, requirements, fee_payer=fee_payer, operator=None)
+        operator = self._settings.operator
+        check_channel_config(
+            config, requirements, fee_payer=fee_payer, operator=None if operator is None else operator.pubkey()
+        )
         check_no_cooperative_close(payload)
         channel_id = derive_channel_id(config, fee_payer, self._program_id)
         if payload["type"] == "refund":
             return await self._refund(payload["transaction"], config, requirements, channel_id)
         ceiling = parse_u64(requirements["amount"], "amount")
-        # The signature is checked before any RPC read, so an unsigned request
+        server_signed = config.get("voucherSigner") == "server"
+        # Every proof is checked before any RPC read, so an unsigned request
         # cannot make the server read the chain.
-        setup = None
+        voucher: BatchVoucher | None = None
+        request_id: str | None = None
+        proof_expires_at = 0.0
+        max_claimable: int | None = None
+        deposit: BatchDeposit | None = None
         if payload["type"] == "voucher":
             voucher = payload["voucher"]
-            max_claimable = check_voucher(voucher, config, channel_id)
-            async with self._rpc_scope() as rpc:
-                await self._ensure_fresh(rpc, channel_id, config, requirements)
-        elif payload["type"] == "deposit" and "voucher" in payload:
-            voucher = payload["voucher"]
-            max_claimable = check_voucher(voucher, config, channel_id)
+        elif payload["type"] == "authorization":
+            proof = payload["authorization"]
+            check_authorization(proof, config, channel_id, amount=requirements["amount"], now=int(self._clock()))
+            request_id = proof["requestId"]
+            proof_expires_at = float(proof["expiresAt"])
+        else:
             deposit = payload["deposit"]
-            form = tx_policy.setup_form(deposit["transaction"], self._program_id)
-            async with self._rpc_scope() as rpc:
+            voucher = payload.get("voucher")
+            proof = payload.get("authorization")
+            if proof is not None:
+                check_authorization(proof, config, channel_id, amount=requirements["amount"], now=int(self._clock()))
+                request_id = proof["requestId"]
+                proof_expires_at = float(proof["expiresAt"])
+            self._check_min_deposit(deposit, requirements)
+        if voucher is not None:
+            max_claimable = check_voucher(voucher, config, channel_id)
+        setup = None
+        async with self._rpc_scope() as rpc:
+            if deposit is None:
+                await self._ensure_fresh(rpc, channel_id, config, requirements)
+            else:
+                form = tx_policy.setup_form(deposit["transaction"], self._program_id)
                 exists = await self._ensure_fresh(rpc, channel_id, config, requirements, must_exist=form == "top_up")
                 setup = await self._validate_setup(rpc, deposit, form, config, requirements, channel_id, exists)
-        else:
-            raise BatchSettlementError(errors.INVALID_PAYLOAD_TYPE, f"{payload['type']} is not a paid request")
-        reservation_id, required = await self._reserve(
-            channel_id,
-            config,
-            requirements,
-            kind="client",
-            ceiling=ceiling,
-            voucher=voucher,
-            max_claimable=max_claimable,
-            setup=setup,
-        )
+        if request_id is not None:
+            # The record may be pruned once the proof expires: verify refuses an expired proof.
+            created, _ = await self._operations.reserve(
+                channel_id, request_id, ceiling, expires_at=proof_expires_at, now=self._clock()
+            )
+            if not created:
+                raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, f"request {request_id} was already used")
+        try:
+            reservation_id, required = await self._reserve(
+                channel_id,
+                config,
+                requirements,
+                kind="server" if server_signed else "client",
+                ceiling=ceiling,
+                voucher=voucher,
+                max_claimable=max_claimable,
+                setup=setup,
+                request_id=request_id,
+            )
+        except BaseException:
+            if request_id is not None:
+                await self._operations.release(channel_id, request_id)
+            raise
         return VerifiedBatchRequest(
             channel_id=channel_id,
             payer=config["payer"],
             kind=payload["type"],
-            server_signed=False,
+            server_signed=server_signed,
             requirements=requirements,
             channel_config=config,
             ceiling=ceiling,
             reservation_id=reservation_id,
             required_deposit=required,
             voucher=voucher,
-            request_id=None,
+            request_id=request_id,
             setup=setup,
         )
 
@@ -468,7 +559,7 @@ class X402BatchSettlement:
         kind: Literal["client", "server"],
         ceiling: int,
         voucher: BatchVoucher | None,
-        max_claimable: int,
+        max_claimable: int | None,
         setup: PendingSetup | None,
         request_id: str | None = None,
     ) -> tuple[str, int]:
@@ -488,9 +579,14 @@ class X402BatchSettlement:
             # server-signed requests share it with other server-signed ones.
             if (kind != "server" and live) or any(r.kind != "server" for r in live.values()):
                 raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, f"channel {channel_id} is busy")
+            # A server-signed request can reach at most its ceiling on top of
+            # what was charged; a client voucher states its cumulative.
+            claim = record.charged_cumulative + ceiling if max_claimable is None else max_claimable
             if voucher is not None:
+                if claim == record.charged_cumulative and voucher["signature"] == record.voucher_signature:
+                    raise _ReplayedVoucher(errors.DUPLICATE_SETTLEMENT, f"voucher for {claim} was already accepted")
                 check_cumulative(
-                    max_claimable,
+                    claim,
                     voucher["signature"],
                     charged=record.charged_cumulative,
                     amount=ceiling,
@@ -501,19 +597,23 @@ class X402BatchSettlement:
                 deposit += setup.amount
             reserved = sum(r.ceiling for r in live.values())
             check_capacity(
-                max_claimable=max_claimable,
+                max_claimable=claim,
                 charged=record.charged_cumulative,
                 reserved=reserved,
                 ceiling=ceiling,
                 deposit=deposit,
             )
-            required[0] = max(max_claimable, record.charged_cumulative + reserved + ceiling)
+            required[0] = max(claim, record.charged_cumulative + reserved + ceiling)
             expires_at = now + max(_MIN_RESERVATION_SECONDS, requirements["maxTimeoutSeconds"])
             live[reservation_id] = Reservation(ceiling, kind, expires_at, request_id)
             return replace(record, reservations=live)
 
         try:
             await self._store.update(channel_id, reserve)
+        except _ReplayedVoucher as exc:
+            # Its response was lost: prove the charge so the client can confirm it and move on.
+            corrective = await self._corrective(channel_id, requirements)
+            raise CorrectiveRequired(exc.detail, [corrective], errors.DUPLICATE_SETTLEMENT) from None
         except BatchSettlementError as exc:
             if exc.code != errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH:
                 raise
@@ -540,60 +640,131 @@ class X402BatchSettlement:
     async def commit(self, verified: VerifiedBatchRequest, actual: int | None = None) -> BatchSettlementResponse:
         """Charge the verified request after its handler succeeded; broadcast its setup first, if any.
 
-        Client-signed requests charge exactly the ceiling their voucher covers.
+        Client-signed requests charge exactly the price their voucher covers.
+        Server-signed requests charge the metered ``actual`` (``0 <= actual <=
+        ceiling``) and get an operator-signed voucher for the new cumulative; a
+        missing charge (``None``) fails closed: the reservation is released and
+        nothing is served, while an explicit ``0`` serves at the unchanged
+        cumulative.
         """
-        if actual is not None and actual != verified.ceiling:
+        if verified.server_signed and actual is None:
+            await self.release(verified)
+            raise BatchSettlementError("settlement_failed", "usage Charge must be called before the handler returns")
+        charge_amount = verified.ceiling if actual is None else actual
+        exact = verified.server_signed or charge_amount == verified.ceiling
+        if not exact or not 0 <= charge_amount <= verified.ceiling:
             await self.release(verified)
             raise BatchSettlementError(
-                errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH, "a client-signed voucher charges exactly its price"
+                errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                f"charge {charge_amount} is not allowed for a ceiling of {verified.ceiling}",
             )
-        voucher = verified.voucher
-        assert voucher is not None  # client-signed requests always carry one
-        max_claimable = int(voucher["maxClaimableAmount"])
         channel: Channel | None = None
         if verified.setup is not None:
+            # Nothing irreversible for a request whose lease is already gone.
+            await self._require_reservation(verified)
             channel = await self._broadcast_setup(verified)
+            # The escrow landed: record it whether or not the charge below can
+            # still be made, so a retry of the same bytes is never counted twice.
+            await self._record_after_broadcast(
+                "setup_after_broadcast",
+                verified.channel_id,
+                lambda current: self._with_setup(current, verified, channel),
+            )
         now = self._clock()
+        issued: list[BatchVoucher] = []
 
         def charge(current: ChannelRecord | None) -> ChannelRecord:
-            if current is None or verified.reservation_id not in current.reservations:
+            if current is None:
                 raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, "reservation expired or was released")
-            record = current if channel is None else _advance(current, channel, now)
-            if max_claimable != record.charged_cumulative + verified.ceiling:
-                raise BatchSettlementError(errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH, "channel moved since verify")
-            reservations = dict(record.reservations)
-            del reservations[verified.reservation_id]
-            processed = record.processed_setup_signatures
-            setup = verified.setup
-            if setup is not None and setup.payer_signature not in processed:
-                processed = [*processed, setup.payer_signature]
+            record = current if channel is None else self._with_setup(current, verified, channel)
+            reservation = record.reservations.get(verified.reservation_id)
+            if reservation is None or reservation.expires_at <= now:
+                raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, "reservation expired or was released")
+            if record.status in ("sealed", "distributed"):
+                raise BatchSettlementError(
+                    errors.INVALID_CLOSE_STATE, f"channel {record.channel_id} is {record.status}"
+                )
+            cumulative = record.charged_cumulative + charge_amount
+            if cumulative > record.deposit:
+                raise BatchSettlementError(
+                    errors.INVALID_CUMULATIVE_EXCEEDS_DEPOSIT, f"{cumulative} is over the deposit {record.deposit}"
+                )
+            if verified.server_signed:
+                voucher = sign_voucher(self._operator(), verified.channel_id, cumulative)
+            else:
+                voucher = verified.voucher
+                assert voucher is not None  # client-signed requests always carry one
+                if int(voucher["maxClaimableAmount"]) != cumulative:
+                    raise BatchSettlementError(errors.INVALID_CUMULATIVE_AMOUNT_MISMATCH, "channel moved since verify")
+            issued.append(voucher)
             return replace(
-                record,
-                charged_cumulative=max_claimable,
-                signed_max_claimable=max_claimable,
+                _without(record, verified.reservation_id),
+                charged_cumulative=cumulative,
+                signed_max_claimable=cumulative,
                 voucher_signature=voucher["signature"],
-                reservations=reservations,
-                processed_setup_signatures=processed,
                 last_activity_at=now,
-                open_signature=setup.signature if setup is not None and setup.form == "open" else record.open_signature,
             )
 
-        if channel is None:
-            # Nothing irreversible happened: a failed write must not serve.
+        record: ChannelRecord | None
+        try:
             record = await self._store.update(verified.channel_id, charge)
-            return self._accepted(verified, _snapshot(record))
-        record = await self._record_after_broadcast("commit_after_deposit", verified.channel_id, charge)
-        if record is not None:
-            state = _snapshot(record)
-        else:
+        except BatchSettlementError:
+            # The request cannot be charged (lease gone, channel sealed or
+            # moved): nothing may be served for it.
+            await self.release(verified)
+            raise
+        except Exception as exc:
+            if channel is None:
+                raise  # nothing irreversible happened: a failed write must not serve
+            self._alert("commit_after_deposit", verified.channel_id, exc)  # the escrow landed: alert, never re-raise
+            record = None
+        if record is None:
+            assert channel is not None
             state: BatchChannelState = {
                 "channelId": verified.channel_id,
                 "balance": str(int(channel.deposit)),
                 "totalClaimed": str(int(channel.settlement.settled)),
                 "withdrawRequestedAt": int(channel.closureStartedAt),
-                "chargedCumulativeAmount": str(max_claimable),
             }
-        return self._accepted(verified, state)
+            if verified.voucher is not None:
+                state["chargedCumulativeAmount"] = verified.voucher["maxClaimableAmount"]
+            # A server-signed request cannot be given a voucher without the
+            # stored cumulative; the client restores its state and resyncs.
+            return self._accepted(verified, state, verified.voucher)
+        if verified.request_id is not None:
+            try:
+                await self._operations.complete(
+                    verified.channel_id,
+                    verified.request_id,
+                    ceiling=verified.ceiling,
+                    actual=charge_amount,
+                    cumulative=record.charged_cumulative,
+                )
+            except Exception as exc:  # noqa: BLE001 - the charge is recorded; the request id stays consumed
+                self._alert("operation_complete", verified.channel_id, exc)
+        return self._accepted(verified, _snapshot(record), issued[-1])
+
+    async def _require_reservation(self, verified: VerifiedBatchRequest) -> None:
+        """Refuse (release + 402) a request whose reservation expired or was dropped meanwhile."""
+        current = await self._store.get(verified.channel_id)
+        reservation = None if current is None else current.reservations.get(verified.reservation_id)
+        if reservation is None or reservation.expires_at <= self._clock():
+            await self.release(verified)
+            raise BatchSettlementError(errors.DUPLICATE_SETTLEMENT, "reservation expired or was released")
+
+    def _with_setup(
+        self, current: ChannelRecord | None, verified: VerifiedBatchRequest, channel: Channel
+    ) -> ChannelRecord:
+        """Fold a confirmed setup into the record: the chain's escrow, the payer signature, the open signature."""
+        base = current or self._new_record(verified.channel_id, verified.channel_config, verified.requirements)
+        record = _advance(base, channel, self._clock())
+        setup = verified.setup
+        assert setup is not None
+        processed = record.processed_setup_signatures
+        if setup.payer_signature not in processed:
+            processed = [*processed, setup.payer_signature]
+        opened = setup.signature if setup.form == "open" else record.open_signature
+        return replace(record, processed_setup_signatures=processed, open_signature=opened)
 
     async def _broadcast_setup(self, verified: VerifiedBatchRequest) -> Channel:
         """Send the co-signed setup, wait for it, and bind the confirmed channel before charging against it."""
@@ -632,25 +803,35 @@ class X402BatchSettlement:
         return channel
 
     async def release(self, verified: VerifiedBatchRequest) -> None:
-        """Drop the request's reservation (handler failed or was cancelled); idempotent."""
+        """Drop the request's reservation (handler failed or was cancelled); idempotent.
 
-        await self._store.update(verified.channel_id, lambda current: _without(current, verified.reservation_id))
+        A server-signed request id stays consumed: its operation is tombstoned.
+        """
+        with contextlib.suppress(BatchSettlementError):  # already gone
+            await self._store.update(verified.channel_id, lambda current: _without(current, verified.reservation_id))
+        # A failed open leaves a provisional record that holds nothing: forget it.
+        await self._store.delete_if(verified.channel_id, _holds_nothing)
+        if verified.request_id is not None:
+            await self._operations.release(verified.channel_id, verified.request_id)
 
-    def _accepted(self, verified: VerifiedBatchRequest, state: BatchChannelState) -> BatchSettlementResponse:
-        voucher = verified.voucher
-        assert voucher is not None
+    def _accepted(
+        self, verified: VerifiedBatchRequest, state: BatchChannelState, voucher: BatchVoucher | None
+    ) -> BatchSettlementResponse:
         setup = verified.setup
+        extra: BatchSettlementExtra = {"channelState": state}
+        if voucher is not None:
+            extra["commitmentId"] = commitment_id(verified.channel_id, voucher["maxClaimableAmount"])
+            if verified.server_signed:
+                extra["voucher"] = voucher
+        if not verified.server_signed:
+            extra["chargedAmount"] = verified.requirements["amount"]
         return {
             "success": True,
             "transaction": setup.signature if setup is not None else "",
             "network": verified.requirements["network"],
             "amount": setup.amount_string if setup is not None else "",
             "payer": verified.payer,
-            "extra": {
-                "commitmentId": commitment_id(verified.channel_id, voucher["maxClaimableAmount"]),
-                "chargedAmount": verified.requirements["amount"],
-                "channelState": state,
-            },
+            "extra": extra,
         }
 
     # -- refund (handler bypassed) ------------------------------------------------------
@@ -802,7 +983,34 @@ class X402BatchSettlement:
             token_program=requirements["extra"]["tokenProgram"],
         )
 
-    def _requirement(self, gate: Gate) -> BatchRequirements:
+    def _operator(self) -> LocalSigner:
+        operator = self._settings.operator
+        if operator is None:
+            raise ConfigurationError("solana_pay_kit: server-signed batch-settlement needs an operator signer")
+        return operator
+
+    def _accepts(self, gate: Gate, voucher_signer: VoucherSigner | None) -> list[BatchRequirements]:
+        """The route's accepts without hints: client-signed first, then server-signed when an operator is set."""
+        operator = self._settings.operator
+        if voucher_signer == "server" and operator is None:
+            raise ConfigurationError('solana_pay_kit: voucher_signer="server" needs BatchSettlementConfig.operator')
+        accepts: list[BatchRequirements] = []
+        if voucher_signer != "server":
+            accepts.append(self._requirement(gate, server_signed=False))
+        if operator is not None and voucher_signer != "client":
+            server = self._requirement(gate, server_signed=True)
+            server["extra"]["voucherSigner"] = "server"
+            server["extra"]["operator"] = operator.pubkey()
+            accepts.append(server)
+        return accepts
+
+    def _check_min_deposit(self, deposit: BatchDeposit, requirements: BatchRequirements) -> None:
+        hint = requirements["extra"].get("minDeposit")
+        amount = parse_u64(deposit["amount"], "deposit.amount")
+        if self._settings.enforce_min_deposit and hint is not None and amount < int(hint):
+            raise BatchSettlementError(errors.INVALID_DEPOSIT_BELOW_MIN_DEPOSIT, f"deposit {amount} is below {hint}")
+
+    def _requirement(self, gate: Gate, *, server_signed: bool = False) -> BatchRequirements:
         """The route's client-signed requirement without construction hints."""
         coin = gate.amount.primary_coin()
         coin_value = coin.value if coin is not None else self._config.stablecoins[0].value
@@ -812,6 +1020,7 @@ class X402BatchSettlement:
             raise ConfigurationError(f"solana_pay_kit: x402 batch-settlement needs an SPL mint for {coin_value!r}")
         try:
             amount = parse_units(gate.total().amount_string(), _DECIMALS)
+            amount_units = int(amount)
         except ValueError as exc:
             raise ConfigurationError(f"solana_pay_kit: batch price exceeds {_DECIMALS}-decimal precision") from exc
         requirement: BatchRequirements = {
@@ -829,6 +1038,10 @@ class X402BatchSettlement:
         }
         if self._settings.receiver_authorizer is not None:
             requirement["extra"]["receiverAuthorizer"] = self._settings.receiver_authorizer
+        override = self._settings.min_deposit
+        multiple = _SERVER_MIN_DEPOSIT_MULTIPLE if server_signed else _CLIENT_MIN_DEPOSIT_MULTIPLE
+        minimum = amount_units * multiple if override is None else _atomic_min_deposit(override)
+        requirement["extra"]["minDeposit"] = str(max(minimum, amount_units))
         return requirement
 
     def _match_accepted(self, envelope: BatchPaymentPayload, accepts: list[BatchRequirements]) -> BatchRequirements:
@@ -897,6 +1110,18 @@ def _without(current: ChannelRecord | None, reservation_id: str) -> ChannelRecor
     if current is None:
         raise BatchSettlementError(errors.INVALID_CHANNEL_STATE, "channel vanished")
     return replace(current, reservations={k: v for k, v in current.reservations.items() if k != reservation_id})
+
+
+def _holds_nothing(record: ChannelRecord) -> bool:
+    """A record that never saw escrow, a charge, a voucher, a chain read or a setup, and holds no reservation."""
+    return (
+        record.deposit == 0
+        and record.charged_cumulative == 0
+        and record.voucher_signature is None
+        and record.onchain_synced_at is None
+        and not record.processed_setup_signatures
+        and not record.reservations
+    )
 
 
 def _require_config(record: ChannelRecord, config: BatchChannelConfig) -> None:
