@@ -319,11 +319,58 @@ export type VectorInput = {
   // echoed `extensions["payment-identifier"].info.id` is missing or does
   // not match ^[A-Za-z0-9_-]{16,128}$.
   x402ServerRequiresPaymentIdentifier?: boolean;
+
+  // ── x402-batch-settlement inputs (canonical-bytes) ───────────────────
+  // Each vector sets exactly one of these; the runner emits the encoded
+  // bytes as exactBytes.bytes/base64Url. Frozen from the x402 PR #23 TS
+  // encoders (packages/mechanisms/svm/src/{payment-channels,batch-settlement}).
+  // u64 values are decimal strings; i64 timestamps are JSON numbers.
+  //
+  // 50-byte voucher message: 0x56 0x01 || channelId || u64 LE || i64 LE.
+  batchVoucherMessage?: {
+    channelId: string;
+    maxClaimableAmount: string;
+    expiresAt: number;
+  };
+  // Server-signed-mode payer proof: "x402-batch-authorization-v2" ||
+  // channelId || payer || operator || u16 LE len || requestId ||
+  // authorizedAmount u64 LE || expiresAt i64 LE.
+  batchAuthorizationMessage?: {
+    channelId: string;
+    payer: string;
+    operator: string;
+    requestId: string;
+    authorizedAmount: string;
+    expiresAt: number;
+  };
+  // 32-byte SHA-256 close-authorization digest the receiver authorizer
+  // signs. `programId` omitted means the canonical payment-channels program.
+  batchCloseAuthorizationDigest?: {
+    network: string;
+    feePayer: string;
+    channelId: string;
+    maxClaimableAmount: string;
+    voucherExpiresAt: number;
+    validBefore: number;
+    programId?: string;
+  };
+  // 32-byte channel PDA, seeds ["channel", payer, payee, mint,
+  // authorizedSigner, salt u64 LE, openSlot u64 LE]. `programId` omitted
+  // means CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX.
+  batchChannelPda?: {
+    payer: string;
+    payee: string;
+    mint: string;
+    authorizedSigner: string;
+    salt: string;
+    openSlot: string;
+    programId?: string;
+  };
 };
 
 export type ConformanceVector = {
   id: string;
-  intent: "charge" | "x402-exact" | "session";
+  intent: "charge" | "x402-exact" | "session" | "x402-batch-settlement";
   mode: VectorMode;
   description?: string;
   input: VectorInput;

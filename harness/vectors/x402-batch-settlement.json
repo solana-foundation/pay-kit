@@ -1,0 +1,271 @@
+[
+  {
+    "id": "x402-batch-channel-pda-client-signed",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payment-channels channel PDA, seeds [\"channel\", payer, payee, mint, authorizedSigner, salt u64 LE, openSlot u64 LE], program CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX unless programId is set. Case: client-signed channel (authorizedSigner = payer), salt 0. Expected address BehPku6MwHiDXWbxRudLbQTXtuMgQQZXqxxgCE7AjTnb. Frozen from the x402 PR #23 findPaymentChannelPda.",
+    "input": {
+      "batchChannelPda": {
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "payee": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "authorizedSigner": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "salt": "0",
+        "openSlot": "350000000"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [158, 61, 7, 238, 179, 191, 119, 12, 6, 130, 29, 134, 147, 32, 69, 96, 114, 54, 248, 9, 232, 239, 47, 81, 45, 81, 104, 117, 61, 151, 159, 156],
+        "base64Url": "nj0H7rO_dwwGgh2GkyBFYHI2-Ano7y9RLVFodT2Xn5w"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-channel-pda-u64-max-seeds",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payment-channels channel PDA, seeds [\"channel\", payer, payee, mint, authorizedSigner, salt u64 LE, openSlot u64 LE], program CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX unless programId is set. Case: server-signed channel (authorizedSigner = operator), salt and openSlot at u64 max, pinning u64 LE seed packing. Expected address rxLBKLRjnzJW4oAAnXWN9G7EmkAum8S2zhRncVyzxfn. Frozen from the x402 PR #23 findPaymentChannelPda.",
+    "input": {
+      "batchChannelPda": {
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "payee": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "authorizedSigner": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "salt": "18446744073709551615",
+        "openSlot": "18446744073709551615"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [12, 204, 5, 175, 197, 18, 79, 150, 46, 161, 127, 37, 218, 114, 167, 174, 11, 55, 178, 147, 59, 209, 155, 96, 200, 62, 139, 241, 19, 102, 62, 173],
+        "base64Url": "DMwFr8UST5YuoX8l2nKnrgs3spM70ZtgyD6L8RNmPq0"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-channel-pda-explicit-program",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payment-channels channel PDA, seeds [\"channel\", payer, payee, mint, authorizedSigner, salt u64 LE, openSlot u64 LE], program CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX unless programId is set. Case: explicit non-default programId and devnet mint, pinning that the program id is the derivation base. Expected address DhFWVat1v6NMhx1o1wHRCM2c8m7vVewaX4bCP5aFmUgW. Frozen from the x402 PR #23 findPaymentChannelPda.",
+    "input": {
+      "batchChannelPda": {
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "payee": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "authorizedSigner": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "salt": "7",
+        "openSlot": "1",
+        "programId": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [188, 155, 225, 90, 161, 107, 30, 104, 144, 210, 224, 240, 19, 55, 206, 15, 104, 5, 100, 147, 75, 160, 46, 130, 88, 128, 177, 111, 115, 140, 214, 31],
+        "base64Url": "vJvhWqFrHmiQ0uDwEzfOD2gFZJNLoC6CWICxb3OM1h8"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-voucher-message",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "50-byte batch-settlement voucher message 0x56 0x01 || channelId(32) || maxClaimableAmount u64 LE || expiresAt i64 LE. Case: non-expiring voucher (expiresAt 0, the scheme constant). Frozen from the x402 PR #23 encodeVoucherMessageBytes.",
+    "input": {
+      "batchVoucherMessage": {
+        "channelId": "BehPku6MwHiDXWbxRudLbQTXtuMgQQZXqxxgCE7AjTnb",
+        "maxClaimableAmount": "1000000",
+        "expiresAt": 0
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [86, 1, 158, 61, 7, 238, 179, 191, 119, 12, 6, 130, 29, 134, 147, 32, 69, 96, 114, 54, 248, 9, 232, 239, 47, 81, 45, 81, 104, 117, 61, 151, 159, 156, 64, 66, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "base64Url": "VgGePQfus793DAaCHYaTIEVgcjb4CejvL1EtUWh1PZefnEBCDwAAAAAAAAAAAAAAAAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-voucher-message-u64-max",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "50-byte batch-settlement voucher message 0x56 0x01 || channelId(32) || maxClaimableAmount u64 LE || expiresAt i64 LE. Case: maxClaimableAmount at u64 max, pinning no precision loss. Frozen from the x402 PR #23 encodeVoucherMessageBytes.",
+    "input": {
+      "batchVoucherMessage": {
+        "channelId": "rxLBKLRjnzJW4oAAnXWN9G7EmkAum8S2zhRncVyzxfn",
+        "maxClaimableAmount": "18446744073709551615",
+        "expiresAt": 0
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [86, 1, 12, 204, 5, 175, 197, 18, 79, 150, 46, 161, 127, 37, 218, 114, 167, 174, 11, 55, 178, 147, 59, 209, 155, 96, 200, 62, 139, 241, 19, 102, 62, 173, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0],
+        "base64Url": "VgEMzAWvxRJPli6hfyXacqeuCzeykzvRm2DIPovxE2Y-rf__________AAAAAAAAAAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-voucher-message-nonzero-expiry",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "50-byte batch-settlement voucher message 0x56 0x01 || channelId(32) || maxClaimableAmount u64 LE || expiresAt i64 LE. Case: nonzero expiresAt, pinning i64 LE packing of the expiry. Frozen from the x402 PR #23 encodeVoucherMessageBytes.",
+    "input": {
+      "batchVoucherMessage": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "maxClaimableAmount": "42",
+        "expiresAt": 1767225600
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [86, 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 42, 0, 0, 0, 0, 0, 0, 0, 0, 185, 85, 105, 0, 0, 0, 0],
+        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAAALlVaQAAAAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-authorization-message",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payer authorization message for server-signed mode: \"x402-batch-authorization-v2\" || channelId(32) || payer(32) || operator(32) || u16 LE len(requestId) || requestId UTF-8 || authorizedAmount u64 LE || expiresAt i64 LE, signed raw by the payer. Case: server-signed channel, ASCII requestId. Frozen from the x402 PR #23 encodeBatchAuthorizationMessage.",
+    "input": {
+      "batchAuthorizationMessage": {
+        "channelId": "rxLBKLRjnzJW4oAAnXWN9G7EmkAum8S2zhRncVyzxfn",
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "operator": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "requestId": "req-0001",
+        "authorizedAmount": "1000",
+        "expiresAt": 1767225600
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [120, 52, 48, 50, 45, 98, 97, 116, 99, 104, 45, 97, 117, 116, 104, 111, 114, 105, 122, 97, 116, 105, 111, 110, 45, 118, 50, 12, 204, 5, 175, 197, 18, 79, 150, 46, 161, 127, 37, 218, 114, 167, 174, 11, 55, 178, 147, 59, 209, 155, 96, 200, 62, 139, 241, 19, 102, 62, 173, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 8, 0, 114, 101, 113, 45, 48, 48, 48, 49, 232, 3, 0, 0, 0, 0, 0, 0, 0, 185, 85, 105, 0, 0, 0, 0],
+        "base64Url": "eDQwMi1iYXRjaC1hdXRob3JpemF0aW9uLXYyDMwFr8UST5YuoX8l2nKnrgs3spM70ZtgyD6L8RNmPq0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDCAByZXEtMDAwMegDAAAAAAAAALlVaQAAAAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-authorization-message-u64-max-utf8",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payer authorization message for server-signed mode: \"x402-batch-authorization-v2\" || channelId(32) || payer(32) || operator(32) || u16 LE len(requestId) || requestId UTF-8 || authorizedAmount u64 LE || expiresAt i64 LE, signed raw by the payer. Case: authorizedAmount at u64 max, expiresAt at 2^53 - 1, multi-byte UTF-8 requestId (length prefix counts bytes, not characters). Frozen from the x402 PR #23 encodeBatchAuthorizationMessage.",
+    "input": {
+      "batchAuthorizationMessage": {
+        "channelId": "rxLBKLRjnzJW4oAAnXWN9G7EmkAum8S2zhRncVyzxfn",
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "operator": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "requestId": "req-é-€",
+        "authorizedAmount": "18446744073709551615",
+        "expiresAt": 9007199254740991
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [120, 52, 48, 50, 45, 98, 97, 116, 99, 104, 45, 97, 117, 116, 104, 111, 114, 105, 122, 97, 116, 105, 111, 110, 45, 118, 50, 12, 204, 5, 175, 197, 18, 79, 150, 46, 161, 127, 37, 218, 114, 167, 174, 11, 55, 178, 147, 59, 209, 155, 96, 200, 62, 139, 241, 19, 102, 62, 173, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 10, 0, 114, 101, 113, 45, 195, 169, 45, 226, 130, 172, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 31, 0],
+        "base64Url": "eDQwMi1iYXRjaC1hdXRob3JpemF0aW9uLXYyDMwFr8UST5YuoX8l2nKnrgs3spM70ZtgyD6L8RNmPq0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDCgByZXEtw6kt4oKs__________________8fAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-authorization-message-distinct-operator-max-request-id",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Payer authorization message for server-signed mode: \"x402-batch-authorization-v2\" || channelId(32) || payer(32) || operator(32) || u16 LE len(requestId) || requestId UTF-8 || authorizedAmount u64 LE || expiresAt i64 LE, signed raw by the payer. Case: distinct operator and channel, zero amount, 256-byte requestId (the maximum, the only length that sets the high byte of the u16 LE prefix). Frozen from the x402 PR #23 encodeBatchAuthorizationMessage.",
+    "input": {
+      "batchAuthorizationMessage": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "operator": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "requestId": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "authorizedAmount": "0",
+        "expiresAt": 1
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [120, 52, 48, 50, 45, 98, 97, 116, 99, 104, 45, 97, 117, 116, 104, 111, 114, 105, 122, 97, 116, 105, 111, 110, 45, 118, 50, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 1, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        "base64Url": "eDQwMi1iYXRjaC1hdXRob3JpemF0aW9uLXYyCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAFycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJyAAAAAAAAAAABAAAAAAAAAA"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-close-authorization-digest",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Close-authorization digest SHA-256(\"x402:batch-settlement:svm:close:v1\" || 0x00 || u16 LE len(network) || network || programId(32) || feePayer(32) || channelId(32) || maxClaimableAmount u64 LE || voucherExpiresAt i64 LE || validBefore i64 LE), signed by the receiver authorizer. Case: devnet, default program id, voucherExpiresAt 0. Frozen from the x402 PR #23 encodeCloseAuthorizationDigest.",
+    "input": {
+      "batchCloseAuthorizationDigest": {
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "feePayer": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "channelId": "BehPku6MwHiDXWbxRudLbQTXtuMgQQZXqxxgCE7AjTnb",
+        "maxClaimableAmount": "1000000",
+        "voucherExpiresAt": 0,
+        "validBefore": 1767225600
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [197, 152, 11, 220, 153, 133, 96, 32, 9, 43, 109, 161, 170, 246, 73, 124, 46, 42, 237, 74, 212, 146, 162, 49, 19, 133, 224, 187, 54, 100, 30, 204],
+        "base64Url": "xZgL3JmFYCAJK22hqvZJfC4q7UrUkqIxE4XguzZkHsw"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-close-authorization-digest-u64-max",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Close-authorization digest SHA-256(\"x402:batch-settlement:svm:close:v1\" || 0x00 || u16 LE len(network) || network || programId(32) || feePayer(32) || channelId(32) || maxClaimableAmount u64 LE || voucherExpiresAt i64 LE || validBefore i64 LE), signed by the receiver authorizer. Case: mainnet, maxClaimableAmount at u64 max, nonzero voucherExpiresAt, validBefore at 2^53 - 1. Frozen from the x402 PR #23 encodeCloseAuthorizationDigest.",
+    "input": {
+      "batchCloseAuthorizationDigest": {
+        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "feePayer": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "channelId": "rxLBKLRjnzJW4oAAnXWN9G7EmkAum8S2zhRncVyzxfn",
+        "maxClaimableAmount": "18446744073709551615",
+        "voucherExpiresAt": 1767225600,
+        "validBefore": 9007199254740991
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [192, 223, 93, 37, 25, 53, 253, 207, 48, 28, 91, 228, 202, 192, 86, 229, 111, 96, 98, 60, 165, 130, 21, 154, 188, 55, 115, 63, 239, 72, 208, 183],
+        "base64Url": "wN9dJRk1_c8wHFvkysBW5W9gYjylghWavDdzP-9I0Lc"
+      }
+    }
+  },
+  {
+    "id": "x402-batch-close-authorization-digest-explicit-program",
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "description": "Close-authorization digest SHA-256(\"x402:batch-settlement:svm:close:v1\" || 0x00 || u16 LE len(network) || network || programId(32) || feePayer(32) || channelId(32) || maxClaimableAmount u64 LE || voucherExpiresAt i64 LE || validBefore i64 LE), signed by the receiver authorizer. Case: explicit non-default programId, distinct channel and fee payer, zero amount. Frozen from the x402 PR #23 encodeCloseAuthorizationDigest.",
+    "input": {
+      "batchCloseAuthorizationDigest": {
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "feePayer": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "maxClaimableAmount": "0",
+        "voucherExpiresAt": 0,
+        "validBefore": 1,
+        "programId": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [187, 15, 186, 237, 239, 154, 39, 173, 178, 151, 28, 236, 166, 173, 103, 144, 25, 171, 151, 152, 182, 136, 156, 79, 144, 202, 30, 155, 24, 146, 98, 193],
+        "base64Url": "uw-67e-aJ62ylxzspq1nkBmrl5i2iJxPkMoemxiSYsE"
+      }
+    }
+  }
+]

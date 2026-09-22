@@ -246,6 +246,35 @@ Vectors across the divergence classes from the audit:
   empty `{}` is indistinguishable from `[]` once decoded into a dynamically
   typed runner's untyped container; empty-map encoding is a separate concern
   from envelope wire agreement.
+- `x402-batch-settlement.json` (`intent: "x402-batch-settlement"`,
+  `canonical-bytes`): the 50-byte voucher message, the server-signed payer
+  authorization message, the close-authorization SHA-256 digest, and the
+  payment-channels channel PDA, 3 cases each (u64-max amounts and seeds,
+  nonzero expiry, multi-byte and 256-byte requestId, explicit programId).
+  Inputs are `batchVoucherMessage`, `batchAuthorizationMessage`,
+  `batchCloseAuthorizationDigest`, `batchChannelPda`; expected bytes are
+  frozen from the x402 PR #23 TypeScript encoders. Only runners that list
+  the intent in `harness/runners/<lang>.json` run them (Python today).
+
+  How they were frozen, since no TypeScript runner executes them: check out
+  solana-foundation/x402 PR #23 (branch `feat/svm-batch-server-mode-guards`)
+  at commit `5b38ab6`, install `typescript/` with pnpm, and call these
+  encoders from `typescript/packages/mechanisms/svm/src/` with each vector's
+  `input`, writing `exactBytes` from the result:
+
+  | Input | Encoder |
+  | --- | --- |
+  | `batchVoucherMessage` | `encodeVoucherMessageBytes` in `payment-channels/voucher.ts` |
+  | `batchChannelPda` | `findPaymentChannelPda` in `payment-channels/open.ts` (the 32-byte address) |
+  | `batchAuthorizationMessage` | `encodeBatchAuthorizationMessage` in `batch-settlement/authorization.ts` |
+  | `batchCloseAuthorizationDigest` | `encodeCloseAuthorizationDigest` in `batch-settlement/closeAuthorization.ts` |
+
+  Run the script with that checkout's tsx
+  (`typescript/node_modules/.bin/tsx freeze.mts > out.json`) and paste the
+  cases in unchanged. Keys in the inputs are 32-byte fills (1 payer, 2
+  payee, 3 operator, 4 a second operator, 7 a second program id, 9 a second
+  channel) so a case can be rebuilt by hand. A changed byte here means an
+  encoder changed: re-freeze from TypeScript, never from the SDK under test.
 
 ## Per-SDK runner follow-up
 
