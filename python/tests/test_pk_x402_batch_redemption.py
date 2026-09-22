@@ -114,6 +114,24 @@ class _Harness:
         return record
 
 
+def _count_calls(world: World) -> dict[str, int]:
+    """Count account-read RPC calls (not addresses) from now on."""
+    calls = {"multiple": 0, "single": 0}
+    multiple, single = world.chain.get_multiple_accounts, world.chain.get_account_info
+
+    async def counted_multiple(addresses: list[str], commitment: str = "confirmed") -> Any:
+        calls["multiple"] += 1
+        return await multiple(addresses, commitment)
+
+    async def counted_single(address: str, commitment: str = "confirmed") -> Any:
+        calls["single"] += 1
+        return await single(address, commitment)
+
+    world.chain.get_multiple_accounts = counted_multiple  # type: ignore[method-assign]
+    world.chain.get_account_info = counted_single  # type: ignore[method-assign]
+    return calls
+
+
 def _count_reads(world: World, channel_id: str) -> list[int]:
     """Count the account reads a channel costs; the list holds the running total."""
     reads = [0]
@@ -656,39 +674,67 @@ async def test_an_absent_account_with_an_unclaimed_voucher_goes_dormant_and_keep
     channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
     del world.chain.accounts[channel_id]
     reads = _count_reads(world, channel_id)
-    await h.worker.finalize_close()
+    await h.worker.run_pass()
     clock[0] += horizon + 1
-    await h.worker.finalize_close()  # dormant from here
+    await h.worker.run_pass()  # dormant from here
     parked = reads[0]
-    for _ in range(5):
-        clock[0] += horizon / 10
-        await h.worker.finalize_close()
-    assert reads[0] == parked  # no read at all while it is parked
-    clock[0] += horizon
-    await h.worker.finalize_close()
-    assert reads[0] > parked  # one read a horizon later
+    for _ in range(3):
+        await h.worker.run_pass()
+    # Still watched every pass, but only by the batched read the finalize pass
+    # already issues: no per-channel read of its own, and no repeated alert.
+    assert reads[0] == parked + 3
     record = await h.record(channel_id)
     assert record.signed_max_claimable == 2 * PRICE  # the voucher is still there
     assert h.alerts == ["channel_account_absent", "channel_account_dormant"]
     assert str(PRICE) in h.details[-1]  # signed 2 x PRICE minus the PRICE already settled
-    # Back on chain: the next due read revives it, and it is read every pass again.
+    # Back on chain: the same pass revives it, and it claims on the next one.
     world.put_channel(deposit=5 * PRICE, settled=PRICE)
-    clock[0] += horizon
     await h.worker.finalize_close()
-    awake = reads[0]
-    await h.worker.finalize_close()
-    assert reads[0] > awake
-    # A second disappearance is a second story: absent, then dormant again.
-    del world.chain.accounts[channel_id]
-    await h.worker.finalize_close()
-    clock[0] += horizon + 1
-    await h.worker.finalize_close()
-    assert h.alerts[-2:] == ["channel_account_absent", "channel_account_dormant"]
-    # And the voucher it kept through all of that is still claimable.
-    world.put_channel(deposit=5 * PRICE, settled=PRICE)
     h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE)
-    clock[0] += horizon
     assert (await h.worker.claim()).claimed == [channel_id]
+    # Gone again with nothing left unclaimed: now the record is disposable.
+    del world.chain.accounts[channel_id]
+    await h.worker.run_pass()
+    clock[0] += horizon + 1
+    await h.worker.run_pass()
+    assert h.alerts[-2:] == ["channel_account_absent", "channel_account_dropped"]
+    assert await h.store.get(channel_id) is None
+
+
+async def test_a_dormant_channel_that_comes_back_closing_is_sealed_in_its_grace(world: World) -> None:
+    # The window this has to react inside is the payer's grace period, so a
+    # dormant channel is read with every pass, not once per horizon.
+    horizon = GRACE + 1_500 * 0.8
+    clock = [NOW]
+    h = _Harness(world, clock)
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+    del world.chain.accounts[channel_id]
+    await h.worker.run_pass()
+    clock[0] += horizon + 1
+    await h.worker.run_pass()  # dormant
+    # The payer forces a close while the record is parked.
+    world.put_channel(deposit=5 * PRICE, settled=PRICE, status=CLOSING, closure_started_at=int(clock[0]))
+    await h.worker.run_pass()  # the batched read finds it and revives it
+    h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE, payout=2 * PRICE, status=DISTRIBUTED)
+    result = await h.worker.claim()
+    assert result.sealed == [channel_id]
+    (tx,) = world.chain.sent
+    assert _signed_cumulative(tx) == 2 * PRICE  # the voucher it kept through dormancy
+
+
+async def test_dormant_channels_cost_one_batched_read_per_hundred(world: World) -> None:
+    h = _Harness(world, [NOW])
+    for salt in range(150):
+        channel_id = await h.seed(salt, charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+        del world.chain.accounts[channel_id]
+        # Parked, as the test above walks through; set here to keep this one
+        # about the read cost rather than about getting there.
+        h.worker._dormant[channel_id] = NOW  # noqa: SLF001
+    calls = _count_calls(world)
+    await h.worker.run_pass()
+    # getMultipleAccounts caps at 100 addresses: two calls for 150 channels,
+    # and not one read of its own for any of them.
+    assert (calls["multiple"], calls["single"]) == (2, 0)
 
 
 async def test_an_account_that_comes_back_restarts_the_horizon(world: World) -> None:

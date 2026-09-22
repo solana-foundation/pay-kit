@@ -329,6 +329,8 @@ class BatchRedemption:
             # the grace period allows, and a failed seal is retried next pass.
             if record.status not in ("open", "closing") or record.voucher_signature is None:
                 continue
+            if self._parked(record):
+                continue  # absent: the finalize pass reads it with the batch and revives it
             if record.signed_max_claimable <= record.settled:
                 continue
             if record.signed_max_claimable > record.charged_cumulative:
@@ -475,7 +477,11 @@ class BatchRedemption:
     # -- distribute -------------------------------------------------------------------------------
 
     async def _settle(self, rpc: SolanaRpc, result: RedemptionResult, only: list[str] | None) -> None:
-        payable = [r for r in await self._records(only) if r.status == "open" and r.settled > r.payout_watermark]
+        payable = [
+            r
+            for r in await self._records(only)
+            if r.status == "open" and r.settled > r.payout_watermark and not self._parked(r)
+        ]
         # Channels sharing mint, token program and payTo share most accounts:
         # mixing them would outgrow one transaction.
         groups: dict[tuple[str, str, str], list[ChannelRecord]] = {}
@@ -601,6 +607,8 @@ class BatchRedemption:
             last = record.last_activity_at
             if record.status != "open" or last is None or now - last < idle or record.live_reservations(now):
                 continue
+            if self._parked(record):
+                continue
             if record.signed_max_claimable > record.charged_cumulative:
                 self._alert("idle_above_charged", record.channel_id, ValueError("signed above charged"))
                 continue
@@ -682,15 +690,11 @@ class BatchRedemption:
 
     async def _records(self, only: list[str] | None) -> list[ChannelRecord]:
         records = await self._store.list()
-        if only is not None:
-            return [r for r in records if r.channel_id in set(only)]  # asked for by name: always read
-        now = self._clock()
-        return [r for r in records if self._due(r, now)]
+        return records if only is None else [r for r in records if r.channel_id in set(only)]
 
-    def _due(self, record: ChannelRecord, now: float) -> bool:
-        """Whether this pass spends a read on ``record``; a dormant channel is due once per horizon."""
-        since = self._dormant.get(record.channel_id)
-        return since is None or now - since >= self._horizon(record)
+    def _parked(self, record: ChannelRecord) -> bool:
+        """Whether a channel is dormant: still read with the batch, but worked on by nobody."""
+        return record.channel_id in self._dormant
 
     async def _read(self, rpc: SolanaRpc, records: list[ChannelRecord]) -> list[Channel | None]:
         return await self._read_ids(rpc, [r.channel_id for r in records])
@@ -733,8 +737,11 @@ class BatchRedemption:
         ``reclaim`` is permissionless, so a channel someone else sealed,
         distributed and reclaimed leaves a record no read will ever satisfy.
         Past the horizon (the payer's withdraw delay plus the reclaim window)
-        such a record goes dormant rather than away: it stops costing a read
-        every pass and is checked once per horizon instead. A record with
+        such a record goes dormant rather than away: it is still read every
+        pass, with the batch the finalize pass already issues, but no pass
+        works on it and it is alerted once rather than every time. The moment
+        the account answers again it is revived on that same pass, in time to
+        seal inside a grace period the payer may have started. A record with
         nothing left to claim is dropped there, since a rebuild from the chain
         would restore everything it still held; one that holds a voucher above
         the settled watermark is never dropped, because that voucher is the
@@ -744,6 +751,8 @@ class BatchRedemption:
         if not opened:
             await self._record_after_broadcast("vanished", record.channel_id, None)
             return
+        if self._parked(record):
+            return  # parked: this pass already read it with the batch, and it is still gone
         if record.live_reservations(self._clock()):
             return  # an open or a request is still in flight
         now = self._clock()
