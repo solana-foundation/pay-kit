@@ -582,16 +582,48 @@ async def test_settled_after_subscription_expires(monkeypatch: pytest.MonkeyPatc
         await h.server.verify_credential(activation.credential)
 
 
-async def test_binding_store_failure_still_grants(h: Harness, caplog: pytest.LogCaptureFixture) -> None:
+async def test_binding_store_failure_refuses_then_the_retry_grants(
+    h: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A receipt whose proof was never stored sells a subscription that cannot be
+    # used, so the activation is refused instead; replaying the same credential
+    # finds the confirmed signature and binds it without charging again.
     _, activation = await h.activation()
+    working, failing = h.store.put, True
 
-    async def broken_put(key: str, value: Any) -> None:
-        raise OSError("disk full")
+    async def flaky_put(key: str, value: Any) -> None:
+        if failing and key.startswith("solana-subscription:authentication:"):
+            raise OSError("disk full")
+        await working(key, value)
 
-    h.store.put = broken_put  # type: ignore[method-assign]
-    receipt = await h.server.verify_credential(activation.credential)
-    assert receipt.period_index == 0
+    h.store.put = flaky_put  # type: ignore[method-assign]
+    with pytest.raises(PaymentError, match="proof could not be stored"):
+        await h.server.verify_credential(activation.credential)
     assert "ALERT" in caplog.text
+    assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is None
+    sent = len(h.rpc.sent)
+
+    failing = False
+    receipt = await h.server.verify_credential(activation.credential)
+    assert receipt.period_index == 0 and len(h.rpc.sent) == sent  # no second broadcast
+    assert await h.store.get(f"solana-subscription:authentication:{DELEGATION}") is not None
+
+
+async def test_binding_store_retries_before_refusing(h: Harness) -> None:
+    # A store that flaps must not cost the subscriber an activation round trip.
+    _, activation = await h.activation()
+    working, failures = h.store.put, 2
+
+    async def flaky_put(key: str, value: Any) -> None:
+        nonlocal failures
+        if failures and key.startswith("solana-subscription:authentication:"):
+            failures -= 1
+            raise OSError("disk full")
+        await working(key, value)
+
+    h.store.put = flaky_put  # type: ignore[method-assign]
+    assert (await h.server.verify_credential(activation.credential)).period_index == 0
+    assert failures == 0
 
 
 async def test_reactivation_rotates_binding(h: Harness) -> None:

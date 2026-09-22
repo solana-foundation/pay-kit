@@ -5,7 +5,10 @@ and recipient token account) on chain. Activation takes a subscriber-signed
 transaction, validates it with :mod:`._subscription_scope`, reserves it against
 replay per challenge AND per signature, co-signs it as puller (and fee payer
 when sponsored), broadcasts, then checks the resulting ``SubscriptionDelegation``
-before binding the subscriber's bearer proof. Access re-checks that proof, the
+before binding the subscriber's bearer proof, which the activation is not
+complete without: a binding that cannot be stored is retried and then refused,
+because a receipt whose proof is missing buys a subscription nothing. Access
+re-checks that proof, the
 delegation, its ``SubscriptionAuthority`` incarnation and the current period
 against the chain on every request, and when the current period is unpaid it
 collects it with one puller-signed ``transfer_subscription`` (``renew_on_access``).
@@ -28,6 +31,7 @@ the same address starts a fresh set of renewal keys.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -129,6 +133,10 @@ _REJECTED_SUFFIX = ":rejected"
 # Attempts that landed with an error paid a fee: at most this many per period.
 # Preflight rejections and attempts that expired unseen cost nothing and do not count.
 _MAX_FAILED_RENEWALS = 5
+# The bearer binding is what the paid subscription is used with, so a store
+# hiccup is retried before the activation is refused.
+_BINDING_WRITE_ATTEMPTS = 3
+_BINDING_WRITE_BACKOFF_SECONDS = 0.05
 # One renewal claim per window of chain time. A blockhash lives for about 60-90 s,
 # so a claim two windows old can no longer land: only the last window's claim can
 # still be in flight. Should one land late anyway, the program's per-period cap
@@ -573,14 +581,7 @@ class SubscriptionServer:
             "subscriptionId": subscription_id,
             "subscriptionExpires": request.subscription_expires or None,
         }
-        try:
-            # A put, not put_if_absent: a confirmed re-activation of a revoked
-            # delegation replaces the prior lifecycle's proof.
-            await self._store.put(_BINDING_KEY.format(delegation), binding)
-        except Exception:  # noqa: BLE001 - the charge settled; never turn a lost binding into a 402
-            logger.exception(
-                "ALERT subscription %s settled in %s but its proof binding was not stored", delegation, signature
-            )
+        await self._store_binding(delegation, binding, signature)
         return self._receipt(
             challenge_id=challenge.id,
             request=request,
@@ -592,6 +593,36 @@ class SubscriptionServer:
             cancel_at=0,
             timestamp=settled.current_period_start_ts,
         )
+
+    async def _store_binding(self, delegation: Pubkey, binding: dict[str, Any], signature: str) -> None:
+        """Store the bearer binding, retrying a failing store before refusing the activation.
+
+        A receipt without the binding is worthless: every later proof would be
+        rejected and the subscriber would have paid for a subscription it cannot
+        use. Refusing instead is safe because replaying the same credential is
+        idempotent - the confirmed signature is found, the broadcast is skipped,
+        and the binding is written without charging a second period.
+        """
+        for attempt in range(_BINDING_WRITE_ATTEMPTS):
+            try:
+                # A put, not put_if_absent: a confirmed re-activation of a revoked
+                # delegation replaces the prior lifecycle's proof.
+                await self._store.put(_BINDING_KEY.format(delegation), binding)
+                return
+            except Exception:  # noqa: BLE001 - retried below, then surfaced as a retryable failure
+                if attempt + 1 < _BINDING_WRITE_ATTEMPTS:
+                    await asyncio.sleep(_BINDING_WRITE_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                logger.exception(
+                    "ALERT subscription %s settled in %s but its proof binding was not stored",
+                    delegation,
+                    signature,
+                )
+                raise PaymentError(
+                    f"subscription {delegation} settled in {signature} but its proof could not be stored; "
+                    "retry this activation credential",
+                    code="transaction-not-found",
+                ) from None
 
     def _receipt(
         self,
