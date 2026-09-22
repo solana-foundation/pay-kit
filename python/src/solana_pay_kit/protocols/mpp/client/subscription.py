@@ -83,7 +83,7 @@ def _extension_problems(details: SubscriptionMethodDetails, request: Subscriptio
         ("expectedCreatedAt", details.expected_created_at, plan.created_at),
     ]
     return [
-        f"methodDetails.{name} does not match the on-chain plan"
+        f"methodDetails.{name} is {advertised!r} but the on-chain plan has {actual!r}"
         for name, advertised, actual in checks
         if advertised not in ("", None) and advertised != actual
     ]
@@ -157,7 +157,7 @@ async def build_subscription_activation(
         now=int(time.time()),
     ) + _extension_problems(details, request, plan)
     if problems:
-        raise ValueError("refusing to sign: " + "; ".join(problems))
+        raise ValueError(f"refusing to sign plan {details.plan_address}: " + "; ".join(problems))
 
     mint = Pubkey.from_string(details.mint)
     token_program = Pubkey.from_string(details.token_program)
