@@ -277,6 +277,7 @@ async def _run() -> dict[str, Any]:
 
 
 def main() -> None:
+    """Run the flow named by ``X402_HARNESS_BATCH_FLOW`` and print one result line."""
     try:
         result = asyncio.run(_run())
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - one structured failure line

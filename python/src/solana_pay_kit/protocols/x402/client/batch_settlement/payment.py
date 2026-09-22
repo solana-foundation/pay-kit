@@ -165,12 +165,15 @@ class MemoryClientChannelStore:
         self.records: dict[str, ClientChannelRecord] = {}
 
     async def get(self, key: str) -> ClientChannelRecord | None:
+        """The record stored under ``key``, or ``None``."""
         return self.records.get(key)
 
     async def set(self, key: str, record: ClientChannelRecord) -> None:
+        """Store ``record`` under ``key``, replacing any previous one."""
         self.records[key] = record
 
     async def delete(self, key: str) -> None:
+        """Forget ``key``; an unknown key is a no-op."""
         self.records.pop(key, None)
 
 

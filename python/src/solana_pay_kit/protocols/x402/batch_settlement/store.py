@@ -237,11 +237,13 @@ class MemoryBatchChannelStore:
         self._lock = threading.Lock()
 
     async def get(self, channel_id: str) -> ChannelRecord | None:
+        """A clone of the record for ``channel_id``, or ``None`` when unknown."""
         with self._lock:
             record = self._data.get(channel_id)
             return None if record is None else record.clone()
 
     async def update(self, channel_id: str, mutator: ChannelMutator) -> ChannelRecord:
+        """Apply ``mutator`` under the store lock and return what was written."""
         # One lock for every channel, held only while the synchronous mutator
         # runs; per-channel locks if mutators ever get slow.
         with self._lock:
@@ -251,10 +253,12 @@ class MemoryBatchChannelStore:
             return after
 
     async def delete(self, channel_id: str) -> None:
+        """Forget ``channel_id``; an unknown id is a no-op."""
         with self._lock:
             self._data.pop(channel_id, None)
 
     async def delete_if(self, channel_id: str, predicate: Callable[[ChannelRecord], bool]) -> bool:
+        """Forget ``channel_id`` when ``predicate`` accepts its record; ``True`` when it was deleted."""
         with self._lock:
             record = self._data.get(channel_id)
             if record is None or not predicate(record.clone()):
@@ -263,6 +267,7 @@ class MemoryBatchChannelStore:
             return True
 
     async def list(self) -> list[ChannelRecord]:
+        """Clones of every stored record."""
         with self._lock:
             return [record.clone() for record in self._data.values()]
 
@@ -291,12 +296,14 @@ class StoreBackedBatchChannelStore:
         return None if raw is None else ChannelRecord.from_dict(cast("dict[str, Any]", raw))
 
     async def get(self, channel_id: str) -> ChannelRecord | None:
+        """The record for ``channel_id`` decoded from the ``Store``, or ``None``."""
         return await self._read(channel_id)
 
     async def _index(self) -> list[str]:
         return list(dict.fromkeys(cast("list[str]", await self._store.get(self._INDEX) or [])))
 
     async def update(self, channel_id: str, mutator: ChannelMutator) -> ChannelRecord:
+        """Read, apply ``mutator`` and write the record back, holding this process's lock."""
         async with self._lock:
             before = await self._read(channel_id)
             after = _checked(channel_id, before, mutator(None if before is None else before.clone()))
@@ -309,6 +316,7 @@ class StoreBackedBatchChannelStore:
             return after
 
     async def delete(self, channel_id: str) -> None:
+        """Forget ``channel_id`` and drop it from the channel index."""
         async with self._lock:
             await self._delete(channel_id)
 
@@ -317,6 +325,7 @@ class StoreBackedBatchChannelStore:
         await self._store.put(self._INDEX, [cid for cid in await self._index() if cid != channel_id])
 
     async def delete_if(self, channel_id: str, predicate: Callable[[ChannelRecord], bool]) -> bool:
+        """Forget ``channel_id`` when ``predicate`` accepts its record; ``True`` when it was deleted."""
         async with self._lock:
             record = await self._read(channel_id)
             if record is None or not predicate(record):
@@ -325,6 +334,7 @@ class StoreBackedBatchChannelStore:
             return True
 
     async def list(self) -> list[ChannelRecord]:
+        """Every record the channel index still names."""
         records = [await self._read(channel_id) for channel_id in await self._index()]
         return [record for record in records if record is not None]
 
@@ -427,6 +437,7 @@ class MemoryBatchOperationStore:
         self._lock = threading.Lock()
 
     async def get(self, channel_id: str, request_id: str) -> OperationRecord | None:
+        """A copy of the record for ``(channel_id, request_id)``, or ``None``."""
         with self._lock:
             record = self._data.get((channel_id, request_id))
             return None if record is None else deepcopy(record)
@@ -434,6 +445,7 @@ class MemoryBatchOperationStore:
     async def reserve(
         self, channel_id: str, request_id: str, ceiling: int, *, expires_at: float, now: float
     ) -> tuple[bool, OperationRecord]:
+        """Reserve ``request_id`` unless it exists, first pruning this channel's expired records."""
         with self._lock:
             existing = self._data.get((channel_id, request_id))
             if existing is not None:
@@ -447,6 +459,7 @@ class MemoryBatchOperationStore:
     async def complete(
         self, channel_id: str, request_id: str, *, ceiling: int, actual: int, cumulative: int
     ) -> OperationRecord:
+        """Mark the reservation completed with the metered ``actual``."""
         with self._lock:
             record = self._data.get((channel_id, request_id))
             if record is None:
@@ -455,12 +468,14 @@ class MemoryBatchOperationStore:
             return deepcopy(self._data[(channel_id, request_id)])
 
     async def release(self, channel_id: str, request_id: str) -> None:
+        """Tombstone a failed reservation, keeping the request id consumed."""
         with self._lock:
             record = self._data.get((channel_id, request_id))
             if record is not None:
                 self._data[(channel_id, request_id)] = _released(record)
 
     async def drop_channel(self, channel_id: str) -> None:
+        """Forget every operation of ``channel_id``."""
         with self._lock:
             for key in [k for k in self._data if k[0] == channel_id]:
                 del self._data[key]
@@ -486,6 +501,7 @@ class StoreBackedBatchOperationStore:
         return f"{_KEY_PREFIX}op:{channel_id}:{request_id}"
 
     async def get(self, channel_id: str, request_id: str) -> OperationRecord | None:
+        """The record for ``(channel_id, request_id)`` decoded from the ``Store``, or ``None``."""
         raw = await self._store.get(self._key(channel_id, request_id))
         return None if raw is None else OperationRecord.from_dict(cast("dict[str, Any]", raw))
 
@@ -496,6 +512,7 @@ class StoreBackedBatchOperationStore:
     async def reserve(
         self, channel_id: str, request_id: str, ceiling: int, *, expires_at: float, now: float
     ) -> tuple[bool, OperationRecord]:
+        """Reserve ``request_id`` with ``put_if_absent``, then prune this channel's expired records."""
         record = OperationRecord(channel_id, request_id, ceiling, expires_at=expires_at)
         if not await self._store.put_if_absent(self._key(channel_id, request_id), record.to_dict()):
             existing = await self.get(channel_id, request_id)
@@ -516,6 +533,7 @@ class StoreBackedBatchOperationStore:
     async def complete(
         self, channel_id: str, request_id: str, *, ceiling: int, actual: int, cumulative: int
     ) -> OperationRecord:
+        """Mark the reservation completed with the metered ``actual``."""
         async with self._lock:
             record = await self.get(channel_id, request_id)
             if record is None:
@@ -525,6 +543,7 @@ class StoreBackedBatchOperationStore:
             return done
 
     async def drop_channel(self, channel_id: str) -> None:
+        """Forget every operation of ``channel_id``, index included."""
         async with self._lock:
             index = cast("dict[str, float]", await self._store.get(self._index_key(channel_id)) or {})
             for request_id in index:
@@ -532,6 +551,7 @@ class StoreBackedBatchOperationStore:
             await self._store.delete(self._index_key(channel_id))
 
     async def release(self, channel_id: str, request_id: str) -> None:
+        """Tombstone a failed reservation, keeping the request id consumed."""
         async with self._lock:
             record = await self.get(channel_id, request_id)
             if record is not None and record.status == "reserved":
