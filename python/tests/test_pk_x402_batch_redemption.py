@@ -114,6 +114,24 @@ class _Harness:
         return record
 
 
+def _count_reads(world: World, channel_id: str) -> list[int]:
+    """Count the account reads a channel costs; the list holds the running total."""
+    reads = [0]
+    multiple, single = world.chain.get_multiple_accounts, world.chain.get_account_info
+
+    async def counted_multiple(addresses: list[str], commitment: str = "confirmed") -> Any:
+        reads[0] += sum(1 for address in addresses if address == channel_id)
+        return await multiple(addresses, commitment)
+
+    async def counted_single(address: str, commitment: str = "confirmed") -> Any:
+        reads[0] += int(address == channel_id)
+        return await single(address, commitment)
+
+    world.chain.get_multiple_accounts = counted_multiple  # type: ignore[method-assign]
+    world.chain.get_account_info = counted_single  # type: ignore[method-assign]
+    return reads
+
+
 def _signed_cumulative(tx: VersionedTransaction) -> int:
     """The cumulative in the Ed25519 voucher message the transaction carries."""
     message = bytes(tx.message.instructions[0].data)
@@ -611,13 +629,12 @@ async def test_an_absent_account_drops_a_failed_open_but_keeps_an_opened_channel
     assert (await h.worker.claim()).claimed == [opened]
 
 
-async def test_an_account_absent_past_the_reclaim_horizon_is_written_off(world: World) -> None:
-    # reclaim is permissionless: a channel someone else sealed, distributed and
-    # reclaimed never comes back, so the record goes once no read could still
-    # be lag, with the voucher amount that was forfeited.
+async def test_an_absent_account_with_nothing_unclaimed_is_dropped_past_the_horizon(world: World) -> None:
+    # Everything this record holds is already settled on chain, so recover()
+    # could rebuild it: once no read could still be lag, it can go.
     clock = [NOW]
     h = _Harness(world, clock)
-    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+    channel_id = await h.seed(charged=2 * PRICE, signed=2 * PRICE, settled=2 * PRICE)
     del world.chain.accounts[channel_id]
     await h.worker.finalize_close()
     clock[0] += GRACE + 1_500 * 0.8  # the withdraw delay plus the reclaim window
@@ -626,8 +643,52 @@ async def test_an_account_absent_past_the_reclaim_horizon_is_written_off(world: 
     clock[0] += 1
     await h.worker.finalize_close()
     assert await h.store.get(channel_id) is None
-    assert h.alerts == ["channel_account_absent", "channel_account_forfeited"]
+    assert h.alerts == ["channel_account_absent", "channel_account_dropped"]
+
+
+async def test_an_absent_account_with_an_unclaimed_voucher_goes_dormant_and_keeps_it(world: World) -> None:
+    # A null read never proves the voucher was claimed, and recover() could
+    # only rebuild this channel at the chain's settled watermark, so the record
+    # is parked, not deleted: read once per horizon instead of once per pass.
+    horizon = GRACE + 1_500 * 0.8
+    clock = [NOW]
+    h = _Harness(world, clock)
+    channel_id = await h.seed(charged=3 * PRICE, signed=2 * PRICE, settled=PRICE)
+    del world.chain.accounts[channel_id]
+    reads = _count_reads(world, channel_id)
+    await h.worker.finalize_close()
+    clock[0] += horizon + 1
+    await h.worker.finalize_close()  # dormant from here
+    parked = reads[0]
+    for _ in range(5):
+        clock[0] += horizon / 10
+        await h.worker.finalize_close()
+    assert reads[0] == parked  # no read at all while it is parked
+    clock[0] += horizon
+    await h.worker.finalize_close()
+    assert reads[0] > parked  # one read a horizon later
+    record = await h.record(channel_id)
+    assert record.signed_max_claimable == 2 * PRICE  # the voucher is still there
+    assert h.alerts == ["channel_account_absent", "channel_account_dormant"]
     assert str(PRICE) in h.details[-1]  # signed 2 x PRICE minus the PRICE already settled
+    # Back on chain: the next due read revives it, and it is read every pass again.
+    world.put_channel(deposit=5 * PRICE, settled=PRICE)
+    clock[0] += horizon
+    await h.worker.finalize_close()
+    awake = reads[0]
+    await h.worker.finalize_close()
+    assert reads[0] > awake
+    # A second disappearance is a second story: absent, then dormant again.
+    del world.chain.accounts[channel_id]
+    await h.worker.finalize_close()
+    clock[0] += horizon + 1
+    await h.worker.finalize_close()
+    assert h.alerts[-2:] == ["channel_account_absent", "channel_account_dormant"]
+    # And the voucher it kept through all of that is still claimable.
+    world.put_channel(deposit=5 * PRICE, settled=PRICE)
+    h.lands(channel_id, deposit=5 * PRICE, settled=2 * PRICE)
+    clock[0] += horizon
+    assert (await h.worker.claim()).claimed == [channel_id]
 
 
 async def test_an_account_that_comes_back_restarts_the_horizon(world: World) -> None:

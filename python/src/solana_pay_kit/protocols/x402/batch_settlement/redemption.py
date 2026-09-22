@@ -162,8 +162,11 @@ class BatchRedemption:
         # Sponsored channels with no known payTo: never charged here, only reclaimed.
         self._reclaim_only: set[str] = set()
         # Channels whose account did not read back, and when that started:
-        # alerted once, kept, re-read next pass, given up on after the horizon.
+        # alerted once, kept, re-read next pass.
         self._absent: dict[str, float] = {}
+        # Channels absent past the horizon that still hold an unclaimed voucher:
+        # parked, read once per horizon instead of once per pass, never dropped.
+        self._dormant: dict[str, float] = {}
 
     # -- passes ---------------------------------------------------------------------------
 
@@ -679,7 +682,15 @@ class BatchRedemption:
 
     async def _records(self, only: list[str] | None) -> list[ChannelRecord]:
         records = await self._store.list()
-        return records if only is None else [r for r in records if r.channel_id in set(only)]
+        if only is not None:
+            return [r for r in records if r.channel_id in set(only)]  # asked for by name: always read
+        now = self._clock()
+        return [r for r in records if self._due(r, now)]
+
+    def _due(self, record: ChannelRecord, now: float) -> bool:
+        """Whether this pass spends a read on ``record``; a dormant channel is due once per horizon."""
+        since = self._dormant.get(record.channel_id)
+        return since is None or now - since >= self._horizon(record)
 
     async def _read(self, rpc: SolanaRpc, records: list[ChannelRecord]) -> list[Channel | None]:
         return await self._read_ids(rpc, [r.channel_id for r in records])
@@ -719,12 +730,15 @@ class BatchRedemption:
         channel ``reclaim`` itself freed, which it drops there. Anything else is
         kept and alerted once, for the next pass to read again.
 
-        A record is not kept forever: ``reclaim`` is permissionless, so a
-        channel someone else sealed, distributed and reclaimed leaves a record
-        no read will ever satisfy. Once the account has been absent for longer
-        than the payer's withdraw delay plus the reclaim window, that is the
-        only story left, and the record goes with an alert naming the voucher
-        amount that was never claimed.
+        ``reclaim`` is permissionless, so a channel someone else sealed,
+        distributed and reclaimed leaves a record no read will ever satisfy.
+        Past the horizon (the payer's withdraw delay plus the reclaim window)
+        such a record goes dormant rather than away: it stops costing a read
+        every pass and is checked once per horizon instead. A record with
+        nothing left to claim is dropped there, since a rebuild from the chain
+        would restore everything it still held; one that holds a voucher above
+        the settled watermark is never dropped, because that voucher is the
+        only record of the charge and no read can prove it worthless.
         """
         opened = record.deposit > 0 or record.onchain_synced_at is not None or record.processed_setup_signatures
         if not opened:
@@ -741,17 +755,25 @@ class BatchRedemption:
             self._absent[record.channel_id] = now
             self._alert("channel_account_absent", record.channel_id, ValueError(f"status {record.status}"))
             return
-        horizon = int(record.channel_config["withdrawDelay"]) + _RECLAIM_WINDOW_SECONDS
-        if now - since <= horizon:
+        if now - since <= self._horizon(record):
             return
         unclaimed = max(0, record.signed_max_claimable - record.settled)
-        self._alert(
-            "channel_account_forfeited",
-            record.channel_id,
-            ValueError(f"absent for {int(now - since)}s; {unclaimed} never claimed"),
-        )
-        self._absent.pop(record.channel_id, None)
-        await self._record_after_broadcast("vanished", record.channel_id, None)
+        if not unclaimed:
+            self._absent.pop(record.channel_id, None)
+            self._alert("channel_account_dropped", record.channel_id, ValueError(f"absent for {int(now - since)}s"))
+            await self._record_after_broadcast("vanished", record.channel_id, None)
+            return
+        if record.channel_id not in self._dormant:
+            self._alert(
+                "channel_account_dormant",
+                record.channel_id,
+                ValueError(f"absent for {int(now - since)}s; {unclaimed} unclaimed"),
+            )
+        self._dormant[record.channel_id] = now  # read again a horizon from now, not next pass
+
+    def _horizon(self, record: ChannelRecord) -> float:
+        """How long an absence has to last before it can be anything but lag."""
+        return int(record.channel_config["withdrawDelay"]) + _RECLAIM_WINDOW_SECONDS
 
     async def _visible_again(self, rpc: SolanaRpc, channel_id: str) -> bool:
         """Re-read an account that looked absent; short, because the next pass reads it again anyway."""
@@ -784,7 +806,9 @@ class BatchRedemption:
     async def _sync(self, record: ChannelRecord, channel: Channel) -> ChannelRecord:
         """Fold a fresh read into the record (not after a broadcast: a failure skips this channel)."""
         now = self._clock()
-        self._absent.pop(record.channel_id, None)  # seen: any earlier absence was lag, not the end
+        # Seen: any earlier absence was lag, and a dormant channel is back.
+        self._absent.pop(record.channel_id, None)
+        self._dormant.pop(record.channel_id, None)
         try:
             return await self._store.update(record.channel_id, lambda current: _fold(current, channel, now))
         except Exception as exc:  # noqa: BLE001 - leave this channel for the next pass
