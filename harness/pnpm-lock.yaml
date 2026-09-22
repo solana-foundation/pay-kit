@@ -21,8 +21,8 @@ importers:
         specifier: file:../typescript/packages/pay-kit
         version: file:../typescript/packages/pay-kit(@solana/addresses@7.1.1(typescript@5.9.3))(@solana/codecs-core@7.1.1(typescript@5.9.3))(@solana/codecs-strings@7.1.1(typescript@5.9.3))(@solana/keys@7.1.1(typescript@5.9.3))(@solana/signers@7.1.1(typescript@5.9.3))(@solana/transactions@7.1.1(typescript@5.9.3))(express@4.22.2)(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@solana/surfpool':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0(@solana/kit-plugin-rpc@0.15.0(@solana/kit@6.8.0(typescript@5.9.3)))(@solana/kit-plugin-signer@0.13.0(@solana/kit@6.8.0(typescript@5.9.3)))(@solana/kit@6.8.0(typescript@5.9.3))
       mppx:
         specifier: ^0.5.5
         version: 0.5.17(express@4.22.2)(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
@@ -1316,28 +1316,39 @@ packages:
     peerDependencies:
       '@solana/kit': ^7.0.0
 
-  '@solana/surfpool-darwin-arm64@1.4.0':
-    resolution: {integrity: sha512-/sh7zJEzulPtBbB7ykUmhhrox+X1BJ1ff/OH81C7X/W0usXZtIRuonSKA2KgWHFFUVFHYRemMv6GmkmbbPlTjQ==}
+  '@solana/surfpool-darwin-arm64@1.5.0':
+    resolution: {integrity: sha512-RdjEN7WDAr1Vrp1CD+NAS3pwT//TJclX9zyxjhAMpmBofwDzlCO8/yqv2CbD77UOuB/y3UWz3MvEEHxZfetKsw==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [darwin]
 
-  '@solana/surfpool-darwin-x64@1.4.0':
-    resolution: {integrity: sha512-AZXo4a/MlmUAsfmbL7MQBf1aHOerR3K0Xj1Cjq64N7D5pXU9dJ4MbtU+xI+V+X6QFSN1WWdr9fIies6BwXl3qg==}
+  '@solana/surfpool-darwin-x64@1.5.0':
+    resolution: {integrity: sha512-8ScgLVX32JX7HH0XkijZxlpsNAALuzaJQDUTjJ1aPazKzunliek27TP9ZkVzzBHypyiY59wpwNue9PUGnGKdIw==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
 
-  '@solana/surfpool-linux-x64-gnu@1.4.0':
-    resolution: {integrity: sha512-hOZ+Yq52asaYyM2/mmd9iqir+1FM9aWSKGM7YHgAREy4pGdMvtcgMSAo36n/zCcWfb83Byey8SQUXRvO3CqDag==}
+  '@solana/surfpool-linux-x64-gnu@1.5.0':
+    resolution: {integrity: sha512-d+wUCBdzw7U4inKoe+Lj7XlH8Nmd6A00IZOsG3R61NQbqhRVp7zFpVCCzV00RvgAOsSedkI87I6B4ehAuyGPAg==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@solana/surfpool@1.4.0':
-    resolution: {integrity: sha512-YAHZz4Gkq4JKg82pVt4yENs+zxvcUliyS1Nz5JVBYiww3LZp9SG0Fsf/vHakQdgyuEaBwPuLVhS/PritsEhUbA==}
+  '@solana/surfpool@1.5.0':
+    resolution: {integrity: sha512-smTwmZpron2Zf/EcxwcjlJ5cva+nnf4GWpHf7RJj8nEzA4XcHlCDFkO+Dwoe5mapHKelePqFeWpId7Q/7zxEOg==}
     engines: {node: '>=18'}
+    peerDependencies:
+      '@solana/kit': ^7.0.0
+      '@solana/kit-plugin-rpc': ^0.15.0
+      '@solana/kit-plugin-signer': ^0.13.0
+    peerDependenciesMeta:
+      '@solana/kit':
+        optional: true
+      '@solana/kit-plugin-rpc':
+        optional: true
+      '@solana/kit-plugin-signer':
+        optional: true
 
   '@solana/sysvars@6.8.0':
     resolution: {integrity: sha512-pwfMpMNL6MSmm07eHQYdTdRdzmPOd+EuVCCaNLSYdWGpYcocVJiaLiNWRV3cXA5wPj/ZFkoUGtc1bo0v7H50lw==}
@@ -3420,20 +3431,23 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - typescript
 
-  '@solana/surfpool-darwin-arm64@1.4.0':
+  '@solana/surfpool-darwin-arm64@1.5.0':
     optional: true
 
-  '@solana/surfpool-darwin-x64@1.4.0':
+  '@solana/surfpool-darwin-x64@1.5.0':
     optional: true
 
-  '@solana/surfpool-linux-x64-gnu@1.4.0':
+  '@solana/surfpool-linux-x64-gnu@1.5.0':
     optional: true
 
-  '@solana/surfpool@1.4.0':
+  '@solana/surfpool@1.5.0(@solana/kit-plugin-rpc@0.15.0(@solana/kit@6.8.0(typescript@5.9.3)))(@solana/kit-plugin-signer@0.13.0(@solana/kit@6.8.0(typescript@5.9.3)))(@solana/kit@6.8.0(typescript@5.9.3))':
     optionalDependencies:
-      '@solana/surfpool-darwin-arm64': 1.4.0
-      '@solana/surfpool-darwin-x64': 1.4.0
-      '@solana/surfpool-linux-x64-gnu': 1.4.0
+      '@solana/kit': 6.8.0(typescript@5.9.3)
+      '@solana/kit-plugin-rpc': 0.15.0(@solana/kit@6.8.0(typescript@5.9.3))
+      '@solana/kit-plugin-signer': 0.13.0(@solana/kit@6.8.0(typescript@5.9.3))
+      '@solana/surfpool-darwin-arm64': 1.5.0
+      '@solana/surfpool-darwin-x64': 1.5.0
+      '@solana/surfpool-linux-x64-gnu': 1.5.0
 
   '@solana/sysvars@6.8.0(typescript@5.9.3)':
     dependencies:
