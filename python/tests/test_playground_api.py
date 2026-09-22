@@ -8,11 +8,18 @@ never touch the network; the faucet auto-funding is opt-in (off here).
 
 from __future__ import annotations
 
+import importlib
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
-from examples.playground_api import sessions
+from examples.playground_api import app as app_module
+from examples.playground_api import sessions, subscriptions
 from examples.playground_api.app import app
+
+#: A valid base58 pubkey standing in for an on-chain Plan PDA.
+PLAN = "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT"
 
 
 @pytest.fixture
@@ -82,3 +89,38 @@ def test_summarize_route_challenges_with_upto(client: TestClient) -> None:
     assert extra["withdrawDelay"] == 900
     assert "assetTransferMethod" not in extra
     assert "facilitatorAddress" not in extra
+
+
+def test_feed_without_a_plan_names_the_variable(client: TestClient) -> None:
+    resp = client.get("/api/v1/feed")
+    assert resp.status_code == 503
+    assert "PAY_KIT_PLAYGROUND_PLAN_ID" in resp.json()["error"]
+
+
+@pytest.fixture
+def subscribed() -> Iterator[TestClient]:
+    """The playground booted with a plan configured, then restored."""
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("PAY_KIT_PLAYGROUND_PLAN_ID", PLAN)
+        importlib.reload(subscriptions)
+        importlib.reload(app_module)
+        yield TestClient(app_module.app, raise_server_exceptions=False)
+    importlib.reload(subscriptions)
+    importlib.reload(app_module)
+
+
+def test_feed_is_gated_and_advertised(subscribed: TestClient) -> None:
+    # The plan does not exist on the unreachable sandbox RPC, so the gate stops
+    # the request before the handler instead of serving the feed.
+    resp = subscribed.get("/api/v1/feed")
+    assert resp.status_code == 503 and PLAN in resp.json()["error"]
+
+    offers = subscribed.get("/openapi.json").json()["paths"]["/api/v1/feed"]["get"]["x-payment-info"]["offers"]
+    assert len(offers) == 1
+    assert {key: offers[0][key] for key in ("amount", "intent", "method", "planId", "scheme")} == {
+        "amount": str(subscriptions.PRICE_BASE_UNITS),
+        "intent": "subscription",
+        "method": "mpp",
+        "planId": PLAN,
+        "scheme": "subscription",
+    }

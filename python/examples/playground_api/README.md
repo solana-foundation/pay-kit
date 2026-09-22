@@ -11,6 +11,7 @@ Routes:
 - `GET  /api/v1/quote/{symbol}` fixed charge, MPP or x402; `via` reports the rail used.
 - `GET  /api/v1/joke`           MPP charge with a platform split (x402 auto-disabled).
 - `GET  /api/v1/stream`         MPP session: open a channel, stream metered SSE deliveries.
+- `GET  /api/v1/feed`           MPP subscription: activate once, read for the rest of the period.
 - `POST /api/v1/summarize`     x402 `upto`: authorize a ceiling, bill metered tokens.
 - `GET  /sessions/receipt/{id}` poll a session channel's settle status (out-of-band settlement).
 - `GET  /api/v1/docs[...]`      unpaid SDK reference markdown (when generated).
@@ -21,7 +22,12 @@ Routes:
 The session side-channel (`POST /__402/session/deliveries` and `/commit`) is
 mounted for the metered-voucher flow.
 
-The x402 `upto` usage gate is served at `POST /api/v1/summarize` (mirrors the TS playground). The MPP `subscription` gate (TS `/api/v1/feed`) is left out: the Python SDK does not ship that gate kind yet.
+The x402 `upto` usage gate is served at `POST /api/v1/summarize` and the MPP
+`subscription` gate at `GET /api/v1/feed` (both mirror the TS playground). The
+feed bills 0.10 USDC per day against an existing on-chain `Plan`: set
+`PAY_KIT_PLAYGROUND_PLAN_ID` to its PDA (the example never creates one) and the
+route answers 503 naming the variable until you do. The puller is the operator
+signer, because this server signs the renewal itself.
 
 Run:
 

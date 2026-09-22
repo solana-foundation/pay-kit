@@ -131,6 +131,34 @@ def session_offer(
     )
 
 
+def subscription_offer(
+    config: Config,
+    *,
+    amount_base_units: str,
+    pay_to: str,
+    plan_id: str,
+    currency: str = "USDC",
+) -> dict[str, Any]:
+    """The single MPP `subscription` discovery offer (recurring amount per period).
+
+    Carries the on-chain Plan PDA as `planId`, the way the TS offer does; the
+    period itself lives on the route summary and in the 402 challenge.
+    """
+    decimals = stablecoin_decimals(currency, _mints_network(config))
+    price = format(Decimal(amount_base_units) / (Decimal(10) ** decimals), "f")
+    return _offer(
+        amount=amount_base_units,
+        currency=currency,
+        description=f"{price} {currency}",
+        intent="subscription",
+        method="mpp",
+        network=config.network.caip2(),
+        payTo=pay_to,
+        planId=plan_id,
+        scheme="subscription",
+    )
+
+
 def upto_offer(gate: Gate, config: Config, *, currency: str = "USDC") -> dict[str, Any]:
     """The single x402 `upto` discovery offer (authorize a ceiling, bill usage).
 

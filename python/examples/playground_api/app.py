@@ -9,15 +9,17 @@ Python SDK ships today.
     GET  /api/v1/quote/{symbol}   fixed charge, MPP or x402
     GET  /api/v1/joke             MPP charge with a platform split (x402 auto-off)
     GET  /api/v1/stream           MPP session: open a channel, stream metered SSE
+    GET  /api/v1/feed             MPP subscription: activate once, read all period
     POST /api/v1/summarize        x402 upto: authorize a ceiling, bill metered tokens
     GET  /api/v1/docs[...]        unpaid SDK reference (docs.py)
     POST /api/v1/faucet/airdrop   localnet-only USDC faucet (sandbox.py)
     GET  /openapi.json            OpenAPI 3.1 discovery (x-payment-info offers)
     GET  /api/v1/health           free liveness probe + operator/network info
 
-The x402 `upto` usage gate is served at `POST /api/v1/summarize` (mirrors the TS
-playground). The MPP `subscription` gate (TS `/api/v1/feed`) is intentionally
-absent: the Python SDK does not ship that gate kind yet.
+The x402 `upto` usage gate is served at `POST /api/v1/summarize` and the MPP
+`subscription` gate at `GET /api/v1/feed` (both mirror the TS playground). The
+feed needs an on-chain Plan in `PAY_KIT_PLAYGROUND_PLAN_ID`; without it the
+route answers 503 naming the variable.
 
 Run:
 
@@ -56,7 +58,7 @@ solana_pay_kit.configure(
 
 # Imported after configure() so the session method builds from the resolved
 # operator / recipient / challenge-binding secret.
-from . import sessions  # noqa: E402
+from . import sessions, subscriptions  # noqa: E402
 
 _cfg = solana_pay_kit.config()
 _RECIPIENT = _cfg.effective_recipient()
@@ -127,6 +129,7 @@ app = FastAPI(title="PayKit Playground (Python)", openapi_url=None)
 # One-call setup: payment-header CORS + the PayKitError -> 402 challenge mapping.
 install(app)
 app.include_router(sessions.router)
+app.include_router(subscriptions.router)
 
 
 # ── Priced routes ──
@@ -229,6 +232,25 @@ _OPENAPI = discovery.build_openapi_document(
                 )
             ],
         },
+        *(
+            [
+                {
+                    "method": "GET",
+                    "path": "/api/v1/feed",
+                    "summary": "Feed subscription (0.10 USDC per day)",
+                    "offers": [
+                        discovery.subscription_offer(
+                            _cfg,
+                            amount_base_units=str(subscriptions.PRICE_BASE_UNITS),
+                            pay_to=_RECIPIENT,
+                            plan_id=subscriptions.PLAN_ID,
+                        )
+                    ],
+                }
+            ]
+            if subscriptions.PLAN_ID
+            else []
+        ),
         {
             "method": "POST",
             "path": "/api/v1/summarize",
