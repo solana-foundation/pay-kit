@@ -588,6 +588,27 @@ async def test_a_refund_claims_the_charged_voucher_before_request_close(world: W
     assert record is not None and record.status == "closing" and record.reservations == {}
 
 
+async def test_a_refund_takes_a_channel_whose_lease_ran_out_and_the_late_commit_is_refused(world: World) -> None:
+    # A handler outlived its reservation, so the refund is free to take the
+    # channel: it claims what was charged and closes. The late commit must fail
+    # closed, or its charge would be served after the claim that preceded the
+    # close and could never be redeemed.
+    clock = [NOW]
+    engine = _engine(world, clock=lambda: clock[0])
+    await _open(engine, world)
+    request = world.header(_requirement(engine, world), world.voucher_payload(2 * PRICE))
+    late = await _verify(engine, world.gate, request)
+    clock[0] += 301  # the lease is gone; the refund no longer sees it
+    world.lands_as_channel(deposit=3 * PRICE, status=CLOSING, closure_started_at=int(clock[0]))
+    response = await _refund_response(engine, world, _refund(world))
+    assert response["success"]
+    sent = len(world.chain.sent)
+    assert await _code(engine.commit(late)) == errors.DUPLICATE_SETTLEMENT
+    record = await engine._store.get(world.channel_id())  # noqa: SLF001
+    assert record is not None and (record.status, record.charged_cumulative) == ("closing", PRICE)
+    assert len(world.chain.sent) == sent  # nothing else was broadcast
+
+
 async def test_a_refund_with_nothing_to_claim_only_closes_and_needs_no_memo(world: World) -> None:
     engine = _engine(world)
     world.put_channel(deposit=3 * PRICE)
