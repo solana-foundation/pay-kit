@@ -869,6 +869,7 @@ impl<S: ChannelStore> SessionServer<S> {
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            final_cumulative: None,
             // Persisted so the channel PDA can be re-derived and the reclaim
             // gate evaluated later.
             open_slot: Some(payload.open_slot),
@@ -2528,6 +2529,7 @@ mod tests {
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            final_cumulative: None,
             open_slot: Some(42),
             payer: Pubkey::new_unique().to_string(),
             rent_payer: Pubkey::new_unique().to_string(),

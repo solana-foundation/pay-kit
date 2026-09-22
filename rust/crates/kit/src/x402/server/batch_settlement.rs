@@ -2275,6 +2275,7 @@ impl X402BatchSettlement {
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            final_cumulative: None,
             open_slot: Some(config.open_slot),
             payer: config.payer.clone(),
             rent_payer: self.fee_payer(),
@@ -2306,11 +2307,27 @@ impl X402BatchSettlement {
     /// channel, which is what makes the finalizer's later snapshot of the
     /// committed watermark safe to seal at. Returns `None` when the channel
     /// has no record in this store.
-    async fn mark_close_requested(
+    /// Record the payer's close on the durable record and choose, in the same
+    /// atomic transition, what the finalizer does about it.
+    ///
+    /// Choosing is what freezes the record: a plan that seals now (`Apply`,
+    /// `SealFrozen`) fences the watermark at the amount the seal will carry,
+    /// so a commit whose store call was delayed across its lease expiry —
+    /// parked while this pass ran — finds the fence and is refused instead of
+    /// recording a charge above the seal. A commit that lands first is seen
+    /// here and included in the choice. Neither order strands a charge, and
+    /// no timestamp comparison is involved. Plans that do not seal
+    /// (`InFlight`, `NothingToApply`) leave the record open for the next pass.
+    ///
+    /// Returns `None` for a channel this store never knew.
+    async fn plan_close(
         &self,
         channel_id: &str,
         closure_started_at: i64,
-    ) -> Result<Option<ChannelState>, Error> {
+        onchain_settled: u64,
+        past_deadline: bool,
+        now: i64,
+    ) -> Result<Option<(GraceSealPlan, ChannelState)>, Error> {
         let closed_at = u64::try_from(closure_started_at).unwrap_or_else(|_| now_unix());
         let known = self
             .store
@@ -2321,20 +2338,30 @@ impl X402BatchSettlement {
         if !known {
             return Ok(None);
         }
+        let chosen = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&chosen);
         self.store
-            .update_channel(
+            .mutate_channel(
                 channel_id,
-                Box::new(move |current| {
-                    let mut state = current.ok_or_else(|| {
-                        crate::core::store::StoreError::Internal("channel not found".into())
-                    })?;
+                None,
+                Box::new(move |state| {
                     state.close_requested_at = Some(state.close_requested_at.unwrap_or(closed_at));
-                    Ok(state)
+                    let plan = grace_seal_plan(state, onchain_settled, past_deadline, now);
+                    match &plan {
+                        GraceSealPlan::Apply { cumulative, .. } => {
+                            state.freeze_watermark_at(*cumulative)
+                        }
+                        GraceSealPlan::SealFrozen => state.freeze_watermark_at(onchain_settled),
+                        GraceSealPlan::InFlight | GraceSealPlan::NothingToApply => {}
+                    }
+                    *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((plan, state.clone()));
+                    Ok(())
                 }),
             )
             .await
-            .map(Some)
-            .map_err(|e| Error::Other(format!("store error: {e}")))
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        let chosen = chosen.lock().unwrap_or_else(|e| e.into_inner()).take();
+        Ok(chosen)
     }
 
     async fn record_close(
@@ -2802,24 +2829,29 @@ impl X402BatchSettlement {
                 .closure_started_at
                 .saturating_add(i64::from(onchain.grace_period));
             let past_deadline = now >= due;
-            // Record the close durably first, so every replica's `reserve`
-            // refuses new charges from here on, then take the snapshot. A
-            // request that reserved before this mark is still running its
-            // handler; sealing now — early with the committed voucher, or late
-            // at the frozen watermark — would leave its charge stranded once
-            // `finish_commit` lands, so wait for the next pass instead.
-            // Reservations are only ever removed by the request that owns
-            // them, so this converges. A channel this store never knew has
-            // nothing to coordinate: past the deadline it is sealed like any
-            // other crank would.
+            // Record the close durably, so every replica's `reserve` refuses
+            // new charges from here on, and choose the plan in that same
+            // transition. A request that reserved before this mark is still
+            // running its handler; sealing now — early with the committed
+            // voucher, or late at the frozen watermark — would leave its
+            // charge stranded once `finish_commit` lands, so wait for the
+            // next pass instead. Reservations are only ever removed by the
+            // request that owns them, so this converges. Choosing a seal
+            // fences the record, so a commit delayed past its lease can no
+            // longer slip in behind the choice. A channel this store never
+            // knew has nothing to coordinate: past the deadline it is sealed
+            // like any other crank would.
             let plan = match self
-                .mark_close_requested(channel_id, onchain.closure_started_at)
+                .plan_close(
+                    channel_id,
+                    onchain.closure_started_at,
+                    onchain.settlement.settled,
+                    past_deadline,
+                    now,
+                )
                 .await?
             {
-                Some(state) => Some((
-                    grace_seal_plan(&state, onchain.settlement.settled, past_deadline, now),
-                    state,
-                )),
+                Some(chosen) => Some(chosen),
                 None if past_deadline => None,
                 None => continue,
             };
@@ -3075,8 +3107,8 @@ enum GraceSealPlan {
 /// from being the party that seals under its own live request, and the
 /// request settles or releases before the next pass. A reservation whose
 /// lease is dead — its owner crashed or overran — never blocks the seal
-/// forever: nobody else can release it, so it is treated as gone, and
-/// `commit_authorization` refuses it once the close is recorded so it cannot
+/// forever: nobody else can release it, so it is treated as gone, and the
+/// caller (`plan_close`) fences the record in the same transition so it cannot
 /// land a charge behind the seal either. The scheme's `withdrawDelay >=
 /// maxTimeoutSeconds` bound, and the reservation lease that mirrors it, are
 /// what keep a request reserved before the close from legitimately outliving
@@ -3432,6 +3464,7 @@ mod tests {
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            final_cumulative: None,
             open_slot: Some(config.open_slot),
             payer: config.payer.clone(),
             rent_payer: String::new(),
@@ -4395,17 +4428,18 @@ mod tests {
         let now = now_unix() as i64;
 
         // The payer's request_close lands onchain meanwhile. The finalizer
-        // records the close and consults the plan: with the handler still
-        // running, sealing has to wait.
-        let state = handler
-            .mark_close_requested(&channel_id, 1_700_000_000)
+        // records the close and chooses its plan: with the handler still
+        // running, sealing has to wait, and the record stays open.
+        let (plan, state) = handler
+            .plan_close(&channel_id, 1_700_000_000, 0, false, now)
             .await
             .unwrap()
             .expect("known channel");
         assert!(state.close_requested_at.is_some());
+        assert_eq!(plan, GraceSealPlan::InFlight);
         assert_eq!(
-            grace_seal_plan(&state, 0, false, now),
-            GraceSealPlan::InFlight
+            state.final_cumulative, None,
+            "a deferred seal fences nothing"
         );
         // Past the deadline the request can no longer be applied onchain, but
         // the finalizer still does not seal underneath it.
@@ -4431,8 +4465,13 @@ mod tests {
         assert_eq!(state.cumulative, 3_000);
 
         // Now the finalizer seals with the 3000 voucher, not the 2000 it saw
-        // while the request was in flight.
-        match grace_seal_plan(&state, 0, false, now) {
+        // while the request was in flight, and fences the record there.
+        let (plan, state) = handler
+            .plan_close(&channel_id, 1_700_000_000, 0, false, now)
+            .await
+            .unwrap()
+            .expect("known channel");
+        match plan {
             GraceSealPlan::Apply {
                 cumulative,
                 signature,
@@ -4446,6 +4485,7 @@ mod tests {
             }
             other => panic!("expected the committed voucher to be applied, got {other:?}"),
         }
+        assert_eq!(state.final_cumulative, Some(3_000));
         // Once the chain already carries that watermark there is nothing to
         // apply early; the permissionless seal after the grace period suffices.
         assert_eq!(
@@ -4460,12 +4500,202 @@ mod tests {
         );
     }
 
+    /// A store whose next mutation parks until released, standing in for a
+    /// replica whose commit call stalls while its reservation lease runs out
+    /// and the finalizer passes. Every other call goes straight through.
+    struct PausingStore {
+        inner: Arc<MemoryChannelStore>,
+        pause_next: std::sync::atomic::AtomicBool,
+        gate: tokio::sync::Notify,
+    }
+
+    impl PausingStore {
+        fn new(inner: Arc<MemoryChannelStore>) -> Self {
+            Self {
+                inner,
+                pause_next: std::sync::atomic::AtomicBool::new(false),
+                gate: tokio::sync::Notify::new(),
+            }
+        }
+
+        fn pause_next_mutation(&self) {
+            self.pause_next
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn release(&self) {
+            self.gate.notify_one();
+        }
+    }
+
+    use crate::core::store::StoreError;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + Send + 'a>>;
+
+    impl ChannelStore for PausingStore {
+        fn list_channels(&self) -> StoreFuture<'_, Vec<ChannelState>> {
+            self.inner.list_channels()
+        }
+        fn list_channel_ids(&self) -> StoreFuture<'_, Vec<String>> {
+            self.inner.list_channel_ids()
+        }
+        fn get_channel(&self, channel_id: &str) -> StoreFuture<'_, Option<ChannelState>> {
+            self.inner.get_channel(channel_id)
+        }
+        fn put_channel(&self, channel_id: &str, state: ChannelState) -> StoreFuture<'_, ()> {
+            self.inner.put_channel(channel_id, state)
+        }
+        fn delete_channel(&self, channel_id: &str) -> StoreFuture<'_, ()> {
+            self.inner.delete_channel(channel_id)
+        }
+        fn update_channel(
+            &self,
+            channel_id: &str,
+            updater: Box<
+                dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send,
+            >,
+        ) -> StoreFuture<'_, ChannelState> {
+            self.inner.update_channel(channel_id, updater)
+        }
+        fn read_channel(
+            &self,
+            channel_id: &str,
+            reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+        ) -> StoreFuture<'_, ()> {
+            self.inner.read_channel(channel_id, reader)
+        }
+        fn mutate_channel(
+            &self,
+            channel_id: &str,
+            seed: Option<ChannelState>,
+            mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+        ) -> StoreFuture<'_, ()> {
+            let channel_id = channel_id.to_string();
+            let paused = self
+                .pause_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if paused {
+                    self.gate.notified().await;
+                }
+                self.inner.mutate_channel(&channel_id, seed, mutator).await
+            })
+        }
+        fn touch_channel_lifecycle(
+            &self,
+            channel_id: &str,
+            lifecycle: crate::core::store::ChannelLifecycle,
+        ) -> StoreFuture<'_, ChannelState> {
+            self.inner.touch_channel_lifecycle(channel_id, lifecycle)
+        }
+        fn advance_cumulative(
+            &self,
+            channel_id: &str,
+            expected: u64,
+            new: u64,
+        ) -> StoreFuture<'_, bool> {
+            self.inner.advance_cumulative(channel_id, expected, new)
+        }
+        fn update_deposit(&self, channel_id: &str, new_deposit: u64) -> StoreFuture<'_, ()> {
+            self.inner.update_deposit(channel_id, new_deposit)
+        }
+        fn mark_sealed(&self, channel_id: &str) -> StoreFuture<'_, ()> {
+            self.inner.mark_sealed(channel_id)
+        }
+        fn mark_finalized(&self, channel_id: &str) -> StoreFuture<'_, ()> {
+            self.inner.mark_finalized(channel_id)
+        }
+    }
+
+    /// The interleaving a timestamp check cannot close: a commit's store call
+    /// stalls, its reservation lease runs out meanwhile, and the finalizer
+    /// passes, finds only a dead lease, and chooses the 2000 voucher. The
+    /// parked commit then resumes with the `now` it captured before the stall.
+    /// Because choosing fences the record in the same transition, that commit
+    /// is refused rather than recording an unredeemable 3000. (The other
+    /// order — commit first, then the pass — includes the 3000 voucher; see
+    /// `closing_during_a_handler_keeps_its_charge_redeemable`.)
+    #[tokio::test]
+    async fn a_commit_delayed_across_its_lease_expiry_is_fenced_out_of_the_seal() {
+        let inner = Arc::new(MemoryChannelStore::new());
+        let store = Arc::new(PausingStore::new(inner.clone()));
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&inner, &handler, &fee_payer, 2_000).await;
+        let BatchAccess::Serve(outcome) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("a fresh authorization must be served");
+        };
+        let channel_id = outcome.channel_id.clone();
+        handler.mark_handler_succeeded(&outcome).await.unwrap();
+
+        // The commit reaches the store and parks there, `now` already taken.
+        store.pause_next_mutation();
+        let mut commit = std::pin::pin!(handler.finish_commit(&outcome));
+        let parked = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(commit.as_mut().poll(cx).is_pending())
+        })
+        .await;
+        assert!(parked, "the commit must be parked at its store call");
+
+        // Wall-clock passes while it is parked: the reservation lease dies.
+        // (The seeded 2000 watermark gets the voucher signature a real commit
+        // would have left, so the finalizer has something to apply.)
+        let now = now_unix() as i64;
+        inner
+            .update_channel(
+                &channel_id,
+                Box::new(move |current| {
+                    let mut state = current.expect("known channel");
+                    for delivery in &mut state.pending_deliveries {
+                        delivery.expires_at = now - 1;
+                    }
+                    state.highest_voucher_signature = Some("sig-2000".to_string());
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+
+        // The payer's request_close has landed; the finalizer's pass sees a
+        // dead lease, chooses the committed 2000 voucher, and fences there.
+        let (plan, state) = handler
+            .plan_close(&channel_id, now - 30, 0, false, now)
+            .await
+            .unwrap()
+            .expect("known channel");
+        assert!(
+            matches!(
+                plan,
+                GraceSealPlan::Apply {
+                    cumulative: 2_000,
+                    ..
+                }
+            ),
+            "{plan:?}"
+        );
+        assert_eq!(state.final_cumulative, Some(2_000));
+
+        // The parked commit resumes and is refused: nothing lands above the
+        // amount the seal carries, however stale its timestamp.
+        store.release();
+        let refused = commit.await.expect_err("a fenced commit is refused");
+        assert!(refused.to_string().contains("final watermark"), "{refused}");
+        let state = inner.get_channel(&channel_id).await.unwrap().unwrap();
+        assert_eq!(state.cumulative, 2_000, "the refused commit wrote nothing");
+        assert_eq!(state.final_cumulative, Some(2_000));
+    }
+
     /// A replica that crashed after reserving leaves a reservation nobody else
     /// can release. Once its lease is dead it must not hold the seal hostage:
     /// past the grace deadline the channel is sealed at the frozen watermark,
     /// and before it the committed voucher is applied. The commit side agrees:
-    /// a request that outlived its lease while the channel was closing can no
-    /// longer land its charge, so the seal never strands one.
+    /// once the finalizer has chosen, the record is fenced and a late commit
+    /// is refused, so the seal never strands one.
     #[test]
     fn a_dead_reservation_does_not_block_the_seal() {
         let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
@@ -4526,9 +4756,10 @@ mod tests {
             GraceSealPlan::SealFrozen
         );
 
-        // Once the close is recorded, that dead-lease request can no longer
-        // land its charge: the finalizer may already have sealed past it.
+        // Once the finalizer has chosen to seal, that dead-lease request can
+        // no longer land its charge: the record is fenced at the choice.
         state.close_requested_at = Some(now as u64);
+        state.freeze_watermark_at(2_000);
         let refused = state
             .commit_authorization(
                 "access:test:3000",
@@ -4540,11 +4771,11 @@ mod tests {
                 |_| None,
             )
             .unwrap_err();
-        assert!(refused.to_string().contains("lease"), "{refused}");
+        assert!(refused.to_string().contains("final watermark"), "{refused}");
         assert_eq!(state.cumulative, 2_000, "a refused commit writes nothing");
-        // A live lease commits while the channel is merely closing: the
-        // finalizer waits for exactly this.
-        state.pending_deliveries = vec![reservation(now + 60, true)];
+        // Merely closing, with no choice made yet, a commit still lands — even
+        // from a dead lease; the next pass will include it.
+        state.final_cumulative = None;
         state
             .commit_authorization(
                 "access:test:3000",
@@ -4555,11 +4786,11 @@ mod tests {
                 now,
                 |_| None,
             )
-            .expect("live lease commits");
+            .expect("an unfenced closing channel still commits");
         assert_eq!(state.cumulative, 3_000);
-        // But never under a seal, however live the lease. (A replay of the
-        // charge already committed above stays idempotent, so this is a new
-        // authorization.)
+        // And never under a landed seal, however live the lease. (A replay of
+        // the charge already committed above stays idempotent, so this is a
+        // new authorization.)
         state.pending_deliveries = vec![crate::core::store::PendingDelivery {
             delivery_id: "access:test:4000".to_string(),
             ..reservation(now + 60, true)
