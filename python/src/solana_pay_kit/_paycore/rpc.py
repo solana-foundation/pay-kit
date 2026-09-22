@@ -91,6 +91,23 @@ _LOOP_CLIENTS: weakref.WeakKeyDictionary[Any, list[httpx.AsyncClient]] = weakref
 _LOOP_CLIENTS_LOCK = threading.Lock()
 
 
+def _unregister_loop_client(loop: Any, client: httpx.AsyncClient) -> None:
+    """Drop a closed or replaced client from the registry.
+
+    A long-lived loop (FastAPI, a worker) never calls ``aclose_loop_clients``,
+    and the adapters build one ``SolanaRpc`` per request, so a client left here
+    after its own close would pin its transport and SSL context for the life of
+    the loop.
+    """
+    with _LOOP_CLIENTS_LOCK:
+        clients = _LOOP_CLIENTS.get(loop)
+        if clients is None:
+            return
+        clients[:] = [c for c in clients if c is not client]
+        if not clients:
+            del _LOOP_CLIENTS[loop]
+
+
 async def aclose_loop_clients() -> None:
     """Close every RPC HTTP client opened on the running loop.
 
@@ -146,6 +163,8 @@ class SolanaRpc:
                 return self._loopless_client
             client = self._clients.get(loop)
             if client is None or client.is_closed or loop.is_closed():
+                if client is not None:
+                    _unregister_loop_client(loop, client)
                 client = httpx.AsyncClient(timeout=self._timeout)
                 self._clients[loop] = client
                 with _LOOP_CLIENTS_LOCK:
@@ -159,9 +178,12 @@ class SolanaRpc:
     async def aclose(self) -> None:
         """Close every HTTP client this RPC opened, for this loop and any other."""
         with self._clients_lock:
-            clients = [*self._clients.values(), self._loopless_client, self._injected]
+            per_loop = list(self._clients.items())
+            clients = [*(c for _, c in per_loop), self._loopless_client, self._injected]
             self._clients.clear()
             self._loopless_client = None
+        for loop, client in per_loop:
+            _unregister_loop_client(loop, client)
         for client in clients:
             if client is None:
                 continue

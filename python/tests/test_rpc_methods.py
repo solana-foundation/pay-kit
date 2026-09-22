@@ -345,3 +345,30 @@ def test_rpc_client_is_per_event_loop() -> None:
         assert first_client != second_client  # a fresh client for the fresh loop
     finally:
         server.close()
+
+
+def test_closed_clients_leave_the_loop_registry() -> None:
+    """A long-lived loop builds one SolanaRpc per request; closing it must not pin its client."""
+    import asyncio
+
+    from solana_pay_kit._paycore import rpc as rpc_module
+
+    server = _KeepAliveRpcServer(7)
+    try:
+
+        async def serve_requests() -> tuple[int, int]:
+            loop = asyncio.get_running_loop()
+            for _ in range(3):
+                rpc = rpc_module.SolanaRpc(server.url)
+                assert await rpc.get_slot() == 7
+                await rpc.aclose()
+            after_close = len(rpc_module._LOOP_CLIENTS.get(loop, []))  # pyright: ignore[reportPrivateUsage]
+            still_open = rpc_module.SolanaRpc(server.url)
+            await still_open.get_slot()
+            open_count = len(rpc_module._LOOP_CLIENTS.get(loop, []))  # pyright: ignore[reportPrivateUsage]
+            await rpc_module.aclose_loop_clients()
+            return after_close, open_count
+
+        assert asyncio.run(serve_requests()) == (0, 1)
+    finally:
+        server.close()
