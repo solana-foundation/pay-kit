@@ -370,7 +370,12 @@ pub enum BatchPayload {
     /// Open a channel or top up an existing one, and authorize this request.
     Deposit {
         channel_config: BatchChannelConfig,
-        voucher: BatchVoucher,
+        /// REQUIRED in client mode, absent in server mode (spec §4.3). Optional
+        /// on the wire so a server-mode deposit still parses and can be refused
+        /// with `invalid_batch_settlement_svm_payload_type` instead of failing
+        /// deserialization with a generic error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voucher: Option<BatchVoucher>,
         deposit: BatchDeposit,
         /// Server-mode payer proof, carried instead of `voucher` there. Parsed
         /// so the refusal can name the right code; never accepted here.
@@ -434,9 +439,8 @@ impl BatchPayload {
     /// payer proof rather than a voucher.
     pub fn charge_voucher(&self) -> Option<&BatchVoucher> {
         match self {
-            BatchPayload::Deposit { voucher, .. } | BatchPayload::Voucher { voucher, .. } => {
-                Some(voucher)
-            }
+            BatchPayload::Deposit { voucher, .. } => voucher.as_ref(),
+            BatchPayload::Voucher { voucher, .. } => Some(voucher),
             BatchPayload::Authorization { .. } | BatchPayload::Refund { .. } => None,
         }
     }
@@ -766,7 +770,7 @@ mod tests {
     fn payload_union_round_trips_every_variant() {
         let deposit = BatchPayload::Deposit {
             channel_config: channel_config(),
-            voucher: voucher("1000"),
+            voucher: Some(voucher("1000")),
             deposit: BatchDeposit {
                 amount: "100000".to_string(),
                 transaction: "b64".to_string(),
@@ -827,6 +831,32 @@ mod tests {
         .unwrap();
         assert_eq!(authorization.type_name(), "authorization");
         assert!(authorization.charge_voucher().is_none());
+        // A server-mode deposit carries a proof and no voucher, and must still
+        // parse so the server can refuse it by type.
+        let delegated: BatchPayload = serde_json::from_value(serde_json::json!({
+            "type": "deposit",
+            "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+            "deposit": { "amount": "100000", "transaction": "b64" },
+            "authorization": {
+                "type": "proof",
+                "channelId": CHANNEL,
+                "payer": "Payer111111111111111111111111111111111111",
+                "requestId": "req-1",
+                "authorizedAmount": "1000",
+                "expiresAt": 1_758_215_100,
+                "signature": "sig"
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            delegated,
+            BatchPayload::Deposit {
+                voucher: None,
+                authorization: Some(_),
+                ..
+            }
+        ));
+        assert!(delegated.charge_voucher().is_none());
         // And a refund that names an amount keeps it, so the server can refuse
         // it with the dedicated code instead of silently ignoring it.
         let partial: BatchPayload = serde_json::from_value(serde_json::json!({

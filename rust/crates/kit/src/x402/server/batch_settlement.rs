@@ -1015,6 +1015,14 @@ impl X402BatchSettlement {
             BatchPayload::Deposit {
                 voucher, deposit, ..
             } => {
+                // `check_client_signed_payload` refused a voucherless deposit
+                // above; this only lets the borrow below be a `&BatchVoucher`.
+                let Some(voucher) = voucher.as_ref() else {
+                    return Err(batch_err(
+                        codes::INVALID_PAYLOAD_TYPE,
+                        "deposit carries no client voucher",
+                    ));
+                };
                 let stored = self
                     .store
                     .get_channel(&channel_b58)
@@ -3036,10 +3044,10 @@ fn voucher_of(
     payload: &BatchPayload,
 ) -> Option<&crate::x402::protocol::schemes::batch_settlement::BatchVoucher> {
     match payload {
-        BatchPayload::Voucher { voucher, .. } | BatchPayload::Deposit { voucher, .. } => {
-            Some(voucher)
+        BatchPayload::Voucher { voucher, .. } => Some(voucher),
+        BatchPayload::Deposit { voucher, .. } | BatchPayload::Refund { voucher, .. } => {
+            voucher.as_ref()
         }
-        BatchPayload::Refund { voucher, .. } => voucher.as_ref(),
         BatchPayload::Authorization { .. } => None,
     }
 }
@@ -4159,18 +4167,39 @@ mod tests {
             codes::INVALID_CHANNEL_STATE
         );
 
+        // A server-mode deposit (payer proof, no voucher) parses and is refused
+        // by type as well, rather than dying in deserialization.
+        let proof = crate::x402::protocol::schemes::batch_settlement::BatchAuthorization {
+            kind: "proof".to_string(),
+            channel_id: pc::pubkey_string(&channel),
+            payer: pc::pubkey_string(&Pubkey::from(key.verifying_key().to_bytes())),
+            request_id: "req-1".to_string(),
+            authorized_amount: requirements.amount.clone(),
+            expires_at: i64::MAX,
+            signature: "sig".to_string(),
+        };
+        let payload = BatchPayload::Deposit {
+            channel_config: config.clone(),
+            voucher: None,
+            deposit: crate::x402::protocol::schemes::batch_settlement::BatchDeposit {
+                amount: "100000".to_string(),
+                transaction: "b64".to_string(),
+            },
+            authorization: Some(proof.clone()),
+        };
+        let err = handler
+            .verify_payment(&header(&requirements, payload), "0.001")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+            codes::INVALID_PAYLOAD_TYPE
+        );
+
         // And the server-mode steady-state payload is refused by type.
         let payload = BatchPayload::Authorization {
             channel_config: config,
-            authorization: crate::x402::protocol::schemes::batch_settlement::BatchAuthorization {
-                kind: "proof".to_string(),
-                channel_id: pc::pubkey_string(&channel),
-                payer: pc::pubkey_string(&Pubkey::from(key.verifying_key().to_bytes())),
-                request_id: "req-1".to_string(),
-                authorized_amount: requirements.amount.clone(),
-                expires_at: i64::MAX,
-                signature: "sig".to_string(),
-            },
+            authorization: proof,
         };
         let err = handler
             .verify_payment(&header(&requirements, payload), "0.001")
@@ -4199,12 +4228,12 @@ mod tests {
                 open_slot: 1,
                 voucher_signer: None,
             },
-            voucher: BatchVoucher {
+            voucher: Some(BatchVoucher {
                 channel_id: PAY_TO.to_string(),
                 max_claimable_amount: "1".to_string(),
                 expires_at: 0,
                 signature: "sig".to_string(),
-            },
+            }),
             deposit: BatchDeposit {
                 amount: "1".to_string(),
                 transaction: "b64".to_string(),

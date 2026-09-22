@@ -458,7 +458,7 @@ pub async fn build_deposit(
         channel,
         BatchPayload::Deposit {
             channel_config: config,
-            voucher,
+            voucher: Some(voucher),
             deposit: BatchDeposit {
                 amount: deposit_amount.to_string(),
                 transaction: open.transaction,
@@ -500,7 +500,7 @@ pub async fn build_top_up(
     let voucher = channel.sign_next_voucher(signer, terms.amount).await?;
     Ok(BatchPayload::Deposit {
         channel_config: channel.config.clone(),
-        voucher,
+        voucher: Some(voucher),
         deposit: BatchDeposit {
             amount: top_up_amount.to_string(),
             transaction,
@@ -610,7 +610,12 @@ pub fn parse_challenge(
     // A server offering server-signed metering is expected to list the same
     // resource client-signed as well; this client only ever pays the latter.
     let requirement = envelope.accepts.into_iter().find(|r| {
-        r.scheme == BATCH_SETTLEMENT_SCHEME && r.extra.voucher_signer.as_deref() != Some("server")
+        r.scheme == BATCH_SETTLEMENT_SCHEME
+            && r.extra.voucher_signer.as_deref() != Some("server")
+            // An operator key alone is the same delegation; `resolve_terms`
+            // would refuse it, so skip it here too instead of stranding a
+            // usable client-signed accept behind it.
+            && r.extra.operator.is_none()
     })?;
     Some((requirement, error))
 }
@@ -778,16 +783,20 @@ mod tests {
         metered.amount = "5000".to_string();
         metered.extra.voucher_signer = Some("server".to_string());
         metered.extra.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        let mut operator_only = requirements(&fee_payer);
+        operator_only.amount = "7000".to_string();
+        operator_only.extra.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
         let envelope = BatchRequiredEnvelope {
             x402_version: X402_VERSION_V2,
             resource: None,
-            accepts: vec![metered.clone(), requirements(&fee_payer)],
+            accepts: vec![metered.clone(), operator_only, requirements(&fee_payer)],
             error: None,
         };
         let body = serde_json::to_string(&envelope).unwrap();
         let (chosen, _) = parse_challenge(&[], Some(&body)).unwrap();
         assert_eq!(chosen.amount, "1000");
         assert!(chosen.extra.voucher_signer.is_none());
+        assert!(chosen.extra.operator.is_none());
         // Only a server-signed accept on offer: nothing this client can pay.
         let only_metered = BatchRequiredEnvelope {
             x402_version: X402_VERSION_V2,
@@ -842,6 +851,7 @@ mod tests {
         else {
             panic!("expected a deposit payload");
         };
+        let voucher = voucher.as_ref().expect("client deposits carry a voucher");
         assert_eq!(voucher.max_claimable_amount, "1000");
         assert_eq!(voucher.expires_at, 0);
         assert_eq!(deposit.amount, "100000");
@@ -916,7 +926,10 @@ mod tests {
         else {
             panic!("expected a deposit payload");
         };
-        assert_eq!(voucher.max_claimable_amount, "2000");
+        assert_eq!(
+            voucher.as_ref().map(|v| v.max_claimable_amount.as_str()),
+            Some("2000")
+        );
         validate_setup_transaction(
             &deposit.transaction,
             SetupForm::TopUp,

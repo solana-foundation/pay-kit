@@ -209,7 +209,14 @@ pub fn check_channel_config(
 pub fn check_client_signed_payload(payload: &BatchPayload) -> Result<()> {
     let refused = match payload {
         BatchPayload::Authorization { .. } => true,
-        BatchPayload::Deposit { authorization, .. } => authorization.is_some(),
+        // A deposit either carries the client's voucher (client mode) or a
+        // payer proof (server mode); one with no voucher has nothing this
+        // server can charge against, whichever field it carries.
+        BatchPayload::Deposit {
+            authorization,
+            voucher,
+            ..
+        } => authorization.is_some() || voucher.is_none(),
         BatchPayload::Voucher { .. } | BatchPayload::Refund { .. } => false,
     };
     if refused {
@@ -678,12 +685,28 @@ mod tests {
         );
         let delegated_deposit = BatchPayload::Deposit {
             channel_config: config.clone(),
-            voucher: BatchVoucher {
+            voucher: None,
+            deposit: BatchDeposit {
+                amount: "1".to_string(),
+                transaction: "b64".to_string(),
+            },
+            authorization: Some(proof.clone()),
+        };
+        assert_eq!(
+            check_client_signed_payload(&delegated_deposit)
+                .unwrap_err()
+                .code,
+            errors::INVALID_PAYLOAD_TYPE
+        );
+        // Both fields at once, or neither, are equally not a client-signed deposit.
+        let both = BatchPayload::Deposit {
+            channel_config: config.clone(),
+            voucher: Some(BatchVoucher {
                 channel_id: PAY_TO.to_string(),
                 max_claimable_amount: "1".to_string(),
                 expires_at: 0,
                 signature: "sig".to_string(),
-            },
+            }),
             deposit: BatchDeposit {
                 amount: "1".to_string(),
                 transaction: "b64".to_string(),
@@ -691,9 +714,20 @@ mod tests {
             authorization: Some(proof),
         };
         assert_eq!(
-            check_client_signed_payload(&delegated_deposit)
-                .unwrap_err()
-                .code,
+            check_client_signed_payload(&both).unwrap_err().code,
+            errors::INVALID_PAYLOAD_TYPE
+        );
+        let neither = BatchPayload::Deposit {
+            channel_config: config.clone(),
+            voucher: None,
+            deposit: BatchDeposit {
+                amount: "1".to_string(),
+                transaction: "b64".to_string(),
+            },
+            authorization: None,
+        };
+        assert_eq!(
+            check_client_signed_payload(&neither).unwrap_err().code,
             errors::INVALID_PAYLOAD_TYPE
         );
         let voucher = BatchPayload::Voucher {
@@ -820,12 +854,12 @@ mod tests {
         // Paid-request payloads are unaffected.
         let deposit = BatchPayload::Deposit {
             channel_config: config,
-            voucher: BatchVoucher {
+            voucher: Some(BatchVoucher {
                 channel_id: PAY_TO.to_string(),
                 max_claimable_amount: "1".to_string(),
                 expires_at: 0,
                 signature: "sig".to_string(),
-            },
+            }),
             deposit: BatchDeposit {
                 amount: "1".to_string(),
                 transaction: "b64".to_string(),
@@ -833,6 +867,7 @@ mod tests {
             authorization: None,
         };
         assert!(check_no_cooperative_close(&deposit).is_ok());
+        assert!(check_client_signed_payload(&deposit).is_ok());
     }
 
     #[test]
