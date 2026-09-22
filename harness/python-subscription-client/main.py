@@ -94,6 +94,7 @@ async def _activate(signer: Keypair, rpc_url: str, challenge: PaymentChallenge) 
 
 
 def main() -> None:
+    """Drive one scenario: 402, activation, then the bearer proof, and print the result line."""
     target = os.environ["MPP_HARNESS_TARGET_URL"]
     signer = Keypair.from_bytes(bytes(json.loads(os.environ["MPP_HARNESS_CLIENT_SECRET_KEY"])))
 

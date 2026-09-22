@@ -228,6 +228,7 @@ class SubscriptionServer:
     """Issues subscription challenges and verifies activation and access credentials."""
 
     def __init__(self, config: SubscriptionConfig) -> None:
+        """Validate the configuration and bind the puller, fee payer, store and RPC client."""
         if not isinstance(config.store, Store):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise _config_error("replay store is required; pass MemoryStore() or FileReplayStore(path) explicitly")
         secret_key = config.secret_key or os.environ.get(_SECRET_KEY_ENV_VAR, "")
