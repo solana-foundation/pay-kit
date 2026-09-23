@@ -60,6 +60,7 @@ async function getPayKitClient(): Promise<PayKitClient> {
   if (!payKitClient) {
     const signer = await getSigner()
     payKitClient = await createPayKitClient({
+      network: 'localnet',
       onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
       rpcUrl: RPC_URL,
       signer,
