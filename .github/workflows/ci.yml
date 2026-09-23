@@ -183,12 +183,6 @@ jobs:
           cache-dependency-path: |
             typescript/pnpm-lock.yaml
             playground/pnpm-lock.yaml
-      - name: Install branch TypeScript dependencies
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build browser SDK dependencies
-        working-directory: typescript
-        run: pnpm --filter '@solana/pay-kit...' build
       - name: Install playground dependencies
         working-directory: playground
         run: pnpm install --frozen-lockfile

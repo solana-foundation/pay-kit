@@ -3,8 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prepare:sdk": "pnpm -C .. prepare:sdk",
+    "predev": "pnpm prepare:sdk",
     "dev": "vite",
+    "dev:prepared": "vite",
+    "prebuild": "pnpm prepare:sdk",
     "build": "tsc --noEmit && vite build",
+    "build:prepared": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
