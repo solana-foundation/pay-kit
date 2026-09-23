@@ -166,6 +166,37 @@ jobs:
             python/src/pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
+  test-playground-smoke:
+    name: Playground browser smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: |
+            typescript/pnpm-lock.yaml
+            playground/pnpm-lock.yaml
+      - name: Install branch TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build browser SDK dependencies
+        working-directory: typescript
+        run: pnpm --filter '@solana/pay-kit...' build
+      - name: Install playground dependencies
+        working-directory: playground
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        working-directory: playground
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Verify playground renders
+        working-directory: playground
+        run: pnpm exec playwright test --config playwright.smoke.config.ts
+
   test-rust:
     name: Rust tests
     needs: build-html
