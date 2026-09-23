@@ -449,18 +449,32 @@ impl PaymentOffer {
     }
 
     fn from_x402(
-        requirement: PaymentRequirements,
+        mut requirement: PaymentRequirements,
         origin: &str,
     ) -> Result<Option<Self>, PermissionRejection> {
         if requirement.currency.eq_ignore_ascii_case("SOL") || !is_exact(&requirement) {
             return Ok(None);
         }
-        let cluster = requirement
-            .cluster
-            .as_deref()
+        let network = cluster_for_caip2_network(&requirement.network)
             .and_then(parse_network)
-            .or_else(|| cluster_for_caip2_network(&requirement.network).and_then(parse_network))
             .ok_or_else(|| PermissionRejection::invalid_terms("unsupported x402 network"))?;
+        let cluster = match requirement.cluster.as_deref() {
+            Some(value) => {
+                let cluster = parse_network(value).ok_or_else(|| {
+                    PermissionRejection::invalid_terms("unsupported explicit x402 cluster")
+                })?;
+                if !networks_compatible(cluster, network) {
+                    return Err(PermissionRejection::invalid_terms(
+                        "x402 cluster does not match network",
+                    ));
+                }
+                cluster
+            }
+            None => network,
+        };
+        // The signing path must consume the same canonical cluster that was
+        // authorized above; never retain an unchecked wire value.
+        requirement.cluster = Some(cluster.as_str().to_string());
         let mint = resolve_stablecoin_mint(&requirement.currency, Some(cluster.as_str()))
             .ok_or_else(|| PermissionRejection::invalid_terms("unsupported x402 asset"))?;
         let mint = mint
@@ -500,8 +514,19 @@ fn parse_network(value: &str) -> Option<SolanaNetwork> {
         "mainnet" | "mainnet-beta" => Some(SolanaNetwork::Mainnet),
         "devnet" => Some(SolanaNetwork::Devnet),
         "localnet" => Some(SolanaNetwork::Localnet),
-        _ => None,
+        _ => cluster_for_caip2_network(value)
+            .filter(|cluster| *cluster != value)
+            .and_then(parse_network),
     }
+}
+
+fn networks_compatible(left: SolanaNetwork, right: SolanaNetwork) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (SolanaNetwork::Devnet, SolanaNetwork::Localnet)
+                | (SolanaNetwork::Localnet, SolanaNetwork::Devnet)
+        )
 }
 
 fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
@@ -597,7 +622,7 @@ mod tests {
             protocol::{core::Base64UrlJson, solana::programs::TOKEN_PROGRAM},
             PaymentChallenge,
         },
-        x402::exact::SOLANA_MAINNET,
+        x402::exact::{SOLANA_DEVNET, SOLANA_MAINNET},
     };
 
     #[derive(Clone)]
@@ -741,6 +766,47 @@ mod tests {
                 "payTo": Pubkey::new_unique().to_string(),
                 "maxTimeoutSeconds": 300,
                 "extra": { "decimals": 6, "tokenProgram": TOKEN_PROGRAM }
+            }]
+        });
+        let payment_required = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&envelope).unwrap());
+        let app = Router::new().route(
+            "/report",
+            get(move || {
+                let payment_required = payment_required.clone();
+                async move {
+                    (
+                        StatusCode::PAYMENT_REQUIRED,
+                        [("payment-required", payment_required)],
+                        "payment required",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/report"), task)
+    }
+
+    async fn unsupported_cluster_x402_server() -> (String, tokio::task::JoinHandle<()>) {
+        let envelope = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": SOLANA_DEVNET,
+                "cluster": "bogus",
+                "amount": "500000",
+                "asset": "USDC",
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
             }]
         });
         let payment_required = base64::engine::general_purpose::STANDARD
@@ -1023,6 +1089,34 @@ mod tests {
             denial.rejections[0].code,
             PermissionDeniedCode::InvalidChallengeTerms
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn unsupported_explicit_x402_cluster_is_denied_before_signing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let (url, task) = unsupported_cluster_x402_server().await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .network(SolanaNetwork::Devnet)
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap();
+
+        let error = client.get(url).send().await.unwrap_err();
+        let ClientError::PermissionDenied(denial) = error else {
+            panic!("expected permission denial");
+        };
+        assert_eq!(
+            denial.rejections[0].code,
+            PermissionDeniedCode::InvalidChallengeTerms
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         task.abort();
     }
 

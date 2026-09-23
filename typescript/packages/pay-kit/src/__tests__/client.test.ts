@@ -106,4 +106,34 @@ describe('createPayKitClient', () => {
         expect(signTransactions).not.toHaveBeenCalled();
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    it('denies an unsupported x402 network before signing or retrying', async () => {
+        const paymentRequired = btoa(
+            JSON.stringify({
+                accepts: [
+                    {
+                        amount: '500000',
+                        asset: 'USDC',
+                        extra: {},
+                        maxTimeoutSeconds: 60,
+                        network: 'solana:unsupported',
+                        payTo: signer.address,
+                        scheme: 'exact',
+                    },
+                ],
+                x402Version: 2,
+            }),
+        );
+        mockFetch.mockResolvedValue(response(402, { 'payment-required': paymentRequired }));
+        const signTransactions = vi.fn(signer.signTransactions.bind(signer));
+        const trackingSigner = new Proxy(signer, {
+            get: (target, property, receiver) =>
+                property === 'signTransactions' ? signTransactions : Reflect.get(target, property, receiver),
+        });
+        const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer: trackingSigner });
+
+        await expect(client.fetch('https://api.test/paid')).rejects.toBeInstanceOf(PermissionDeniedError);
+        expect(signTransactions).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
 });

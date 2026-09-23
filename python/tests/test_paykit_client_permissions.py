@@ -272,3 +272,41 @@ async def test_mpp_build_failure_falls_back_to_x402(monkeypatch: pytest.MonkeyPa
 
     assert result.status_code == 200
     assert inner.requests[1].headers["payment-signature"] == "x402 credential"
+
+
+async def test_unsupported_x402_network_is_not_signed(monkeypatch: pytest.MonkeyPatch) -> None:
+    envelope = {
+        "x402Version": 2,
+        "resource": {"type": "http", "url": "https://api.example/paid"},
+        "accepts": [
+            {
+                "protocol": "x402",
+                "scheme": "exact",
+                "network": "solana:unsupported",
+                "asset": "USDC",
+                "amount": "500000",
+                "maxAmountRequired": "500000",
+                "payTo": UNKNOWN_MINT,
+                "maxTimeoutSeconds": 60,
+                "extra": {},
+            }
+        ],
+    }
+    payment_required = base64.b64encode(json.dumps(envelope).encode()).decode()
+    inner = MockTransport([httpx.Response(402, headers={"payment-required": payment_required})])
+    build = MagicMock()
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("x402",),
+        base_transport=inner,
+    )
+
+    response = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert response.status_code == 402
+    build.assert_not_called()
+    assert len(inner.requests) == 1
