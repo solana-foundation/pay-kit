@@ -327,7 +327,13 @@ impl ClientPermissions {
         }
     }
 
-    pub(crate) fn authorize(
+    /// Check one fully resolved payment offer without constructing or signing
+    /// a transaction.
+    ///
+    /// This is the same boundary used by [`PayKitClient`](super::PayKitClient)
+    /// and is public so higher-level clients (for example an MCP server) can
+    /// apply the permission model to their own protocol negotiation path.
+    pub fn authorize(
         &self,
         candidate: &PaymentCandidate<'_>,
     ) -> Result<AuthorizedPayment, PermissionRejection> {
@@ -505,16 +511,41 @@ impl ClientPermissionsBuilder {
     }
 }
 
-pub(crate) struct PaymentCandidate<'a> {
-    pub origin: &'a str,
-    pub network: SolanaNetwork,
-    pub mint: &'a str,
-    pub amount: u64,
+/// A resolved payment offer presented to [`ClientPermissions::authorize`].
+///
+/// `amount` is expressed in the asset's atomic units. Known stablecoins use
+/// six decimal places, so their atomic amount is also micro-USD for cap checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaymentCandidate<'a> {
+    origin: &'a str,
+    network: SolanaNetwork,
+    mint: &'a str,
+    amount: u64,
 }
 
-#[derive(Debug)]
-pub(crate) struct AuthorizedPayment {
-    pub max_amount_atomic: Option<u64>,
+impl<'a> PaymentCandidate<'a> {
+    /// Describe a payment after protocol parsing and asset resolution.
+    pub const fn new(origin: &'a str, network: SolanaNetwork, mint: &'a str, amount: u64) -> Self {
+        Self {
+            origin,
+            network,
+            mint,
+            amount,
+        }
+    }
+}
+
+/// Permission result for an allowed payment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorizedPayment {
+    max_amount_atomic: Option<u64>,
+}
+
+impl AuthorizedPayment {
+    /// The effective atomic cap to enforce again at the signing boundary.
+    pub const fn max_amount_atomic(self) -> Option<u64> {
+        self.max_amount_atomic
+    }
 }
 
 /// Stable reason code for a denied payment candidate.

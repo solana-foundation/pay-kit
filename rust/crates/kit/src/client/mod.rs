@@ -80,12 +80,11 @@ use crate::{
 };
 
 pub use permissions::{
-    AssetPermission, ClientPermissions, ClientPermissionsBuilder, OriginPermissionOverride,
-    OriginPermissionOverrideBuilder, PermissionConfigError, PermissionDenied, PermissionDeniedCode,
-    PermissionRejection, SolanaNetwork, UsdAmount,
+    AssetPermission, AuthorizedPayment, ClientPermissions, ClientPermissionsBuilder,
+    OriginPermissionOverride, OriginPermissionOverrideBuilder, PaymentCandidate,
+    PermissionConfigError, PermissionDenied, PermissionDeniedCode, PermissionRejection,
+    SolanaNetwork, UsdAmount,
 };
-
-use permissions::{AuthorizedPayment, PaymentCandidate};
 
 /// Payment protocols the high-level client can answer automatically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -231,7 +230,7 @@ impl PayKitClient {
                     &rpc,
                     challenge,
                     crate::mpp::client::BuildChargeTransactionOptions {
-                        max_amount_base_units: authorization.max_amount_atomic,
+                        max_amount_base_units: authorization.max_amount_atomic(),
                         expected_network: Some(offer.network.to_string()),
                         ..Default::default()
                     },
@@ -431,12 +430,7 @@ impl PaymentOffer {
     }
 
     fn candidate(&self) -> PaymentCandidate<'_> {
-        PaymentCandidate {
-            origin: &self.origin,
-            network: self.network,
-            mint: &self.mint,
-            amount: self.amount,
-        }
+        PaymentCandidate::new(&self.origin, self.network, &self.mint, self.amount)
     }
 }
 
