@@ -16,6 +16,7 @@ import type {
   ResponsePayload,
 } from '../types'
 import { fmtUnits } from '../lib/format'
+import { useConfig } from '../hooks/useConfig'
 
 interface Props {
   endpoints: Endpoint[]
@@ -69,6 +70,7 @@ export function EndpointWorkbench({
   disabledReason,
   onBalanceChange,
 }: Props) {
+  const config = useConfig()
   const [searchParams, setSearchParams] = useSearchParams()
   const epId = searchParams.get('ep')
   const endpoint = useMemo<Endpoint | null>(() => {
@@ -133,7 +135,14 @@ export function EndpointWorkbench({
     pushLog(`${endpoint.method} ${url}`, 'req')
 
     try {
-      for await (const step of runFlow(endpoint, url, paramValues, primitive, dual ? protocol : undefined)) {
+      for await (const step of runFlow(
+        endpoint,
+        url,
+        paramValues,
+        primitive,
+        config?.network,
+        dual ? protocol : undefined,
+      )) {
         handleProgress(step, advance, pushLog, setResponse)
       }
     } catch (err) {
@@ -235,11 +244,13 @@ async function* runFlow(
   url: string,
   paramValues: Record<string, string>,
   primitive: Primitive,
+  network?: string,
   protocol?: 'mpp' | 'x402',
 ): AsyncGenerator<FlowProgress> {
   void paramValues
   for await (const step of payAndFetch(url, {
     primitive,
+    network,
     protocol,
     unitPrice: endpoint.unitPrice,
     init: { method: endpoint.method },

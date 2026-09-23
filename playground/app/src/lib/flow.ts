@@ -5,7 +5,7 @@ import {
   SUBSCRIPTIONS_PROGRAM,
   type SessionFetchClient,
 } from '@solana/mpp/client'
-import { createPayKitClient, type PayKitClient } from '@solana/pay-kit/client'
+import { createPayKitClient, type PayKitClient, type SolanaNetwork } from '@solana/pay-kit/client'
 import { getSigner, RPC_URL, TOKEN_PROGRAM, USDC_MINT } from './wallet'
 import type { FlowProgress } from '../types'
 
@@ -29,6 +29,7 @@ interface ProgressEvent {
 }
 
 let payKitClient: PayKitClient | null = null
+let payKitNetwork: SolanaNetwork | null = null
 let sessionFetch: SessionFetchClient | null = null
 let subscriptionAuthorityPromise: Promise<bigint> | null = null
 let progressCallback: ((e: ProgressEvent) => void) | null = null
@@ -56,15 +57,23 @@ function ensureSubscriptionAuthority(): Promise<bigint> {
  * for every primitive. Sessions stream through the dedicated SessionFetch
  * client below (the streaming exception the unified client delegates out).
  */
-async function getPayKitClient(): Promise<PayKitClient> {
-  if (!payKitClient) {
+function normalizeClientNetwork(network: string | undefined): SolanaNetwork {
+  if (!network || network === 'mainnet' || network === 'mainnet-beta') return 'mainnet'
+  if (network === 'devnet' || network === 'localnet') return network
+  throw new Error(`Unsupported Solana network: ${network}`)
+}
+
+async function getPayKitClient(network: string | undefined): Promise<PayKitClient> {
+  const normalizedNetwork = normalizeClientNetwork(network)
+  if (!payKitClient || payKitNetwork !== normalizedNetwork) {
     const signer = await getSigner()
     payKitClient = await createPayKitClient({
-      network: 'localnet',
+      network: normalizedNetwork,
       onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
       rpcUrl: RPC_URL,
       signer,
     })
+    payKitNetwork = normalizedNetwork
   }
   return payKitClient
 }
@@ -203,6 +212,8 @@ interface Options {
   /** Per-delivery price in base units (sessions only) — used as the fallback
    * voucher amount when the response doesn't carry per-chunk costs. */
   unitPrice?: string
+  /** Solana network advertised by the deployed playground server. */
+  network?: string
   init?: RequestInit
 }
 
@@ -276,7 +287,7 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
             // hidden side effect. The playground opts into authority setup
             // explicitly so its zero-config demo still works for a new wallet.
             if (opts.primitive === 'subscription') await ensureSubscriptionAuthority()
-            return (await getPayKitClient()).fetch(url, opts.init, opts.protocol)
+            return (await getPayKitClient(opts.network)).fetch(url, opts.init, opts.protocol)
           })()
 
     while (true) {
@@ -388,6 +399,7 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
 /** Reset cached payment clients (call after wallet reset). */
 export function resetMppxClients() {
   payKitClient = null
+  payKitNetwork = null
   sessionFetch = null
   subscriptionAuthorityPromise = null
 }
