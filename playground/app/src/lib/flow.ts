@@ -84,8 +84,12 @@ async function getPayKitClient(network: string | undefined): Promise<PayKitClien
       onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
       // Surfpool's discovery metadata uses the forked mainnet identity, while
       // its MPP challenge uses `localnet`. Authorize both explicit identities
-      // for this sandbox client while retaining the default $1 cap.
-      permissions: ClientPermissions.builder().allowNetwork('localnet').build(),
+      // plus the configured deployment network while retaining the default
+      // $1 cap.
+      permissions: ClientPermissions.builder()
+        .allowNetwork('localnet')
+        .allowNetwork(normalizedNetwork)
+        .build(),
       rpcUrl: RPC_URL,
       signer,
     })
