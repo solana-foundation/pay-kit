@@ -50,7 +50,10 @@ function toConfig(doc: OpenApiDoc): ConfigResponse {
 
       for (const offer of offers) {
         if (!recipient && offer.payTo) recipient = offer.payTo
-        if (!network && offer.network) network = offer.network
+        // Prefer MPP's explicit cluster slug when both rails are advertised.
+        // x402's CAIP-2 identifier cannot distinguish a Surfpool localnet fork
+        // from the real cluster it mirrors.
+        if (offer.network && (!network || offer.method === 'mpp')) network = offer.network
         if (!feePayer && offer.feePayer) feePayer = offer.feePayer
         if (!planId && offer.planId) planId = offer.planId
       }

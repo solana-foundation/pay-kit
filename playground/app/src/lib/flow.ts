@@ -5,7 +5,12 @@ import {
   SUBSCRIPTIONS_PROGRAM,
   type SessionFetchClient,
 } from '@solana/mpp/client'
-import { createPayKitClient, type PayKitClient, type SolanaNetwork } from '@solana/pay-kit/client'
+import {
+  ClientPermissions,
+  createPayKitClient,
+  type PayKitClient,
+  type SolanaNetwork,
+} from '@solana/pay-kit/client'
 import { getSigner, RPC_URL, TOKEN_PROGRAM, USDC_MINT } from './wallet'
 import type { FlowProgress } from '../types'
 
@@ -58,8 +63,15 @@ function ensureSubscriptionAuthority(): Promise<bigint> {
  * client below (the streaming exception the unified client delegates out).
  */
 function normalizeClientNetwork(network: string | undefined): SolanaNetwork {
-  if (!network || network === 'mainnet' || network === 'mainnet-beta') return 'mainnet'
+  if (
+    !network ||
+    network === 'mainnet' ||
+    network === 'mainnet-beta' ||
+    network === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
+  )
+    return 'mainnet'
   if (network === 'devnet' || network === 'localnet') return network
+  if (network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') return 'devnet'
   throw new Error(`Unsupported Solana network: ${network}`)
 }
 
@@ -70,6 +82,12 @@ async function getPayKitClient(network: string | undefined): Promise<PayKitClien
     payKitClient = await createPayKitClient({
       network: normalizedNetwork,
       onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
+      // A Surfpool fork advertises `localnet` over MPP but the forked mainnet
+      // identity over x402. Allow both while retaining the default $1 cap.
+      permissions:
+        normalizedNetwork === 'localnet'
+          ? ClientPermissions.builder().allowNetwork('localnet').build()
+          : undefined,
       rpcUrl: RPC_URL,
       signer,
     })
