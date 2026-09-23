@@ -119,69 +119,84 @@ USD caps apply only to known dollar-pegged assets with known decimals. A custom
 mint is denied unless added with `AssetPermission` or the caller explicitly
 uses `.allow_any_asset()`. Custom asset caps are atomic integer amounts.
 
-## Proposed TypeScript parity
+## TypeScript API
 
-TypeScript should expose the same concepts using idiomatic object
-configuration:
+TypeScript exposes the same concepts through immutable fluent builders:
 
 ```ts
-import { createPayKitClient, usd } from '@solana/pay-kit/client'
+import {
+  AssetPermission,
+  ClientPermissions,
+  OriginPermissionOverride,
+  PayKitClient,
+  usd,
+} from '@solana/pay-kit/client'
 
-const client = await createPayKitClient({
-  signer,
-  rpcUrl: 'https://api.mainnet-beta.solana.com',
-  network: 'mainnet',
-  accept: ['mpp', 'x402'],
-  permissions: {
-    allowedOrigins: ['https://api.example.com'],
-    allowedNetworks: ['mainnet'],
-    maxAmountPerPayment: usd('1.00'),
-    originOverrides: {
-      'https://api.example.com': {
-        maxAmountPerPayment: usd('5.00'),
-      },
-    },
-    allowedAssets: [
-      {
-        network: 'mainnet',
-        asset: customMint,
-        maxAmountPerPayment: 2_000_000n,
-      },
-    ],
-  },
-})
+const permissions = ClientPermissions.builder()
+  .allowOrigin('https://api.example.com')
+  .onlyNetwork('mainnet')
+  .maxAmountPerPayment(usd('1.00'))
+  .allowAsset(AssetPermission.withCap('mainnet', customMint, 2_000_000n))
+  .overrideOrigin(
+    OriginPermissionOverride.builder('https://api.example.com')
+      .maxAmountPerPayment(usd('5.00'))
+      .build(),
+  )
+  .build()
+
+const client = await PayKitClient.builder()
+  .signer(signer)
+  .rpcUrl('https://api.mainnet-beta.solana.com')
+  .network('mainnet')
+  .accept(['mpp', 'x402'])
+  .permissions(permissions)
+  .build()
 
 const response = await client.fetch('https://api.example.com/report')
 ```
 
-Suggested public types:
+`.permissions(false)` mirrors Rust's `ClientPermissions::unrestricted()`.
+`createPayKitClient({...})` remains available as the config-object factory.
 
-```ts
-type SolanaNetwork = 'mainnet' | 'devnet' | 'localnet'
+## Python API
 
-type ClientPermissions = {
-  readonly allowedOrigins?: true | readonly string[]
-  readonly allowedNetworks?: readonly SolanaNetwork[]
-  readonly maxAmountPerPayment?: UsdAmount | false
-  readonly allowedAssets?: true | readonly ClientAssetPermission[]
-  readonly originOverrides?: Readonly<
-    Record<string, OriginPermissionOverride>
-  >
-}
+Python follows the same builder vocabulary and defaults:
 
-type OriginPermissionOverride = {
-  readonly maxAmountPerPayment?: UsdAmount | false
-  readonly assetCaps?: readonly ClientAssetPermission[]
-}
+```python
+from solana_pay_kit.client import (
+    ClientPermissions,
+    OriginPermissionOverride,
+    PayKitClient,
+    usd,
+)
 
-type ClientAssetPermission = {
-  readonly network: SolanaNetwork
-  readonly asset: string
-  readonly maxAmountPerPayment?: bigint
-}
+permissions = (
+    ClientPermissions.builder()
+    .allow_origin("https://api.example.com")
+    .only_network("mainnet")
+    .max_amount_per_payment(usd("1"))
+    .override_origin(
+        OriginPermissionOverride.builder("https://api.example.com")
+        .max_amount_per_payment(usd("5"))
+        .build()
+    )
+    .build()
+)
+
+client = (
+    PayKitClient.builder()
+    .signer(signer)
+    .rpc(rpc)
+    .network("mainnet")
+    .accept(("mpp", "x402"))
+    .permissions(permissions)
+    .build()
+)
 ```
 
-`permissions: false` would mirror Rust's `unrestricted()`.
+The public classes and methods carry docstrings and are included automatically
+in the package's pydoc-markdown API reference. `.permissions(False)` is the
+explicit unrestricted escape hatch.
 
 ## Architecture
 
@@ -204,19 +219,18 @@ The request flow is:
 ```text
 send request
   -> receive 402
-  -> parse every enabled MPP and x402 offer
+  -> parse enabled MPP and x402 offers
   -> normalize each offer
   -> filter through ClientPermissions
   -> select the first permitted offer
-  -> re-evaluate the selected offer
   -> build and sign its transaction
   -> retry once against the final challenge URL
 ```
 
-The first evaluation enables deterministic fallback and aggregate rejection
-details. The second evaluation is the signing boundary. The authorized result
-also carries the resolved atomic cap into the MPP transaction builder, retaining
-its defense-in-depth amount and network checks.
+Evaluation enables deterministic fallback and aggregate rejection details and
+occurs immediately before transaction construction. The authorized result also
+carries the resolved atomic cap into the MPP transaction builder, retaining its
+defense-in-depth amount and network checks.
 
 The response URL is captured after redirects. Payment credentials are added
 only to the retry sent to that final URL.
@@ -256,5 +270,5 @@ cap precedence, unknown assets, network refusal, unrestricted mode, signer
 non-invocation on denial, MPP and x402 paid retries, and fallback from a denied
 MPP offer to a permitted x402 offer.
 
-When TypeScript is implemented, shared serialized candidate fixtures should
-verify that both SDKs produce the same decision and resolved atomic cap.
+Rust and TypeScript tests cover the shared policy decisions and resolved atomic
+caps. Python follows the same cases.

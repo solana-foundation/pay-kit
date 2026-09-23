@@ -13,24 +13,42 @@
  * x402 `ClientSvmSigner` and the MPP client methods).
  */
 import type { KeyPairSigner } from '@solana/kit';
-import { Mppx, serializeSubscriptionAccessCredential, solana } from '@solana/mpp/client';
+import {
+    Challenge,
+    resolveStablecoinMint,
+    selectSolanaChargeChallengeFromResponse,
+    serializeSubscriptionAccessCredential,
+    solana,
+} from '@solana/mpp/client';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
-import type { Network } from '@x402/core/types';
+import type { Network, PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { UptoSvmScheme } from '@x402/svm/upto/client';
 
 import { ConfigurationError } from '../errors.js';
 import type { Protocol } from '../protocol.js';
+import {
+    ClientPermissions,
+    PermissionDeniedError,
+    type PermissionRejection,
+    type SolanaNetwork,
+} from './permissions.js';
 
-/** Capture native fetch before `Mppx.create()` polyfills `globalThis.fetch`. */
+export * from './permissions.js';
+
+/** Capture the caller's fetch implementation once for challenge probes and retries. */
 const nativeFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 
 /** Options for {@link createPayKitClient}. */
 export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
+    /** Solana cluster used to pin default permissions. Defaults to `mainnet`. */
+    readonly network?: SolanaNetwork;
     /** Progress callback, forwarded to the MPP charge/subscription methods. */
     readonly onProgress?: (event: unknown) => void;
+    /** Payment permissions. Pass `false` to allow every supported payment. */
+    readonly permissions?: ClientPermissions | false;
     /** RPC endpoint used to build payments (sign transfers, open channels). */
     readonly rpcUrl: string;
     /** The payer signer — drives both x402 and MPP. */
@@ -48,20 +66,80 @@ export type PayKitClient = {
     readonly fetch: (input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol) => Promise<Response>;
 };
 
+/** Fluent builder for {@link PayKitClient}. */
+export class PayKitClientBuilder {
+    #accept: readonly Protocol[] | undefined;
+    #network: SolanaNetwork = 'mainnet';
+    #onProgress: ((event: unknown) => void) | undefined;
+    #permissions: ClientPermissions | false | undefined;
+    #rpcUrl: string | undefined;
+    #signer: KeyPairSigner | undefined;
+
+    /** Set the payer signer. */
+    signer(signer: KeyPairSigner): this {
+        this.#signer = signer;
+        return this;
+    }
+
+    /** Set the Solana RPC URL. */
+    rpcUrl(rpcUrl: string): this {
+        this.#rpcUrl = rpcUrl;
+        return this;
+    }
+
+    /** Set the Solana cluster. Defaults to `mainnet`. */
+    network(network: SolanaNetwork): this {
+        this.#network = network;
+        return this;
+    }
+
+    /** Restrict the protocols this client may answer. */
+    accept(protocols: readonly Protocol[]): this {
+        this.#accept = protocols;
+        return this;
+    }
+
+    /** Replace the default permission policy. */
+    permissions(permissions: ClientPermissions | false): this {
+        this.#permissions = permissions;
+        return this;
+    }
+
+    /** Set a payment progress callback. */
+    onProgress(callback: (event: unknown) => void): this {
+        this.#onProgress = callback;
+        return this;
+    }
+
+    /** Validate the configuration and build the payment client. */
+    build(): Promise<PayKitClient> {
+        if (!this.#signer) throw new ConfigurationError('PayKitClient requires a signer');
+        if (!this.#rpcUrl) throw new ConfigurationError('PayKitClient requires an RPC URL');
+        return createPayKitClient({
+            accept: this.#accept,
+            network: this.#network,
+            onProgress: this.#onProgress,
+            permissions: this.#permissions,
+            rpcUrl: this.#rpcUrl,
+            signer: this.#signer,
+        });
+    }
+}
+
+/** Builder entry point matching the Rust `PayKitClient::builder()` API. */
+export const PayKitClient = Object.freeze({
+    builder: (): PayKitClientBuilder => new PayKitClientBuilder(),
+});
+
 /** Parse the `intent` from an MPP `www-authenticate` challenge value. */
 function mppIntent(header: string | null): string | undefined {
     return header?.match(/intent="([^"]+)"/)?.[1];
 }
 
-function resourceUrl(input: RequestInfo | URL): string {
-    return input instanceof Request ? input.url : String(input);
-}
-
-function withAuthorization(input: RequestInfo | URL, init: RequestInit | undefined, value: string): RequestInit {
-    const headers = new Headers(input instanceof Request ? input.headers : undefined);
-    new Headers(init?.headers).forEach((headerValue, name) => headers.set(name, headerValue));
-    headers.set('Authorization', value);
-    return { ...init, headers };
+function withHeader(request: Request, name: string, value: string): Request {
+    const headers = new Headers(request.headers);
+    headers.set(name, value);
+    return new Request(request.clone(), { headers });
 }
 
 /**
@@ -80,9 +158,15 @@ function withAuthorization(input: RequestInfo | URL, init: RequestInit | undefin
  */
 export function createPayKitClient(options: PayKitClientOptions): Promise<PayKitClient> {
     const accept = options.accept ?? ['x402', 'mpp'];
+    if (accept.length === 0) throw new ConfigurationError('PayKitClient must accept at least one protocol');
     const acceptsX402 = accept.includes('x402');
     const acceptsMpp = accept.includes('mpp');
     const onProgress = options.onProgress;
+    const network = options.network ?? 'mainnet';
+    const permissions =
+        options.permissions === false
+            ? ClientPermissions.unrestricted()
+            : (options.permissions ?? ClientPermissions.builder().onlyNetwork(network).build());
 
     // x402: one client with the SVM `exact` + `upto` schemes; the HTTP helper
     // turns a parsed 402 into the payment header(s) to retry with. The schemes
@@ -93,41 +177,29 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     if (acceptsX402) {
         const svm = { rpcUrl: options.rpcUrl };
         const client = new x402Client();
+        // PayKit's protocol-neutral permissions are the source of truth. Avoid
+        // applying @x402/core's separate defaults after they have authorized a
+        // challenge (including when callers explicitly choose unrestricted).
+        client.setSpendControls(false);
         client.register('solana:*' as Network, new ExactSvmScheme(options.signer, svm));
         client.register('solana:*' as Network, new UptoSvmScheme(options.signer, svm));
         http = new x402HTTPClient(client);
     }
 
-    // MPP: lazily-built `Mppx` instances (creating one polyfills global fetch,
-    // hence the captured `nativeFetch` above). Charge + subscription are
-    // 402→pay→retry; the instance's own `fetch` handles that loop.
-    let chargeMppx: ReturnType<typeof Mppx.create> | undefined;
+    // MPP charge + subscription credentials are built from the challenge we
+    // already authorized, then the original request is retried directly.
     const subscriptionCredentials = new Map<string, string>();
     const forward = onProgress ? (event: unknown) => onProgress(event) : undefined;
-    const chargeClient = (): ReturnType<typeof Mppx.create> =>
-        (chargeMppx ??= Mppx.create({
-            methods: [solana.charge({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
-        }));
-    const subscriptionClient = (resource: string): ReturnType<typeof Mppx.create> =>
-        Mppx.create({
-            methods: [
-                solana.subscription({
-                    onAuthentication: access => {
-                        subscriptionCredentials.set(resource, serializeSubscriptionAccessCredential(access));
-                    },
-                    onProgress: forward,
-                    rpcUrl: options.rpcUrl,
-                    signer: options.signer,
-                }),
-            ],
-        });
 
     async function payFetch(input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol): Promise<Response> {
-        const resource = resourceUrl(input);
+        // Keep one pristine request and send clones so a POST body can be
+        // replayed exactly once after the 402 challenge.
+        const request = new Request(input, init);
+        const resource = request.url;
         const subscriptionCredential = subscriptionCredentials.get(resource);
         const probe = subscriptionCredential
-            ? await nativeFetch(input, withAuthorization(input, init, subscriptionCredential))
-            : await nativeFetch(input, init);
+            ? await nativeFetch(withHeader(request, 'Authorization', subscriptionCredential))
+            : await nativeFetch(request.clone());
         if (probe.status !== 402) return probe;
 
         // `protocol` (optional) forces a rail when the server offers both;
@@ -135,6 +207,8 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         // charge/subscription), with x402 used when it's the only offer.
         const useMpp = acceptsMpp && protocol !== 'x402';
         const useX402 = acceptsX402 && protocol !== 'mpp';
+        const origin = new URL(probe.url || resource).origin;
+        const rejections: PermissionRejection[] = [];
 
         if (useMpp && probe.headers.get('www-authenticate')) {
             const intent = mppIntent(probe.headers.get('www-authenticate'));
@@ -143,8 +217,70 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                     'Session payments are streaming; use the dedicated session client (createSessionFetch), not client.fetch.',
                 );
             }
-            const mppx = intent === 'subscription' ? subscriptionClient(resource) : chargeClient();
-            return await mppx.fetch(input as string, init);
+            const challenge = selectSolanaChargeChallengeFromResponse(probe);
+            if (challenge) {
+                const challengeNetwork = normalizeNetwork(
+                    challenge.request.methodDetails.network ?? 'mainnet',
+                    network,
+                );
+                const mint = resolveStablecoinMint(challenge.request.currency, challengeNetwork);
+                if (mint) {
+                    try {
+                        const authorization = permissions.authorize({
+                            amount: challengeAmount(challenge.request.amount),
+                            mint,
+                            network: challengeNetwork,
+                            origin,
+                        });
+                        const method = solana.charge({
+                            expectedNetwork: challengeNetwork,
+                            maxAmount: authorization.maxAmountAtomic,
+                            onProgress: forward,
+                            rpcUrl: options.rpcUrl,
+                            signer: options.signer,
+                        });
+                        const authorizationHeader = await method.createCredential({ challenge });
+                        return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
+                    } catch (error) {
+                        if (!(error instanceof PermissionDeniedError)) throw error;
+                        rejections.push(...error.rejections);
+                    }
+                }
+            } else if (intent === 'subscription') {
+                const subscriptionChallenge = Challenge.fromResponseList(probe).find(
+                    candidate => candidate.method === 'solana' && candidate.intent === 'subscription',
+                );
+                const subscriptionTerms = subscriptionRequest(subscriptionChallenge?.request);
+                if (subscriptionChallenge && subscriptionTerms) {
+                    try {
+                        const challengeNetwork = normalizeNetwork(
+                            subscriptionTerms.methodDetails.network ?? 'mainnet',
+                            network,
+                        );
+                        permissions.authorize({
+                            amount: challengeAmount(subscriptionTerms.amount),
+                            mint: subscriptionTerms.currency,
+                            network: challengeNetwork,
+                            origin,
+                        });
+                        const method = solana.subscription({
+                            onAuthentication: access => {
+                                subscriptionCredentials.set(resource, serializeSubscriptionAccessCredential(access));
+                            },
+                            onProgress: forward,
+                            rpcUrl: options.rpcUrl,
+                            signer: options.signer,
+                        });
+                        const authorizationHeader = await method.createCredential({
+                            challenge: subscriptionChallenge as never,
+                        });
+                        return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
+                    } catch (error) {
+                        if (!(error instanceof PermissionDeniedError)) throw error;
+                        rejections.push(...error.rejections);
+                    }
+                }
+            }
         }
 
         if (useX402 && http && probe.headers.get('payment-required')) {
@@ -154,7 +290,27 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             // Emit the same progress vocabulary as the MPP path so callers get a
             // uniform flow (challenge → signing → paying → paid) on both rails.
             const required = http.getPaymentRequiredResponse(name => probe.headers.get(name));
-            const requirement = required.accepts?.[0];
+            const permitted: PaymentRequirements[] = [];
+            for (const requirement of required.accepts ?? []) {
+                try {
+                    permissions.authorize({
+                        amount: challengeAmount(requirement.amount),
+                        mint: requirement.asset,
+                        network: normalizeNetwork(requirement.network, network),
+                        origin,
+                    });
+                    permitted.push(requirement);
+                } catch (error) {
+                    if (!(error instanceof PermissionDeniedError)) throw error;
+                    rejections.push(...error.rejections);
+                }
+            }
+            if (permitted.length === 0) {
+                if (rejections.length > 0) throw new PermissionDeniedError(rejections);
+                return probe;
+            }
+            const permittedRequired: PaymentRequired = { ...required, accepts: permitted };
+            const requirement = permitted[0];
             // Decimals are intentionally omitted: the x402 requirement carries
             // only the asset address, not its precision. Hardcoding 6 would
             // misreport non-6-decimal assets, so leave it to the consumer to
@@ -166,12 +322,12 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                 type: 'challenge',
             });
             onProgress?.({ type: 'signing' });
-            const payload = await http.createPaymentPayload(required);
+            const payload = await http.createPaymentPayload(permittedRequired);
             const payHeaders = http.encodePaymentSignatureHeader(payload);
-            const headers = new Headers(init?.headers);
+            const headers = new Headers(request.headers);
             for (const [name, value] of Object.entries(payHeaders)) headers.set(name, value);
             onProgress?.({ type: 'paying' });
-            const response = await nativeFetch(input, { ...init, headers });
+            const response = await nativeFetch(new Request(request.clone(), { headers }));
             if (response.ok) {
                 try {
                     const settle = http.getPaymentSettleResponse(name => response.headers.get(name));
@@ -183,8 +339,48 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             return response;
         }
 
+        if (rejections.length > 0) throw new PermissionDeniedError(rejections);
+
         return probe;
     }
 
     return Promise.resolve({ fetch: payFetch });
+}
+
+function normalizeNetwork(value: string, configured: SolanaNetwork): SolanaNetwork {
+    if (value === 'mainnet' || value === 'mainnet-beta' || value === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') {
+        return 'mainnet';
+    }
+    if (value === 'localnet') return 'localnet';
+    if (value === 'devnet' || value === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') {
+        return configured === 'localnet' ? 'localnet' : 'devnet';
+    }
+    throw new PermissionDeniedError([
+        { code: 'invalid_challenge_terms', message: `Unsupported Solana network: ${value}` },
+    ]);
+}
+
+function challengeAmount(value: string): bigint {
+    if (!/^\d+$/.test(value)) {
+        throw new PermissionDeniedError([
+            { code: 'invalid_challenge_terms', message: `Invalid payment amount: ${JSON.stringify(value)}` },
+        ]);
+    }
+    return BigInt(value);
+}
+
+function subscriptionRequest(
+    value: unknown,
+): { amount: string; currency: string; methodDetails: { network?: string } } | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const request = value as Record<string, unknown>;
+    if (typeof request.amount !== 'string' || typeof request.currency !== 'string') return undefined;
+    if (!request.methodDetails || typeof request.methodDetails !== 'object') return undefined;
+    const methodDetails = request.methodDetails as Record<string, unknown>;
+    if (methodDetails.network !== undefined && typeof methodDetails.network !== 'string') return undefined;
+    return {
+        amount: request.amount,
+        currency: request.currency,
+        methodDetails: { network: methodDetails.network },
+    };
 }

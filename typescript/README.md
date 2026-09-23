@@ -218,13 +218,36 @@ the cross-language conformance suite in the harness.
 
 ## Client
 
-Unlike the Ruby, Python, and PHP SDKs (server-only), TypeScript also
-ships the paying side, via `@solana/pay-kit/client`:
+TypeScript ships a permissioned paying client via `@solana/pay-kit/client`:
 
 ```ts
-import { createPayKitClient } from '@solana/pay-kit/client'
+import {
+  AssetPermission,
+  ClientPermissions,
+  OriginPermissionOverride,
+  PayKitClient,
+  usd,
+} from '@solana/pay-kit/client'
 
-const client = await createPayKitClient({ signer, rpcUrl })
+const permissions = ClientPermissions.builder()
+  .allowOrigin('https://api.example')
+  .onlyNetwork('mainnet')
+  .maxAmountPerPayment(usd('1'))
+  .allowAsset(AssetPermission.withCap('mainnet', customMint, 2_000_000n))
+  .overrideOrigin(
+    OriginPermissionOverride.builder('https://api.example')
+      .maxAmountPerPayment(usd('5'))
+      .build(),
+  )
+  .build()
+
+const client = await PayKitClient.builder()
+  .signer(signer)
+  .rpcUrl(rpcUrl)
+  .network('mainnet')
+  .permissions(permissions)
+  .build()
+
 const res = await client.fetch('https://api.example/paid')
 ```
 
@@ -232,6 +255,13 @@ const res = await client.fetch('https://api.example/paid')
 matching protocol (MPP or x402) and retries the request with the
 `Authorization: Payment` credential. Pass a third argument
 (`'x402'` / `'mpp'`) to force a rail when an endpoint offers both.
+
+The default policy allows known stablecoins on mainnet from any HTTP(S)
+origin, capped at $1 per payment. Unknown assets and other networks are
+denied. Caps may be global or exact-origin overrides; an override never grants
+an origin. Pass `.permissions(false)` only when you intentionally want an
+unrestricted client. See the [permission architecture](../docs/client-permissions-design.md)
+for precedence, errors, and security invariants.
 
 ---
 

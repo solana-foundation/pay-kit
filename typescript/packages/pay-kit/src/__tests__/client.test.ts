@@ -1,4 +1,5 @@
 import { generateKeyPairSigner, type KeyPairSigner } from '@solana/kit';
+import { Challenge, resolveStablecoinMint } from '@solana/mpp/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `createPayKitClient` binds `globalThis.fetch` into a module-level `nativeFetch`
@@ -10,7 +11,7 @@ const { mockFetch } = vi.hoisted(() => {
     return { mockFetch };
 });
 
-import { createPayKitClient } from '../client/index.js';
+import { createPayKitClient, PermissionDeniedError } from '../client/index.js';
 import { ConfigurationError } from '../errors.js';
 
 const RPC_URL = 'http://127.0.0.1:8899';
@@ -60,6 +61,39 @@ describe('createPayKitClient', () => {
         const result = await client.fetch('http://api.test/joke');
 
         expect(result).toBe(challenge);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies an over-cap MPP challenge before signing or retrying', async () => {
+        const mint = resolveStablecoinMint('USDC', 'mainnet');
+        if (!mint) throw new Error('missing mainnet USDC mint');
+        const challenge = Challenge.serialize({
+            id: 'over-cap',
+            intent: 'charge',
+            method: 'solana',
+            realm: 'test',
+            request: {
+                amount: '1000001',
+                currency: mint,
+                methodDetails: {
+                    decimals: 6,
+                    feePayer: false,
+                    network: 'mainnet',
+                },
+                recipient: signer.address,
+            },
+        });
+        mockFetch.mockResolvedValue(response(402, { 'www-authenticate': challenge }));
+        const signTransactions = vi.fn(signer.signTransactions.bind(signer));
+        const trackingSigner = new Proxy(signer, {
+            get: (target, property, receiver) =>
+                property === 'signTransactions' ? signTransactions : Reflect.get(target, property, receiver),
+        });
+        const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer: trackingSigner });
+
+        await expect(client.fetch('https://api.test/paid')).rejects.toBeInstanceOf(PermissionDeniedError);
+
+        expect(signTransactions).not.toHaveBeenCalled();
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 });

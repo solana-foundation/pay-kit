@@ -223,29 +223,57 @@ and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
 
 ### Client
 
-Pay an x402-gated endpoint with the auto-pay transport (the Go `NewClient`
-ergonomics): hand it a signer and an RPC and you get back an
-`httpx.AsyncClient` that replays any `402` with a signed `PAYMENT-SIGNATURE`
-payment, then returns the paid response.
+Use the high-level client to authorize and pay either MPP or x402 challenges.
+Its safe default permits known stablecoins on mainnet from any HTTP(S) origin,
+capped at $1 per payment. The fluent policy below narrows origins and adds a
+higher cap for one exact origin:
 
 ```python
 import asyncio
 
 from solana_pay_kit import Signer
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit.protocols.x402.client import x402_async_client
+from solana_pay_kit.client import ClientPermissions, OriginPermissionOverride, PayKitClient, usd
 
 async def main():
     signer = Signer.file("payer.json")  # the payer's keypair
-    rpc = SolanaRpc("https://api.devnet.solana.com")
-    async with x402_async_client(signer, rpc) as http:
+    rpc = SolanaRpc("https://api.mainnet-beta.solana.com")
+    permissions = (
+        ClientPermissions.builder()
+        .allow_origin("https://api.example")
+        .only_network("mainnet")
+        .max_amount_per_payment(usd("1"))
+        .override_origin(
+            OriginPermissionOverride.builder("https://api.example")
+            .max_amount_per_payment(usd("5"))
+            .build()
+        )
+        .build()
+    )
+    http = (
+        PayKitClient.builder()
+        .signer(signer)
+        .rpc(rpc)
+        .network("mainnet")
+        .permissions(permissions)
+        .build()
+    )
+    async with http:
         resp = await http.get("https://api.example/report")  # 402 -> pay -> 200
         print(resp.status_code, resp.headers.get("payment-response"))
 
 asyncio.run(main())
 ```
 
-The low-level building blocks are exposed too, mirroring the Rust/Go client:
+Caps can be global or exact-origin overrides. An override changes cap
+precedence but never grants the origin itself. Unknown assets and non-mainnet
+networks are denied unless explicitly enabled. Use `.permissions(False)` only
+when you intentionally want an unrestricted client. Full precedence and
+security invariants are in the
+[permission architecture](../docs/client-permissions-design.md).
+
+The protocol-specific x402 client and low-level building blocks remain exposed:
+`x402_async_client(signer, rpc)` returns an auto-paying `httpx.AsyncClient`;
 `parse_x402_challenge(headers, body, selection)` selects an offer, and
 `build_payment_header(signer, rpc, offer)` returns the base64 `PAYMENT-SIGNATURE`
 value for callers that drive their own HTTP. See
