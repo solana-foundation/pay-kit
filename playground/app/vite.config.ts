@@ -12,6 +12,12 @@ const target = process.env.PAYKIT_PLAYGROUND_API_URL || `http://localhost:${PLAY
 const proxy = { target, changeOrigin: false }
 
 export default defineConfig({
+  // Codama-generated modules use this Node convention to omit development
+  // error messages. Linked workspace packages bypass dependency optimization,
+  // so replace it explicitly for browser execution.
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
+  },
   plugins: [react()],
   resolve: {
     alias: {
