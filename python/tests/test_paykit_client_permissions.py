@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
+from solana_pay_kit._paycore.mints import resolve_stablecoin_mint, token_program_for
+from solana_pay_kit._paycore.network import SOLANA_MAINNET_CAIP2
 from solana_pay_kit.client import (
     AssetPermission,
     ClientPermissions,
@@ -192,3 +196,79 @@ async def test_permitted_mpp_post_replays_body_and_authorization(monkeypatch: py
     assert result.status_code == 200
     assert [request.content for request in inner.requests] == [b'{"query":"report"}'] * 2
     assert inner.requests[1].headers["authorization"] == "Payment credential"
+
+
+async def test_mpp_build_failure_falls_back_to_x402(monkeypatch: pytest.MonkeyPatch) -> None:
+    challenge = PaymentChallenge.with_secret_key(
+        secret_key="secret",
+        realm="api",
+        method="solana",
+        intent="charge",
+        request=encode_json(
+            {
+                "amount": "1000",
+                "currency": "USDC",
+                "recipient": UNKNOWN_MINT,
+                "methodDetails": {"network": "mainnet"},
+            }
+        ),
+    )
+    mint = resolve_stablecoin_mint("USDC", "mainnet")
+    assert mint is not None
+    envelope = {
+        "x402Version": 2,
+        "resource": {"type": "http", "url": "https://api.example/paid"},
+        "accepts": [
+            {
+                "protocol": "x402",
+                "scheme": "exact",
+                "network": SOLANA_MAINNET_CAIP2,
+                "asset": mint,
+                "amount": "1000",
+                "maxAmountRequired": "1000",
+                "payTo": UNKNOWN_MINT,
+                "maxTimeoutSeconds": 60,
+                "extra": {
+                    "feePayer": UNKNOWN_MINT,
+                    "decimals": 6,
+                    "tokenProgram": token_program_for("USDC", "mainnet"),
+                    "memo": "permission-test",
+                },
+            }
+        ],
+    }
+    payment_required = base64.b64encode(json.dumps(envelope).encode()).decode()
+    inner = MockTransport(
+        [
+            httpx.Response(
+                402,
+                headers={
+                    "www-authenticate": format_www_authenticate(challenge),
+                    "payment-required": payment_required,
+                },
+            ),
+            httpx.Response(200),
+        ]
+    )
+
+    async def broken_mpp(**_kwargs: object) -> str:
+        raise ValueError("expired challenge")
+
+    async def x402_credential(*_args: object, **_kwargs: object) -> str:
+        return "x402 credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", broken_mpp)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_credential)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("mpp", "x402"),
+        base_transport=inner,
+    )
+
+    result = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert result.status_code == 200
+    assert inner.requests[1].headers["payment-signature"] == "x402 credential"

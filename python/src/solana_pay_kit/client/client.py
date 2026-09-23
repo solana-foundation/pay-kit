@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Self, cast
 from urllib.parse import urlsplit
@@ -29,6 +30,8 @@ from solana_pay_kit.protocols.x402.client.exact.transport import PAYMENT_SIGNATU
 from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
 from solana_pay_kit.signer import LocalSigner
+
+logger = logging.getLogger("solana_pay_kit")
 
 
 class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
@@ -98,6 +101,8 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     return await self._retry(request, "authorization", header)
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
+                except Exception:  # noqa: BLE001 - an unusable MPP offer may fall back to x402
+                    logger.warning("failed to build MPP payment credential", exc_info=True)
 
         if "x402" in self._protocols:
             body = response.text if response.content else None
@@ -124,6 +129,8 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     return await self._retry(request, name, header)
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
+                except Exception:  # noqa: BLE001 - preserve the original 402 on build failure
+                    logger.warning("failed to build x402 payment credential", exc_info=True)
 
         if rejections:
             raise PermissionDeniedError(tuple(rejections))
