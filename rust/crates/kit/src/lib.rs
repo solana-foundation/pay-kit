@@ -40,6 +40,10 @@ pub mod mpp;
 #[cfg(feature = "x402")]
 pub mod x402;
 
+/// High-level automatic payment client and its permission model.
+#[cfg(all(feature = "mpp", feature = "x402", feature = "client"))]
+pub mod client;
+
 /// Cross-protocol, balance-aware payment selection (MPP charge + x402 accepts).
 ///
 /// Picks a charge option the wallet can fund across *both* protocols, honoring

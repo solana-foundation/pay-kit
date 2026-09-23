@@ -206,23 +206,56 @@ permissionlessly once the grace period has run out.
 
 ## Client
 
-Unlike the Ruby, Python, PHP, and Lua SDKs (server-only), Rust also ships the
-paying side, via the protocol-layer crate re-exported at `solana_pay_kit::mpp`:
+Rust ships a high-level HTTP client that detects MPP and x402 challenges,
+checks one shared permission policy, signs a permitted payment, and retries the
+request once. Enable the `client`, `mpp`, and `x402` features:
 
 ```rust
-use solana_pay_kit::mpp::client::{build_credential_header, parse_challenge};
+use solana_pay_kit::client::{
+    ClientPermissions, ClientProtocol, OriginPermissionOverride, PayKitClient,
+    SolanaNetwork,
+};
 use solana_pay_kit::solana_keychain::memory::MemorySigner;
-use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 
-// 1. Read the 402 challenge from the WWW-Authenticate header.
-let challenge = parse_challenge(www_authenticate_header)?;
-// 2. Sign a payment for it and replay the request with the credential.
-let authorization = build_credential_header(&signer, &rpc, &challenge).await?;
+let permissions = ClientPermissions::builder()
+    .allow_origin("https://api.example.com")?
+    .only_network(SolanaNetwork::Mainnet)
+    .max_amount_per_payment("$1.00".parse()?)
+    .override_origin(
+        OriginPermissionOverride::builder("https://api.example.com")
+            .max_amount_per_payment("$5.00".parse()?)
+            .build()?,
+    )
+    .build()?;
+
+let client = PayKitClient::builder()
+    .signer(MemorySigner::from_bytes(&payer_keypair)?)
+    .rpc_url("https://api.mainnet-beta.solana.com")
+    .network(SolanaNetwork::Mainnet)
+    .accept([ClientProtocol::Mpp, ClientProtocol::X402])
+    .permissions(permissions)
+    .build()?;
+
+let response = client
+    .get("https://api.example.com/report")
+    .send()
+    .await?;
 ```
 
-`build_charge_transaction_with_options` adds auto-pay guardrails — a spending
-cap (`max_amount_base_units`), an expected-network pin, and a refusal to sign
-unknown Token-2022 mints unless opted in.
+Caps are global by default and can be replaced for an exact origin. The default
+policy allows known stablecoins on the configured network up to USD 1.00 per
+payment; unknown mints require an explicit asset permission. Permission checks
+run before transaction construction and wallet invocation. The high-level
+client currently handles MPP charge and x402 exact offers; stateful x402
+`upto` and `batch-settlement` clients remain available through `x402::client`.
+
+The lower-level protocol APIs remain public for callers that manage HTTP
+themselves. For example, MPP exposes `parse_challenge` and
+`build_credential_header`, while `build_charge_transaction_with_options` keeps
+its amount, network, and Token-2022 guardrails.
+
+See [the permission architecture](https://github.com/solana-foundation/pay-kit/blob/main/docs/client-permissions-design.md)
+for cap precedence, defaults, and the proposed TypeScript counterpart.
 
 ---
 

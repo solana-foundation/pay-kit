@@ -9,6 +9,12 @@ repository = "https://github.com/solana-foundation/pay-kit"
 # published crate README so crates.io renders the same guide.
 readme = "../../README.md"
 
+[package.metadata.docs.rs]
+# The high-level payment client is feature-gated. Build it on docs.rs so the
+# permission API is present in the published crate documentation.
+features = ["client"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["mpp", "x402"]
 # Protocol modules. `mpp`/`x402` gate `pub mod mpp`/`pub mod x402` in lib.rs;
