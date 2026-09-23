@@ -15,7 +15,7 @@
  */
 import { generateKeyPairSigner, type KeyPairSigner } from "@solana/kit";
 import { createPayKit, usage, usd } from "@solana/pay-kit";
-import { createPayKitClient } from "@solana/pay-kit/client";
+import { ClientPermissions, createPayKitClient } from "@solana/pay-kit/client";
 import express, { type Request, type Response } from "express";
 import type { Server } from "node:http";
 import crypto from "node:crypto";
@@ -100,6 +100,10 @@ async function payAndAssertSettled(path: string, init: RequestInit, protocol: "x
     rpcUrl: net.rpcUrl,
     signer: await freshFundedClient(),
     network: "localnet",
+    // Surfpool's MPP challenge uses `localnet`, while its x402 challenge uses
+    // the mainnet CAIP-2 identity of the fork. Keep the default $1 cap while
+    // explicitly allowing both advertised network identities.
+    permissions: ClientPermissions.builder().allowNetwork("localnet").build(),
     onProgress: () => {},
   });
   const res = await client.fetch(`${baseUrl}${path}`, init, protocol);
