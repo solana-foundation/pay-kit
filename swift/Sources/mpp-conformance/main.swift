@@ -807,7 +807,7 @@ private func writeCanonical(_ value: Any, into buf: inout String) {
         buf += String(decoding: data, as: UTF8.self)
         return
     }
-    throw RunnerError.message("unsupported JSON value type for canonicalization: \(type(of: value))")
+    fatalError("unsupported JSON value type for canonicalization: \(type(of: value))")
 }
 
 private func utf16Less(_ a: String, _ b: String) -> Bool {
