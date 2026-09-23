@@ -64,6 +64,16 @@ describe('createPayKitClient', () => {
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
+    it('fails closed when a 402 was reached through an internal redirect', async () => {
+        const challenge = response(402);
+        Object.defineProperty(challenge, 'redirected', { value: true });
+        mockFetch.mockResolvedValue(challenge);
+        const client = await createPayKitClient({ rpcUrl: RPC_URL, signer });
+
+        await expect(client.fetch('https://api.test/redirect')).rejects.toBeInstanceOf(PermissionDeniedError);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('denies an over-cap MPP challenge before signing or retrying', async () => {
         const mint = resolveStablecoinMint('USDC', 'mainnet');
         if (!mint) throw new Error('missing mainnet USDC mint');

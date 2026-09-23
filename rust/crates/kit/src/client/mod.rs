@@ -134,6 +134,7 @@ impl PayKitClient {
     }
 
     async fn execute(&self, request: Request) -> Result<Response, ClientError> {
+        let request_url = request.url().clone();
         let mut retry = request
             .try_clone()
             .ok_or(ClientError::RequestBodyNotReplayable)?;
@@ -143,16 +144,32 @@ impl PayKitClient {
         }
 
         let response_url = response.url().clone();
+        // reqwest follows redirects internally, so the response does not
+        // expose the effective method/body/header state used for the final
+        // hop. Replaying the original request at that URL could leak caller
+        // credentials cross-origin or turn a 303's effective GET back into a
+        // POST. Fail closed instead of guessing at redirect semantics.
+        if response_url != request_url {
+            return Err(ClientError::RedirectedChallenge {
+                from: request_url.to_string(),
+                to: response_url.to_string(),
+            });
+        }
         let origin = response_url.origin().ascii_serialization();
         let headers = response_headers(response.headers());
         let body = response.bytes().await?;
         let body = std::str::from_utf8(&body).ok();
-        let offers = self.collect_offers(&headers, body, &origin);
+        let (offers, mut rejections) = self.collect_offers(&headers, body, &origin);
         if offers.is_empty() {
-            return Err(ClientError::NoSupportedChallenge);
+            return if rejections.is_empty() {
+                Err(ClientError::NoSupportedChallenge)
+            } else {
+                Err(ClientError::PermissionDenied(PermissionDenied {
+                    rejections,
+                }))
+            };
         }
 
-        let mut rejections = Vec::new();
         let mut selected = None;
         for offer in offers {
             match self.inner.permissions.authorize(&offer.candidate()) {
@@ -191,8 +208,9 @@ impl PayKitClient {
         headers: &[(String, String)],
         body: Option<&str>,
         origin: &str,
-    ) -> Vec<PaymentOffer> {
+    ) -> (Vec<PaymentOffer>, Vec<PermissionRejection>) {
         let mut offers = Vec::new();
+        let mut rejections = Vec::new();
         if self.inner.protocols.contains(&ClientProtocol::Mpp) {
             let values = headers
                 .iter()
@@ -202,19 +220,23 @@ impl PayKitClient {
                 .into_iter()
                 .filter_map(Result::ok)
             {
-                if let Some(offer) = PaymentOffer::from_mpp(challenge, origin) {
-                    offers.push(offer);
+                match PaymentOffer::from_mpp(challenge, origin) {
+                    Ok(Some(offer)) => offers.push(offer),
+                    Ok(None) => {}
+                    Err(rejection) => rejections.push(rejection),
                 }
             }
         }
         if self.inner.protocols.contains(&ClientProtocol::X402) {
             for requirement in parse_x402_accepts(headers, body) {
-                if let Some(offer) = PaymentOffer::from_x402(requirement, origin) {
-                    offers.push(offer);
+                match PaymentOffer::from_x402(requirement, origin) {
+                    Ok(Some(offer)) => offers.push(offer),
+                    Ok(None) => {}
+                    Err(rejection) => rejections.push(rejection),
                 }
             }
         }
-        offers
+        (offers, rejections)
     }
 
     async fn payment_header(
@@ -384,49 +406,78 @@ struct PaymentOffer {
 }
 
 impl PaymentOffer {
-    fn from_mpp(challenge: crate::mpp::PaymentChallenge, origin: &str) -> Option<Self> {
+    fn from_mpp(
+        challenge: crate::mpp::PaymentChallenge,
+        origin: &str,
+    ) -> Result<Option<Self>, PermissionRejection> {
         if !is_solana_charge_challenge(&challenge) {
-            return None;
+            return Ok(None);
         }
-        let request = challenge.request.decode::<ChargeRequest>().ok()?;
+        let request = challenge
+            .request
+            .decode::<ChargeRequest>()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid MPP charge request"))?;
         if request.currency.eq_ignore_ascii_case("SOL") {
-            return None;
+            return Ok(None);
         }
         let details: MethodDetails = request
             .method_details
             .clone()
-            .and_then(|value| serde_json::from_value(value).ok())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid MPP method details"))?
             .unwrap_or_default();
-        let network = parse_network(details.network.as_deref().unwrap_or("mainnet"))?;
-        let mint = resolve_stablecoin_mint(&request.currency, Some(network.as_str()))?;
-        let mint = mint.parse::<solana_pubkey::Pubkey>().ok()?.to_string();
-        Some(Self {
+        let network = parse_network(details.network.as_deref().unwrap_or("mainnet"))
+            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported MPP network"))?;
+        let mint = resolve_stablecoin_mint(&request.currency, Some(network.as_str()))
+            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported MPP asset"))?;
+        let mint = mint
+            .parse::<solana_pubkey::Pubkey>()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid MPP asset mint"))?
+            .to_string();
+        let amount = request
+            .amount
+            .parse()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid MPP payment amount"))?;
+        Ok(Some(Self {
             origin: origin.to_string(),
             network,
             mint,
-            amount: request.amount.parse().ok()?,
+            amount,
             source: PaymentSource::Mpp(Box::new(challenge)),
-        })
+        }))
     }
 
-    fn from_x402(requirement: PaymentRequirements, origin: &str) -> Option<Self> {
+    fn from_x402(
+        requirement: PaymentRequirements,
+        origin: &str,
+    ) -> Result<Option<Self>, PermissionRejection> {
         if requirement.currency.eq_ignore_ascii_case("SOL") || !is_exact(&requirement) {
-            return None;
+            return Ok(None);
         }
         let cluster = requirement
             .cluster
             .as_deref()
             .and_then(parse_network)
-            .or_else(|| cluster_for_caip2_network(&requirement.network).and_then(parse_network))?;
-        let mint = resolve_stablecoin_mint(&requirement.currency, Some(cluster.as_str()))?;
-        let mint = mint.parse::<solana_pubkey::Pubkey>().ok()?.to_string();
-        Some(Self {
+            .or_else(|| cluster_for_caip2_network(&requirement.network).and_then(parse_network))
+            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported x402 network"))?;
+        let mint = resolve_stablecoin_mint(&requirement.currency, Some(cluster.as_str()))
+            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported x402 asset"))?;
+        let mint = mint
+            .parse::<solana_pubkey::Pubkey>()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid x402 asset mint"))?
+            .to_string();
+        let amount = requirement
+            .amount
+            .parse()
+            .map_err(|_| PermissionRejection::invalid_terms("invalid x402 payment amount"))?;
+        Ok(Some(Self {
             origin: origin.to_string(),
             network: cluster,
             mint,
-            amount: requirement.amount.parse().ok()?,
+            amount,
             source: PaymentSource::X402(Box::new(requirement)),
-        })
+        }))
     }
 
     fn candidate(&self) -> PaymentCandidate<'_> {
@@ -494,6 +545,15 @@ pub enum ClientError {
     /// The request body cannot be cloned for the paid retry.
     #[error("request body cannot be replayed after payment")]
     RequestBodyNotReplayable,
+    /// The 402 was reached through a redirect whose effective request state is
+    /// unavailable for a safe replay.
+    #[error("refusing to pay redirected challenge from {from} to {to}")]
+    RedirectedChallenge {
+        /// Original request URL.
+        from: String,
+        /// Final URL that returned the 402.
+        to: String,
+    },
     /// The 402 did not contain a supported MPP charge or x402 exact offer.
     #[error("402 response contains no supported Solana payment challenge")]
     NoSupportedChallenge,
@@ -519,7 +579,7 @@ mod tests {
     use axum::{
         extract::State,
         http::{HeaderMap, StatusCode},
-        response::IntoResponse,
+        response::{IntoResponse, Redirect},
         routing::get,
         Router,
     };
@@ -626,8 +686,16 @@ mod tests {
         amount: u64,
         recipient: Pubkey,
     ) -> (String, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
+        mpp_challenge_server_with_network(amount, recipient, Some("mainnet")).await
+    }
+
+    async fn mpp_challenge_server_with_network(
+        amount: u64,
+        recipient: Pubkey,
+        network: Option<&str>,
+    ) -> (String, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
         let details = MethodDetails {
-            network: Some("mainnet".to_string()),
+            network: network.map(str::to_string),
             decimals: Some(6),
             token_program: Some(TOKEN_PROGRAM.to_string()),
             recent_blockhash: Some(Hash::new_unique().to_string()),
@@ -660,6 +728,86 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{address}/report"), saw_payment, task)
+    }
+
+    async fn malformed_x402_server() -> (String, tokio::task::JoinHandle<()>) {
+        let envelope = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": SOLANA_MAINNET,
+                "amount": "not-an-integer",
+                "asset": USDC_MAINNET,
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": { "decimals": 6, "tokenProgram": TOKEN_PROGRAM }
+            }]
+        });
+        let payment_required = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&envelope).unwrap());
+        let app = Router::new().route(
+            "/report",
+            get(move || {
+                let payment_required = payment_required.clone();
+                async move {
+                    (
+                        StatusCode::PAYMENT_REQUIRED,
+                        [("payment-required", payment_required)],
+                        "payment required",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/report"), task)
+    }
+
+    async fn redirected_challenge_server(
+        recipient: Pubkey,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let envelope = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": SOLANA_MAINNET,
+                "amount": "500000",
+                "asset": USDC_MAINNET,
+                "payTo": recipient.to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
+            }]
+        });
+        let payment_required = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&envelope).unwrap());
+        let app = Router::new()
+            .route("/start", get(|| async { Redirect::temporary("/report") }))
+            .route(
+                "/report",
+                get(move || {
+                    let payment_required = payment_required.clone();
+                    async move {
+                        (
+                            StatusCode::PAYMENT_REQUIRED,
+                            [("payment-required", payment_required)],
+                            "payment required",
+                        )
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/start"), task)
     }
 
     async fn dual_paid_resource(
@@ -836,6 +984,68 @@ mod tests {
         let response = client.get(url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn omitted_mpp_network_uses_the_mainnet_default_at_signing() {
+        let signer = test_signer();
+        let (url, saw_payment, task) =
+            mpp_challenge_server_with_network(500_000, Pubkey::new_unique(), None).await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::Mpp])
+            .build()
+            .unwrap();
+
+        let response = client.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(saw_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_supported_offer_returns_structured_denial() {
+        let (url, task) = malformed_x402_server().await;
+        let client = PayKitClient::builder()
+            .signer(test_signer())
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap();
+
+        let error = client.get(url).send().await.unwrap_err();
+        let ClientError::PermissionDenied(denial) = error else {
+            panic!("expected permission denial");
+        };
+        assert_eq!(
+            denial.rejections[0].code,
+            PermissionDeniedCode::InvalidChallengeTerms
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn redirected_402_fails_closed_before_signing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let (url, task) = redirected_challenge_server(Pubkey::new_unique()).await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap();
+
+        assert!(matches!(
+            client.get(url).send().await,
+            Err(ClientError::RedirectedChallenge { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         task.abort();
     }
 

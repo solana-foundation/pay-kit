@@ -201,6 +201,14 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             ? await nativeFetch(withHeader(request, 'Authorization', subscriptionCredential))
             : await nativeFetch(request.clone());
         if (probe.status !== 402) return probe;
+        if (probe.redirected) {
+            throw new PermissionDeniedError([
+                {
+                    code: 'invalid_challenge_terms',
+                    message: 'Refusing to pay a 402 reached through an HTTP redirect',
+                },
+            ]);
+        }
 
         // `protocol` (optional) forces a rail when the server offers both;
         // otherwise MPP is preferred (richer progress, canonical for

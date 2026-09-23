@@ -232,8 +232,12 @@ occurs immediately before transaction construction. The authorized result also
 carries the resolved atomic cap into the MPP transaction builder, retaining its
 defense-in-depth amount and network checks.
 
-The response URL is captured after redirects. Payment credentials are added
-only to the retry sent to that final URL.
+Redirect handling fails closed unless the HTTP stack exposes the effective
+request as a new transport request. Rust and TypeScript refuse a 402 reached
+through an internally followed redirect because replaying the original request
+could leak caller credentials or restore a POST that became GET after a 303.
+Python's transport runs beneath httpx redirect handling, so it evaluates and
+retries the effective request directly.
 
 ## Errors
 
@@ -253,6 +257,7 @@ handle, it returns `ClientError::NoSupportedChallenge`.
 ## Security invariants
 
 - Permission checks complete before transaction construction and signing.
+- Internally followed redirects never trigger a guessed payment retry.
 - The signer is never invoked when every offer is denied.
 - An origin override never grants the origin itself.
 - Exact origin matching includes scheme and port; there are no suffix or

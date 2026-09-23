@@ -409,8 +409,13 @@ pub async fn build_charge_transaction_with_options(
         }
     }
     if let Some(expected) = options.expected_network.as_deref() {
-        let actual = method_details.network.as_deref().unwrap_or("");
-        if actual != expected {
+        // An omitted network is the protocol's documented mainnet default.
+        // Compare canonical values so the guard agrees with offer selection
+        // (`mainnet-beta` is the legacy spelling of `mainnet`).
+        let actual = method_details.network.as_deref().unwrap_or("mainnet");
+        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
+            && matches!(expected, "mainnet" | "mainnet-beta");
+        if actual != expected && !both_mainnet {
             return Err(Error::Other(format!(
                 "Challenge network `{actual}` does not match client expected_network `{expected}`"
             )));
