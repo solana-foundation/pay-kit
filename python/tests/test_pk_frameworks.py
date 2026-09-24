@@ -9,6 +9,8 @@ host-quirk translation these tests assert on.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 import solana_pay_kit._middleware as mw
@@ -369,3 +371,502 @@ def test_django_middleware_402_when_unpaid(monkeypatch):
     request.paykit_gate = Price.usd("0.10", Stablecoin.USDC)  # type: ignore[attr-defined]
     resp = middleware(request)
     assert resp.status_code == 402
+
+
+def test_require_subscription_402_then_200(monkeypatch):
+    import asyncio
+
+    from fastapi import Depends, FastAPI, HTTPException
+    from starlette.testclient import TestClient
+
+    from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+    from solana_pay_kit.protocols.mpp.client.subscription import (
+        build_subscription_access_credential,
+        build_subscription_activation,
+    )
+    from solana_pay_kit.protocols.mpp.core.headers import (
+        format_authorization,
+        parse_receipt,
+        parse_www_authenticate,
+    )
+    from tests._subscription_fixtures import SUBSCRIBER
+    from tests.test_subscription_server import Harness
+
+    h = Harness(monkeypatch)
+    app = FastAPI()
+    install_exception_handler(app)
+
+    @app.get("/feed")
+    async def feed(receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+        return {"ok": True}
+
+    client = TestClient(app)
+    denied = client.get("/feed")
+    assert denied.status_code == 402
+    assert denied.headers["cache-control"] == "no-store" and "payment-receipt" not in denied.headers
+    challenge = parse_www_authenticate(denied.headers["www-authenticate"])
+    activation = asyncio.run(build_subscription_activation(SUBSCRIBER, h.rpc, challenge))
+    ok = client.get("/feed", headers={"authorization": format_authorization(activation.credential)})
+    assert ok.status_code == 200 and ok.json() == {"ok": True}
+    assert ok.headers["cache-control"] == "private"
+    assert parse_receipt(ok.headers["payment-receipt"]).period_index == 0
+
+    # The bearer proof grants the same period again without a second charge.
+    access = format_authorization(
+        build_subscription_access_credential(
+            challenge.to_echo(), activation.subscription_delegation, activation.authentication
+        )
+    )
+    reused = client.get("/feed", headers={"authorization": access})
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused.headers["payment-receipt"]).period_index == 0
+
+    @app.get("/boom")
+    async def boom(receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+        raise HTTPException(status_code=500, detail={"error": "handler"})
+
+    # The subscriber paid: a handler that fails afterwards still returns the receipt.
+    broke = TestClient(app, raise_server_exceptions=False).get("/boom", headers={"authorization": access})
+    assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
+    assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0
+
+
+# --- subscription gate (flask / django) ------------------------------------
+
+
+def _subscription_legs(monkeypatch):
+    """A harness plus the three credentials a gated route sees: none, activation, bearer."""
+    import asyncio
+
+    from solana_pay_kit.protocols.mpp.client.subscription import (
+        build_subscription_access_credential,
+        build_subscription_activation,
+    )
+    from solana_pay_kit.protocols.mpp.core.headers import format_authorization
+    from tests._subscription_fixtures import SUBSCRIBER
+    from tests.test_subscription_server import Harness
+
+    h = Harness(monkeypatch)
+    challenge = asyncio.run(h.server.challenge())
+    activation = asyncio.run(build_subscription_activation(SUBSCRIBER, h.rpc, challenge))
+    access = build_subscription_access_credential(
+        challenge.to_echo(), activation.subscription_delegation, activation.authentication
+    )
+    return h, format_authorization(activation.credential), format_authorization(access)
+
+
+def test_flask_require_subscription_402_then_activation_then_proof(monkeypatch):
+    import flask
+
+    import solana_pay_kit.flask as pk_flask
+    from solana_pay_kit.protocols.mpp.core.headers import parse_receipt
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    app = flask.Flask(__name__)
+
+    @app.get("/feed")
+    @pk_flask.require_subscription(h.server)
+    def feed():
+        return {"ok": True}
+
+    @app.get("/boom")
+    @pk_flask.require_subscription(h.server)
+    def boom():
+        flask.abort(500)
+
+    client = app.test_client()
+    denied = client.get("/feed")
+    assert denied.status_code == 402
+    assert denied.headers["cache-control"] == "no-store"
+    assert denied.headers["content-type"] == "application/problem+json"
+    assert denied.headers["www-authenticate"].startswith("Payment ")
+
+    activated = client.get("/feed", headers={"authorization": activation_auth})
+    assert activated.status_code == 200 and activated.headers["cache-control"] == "private"
+    assert parse_receipt(activated.headers["payment-receipt"]).period_index == 0
+
+    reused = client.get("/feed", headers={"authorization": access_auth})
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused.headers["payment-receipt"]).period_index == 0
+
+    # The subscriber paid: a view that aborts afterwards still carries the receipt.
+    broke = client.get("/boom", headers={"authorization": access_auth})
+    assert broke.status_code == 500 and broke.headers["cache-control"] == "private"
+    assert parse_receipt(broke.headers["payment-receipt"]).period_index == 0
+
+
+def test_django_require_subscription_402_then_activation_then_proof(monkeypatch):
+    from django.http import Http404, JsonResponse
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk_django
+    from solana_pay_kit.protocols.mpp.core.headers import parse_receipt
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+
+    @pk_django.require_subscription(h.server)
+    def feed(request):
+        return JsonResponse({"ok": True})
+
+    @pk_django.require_subscription(h.server)
+    def boom(request):
+        raise Http404("gone")
+
+    factory = RequestFactory()
+    denied = feed(factory.get("/feed"))
+    assert denied.status_code == 402
+    assert denied["cache-control"] == "no-store" and denied["content-type"] == "application/problem+json"
+    assert denied["www-authenticate"].startswith("Payment ")
+
+    activated = feed(factory.get("/feed", headers={"authorization": activation_auth}))
+    assert activated.status_code == 200 and activated["cache-control"] == "private"
+    assert parse_receipt(activated["payment-receipt"]).period_index == 0
+
+    reused = feed(factory.get("/feed", headers={"authorization": access_auth}))
+    assert reused.status_code == 200 and len(h.rpc.sent) == 1
+    assert parse_receipt(reused["payment-receipt"]).period_index == 0
+
+    broke = boom(factory.get("/boom", headers={"authorization": access_auth}))
+    assert broke.status_code == 404 and broke["cache-control"] == "private"
+    assert parse_receipt(broke["payment-receipt"]).period_index == 0
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_require_subscription_renews_once_under_two_threads(monkeypatch, framework):
+    """Two requests in their own loops and threads must produce one renewal charge.
+
+    Each shim drives the gate with its own asyncio.run, so the store locks have
+    to be loop-independent; the renewal claim is what keeps the second request
+    from charging the period twice.
+    """
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from solana_pay_kit.protocols.mpp.core.headers import parse_authorization
+    from tests._subscription_fixtures import NOW, PERIOD_SECONDS
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    asyncio.run(h.server.verify_credential(parse_authorization(activation_auth)))
+    h.now = NOW + PERIOD_SECONDS + 10  # the period has rolled over: access renews
+
+    if framework == "flask":
+        import flask
+
+        import solana_pay_kit.flask as pk_flask
+
+        app = flask.Flask(__name__)
+
+        @app.get("/feed")
+        @pk_flask.require_subscription(h.server)
+        def feed():
+            return {"ok": True}
+
+        client = app.test_client()
+
+        def call() -> int:
+            return client.get("/feed", headers={"authorization": access_auth}).status_code
+    else:
+        from django.http import JsonResponse
+        from django.test import RequestFactory
+
+        import solana_pay_kit.django as pk_django
+
+        @pk_django.require_subscription(h.server)
+        def view(request):
+            return JsonResponse({"ok": True})
+
+        factory = RequestFactory()
+
+        def call() -> int:
+            return view(factory.get("/feed", headers={"authorization": access_auth})).status_code
+
+    start = threading.Barrier(2, timeout=30)
+
+    def request() -> int:
+        start.wait()  # both threads leave at the same instant
+        return call()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = [future.result(timeout=30) for future in [pool.submit(request) for _ in range(2)]]
+
+    # Exactly one renewal transaction, whatever the two requests were told.
+    assert len(h.rpc.sent) == 2  # the activation plus one renewal
+    assert statuses.count(200) >= 1 and set(statuses) <= {200, 402}
+
+
+class _ChainServer:
+    """A keep-alive JSON-RPC server serving the reads a subscription challenge makes.
+
+    A real ``SolanaRpc`` against it pools a connection, which is what makes the
+    second request in a second event loop meaningful.
+    """
+
+    def __init__(self, accounts: dict[str, tuple[bytes, str]], blockhash: str) -> None:
+        import base64
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's name
+                request = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+                method, params = request.get("method"), request.get("params") or []
+                if method == "getLatestBlockhash":
+                    result: Any = {"context": {"slot": 1}, "value": {"blockhash": blockhash}}
+                elif method == "getAccountInfo":
+                    found = accounts.get(str(params[0]))
+                    result = {
+                        "context": {"slot": 1},
+                        "value": None
+                        if found is None
+                        else {"data": [base64.b64encode(found[0]).decode(), "base64"], "owner": found[1]},
+                    }
+                else:
+                    result = {"context": {"slot": 1}, "value": None}
+                body = json.dumps({"jsonrpc": "2.0", "id": request.get("id", 1), "result": result}).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - the base signature
+                return  # keep the test output clean
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _subscription_chain() -> tuple[dict[str, tuple[bytes, str]], str]:
+    """The accounts a subscription challenge reads, and the blockhash to serve."""
+    from solana_pay_kit._paycore.paymentchannels import find_associated_token_address
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+    from tests._subscription_fixtures import (
+        BLOCKHASH,
+        MINT,
+        PLAN,
+        PROGRAM_ID,
+        RECIPIENT,
+        SERVER,
+        TOKEN,
+        mint_bytes,
+        plan_bytes,
+    )
+
+    return {
+        str(PLAN): (
+            plan_bytes(owner=SERVER.pubkey(), mint=MINT, destinations=[RECIPIENT], pullers=[SERVER.pubkey()]),
+            PROGRAM_ID,
+        ),
+        str(MINT): (mint_bytes(), TOKEN_PROGRAM),
+        str(find_associated_token_address(RECIPIENT, MINT, TOKEN)[0]): (bytes(165), TOKEN_PROGRAM),
+    }, BLOCKHASH
+
+
+@pytest.mark.parametrize("framework", ["flask", "django"])
+def test_require_subscription_serves_a_second_event_loop(monkeypatch, framework):
+    """Each shim runs its own asyncio.run per request, so request two must still work.
+
+    A shared SolanaRpc used to keep one httpx client (and its pooled socket)
+    from the first loop, and the second request died on "Event loop is closed".
+    """
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+    from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate
+    from tests._subscription_fixtures import BLOCKHASH
+    from tests.test_subscription_server import Harness
+
+    chain = _ChainServer(*_subscription_chain())
+    try:
+        h = Harness(monkeypatch, rpc=SolanaRpc(chain.url))
+
+        if framework == "flask":
+            import flask
+
+            import solana_pay_kit.flask as pk_flask
+
+            app = flask.Flask(__name__)
+
+            @app.get("/feed")
+            @pk_flask.require_subscription(h.server)
+            def feed():
+                return {"ok": True}
+
+            client = app.test_client()
+            answers = [client.get("/feed") for _ in range(2)]
+            statuses = [answer.status_code for answer in answers]
+            challenges = [answer.headers.get("www-authenticate", "") for answer in answers]
+        else:
+            from django.http import JsonResponse
+            from django.test import RequestFactory
+
+            import solana_pay_kit.django as pk_django
+
+            @pk_django.require_subscription(h.server)
+            def view(request):
+                return JsonResponse({"ok": True})
+
+            factory = RequestFactory()
+            answers = [view(factory.get("/feed")) for _ in range(2)]
+            statuses = [answer.status_code for answer in answers]
+            challenges = [answer["www-authenticate"] for answer in answers]
+
+        # Both requests answered with a challenge, and both reached the RPC: the
+        # pre-fetched blockhash is only in the challenge when the fetch worked,
+        # and a client stuck on the first loop cannot fetch it a second time.
+        assert statuses == [402, 402]
+        for header in challenges:
+            request = parse_www_authenticate(header).decode_request()
+            assert request["methodDetails"]["recentBlockhash"] == BLOCKHASH
+    finally:
+        chain.close()
+
+
+@pytest.mark.parametrize("framework", ["flask", "django", "fastapi"])
+def test_require_subscription_never_echoes_exception_text(monkeypatch, framework, caplog):
+    """An exception's text is log material, never response material (CodeQL: information exposure)."""
+    h, _activation_auth, access_auth = _subscription_legs(monkeypatch)
+
+    async def boom(_credential):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(h.server, "verify_credential", boom)
+    headers = {"authorization": access_auth}
+
+    if framework == "flask":
+        import flask
+
+        import solana_pay_kit.flask as pk_flask
+
+        app = flask.Flask(__name__)
+
+        @app.get("/feed")
+        @pk_flask.require_subscription(h.server)
+        def feed():
+            return {"ok": True}
+
+        answer = app.test_client().get("/feed", headers=headers)
+        status, text = answer.status_code, answer.get_data(as_text=True)
+    elif framework == "django":
+        from django.http import JsonResponse
+        from django.test import RequestFactory
+
+        import solana_pay_kit.django as pk_django
+
+        @pk_django.require_subscription(h.server)
+        def view(request):
+            return JsonResponse({"ok": True})
+
+        answer = view(RequestFactory().get("/feed", headers=headers))
+        status, text = answer.status_code, answer.content.decode()
+    else:
+        from fastapi import Depends, FastAPI
+        from starlette.testclient import TestClient
+
+        from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+
+        app = FastAPI()
+        install_exception_handler(app)
+
+        @app.get("/feed")
+        async def served(_receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+            return {"ok": True}
+
+        answer = TestClient(app, raise_server_exceptions=False).get("/feed", headers=headers)
+        status, text = answer.status_code, answer.text
+
+    assert status == 402  # the gate still answers a challenge
+    assert "secret detail" not in text
+
+
+def test_django_subscription_view_error_is_not_echoed(monkeypatch, caplog):
+    """A view's Http404 message is internal too: the body says only what happened."""
+    import asyncio
+
+    from django.http import Http404
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk_django
+    from solana_pay_kit.protocols.mpp.core.headers import parse_authorization
+
+    h, activation_auth, access_auth = _subscription_legs(monkeypatch)
+    asyncio.run(h.server.verify_credential(parse_authorization(activation_auth)))
+
+    @pk_django.require_subscription(h.server)
+    def view(request):
+        raise Http404("secret detail")
+
+    answer = view(RequestFactory().get("/feed", headers={"authorization": access_auth}))
+    assert answer.status_code == 404
+    assert "secret detail" not in answer.content.decode()
+    assert "payment-receipt" in {key.lower() for key in answer.headers}
+
+
+@pytest.mark.parametrize("framework", ["flask", "fastapi"])
+def test_per_request_loops_do_not_leak_http_clients(monkeypatch, framework):
+    """A loop per request must not leave a client behind; a long-lived loop keeps one.
+
+    Each closed loop used to strand an httpx.AsyncClient (and its sockets) that
+    could never be closed again, growing with the request count.
+    """
+    import httpx
+
+    from solana_pay_kit._paycore import rpc as rpc_module
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+    from tests.test_subscription_server import Harness
+
+    opened: list[Any] = []
+
+    class _Counting(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            opened.append(self)
+
+    monkeypatch.setattr(rpc_module.httpx, "AsyncClient", _Counting)
+    chain = _ChainServer(*_subscription_chain())
+    try:
+        h = Harness(monkeypatch, rpc=SolanaRpc(chain.url))
+
+        if framework == "flask":
+            import flask
+
+            import solana_pay_kit.flask as pk_flask
+
+            app = flask.Flask(__name__)
+
+            @app.get("/feed")
+            @pk_flask.require_subscription(h.server)
+            def feed():
+                return {"ok": True}
+
+            client = app.test_client()
+            statuses = [client.get("/feed").status_code for _ in range(3)]
+            assert statuses == [402, 402, 402]
+            assert len(opened) == 3  # one loop, one client, per request
+            assert [c for c in opened if not c.is_closed] == []  # and all closed again
+        else:
+            from fastapi import Depends, FastAPI
+            from starlette.testclient import TestClient
+
+            from solana_pay_kit.fastapi import RequireSubscription, install_exception_handler
+
+            app = FastAPI()
+            install_exception_handler(app)
+
+            @app.get("/feed")
+            async def served(_receipt=Depends(RequireSubscription(h.server))):  # noqa: B008
+                return {"ok": True}
+
+            with TestClient(app) as client:
+                statuses = [client.get("/feed").status_code for _ in range(3)]
+            assert statuses == [402, 402, 402]
+            assert len(opened) == 1  # one long-lived loop, one client, reused
+    finally:
+        chain.close()

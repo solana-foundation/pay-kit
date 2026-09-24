@@ -26,13 +26,14 @@ describe("harness intent selection", () => {
     expect(selectHarnessIntents("x402-upto")).toEqual(["x402-upto"]);
   });
 
+  it("accepts the implemented subscription intent", () => {
+    expect(selectHarnessIntents("subscription")).toEqual(["subscription"]);
+  });
+
   it("accepts all intents at once", () => {
-    expect(selectHarnessIntents("charge,x402-exact,session,x402-upto")).toEqual([
-      "charge",
-      "x402-exact",
-      "session",
-      "x402-upto",
-    ]);
+    expect(
+      selectHarnessIntents("charge,x402-exact,session,x402-upto,subscription"),
+    ).toEqual(["charge", "x402-exact", "session", "x402-upto", "subscription"]);
   });
 
   it("rejects scenarios that are not implemented yet", () => {
@@ -85,6 +86,14 @@ describe("harness scenario selection", () => {
     expect(
       selectHarnessScenarios("session", undefined).map((scenario) => scenario.id),
     ).toEqual(["session-basic"]);
+  });
+
+  it("returns subscription scenarios when explicitly requested", () => {
+    expect(
+      selectHarnessScenarios("subscription", undefined).map(
+        (scenario) => scenario.id,
+      ),
+    ).toEqual(["subscription-activate-access"]);
   });
 
   it("returns x402-upto scenarios when explicitly requested", () => {

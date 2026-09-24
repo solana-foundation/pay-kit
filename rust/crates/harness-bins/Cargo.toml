@@ -39,3 +39,7 @@ path = "src/bin/x402_harness_upto_client.rs"
 [[bin]]
 name = "x402_harness_upto_server"
 path = "src/bin/x402_harness_upto_server.rs"
+
+[[bin]]
+name = "mpp_harness_subscription_server"
+path = "src/bin/mpp_harness_subscription_server.rs"

@@ -9,10 +9,12 @@ the 90 percent line coverage gate: the error branch in ``_call``, both
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
+from solana_pay_kit._paycore.rpc import RpcResponseError, SolanaRpc, _RpcError, _RpcResponse
 
 
 class _FakeResponse:
@@ -91,6 +93,27 @@ async def test_get_signature_statuses_returns_empty_on_null_result():
 async def test_get_signature_statuses_returns_empty_on_null_value():
     rpc = _rpc({"result": {"value": None}, "id": 1})
     assert await rpc.get_signature_statuses(["s"]) == []
+
+
+@pytest.mark.asyncio
+async def test_get_signature_statuses_searches_history_only_when_asked():
+    client = _ScriptedClient([{"result": {"value": [None]}, "id": 1}])
+    rpc = SolanaRpc("http://localhost:9999", timeout=1.0)
+    rpc._client = client  # type: ignore[assignment]
+    await rpc.get_signature_statuses(["s"])
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [["s"], {"searchTransactionHistory": False}],
+    }
+    await rpc.get_signature_statuses(["s"], search_history=True)
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "getSignatureStatuses",
+        "params": [["s"], {"searchTransactionHistory": True}],
+    }
 
 
 @pytest.mark.asyncio
@@ -234,3 +257,118 @@ async def test_get_slot_returns_integer_and_rejects_garbage():
     assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
     with pytest.raises(_RpcError):
         await _rpc({"result": "not-a-slot", "id": 1}).get_slot()
+
+
+@pytest.mark.asyncio
+async def test_is_blockhash_valid_reads_value_and_rejects_garbage():
+    client = _ScriptedClient([{"result": {"context": {"slot": 1}, "value": False}}])
+    rpc = SolanaRpc("http://localhost:9999", timeout=1.0)
+    rpc._client = client  # type: ignore[assignment]
+    assert await rpc.is_blockhash_valid("hash") is False
+    assert client.last_body == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "isBlockhashValid",
+        "params": ["hash", {"commitment": "confirmed"}],
+    }
+    with pytest.raises(PaymentError, match="no boolean"):
+        await _rpc({"result": {"value": "yes"}}).is_blockhash_valid("hash")
+
+
+@pytest.mark.asyncio
+async def test_send_rejection_is_a_response_error_but_a_null_signature_is_not():
+    # A JSON-RPC error means the node refused the transaction before forwarding it;
+    # a null result is ambiguous, so it must not look like a rejection.
+    with pytest.raises(RpcResponseError):
+        await _rpc({"error": {"code": -32002, "message": "Transaction simulation failed"}}).send_raw_transaction(b"x")
+    with pytest.raises(_RpcError) as exc:
+        await _rpc({"result": None}).send_raw_transaction(b"x")
+    assert not isinstance(exc.value, RpcResponseError)
+
+
+class _KeepAliveRpcServer:
+    """A local JSON-RPC server that holds the connection open between calls.
+
+    The per-loop client bug only shows with a pooled connection: the second
+    request reuses a socket the first loop opened, and httpx then touches a
+    closed loop. A keep-alive HTTP/1.1 server is what makes that reuse happen.
+    """
+
+    def __init__(self, result: Any) -> None:
+        import http.server
+        import json as _json
+        import threading as _threading
+
+        payload = _json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's name
+                self.rfile.read(int(self.headers.get("content-length", 0)))
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - the base signature
+                return  # keep the test output clean
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._thread = _threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_rpc_client_is_per_event_loop() -> None:
+    """Two asyncio.run calls, one shared SolanaRpc: the second must not hit a closed loop."""
+    import asyncio
+
+    from solana_pay_kit._paycore.rpc import SolanaRpc
+
+    server = _KeepAliveRpcServer({"value": {"blockhash": "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"}})
+    try:
+        rpc = SolanaRpc(server.url)
+
+        async def call() -> tuple[str, int]:
+            response = await rpc.get_latest_blockhash()
+            return response.value.blockhash, id(rpc._client)  # pyright: ignore[reportPrivateUsage]
+
+        first_hash, first_client = asyncio.run(call())
+        second_hash, second_client = asyncio.run(call())
+        assert first_hash == second_hash
+        assert first_client != second_client  # a fresh client for the fresh loop
+    finally:
+        server.close()
+
+
+def test_closed_clients_leave_the_loop_registry() -> None:
+    """A long-lived loop builds one SolanaRpc per request; closing it must not pin its client."""
+    import asyncio
+
+    from solana_pay_kit._paycore import rpc as rpc_module
+
+    server = _KeepAliveRpcServer(7)
+    try:
+
+        async def serve_requests() -> tuple[int, int]:
+            loop = asyncio.get_running_loop()
+            for _ in range(3):
+                rpc = rpc_module.SolanaRpc(server.url)
+                assert await rpc.get_slot() == 7
+                await rpc.aclose()
+            after_close = len(rpc_module._LOOP_CLIENTS.get(loop, []))  # pyright: ignore[reportPrivateUsage]
+            still_open = rpc_module.SolanaRpc(server.url)
+            await still_open.get_slot()
+            open_count = len(rpc_module._LOOP_CLIENTS.get(loop, []))  # pyright: ignore[reportPrivateUsage]
+            await rpc_module.aclose_loop_clients()
+            return after_close, open_count
+
+        assert asyncio.run(serve_requests()) == (0, 1)
+    finally:
+        server.close()

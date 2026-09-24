@@ -279,6 +279,28 @@ export type VectorInput = {
     value: unknown;
   };
 
+  // canonical-bytes (subscription): the JCS message a subscriber signs for
+  // the reusable bearer proof, built by the PRODUCTION SDK:
+  // `{"domain":"mpp-subscription-auth-v1","payer":…,
+  //   "subscriptionChallengeId":…,"subscriptionDelegation":…}`.
+  subscriptionAuthenticationMessage?: {
+    challengeId: string;
+    payer: string;
+    subscriptionDelegation: string;
+  };
+
+  // canonical-bytes (subscription): a subscription wire-shape round-trip
+  // through the production parser and serializer, JCS-canonicalized.
+  // "request" = the challenge request incl. methodDetails, "payload" = the
+  // credential payload (type transaction or proof), "receipt" = the
+  // Payment-Receipt JSON (periodIndex is a JSON number). Reject vectors pin
+  // the shapes every SDK must refuse (month periods, non-canonical integers)
+  // with rejectCode "invalid-payload".
+  subscriptionWire?: {
+    shape: "request" | "payload" | "receipt";
+    value: unknown;
+  };
+
   // ── x402-exact inputs ────────────────────────────────────────────────
   // build-transaction (x402): the offer the client selects + wraps into a
   // payment header. The runner emits the decoded X402EnvelopeShape.
@@ -323,7 +345,7 @@ export type VectorInput = {
 
 export type ConformanceVector = {
   id: string;
-  intent: "charge" | "x402-exact" | "session";
+  intent: "charge" | "x402-exact" | "session" | "subscription";
   mode: VectorMode;
   description?: string;
   input: VectorInput;

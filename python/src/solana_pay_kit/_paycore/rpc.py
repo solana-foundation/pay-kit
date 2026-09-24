@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import itertools
-from typing import Any
+import threading
+import weakref
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 import httpx
 
@@ -30,6 +34,14 @@ from solana_pay_kit._paycore.errors import PaymentError
 
 class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
+
+
+class RpcResponseError(_RpcError):
+    """The node answered the call with a JSON-RPC ``error`` object.
+
+    For ``sendTransaction`` (preflight on) this means the node rejected the
+    transaction before forwarding it, so it can never land.
+    """
 
 
 class _RpcResponse:
@@ -72,13 +84,63 @@ class _BlockhashValue:
         self.blockhash = blockhash
 
 
+#: Every HTTP client opened on a given event loop, so a caller that owns the
+#: loop can close them before it goes away. Keyed weakly: a loop that is simply
+#: dropped takes its entry with it.
+_LOOP_CLIENTS: weakref.WeakKeyDictionary[Any, list[httpx.AsyncClient]] = weakref.WeakKeyDictionary()
+_LOOP_CLIENTS_LOCK = threading.Lock()
+
+
+def _unregister_loop_client(loop: Any, client: httpx.AsyncClient) -> None:
+    """Drop a closed or replaced client from the registry.
+
+    A long-lived loop (FastAPI, a worker) never calls ``aclose_loop_clients``,
+    and the adapters build one ``SolanaRpc`` per request, so a client left here
+    after its own close would pin its transport and SSL context for the life of
+    the loop.
+    """
+    with _LOOP_CLIENTS_LOCK:
+        clients = _LOOP_CLIENTS.get(loop)
+        if clients is None:
+            return
+        clients[:] = [c for c in clients if c is not client]
+        if not clients:
+            del _LOOP_CLIENTS[loop]
+
+
+async def aclose_loop_clients() -> None:
+    """Close every RPC HTTP client opened on the running loop.
+
+    The Flask and Django bridges run one ``asyncio.run`` per request, so each
+    request would otherwise leave a client (and its sockets) bound to a loop
+    that is about to close and can never be closed again. They call this on the
+    way out, inside that loop, which is the only place the close can happen. A
+    long-lived loop (FastAPI, a worker) never calls it and keeps its one client.
+    """
+    loop = asyncio.get_running_loop()
+    with _LOOP_CLIENTS_LOCK:
+        clients = _LOOP_CLIENTS.pop(loop, [])
+    for client in clients:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 class SolanaRpc:
     """Minimal async JSON-RPC client for the Solana RPC API."""
 
     def __init__(self, endpoint: str, timeout: float = 30.0) -> None:
         self._endpoint = endpoint
         self._timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # One HTTP client per event loop. An httpx.AsyncClient pins its pooled
+        # connections to the loop that opened them, and the Flask and Django
+        # shims run one asyncio.run per request, so a single shared client
+        # raises "Event loop is closed" on the second request that reuses a
+        # kept-alive connection. The loops are weak keys, so a finished loop
+        # drops its client with it.
+        self._clients: weakref.WeakKeyDictionary[Any, httpx.AsyncClient] = weakref.WeakKeyDictionary()
+        self._loopless_client: httpx.AsyncClient | None = None
+        self._injected: Any = None  # tests assign SolanaRpc._client directly
+        self._clients_lock = threading.Lock()
         # ``itertools.count`` returns unique integers atomically at the C
         # level under the GIL, so concurrent ``_call`` invocations on
         # different event loops never collide on the same JSON-RPC id.
@@ -86,8 +148,49 @@ class SolanaRpc:
         # its own lock state; the GIL-backed counter is loop-agnostic.
         self._id_counter = itertools.count(1)
 
+    @property
+    def _client(self) -> Any:
+        """The HTTP client for the running loop, opened on first use."""
+        if self._injected is not None:
+            return self._injected
+        loop = None
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+        with self._clients_lock:
+            if loop is None:
+                if self._loopless_client is None or self._loopless_client.is_closed:
+                    self._loopless_client = httpx.AsyncClient(timeout=self._timeout)
+                return self._loopless_client
+            client = self._clients.get(loop)
+            if client is None or client.is_closed or loop.is_closed():
+                if client is not None:
+                    _unregister_loop_client(loop, client)
+                client = httpx.AsyncClient(timeout=self._timeout)
+                self._clients[loop] = client
+                with _LOOP_CLIENTS_LOCK:
+                    _LOOP_CLIENTS.setdefault(loop, []).append(client)
+            return client
+
+    @_client.setter
+    def _client(self, client: Any) -> None:
+        self._injected = client
+
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """Close every HTTP client this RPC opened, for this loop and any other."""
+        with self._clients_lock:
+            per_loop = list(self._clients.items())
+            clients = [*(c for _, c in per_loop), self._loopless_client, self._injected]
+            self._clients.clear()
+            self._loopless_client = None
+        for loop, client in per_loop:
+            _unregister_loop_client(loop, client)
+        for client in clients:
+            if client is None:
+                continue
+            # A client whose loop has already closed cannot be awaited; dropping
+            # it is all that is left, and its sockets go with it.
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def _call(self, method: str, params: list[Any]) -> Any:
         rpc_id = next(self._id_counter)
@@ -97,7 +200,7 @@ class SolanaRpc:
         data = response.json()
         if "error" in data:
             err = data["error"]
-            raise _RpcError(str(err.get("message") or err), code="payment_invalid")
+            raise RpcResponseError(str(err.get("message") or err), code="payment_invalid")
         return data.get("result")
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any:
@@ -166,8 +269,23 @@ class SolanaRpc:
             return None
         return raw, owner
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
-        result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """Whether ``blockhash`` can still land a transaction (``isBlockhashValid``).
+
+        Used by subscription renewal to decide that an unseen attempt is dead:
+        once this is False at ``confirmed``, a transaction built on the hash can
+        only be in a block already visible to ``getSignatureStatuses``. A reply
+        without a boolean ``value`` raises instead of guessing.
+        """
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, bool):
+            raise _RpcError("isBlockhashValid returned no boolean value", code="payment_invalid")
+        return value
+
+    async def get_signature_statuses(self, signatures: list[str], search_history: bool = False) -> list[Any]:
+        """Statuses for ``signatures``; ``search_history`` also searches beyond the recent status cache."""
+        result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": search_history}])
         return (result or {}).get("value") or []
 
     async def confirm_transaction(self, signature: Any, *_args: Any, **_kwargs: Any) -> Any:
@@ -236,3 +354,70 @@ class SolanaRpc:
             f"timed out awaiting confirmation for {signature}",
             code="transaction-not-found",
         )
+
+
+# -- channel-read replica lag -----------------------------------------------
+
+# An RPC provider can answer getSignatureStatuses and getAccountInfo from
+# different replicas, so an account written by a just-confirmed transaction can
+# still read back MISSING on the replica that serves the follow-up read.
+# Re-reading absorbs that, and only that: an account that is visible but does
+# not say what the caller expected is an answer, not lag.
+#
+# LINEAR backoff, not exponential: replica lag is a small multiple of Solana's
+# ~400ms slot time, so doubling spends the budget on single waits far longer
+# than the lag being absorbed. Six attempts at a 200ms step schedule
+# 200/400/600/800/1000ms - 3.0s total, 1s maximum single wait.
+CHANNEL_READ_ATTEMPTS = 6
+CHANNEL_READ_BACKOFF_STEP_SECONDS = 0.2
+
+_T = TypeVar("_T")
+
+
+def resolve_channel_read_policy(
+    max_attempts: int | None,
+    backoff_step_ms: int | None,
+) -> tuple[int, float]:
+    """Resolve the optional channel-read knobs to ``(attempts, step_seconds)``.
+
+    Unset or non-positive takes the default, so a caller may pass a zero value
+    (an unset field in a language without optionals) without disabling the
+    retry.
+    """
+    attempts = CHANNEL_READ_ATTEMPTS
+    if not isinstance(max_attempts, bool) and isinstance(max_attempts, int) and max_attempts > 0:
+        attempts = max_attempts
+    step_seconds = CHANNEL_READ_BACKOFF_STEP_SECONDS
+    if not isinstance(backoff_step_ms, bool) and isinstance(backoff_step_ms, int) and backoff_step_ms > 0:
+        step_seconds = backoff_step_ms / 1000
+    return attempts, step_seconds
+
+
+async def read_with_replica_retry(
+    read: Callable[[], Awaitable[_T]],
+    attempts: int = CHANNEL_READ_ATTEMPTS,
+    backoff_step_seconds: float = CHANNEL_READ_BACKOFF_STEP_SECONDS,
+) -> _T:
+    """Re-read until the read returns something (``value is not None``).
+
+    The not-yet-visible read is the ONLY lag symptom this absorbs, and there is
+    deliberately no hook to widen it. A visible-but-wrong value is an answer,
+    not lag: it is returned straight away and the caller raises on that first
+    observation. Re-sampling a wrong-but-visible value over the backoff window
+    can only ever flip reject into accept, on state a concurrent writer may
+    have moved in the meantime. Anything ``read`` raises propagates immediately
+    and is never retried.
+
+    The last read is returned as-is once ``attempts`` is exhausted, so the
+    caller keeps its own error for the still-invisible case. Sleeps only
+    *between* attempts: the wait before attempt N+1 is
+    ``backoff_step_seconds * N``, and there is no sleep after the final
+    attempt.
+    """
+    attempt = 1
+    while True:
+        value = await read()
+        if attempt >= attempts or value is not None:
+            return value
+        await asyncio.sleep(backoff_step_seconds * attempt)
+        attempt += 1

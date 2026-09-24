@@ -1,8 +1,9 @@
 """Cross-language harness adapter for the Python PayKit umbrella surface.
 
-One TCP server, two settle paths (x402:exact and mpp:charge), picked per
-scenario by which env namespace the harness orchestrator sets (or by the
-explicit ``PAY_KIT_HARNESS_PROTOCOL`` hint). Mirrors ``harness/php-server/
+One TCP server, several settle paths (x402 exact and upto, MPP charge,
+session and subscription), picked per scenario by which env namespace the
+harness orchestrator sets (or by the explicit ``PAY_KIT_HARNESS_PROTOCOL``
+hint). Mirrors ``harness/php-server/
 server.php`` and the Ruby/Lua pay-kit-server pattern.
 
 This adapter routes every request through the unified ``solana_pay_kit`` surface:
@@ -32,8 +33,10 @@ diagnostics go to stderr.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -85,6 +88,7 @@ from solana_pay_kit.protocols.mpp.server.charge import (  # noqa: E402
     Mpp,
 )
 from solana_pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.subscription import SubscriptionConfig, SubscriptionServer  # noqa: E402
 from solana_pay_kit.protocols.x402 import X402Adapter  # noqa: E402
 from solana_pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
 from solana_pay_kit.usage import Charge, finalize_usage  # noqa: E402
@@ -188,7 +192,7 @@ def _detect_protocol() -> str:
     explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
     if explicit in ("x402-upto", "upto"):
         return "upto"
-    if explicit in ("x402", "mpp", "charge", "session"):
+    if explicit in ("x402", "mpp", "charge", "session", "subscription"):
         return "mpp" if explicit == "charge" else explicit
     x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
     mpp_set = bool(os.environ.get("MPP_HARNESS_RPC_URL"))
@@ -213,6 +217,8 @@ class _Adapter:
             self._build_upto()
         elif self.protocol == "session":
             self._build_session()
+        elif self.protocol == "subscription":
+            self._build_subscription()
         else:
             self._build_mpp()
 
@@ -336,6 +342,40 @@ class _Adapter:
             replay_amount = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_AMOUNT") or amount_units
             self.routes[replay_path] = _base_units_to_human(replay_amount, decimals)
         self.replay_path = replay_path
+
+    def _build_subscription(self) -> None:
+        from solders.keypair import Keypair  # type: ignore[import-untyped]
+        from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+
+        from solana_pay_kit.protocols.mpp._subscriptions import SUBSCRIPTIONS_PROGRAM_ID, find_plan_pda
+
+        self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
+        pay_to = require_env("MPP_HARNESS_PAY_TO")
+        mint = require_env("MPP_HARNESS_MINT")
+        amount = int(require_env("MPP_HARNESS_AMOUNT"))
+        self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/subscription")
+        self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-subscription-reference").lower()
+        self.routes = {}
+        # The harness fee payer publishes the plan and is its owner, puller and
+        # fee payer, with the scenario payTo as the single destination.
+        owner = Keypair.from_bytes(bytes(json.loads(require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY"))))
+        plan_id = secrets.randbits(63)
+        asyncio.run(_create_subscription_plan(self.rpc_url, owner, plan_id, mint, pay_to, amount))
+        plan = find_plan_pda(owner.pubkey(), plan_id, Pubkey.from_string(SUBSCRIPTIONS_PROGRAM_ID))[0]
+        self.subscription_config = SubscriptionConfig(
+            plan=str(plan),
+            mint=mint,
+            recipient=pay_to,
+            amount=amount,
+            puller_signer=owner,
+            store=MemoryStore(),
+            period_count=1,
+            decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
+            network=optional_env("MPP_HARNESS_NETWORK", "localnet"),
+            secret_key=optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad"),
+            realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
+            fee_payer=True,
+        )
 
     def _build_session(self) -> None:
         self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
@@ -482,6 +522,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
         if adapter.protocol == "session" and self.path == adapter.resource_path:
             self._handle_session(adapter)
             return
+        if adapter.protocol == "subscription" and self.path == adapter.resource_path:
+            self._handle_subscription(adapter)
+            return
         if self.path not in adapter.routes:
             self._send_json(404, {"error": "not_found"})
             return
@@ -596,6 +639,31 @@ class HarnessHandler(BaseHTTPRequestHandler):
             body["settledSignature"] = reference
         self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
 
+    def _handle_subscription(self, adapter: _Adapter) -> None:
+        auth = self.headers.get("authorization", "")
+
+        async def _handle_with_fresh_rpc():
+            # Each request runs in its own event loop, so it gets its own RPC
+            # client; the replay store is shared through the config.
+            rpc = SolanaRpc(adapter.rpc_url)
+            try:
+                server = SubscriptionServer(dataclasses.replace(adapter.subscription_config, rpc=rpc))
+                return await server.handle(auth or None)
+            finally:
+                await rpc.aclose()
+
+        result = asyncio.run(_handle_with_fresh_rpc())
+        if not result.ok:
+            self._send_json(result.status, result.body or {"error": "payment_required"}, extra_headers=result.headers)
+            return
+        receipt_header = result.headers.get("payment-receipt", "")
+        if not receipt_header:
+            self._send_json(500, {"error": "subscription gate granted without a payment-receipt header"})
+            return
+        reference = parse_receipt(receipt_header).reference
+        body = {"ok": True, "paid": True, "protocol": "subscription", "reference": reference}
+        self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
+
     def _handle_mpp(self, adapter: _Adapter, request: dict[str, Any]) -> None:
         amount = adapter.routes[self.path]
         options = adapter.charge_options()
@@ -701,6 +769,39 @@ class HarnessHandler(BaseHTTPRequestHandler):
                 "cache-control": "no-store",
             },
         )
+
+
+async def _create_subscription_plan(
+    rpc_url: str, owner: Any, plan_id: int, mint: str, pay_to: str, amount: int
+) -> None:
+    """Publish a 1-day plan for ``amount`` of ``mint`` paying ``pay_to``, signed by ``owner``."""
+    from solders.hash import Hash  # type: ignore[import-untyped]
+    from solders.message import MessageV0  # type: ignore[import-untyped]
+    from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+    from solana_pay_kit.protocols.mpp._subscriptions import SUBSCRIPTIONS_PROGRAM_ID, build_create_plan_ix
+
+    ix = build_create_plan_ix(
+        program=Pubkey.from_string(SUBSCRIPTIONS_PROGRAM_ID),
+        owner=owner.pubkey(),
+        plan_id=plan_id,
+        mint=Pubkey.from_string(mint),
+        token_program=Pubkey.from_string(TOKEN_PROGRAM),
+        amount=amount,
+        period_hours=24,
+        created_at=0,
+        destinations=[Pubkey.from_string(pay_to)],
+    )
+    rpc = SolanaRpc(rpc_url)
+    try:
+        blockhash = (await rpc.get_latest_blockhash()).value.blockhash
+        tx = VersionedTransaction(MessageV0.try_compile(owner.pubkey(), [ix], [], Hash.from_string(blockhash)), [owner])
+        await rpc.send_raw_transaction(bytes(tx))
+        await rpc.await_confirmation(str(tx.signatures[0]))
+    finally:
+        await rpc.aclose()
 
 
 def main() -> None:

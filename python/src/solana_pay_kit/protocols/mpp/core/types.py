@@ -2,46 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from solana_pay_kit.protocols.mpp.core.base64url import decode_json, encode_json
 from solana_pay_kit.protocols.mpp.core.challenge import compute_challenge_id, constant_time_equal
-
-# RFC 3339 section 5.6 ``date-time`` grammar. The capture groups are
-# year-month-day-T-hh-mm-ss[.frac][offset]. ``T`` and ``Z`` may appear in
-# upper or lower case (per RFC 3339 §4.2 note that lowercase is permitted).
-# Offset is either ``Z``/``z`` or ``+HH:MM`` / ``-HH:MM``.
-_RFC3339_RE = re.compile(
-    r"^"
-    r"(\d{4})-(\d{2})-(\d{2})"  # full-date
-    r"[Tt]"  # time separator
-    r"(\d{2}):(\d{2}):(\d{2})"  # partial-time hh:mm:ss
-    r"(\.\d+)?"  # optional time-secfrac
-    r"(?:[Zz]|([+-])(\d{2}):(\d{2}))"  # time-offset
-    r"$"
-)
-
-
-def _parse_rfc3339(value: str) -> datetime:
-    """Parse a strict RFC 3339 timestamp.
-
-    Raises :class:`ValueError` on anything looser than RFC 3339 (e.g. a space
-    instead of ``T``, a missing offset, or an invalid month/day combination).
-    Mirrors the F6 lock that landed on Ruby + PHP + Lua in PR #99 / #102.
-    """
-    match = _RFC3339_RE.match(value)
-    if match is None:
-        raise ValueError(f"not a valid RFC 3339 timestamp: {value!r}")
-    # Delegate the calendar arithmetic to datetime.fromisoformat after we have
-    # confirmed the lexical grammar. Normalize the case of the T/Z markers so
-    # fromisoformat (Python 3.11+) accepts the value.
-    normalized = value.replace("t", "T").replace("z", "Z")
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    return datetime.fromisoformat(normalized)
+from solana_pay_kit.protocols.mpp.core.expires import parse_rfc3339
 
 
 @dataclass
@@ -119,7 +86,7 @@ class PaymentChallenge:
         if not self.expires:
             return False
         try:
-            expires_at = _parse_rfc3339(self.expires)
+            expires_at = parse_rfc3339(self.expires)
         except (ValueError, TypeError):
             return True  # fail-closed on invalid RFC 3339
         ref = now if now is not None else datetime.now(UTC)
@@ -187,6 +154,13 @@ class Receipt:
     idle_timeout_seconds: int | None = None
     tx_hash: str = ""
     refunded: str = ""
+    # Subscription intent: periodIndex is a JSON number, the rest are strings.
+    subscription_id: str = ""
+    subscription_delegation: str = ""
+    period_index: int | None = None
+    period_start: str = ""
+    period_end: str = ""
+    expires_at: str = ""
 
     def is_success(self) -> bool:
         """Return True if the receipt indicates success."""

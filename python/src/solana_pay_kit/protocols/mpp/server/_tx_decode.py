@@ -336,7 +336,12 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
     return str(VersionedTransaction.from_bytes(raw).message.recent_blockhash)
 
 
-def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sponsored: bool = False) -> None:
+def _validate_compute_budget_instruction(
+    data: bytes,
+    account_count: int,
+    fee_sponsored: bool = False,
+    max_unit_limit: int = MAX_COMPUTE_UNIT_LIMIT,
+) -> None:
     """Validate a single ComputeBudget program instruction.
 
     Mirrors ``validate_compute_budget_instruction`` in
@@ -351,7 +356,8 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sp
     co-signs before broadcast), the compute-unit price is held to the tight
     ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED`` cap so a client
     cannot inflate the priority fee the merchant pays. Client-paid mode keeps
-    the general cap.
+    the general cap. ``max_unit_limit`` defaults to the charge cap; the
+    subscription activation raises it to 400,000.
     """
     if account_count != 0:
         raise PaymentError(
@@ -366,9 +372,9 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sp
     discriminator = data[0]
     if discriminator == _COMPUTE_BUDGET_SET_LIMIT_DISCRIMINATOR and len(data) == 5:
         units = int.from_bytes(data[1:5], "little")
-        if units > MAX_COMPUTE_UNIT_LIMIT:
+        if units > max_unit_limit:
             raise PaymentError(
-                f"compute unit limit {units} exceeds cap {MAX_COMPUTE_UNIT_LIMIT}",
+                f"compute unit limit {units} exceeds cap {max_unit_limit}",
                 code="compute-budget-cap-exceeded",
             )
         return

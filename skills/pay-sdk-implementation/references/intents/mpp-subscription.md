@@ -1,7 +1,12 @@
 # `mpp/subscription`
 
-**Status: implemented in Rust and TypeScript.** Use the public sources instead
-of treating subscription semantics as an unpublished draft.
+**Status: implemented in Rust, TypeScript and Python.** Use the public sources
+instead of treating subscription semantics as an unpublished draft. The Python
+port follows the Solana spec draft (mpp-specs #310) where the references relax
+it: the server rejects any associated-token-account instruction in an
+activation, the client initializes a missing `SubscriptionAuthority` in the
+same transaction with the `UNKNOWN_INIT_ID` sentinel, and the server signs as
+puller (not only as fee payer) and renews an unpaid period lazily on access.
 
 Spec and protocol context: <https://paymentauth.org>
 
@@ -15,6 +20,11 @@ Spec and protocol context: <https://paymentauth.org>
 - TypeScript shared implementation and tests:
   `typescript/packages/mpp/src/shared/subscription.ts` and
   `typescript/packages/mpp/src/__tests__/subscription*.test.ts`
+- Python: `python/src/solana_pay_kit/protocols/mpp/{_subscriptions,intents/subscription,client/subscription,server/subscription}.py`
+  and `python/tests/test_subscription*.py`; opt-in on-chain e2e in
+  `python/tests/test_subscription_e2e_surfnet.py`
+- Harness: `harness/vectors/subscription-wire.json` and the
+  `subscription-activate-access` scenario
 
 ## Porting order
 

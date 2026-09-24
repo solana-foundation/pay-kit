@@ -20,6 +20,32 @@ func vectorsDir(t *testing.T) string {
 	return dir
 }
 
+// declaredIntents returns the intents harness/runners/go.json declares, the
+// same filter the harness driver applies (harness/test/conformance.test.ts):
+// vectors for any other intent are skipped, and a manifest without an
+// `intents` list defaults to charge and x402-exact.
+func declaredIntents(t *testing.T) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "harness", "runners", "go.json"))
+	if err != nil {
+		t.Fatalf("read go runner manifest: %v", err)
+	}
+	var manifest struct {
+		Intents []string `json:"intents"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parse go runner manifest: %v", err)
+	}
+	if manifest.Intents == nil {
+		manifest.Intents = []string{"charge", "x402-exact"}
+	}
+	declared := map[string]bool{}
+	for _, intent := range manifest.Intents {
+		declared[intent] = true
+	}
+	return declared
+}
+
 // TestSeededVectorsConform drives every seeded vector through runVector and
 // asserts the runner outcome matches the vector's expect block, plus the
 // exact bytes for canonical-bytes vectors. This is the Go-side mirror of the
@@ -27,6 +53,7 @@ func vectorsDir(t *testing.T) string {
 // TypeScript harness.
 func TestSeededVectorsConform(t *testing.T) {
 	dir := vectorsDir(t)
+	declared := declaredIntents(t)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read vectors dir: %v", err)
@@ -84,6 +111,12 @@ func TestSeededVectorsConform(t *testing.T) {
 		}
 
 		for i, vector := range vectors {
+			if !declared[vector.Intent] {
+				t.Run(vector.ID, func(t *testing.T) {
+					t.Skipf("intent %q is not declared in harness/runners/go.json", vector.Intent)
+				})
+				continue
+			}
 			expect := rawVectors[i].Expect
 			t.Run(vector.ID, func(t *testing.T) {
 				result := runVector(vector)

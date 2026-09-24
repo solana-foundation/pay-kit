@@ -200,6 +200,21 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["session"],
   },
   {
+    id: "python-subscription",
+    label: "Python pay_kit subscription client",
+    role: "client",
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-subscription-client/main.py",
+    ],
+    enabled: isEnabled("python-subscription", "MPP_HARNESS_CLIENTS", false),
+    intents: ["subscription"],
+  },
+  {
     id: "swift-x402",
     label: "Swift x402 exact client",
     role: "client",
@@ -405,7 +420,27 @@ export const serverImplementations: ImplementationDefinition[] = [
       "python-server/server.py",
     ],
     enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
-    intents: ["charge", "x402-exact", "session"],
+    intents: ["charge", "x402-exact", "session", "subscription"],
+  },
+  {
+    id: "rust-subscription",
+    label: "Rust MPP subscription server",
+    role: "server",
+    // Publishes its own plan before ready and runs the Rust SubscriptionServer
+    // with fee_payer = puller (the Rust server signs only the fee-payer slot).
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "mpp_harness_subscription_server",
+    ],
+    enabled: isEnabled("rust-subscription", "MPP_HARNESS_SERVERS", false),
+    intents: ["subscription"],
   },
   {
     id: "go",

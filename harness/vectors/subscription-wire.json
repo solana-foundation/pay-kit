@@ -1,0 +1,194 @@
+[
+  {
+    "id": "subscription-wire-request-spec-example",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "The Solana subscription request example from the spec draft (mpp-specs #310). Round-tripped through the production request parser and serializer, then JCS-canonicalized: amount and periodCount stay canonical decimal strings, decimals stays a number, feePayer a boolean, and no field is renamed, dropped or added.",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "periodUnit": "day",
+          "periodCount": "30",
+          "subscriptionExpires": "2026-07-14T12:00:00Z",
+          "recipient": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+          "description": "Monthly Pro plan",
+          "externalId": "merchant-subscription-270",
+          "methodDetails": {
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "decimals": 6,
+            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "network": "mainnet",
+            "feePayer": true,
+            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h"
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"amount\":\"10000000\",\"currency\":\"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\"description\":\"Monthly Pro plan\",\"externalId\":\"merchant-subscription-270\",\"methodDetails\":{\"decimals\":6,\"feePayer\":true,\"feePayerKey\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"mint\":\"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\"network\":\"mainnet\",\"planAddress\":\"8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT\",\"puller\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"subscriptionProgram\":\"De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\"},\"periodCount\":\"30\",\"periodUnit\":\"day\",\"recipient\":\"9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\",\"subscriptionExpires\":\"2026-07-14T12:00:00Z\"}",
+        "base64Url": "eyJhbW91bnQiOiIxMDAwMDAwMCIsImN1cnJlbmN5IjoiRVBqRldkZDVBdWZxU1NxZU0ycU4xeHp5YmFwQzhHNHdFR0drWnd5VER0MXYiLCJkZXNjcmlwdGlvbiI6Ik1vbnRobHkgUHJvIHBsYW4iLCJleHRlcm5hbElkIjoibWVyY2hhbnQtc3Vic2NyaXB0aW9uLTI3MCIsIm1ldGhvZERldGFpbHMiOnsiZGVjaW1hbHMiOjYsImZlZVBheWVyIjp0cnVlLCJmZWVQYXllcktleSI6IjVmS2I1Y0YyMmNGeWJaQjFINGhMRHlkRmh3b1F5OUp6S3pSV2FTYk1rQjZoIiwibWludCI6IkVQakZXZGQ1QXVmcVNTcWVNMnFOMXh6eWJhcEM4RzR3RUdHa1p3eVREdDF2IiwibmV0d29yayI6Im1haW5uZXQiLCJwbGFuQWRkcmVzcyI6Ijh0V2JxTGtVSm9ZeTd6WGM1aDJFdkNSb2FRRXYyeG5RalV1WWhjM3J6Q2dUIiwicHVsbGVyIjoiNWZLYjVjRjIyY0Z5YlpCMUg0aExEeWRGaHdvUXk5SnpLelJXYVNiTWtCNmgiLCJzdWJzY3JpcHRpb25Qcm9ncmFtIjoiRGUxZWdBRk1rTVdaU041cllYUmo5Q0FkaGVCYW1vYlZOdWJUc2k5YXZSNDQiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIn0sInBlcmlvZENvdW50IjoiMzAiLCJwZXJpb2RVbml0IjoiZGF5IiwicmVjaXBpZW50IjoiOXhRZVd2RzgxNmJVeDlFUGpIbWFUMjN5dlZNMlpXYnJycFpiOVB1c1ZGaW4iLCJzdWJzY3JpcHRpb25FeHBpcmVzIjoiMjAyNi0wNy0xNFQxMjowMDowMFoifQ"
+      }
+    }
+  },
+  {
+    "id": "subscription-auth-message-jcs",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "The JCS message a subscriber signs for the reusable bearer proof: domain mpp-subscription-auth-v1, payer, subscriptionChallengeId and subscriptionDelegation, keys sorted. Mirrors the Rust subscription_authentication_uses_canonical_message_and_binds_delegation test.",
+    "input": {
+      "subscriptionAuthenticationMessage": {
+        "challengeId": "challenge-1",
+        "payer": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+        "subscriptionDelegation": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"domain\":\"mpp-subscription-auth-v1\",\"payer\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"subscriptionChallengeId\":\"challenge-1\",\"subscriptionDelegation\":\"8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT\"}",
+        "base64Url": "eyJkb21haW4iOiJtcHAtc3Vic2NyaXB0aW9uLWF1dGgtdjEiLCJwYXllciI6IjVmS2I1Y0YyMmNGeWJaQjFINGhMRHlkRmh3b1F5OUp6S3pSV2FTYk1rQjZoIiwic3Vic2NyaXB0aW9uQ2hhbGxlbmdlSWQiOiJjaGFsbGVuZ2UtMSIsInN1YnNjcmlwdGlvbkRlbGVnYXRpb24iOiI4dFdicUxrVUpvWXk3elhjNWgyRXZDUm9hUUV2MnhuUWpVdVloYzNyekNnVCJ9"
+      }
+    }
+  },
+  {
+    "id": "subscription-wire-receipt-period-index-number",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "The activation Payment-Receipt from the spec draft, with a base58 delegation. Round-tripped through the production receipt parser and formatter: periodIndex is a JSON number, the other subscription fields are strings.",
+    "input": {
+      "subscriptionWire": {
+        "shape": "receipt",
+        "value": {
+          "method": "solana",
+          "intent": "subscription",
+          "status": "success",
+          "reference": "5J8signature",
+          "challengeId": "ch-sub",
+          "subscriptionId": "c3ViX3NvbGFuYV8wMQ",
+          "subscriptionDelegation": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+          "externalId": "merchant-subscription-270",
+          "periodIndex": 0,
+          "periodStart": "2026-01-15T12:03:10Z",
+          "periodEnd": "2026-02-14T12:03:10Z",
+          "expiresAt": "2026-07-14T12:00:00Z",
+          "timestamp": "2026-01-15T12:03:10Z"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"challengeId\":\"ch-sub\",\"expiresAt\":\"2026-07-14T12:00:00Z\",\"externalId\":\"merchant-subscription-270\",\"intent\":\"subscription\",\"method\":\"solana\",\"periodEnd\":\"2026-02-14T12:03:10Z\",\"periodIndex\":0,\"periodStart\":\"2026-01-15T12:03:10Z\",\"reference\":\"5J8signature\",\"status\":\"success\",\"subscriptionDelegation\":\"8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT\",\"subscriptionId\":\"c3ViX3NvbGFuYV8wMQ\",\"timestamp\":\"2026-01-15T12:03:10Z\"}",
+        "base64Url": "eyJjaGFsbGVuZ2VJZCI6ImNoLXN1YiIsImV4cGlyZXNBdCI6IjIwMjYtMDctMTRUMTI6MDA6MDBaIiwiZXh0ZXJuYWxJZCI6Im1lcmNoYW50LXN1YnNjcmlwdGlvbi0yNzAiLCJpbnRlbnQiOiJzdWJzY3JpcHRpb24iLCJtZXRob2QiOiJzb2xhbmEiLCJwZXJpb2RFbmQiOiIyMDI2LTAyLTE0VDEyOjAzOjEwWiIsInBlcmlvZEluZGV4IjowLCJwZXJpb2RTdGFydCI6IjIwMjYtMDEtMTVUMTI6MDM6MTBaIiwicmVmZXJlbmNlIjoiNUo4c2lnbmF0dXJlIiwic3RhdHVzIjoic3VjY2VzcyIsInN1YnNjcmlwdGlvbkRlbGVnYXRpb24iOiI4dFdicUxrVUpvWXk3elhjNWgyRXZDUm9hUUV2MnhuUWpVdVloYzNyekNnVCIsInN1YnNjcmlwdGlvbklkIjoiYzNWaVgzTnZiR0Z1WVY4d01RIiwidGltZXN0YW1wIjoiMjAyNi0wMS0xNVQxMjowMzoxMFoifQ"
+      }
+    }
+  },
+  {
+    "id": "subscription-wire-access-payload",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "The type=proof access payload: the bound delegation plus the authentication object retained from activation. Round-tripped through the production payload parser and serializer.",
+    "input": {
+      "subscriptionWire": {
+        "shape": "payload",
+        "value": {
+          "type": "proof",
+          "subscriptionDelegation": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+          "authentication": {
+            "type": "proof",
+            "challengeId": "challenge-1",
+            "payer": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "signature": "5VERYxSignature"
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"authentication\":{\"challengeId\":\"challenge-1\",\"payer\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"signature\":\"5VERYxSignature\",\"type\":\"proof\"},\"subscriptionDelegation\":\"8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT\",\"type\":\"proof\"}",
+        "base64Url": "eyJhdXRoZW50aWNhdGlvbiI6eyJjaGFsbGVuZ2VJZCI6ImNoYWxsZW5nZS0xIiwicGF5ZXIiOiI1ZktiNWNGMjJjRnliWkIxSDRoTER5ZEZod29ReTlKekt6UldhU2JNa0I2aCIsInNpZ25hdHVyZSI6IjVWRVJZeFNpZ25hdHVyZSIsInR5cGUiOiJwcm9vZiJ9LCJzdWJzY3JpcHRpb25EZWxlZ2F0aW9uIjoiOHRXYnFMa1VKb1l5N3pYYzVoMkV2Q1JvYVFFdjJ4blFqVXVZaGMzcnpDZ1QiLCJ0eXBlIjoicHJvb2YifQ"
+      }
+    }
+  },
+  {
+    "id": "subscription-wire-request-rejects-month",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "The Solana profile cannot bill calendar months: periodUnit=month must be refused.",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "periodUnit": "month",
+          "periodCount": "1",
+          "subscriptionExpires": "2026-07-14T12:00:00Z",
+          "recipient": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+          "description": "Monthly Pro plan",
+          "externalId": "merchant-subscription-270",
+          "methodDetails": {
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "decimals": 6,
+            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "network": "mainnet",
+            "feePayer": true,
+            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h"
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    }
+  },
+  {
+    "id": "subscription-wire-request-rejects-leading-zero-amount",
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "description": "amount must be a canonical positive integer string: no sign, no leading zeros.",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "010000000",
+          "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "periodUnit": "day",
+          "periodCount": "30",
+          "subscriptionExpires": "2026-07-14T12:00:00Z",
+          "recipient": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+          "description": "Monthly Pro plan",
+          "externalId": "merchant-subscription-270",
+          "methodDetails": {
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "decimals": 6,
+            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "network": "mainnet",
+            "feePayer": true,
+            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h"
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    }
+  }
+]

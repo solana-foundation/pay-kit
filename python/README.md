@@ -298,7 +298,7 @@ Use MPP when:
 | `charge/pull`  | ✅     | ✅     |
 | `charge/push`  | —      | ✅     |
 | `session`      | ✅     | ✅     |
-| `subscription` | —      | —      |
+| `subscription` | ✅     | ✅     |
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =
@@ -312,6 +312,23 @@ broadcasts the open), the reserve/commit metering side channel
 on-chain settle-at-close (when a signer and RPC are configured, a closed
 channel's `settledSignature` carries the real on-chain signature; without them
 the close is a state-flip and the signature stays `null`).
+
+`subscription` ships both sides for the Solana profile. Client:
+`build_subscription_activation` checks the on-chain `Plan` against the
+challenge, then signs one activation transaction (authority init only when
+missing, `subscribe`, the first `transfer_subscription`) plus a reusable bearer
+proof; `build_subscription_access_credential` presents that proof later.
+Server: `SubscriptionServer` checks the plan, mint and recipient token account
+before issuing a challenge, validates every activation instruction, co-signs as
+puller (and fee payer when sponsored), binds the proof after settlement, and on
+access renews an unpaid period with one puller-signed charge
+(`renew_on_access`). Routes gate with `RequireSubscription` on FastAPI and
+`require_subscription` on Flask and Django.
+`tests/test_subscription_e2e_surfnet.py` drives that lifecycle against the
+deployed program (plan, activation, a lazy renewal after a time jump, cancel).
+It is opt-in locally with `MPP_RUN_SUBSCRIPTION_E2E=1` against a surfpool
+mainnet fork, and CI runs it on the same fork, which also proves the pinned
+program id is live on mainnet.
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`
@@ -415,13 +432,16 @@ Boot-time validations (all raise `ConfigurationError` or a subclass):
 `solana_pay_kit` carries no web-framework dependency in the base install. The
 framework shims live in optional submodules imported on demand:
 
-- `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), a `@require_payment` view
-  decorator plus `is_paid` / `payment` request accessors.
+- `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), `@require_payment`,
+  `@require_usage` and `@require_subscription` view decorators plus `is_paid` /
+  `payment` request accessors.
 - `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a Django/DRF-style
-  paywall middleware for route metadata and default policies, plus a
-  `RequirePayment` dependency for `Depends(...)`.
-- `solana_pay_kit.django` (install `solana_pay_kit[django]`), a `require_payment` view
-  decorator and an optional `PaymentMiddleware` stack form.
+  paywall middleware for route metadata and default policies, plus
+  `RequirePayment`, `RequireUsage`, `RequireSession` and `RequireSubscription`
+  dependencies for `Depends(...)`.
+- `solana_pay_kit.django` (install `solana_pay_kit[django]`), `require_payment`,
+  `require_usage` and `require_subscription` view decorators and an optional
+  `PaymentMiddleware` stack form.
 
 Every shim delegates protocol/scheme dispatch and 402-challenge assembly to
 the host-neutral `PayCore`; the shim only translates the outcome into its
@@ -539,7 +559,22 @@ harness commands:
 cd harness
 MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=python pnpm test
 MPP_HARNESS_CLIENTS=rust       MPP_HARNESS_SERVERS=python pnpm test
+# subscription: the Python client activates and accesses against the Python
+# server and the Rust server leg (needs the subscriptions program, so either
+# SUBSCRIPTIONS_PROGRAM_SO or a surfpool datasource for the mainnet fork)
+MPP_HARNESS_INTENTS=subscription \
+  MPP_HARNESS_CLIENTS=python-subscription \
+  MPP_HARNESS_SERVERS=python,rust-subscription \
+  pnpm exec vitest run test/e2e.test.ts --testTimeout 300000
 ```
+
+The subscription lifecycle also runs against a surfpool fork of mainnet from
+pytest, where the deployed program executes. CI runs it in the Python harness
+job (skipped when the datasource secret is unavailable, as on fork PRs);
+locally, start `surfpool start --network mainnet --ci --no-deploy`, then
+`MPP_RUN_SUBSCRIPTION_E2E=1 MPP_SUBSCRIPTION_E2E_RPC_URL=http://127.0.0.1:8899
+uv run pytest tests/test_subscription_e2e_surfnet.py`. Give it a fresh surfnet:
+the suite time-travels past a billing period.
 
 ## Spec
 

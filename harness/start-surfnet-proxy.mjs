@@ -5,7 +5,23 @@ import { Surfnet } from "@solana/surfpool";
 
 const rpcPort = Number(process.env.SURFPOOL_PROXY_RPC_PORT ?? 8899);
 const wsPort = Number(process.env.SURFPOOL_PROXY_WS_PORT ?? 8900);
-const surfnet = Surfnet.start();
+// Opt in to a mainnet fork by naming the programs to stream, so a test can run
+// against a deployed program (e.g. the subscriptions program) instead of a
+// local build. Offline (no programs named) stays the default.
+const streamedPrograms = (process.env.SURFPOOL_STREAM_PROGRAMS ?? "")
+  .split(",")
+  .map((program) => program.trim())
+  .filter(Boolean);
+const surfnet =
+  streamedPrograms.length === 0
+    ? Surfnet.start()
+    : Surfnet.startWithConfig({
+        offline: false,
+        remoteRpcUrl:
+          process.env.SURFPOOL_DATASOURCE_RPC_URL?.trim() ||
+          "https://api.mainnet-beta.solana.com",
+      });
+for (const program of streamedPrograms) surfnet.streamAccount(program);
 const rpcTarget = new URL(surfnet.rpcUrl);
 const wsTarget = new URL(surfnet.wsUrl);
 
@@ -48,13 +64,16 @@ function createSplMintAccountData(decimals) {
   return data;
 }
 
-for (const { mint, tokenProgram } of STABLECOIN_MINTS) {
-  surfnet.setAccount(
-    mint,
-    1_461_600,
-    createSplMintAccountData(6),
-    tokenProgram,
-  );
+// A fork already serves the real mints; only an offline surfnet needs these.
+if (streamedPrograms.length === 0) {
+  for (const { mint, tokenProgram } of STABLECOIN_MINTS) {
+    surfnet.setAccount(
+      mint,
+      1_461_600,
+      createSplMintAccountData(6),
+      tokenProgram,
+    );
+  }
 }
 
 function createProxyServer(target) {
@@ -91,7 +110,32 @@ await new Promise((resolve, reject) => {
   });
 });
 
-for (let attempt = 0; attempt < 50; attempt++) {
+// A streamed account resolves from the datasource a moment after start, so
+// hold "ready" until every named program is executable on the fork.
+async function streamedProgramsReady() {
+  for (const program of streamedPrograms) {
+    surfnet.drainEvents();
+    const response = await fetch(`http://127.0.0.1:${rpcPort}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getAccountInfo",
+        params: [
+          program,
+          { encoding: "base64", dataSlice: { offset: 0, length: 0 } },
+        ],
+      }),
+    });
+    const body = await response.json();
+    if (body?.result?.value?.executable !== true) return false;
+  }
+  return true;
+}
+
+const readyAttempts = streamedPrograms.length === 0 ? 50 : 300; // a fork streams its programs in
+for (let attempt = 0; attempt < readyAttempts; attempt++) {
   try {
     const response = await fetch(`http://127.0.0.1:${rpcPort}`, {
       method: "POST",
@@ -104,7 +148,7 @@ for (let attempt = 0; attempt < 50; attempt++) {
       }),
     });
     const body = await response.json();
-    if (body.result === "ok") {
+    if (body.result === "ok" && (await streamedProgramsReady())) {
       console.log(
         `Surfnet ready at http://127.0.0.1:${rpcPort} -> ${surfnet.rpcUrl}, ws://127.0.0.1:${wsPort} -> ${surfnet.wsUrl}`,
       );
