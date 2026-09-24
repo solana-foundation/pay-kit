@@ -146,7 +146,7 @@ end)
 helper.test('configure() mpp.expires_in default + override', function()
   reset()
   assert(pay_kit.configure())
-  helper.assert_equal(pay_kit.config().mpp.expires_in, 300)
+  helper.assert_equal(pay_kit.config().mpp.expires_in, 120)
 
   reset()
   assert(pay_kit.configure({mpp = {expires_in = 60}}))

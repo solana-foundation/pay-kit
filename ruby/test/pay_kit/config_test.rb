@@ -184,7 +184,7 @@ class PayKitConfigTest < Minitest::Test
 
   def test_mpp_expires_in_default_and_override
     PayKit.configure { |_c| }
-    assert_equal 300, PayKit.config.mpp.expires_in
+    assert_equal 120, PayKit.config.mpp.expires_in
 
     PayKit.reset!
     PayKit.configure { |c| c.mpp.expires_in = 600 }
