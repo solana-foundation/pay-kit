@@ -69,7 +69,7 @@ jobs:
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server,x402_harness_batch_client,x402_harness_batch_server"
           cargo-cache-key: python
       # x402 upto settles on the canonical payment-channels program; the upto
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
@@ -184,3 +184,54 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+      # x402 batch-settlement: basic, top-up, redeem and refund run every
+      # python/rust client x server pair; server-signed and untrusted-fallback
+      # are pinned to the Python adapters (intents/x402-batch-settlement.ts).
+      # Settles on the same payment-channels .so as the upto step and checks
+      # the channel account, payTo's delta and the Closing state on chain. The
+      # pytest suite below covers the same scheme against mainnet state.
+      - name: Focused python/rust x402 batch-settlement matrix
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: x402-batch-settlement
+          MPP_HARNESS_CLIENTS: python-x402-batch,rust-x402-batch
+          MPP_HARNESS_SERVERS: python-x402-batch,rust-x402-batch
+          X402_HARNESS_CLIENTS: python-x402-batch,rust-x402-batch
+          X402_HARNESS_SERVERS: python-x402-batch,rust-x402-batch
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+      # The same scheme against real mainnet state: a surfnet forking mainnet
+      # runs the deployed payment-channels program, so a green run proves the
+      # whole lifecycle (open, vouchers, top-up, claim, distribute, refund,
+      # seal, finalize, reclaim) lands on chain. The suite funds fresh keys
+      # through the surfnet_setAccount / surfnet_setTokenAccount cheatcodes,
+      # which the TCP proxy passes through untouched, and it time-travels past
+      # a grace period, so it gets a surfnet of its own. Skipped, not failed,
+      # without the datasource secret (fork PRs).
+      - name: x402 batch-settlement on a mainnet fork
+        working-directory: python
+        env:
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+          SURFPOOL_FORK: "1"
+        run: |
+          if [ -z "$SURFPOOL_DATASOURCE_RPC_URL" ]; then
+            echo "::notice::SURFPOOL_DATASOURCE_RPC_URL is empty; skipping the batch-settlement on-chain suite"
+            exit 0
+          fi
+          node ../harness/start-surfnet-proxy.mjs &
+          surfnet=$!
+          trap 'kill "$surfnet" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 100); do
+            if curl -sf -X POST http://127.0.0.1:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          test "$ready" -eq 1
+          PAYKIT_SURFNET_RPC_URL=http://127.0.0.1:8899 pytest tests/test_pk_x402_batch_surfpool.py -q

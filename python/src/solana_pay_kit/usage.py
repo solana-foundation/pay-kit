@@ -14,6 +14,8 @@ conformance harness server:
   PayKit **fail-closed** policy at the app layer: a missing or zero charge still
   settles 0 on-chain (channel seal + full refund) yet withholds the protected
   body (HTTP 402). Mirrors Go ``paykit/usage.go`` (``settleZeroAndFailClosed``).
+* :func:`finalize_batch` - the x402 ``batch-settlement`` commit: the voucher's
+  price in client-signed mode, the metered charge in server-signed mode.
 
 The engine-layer zero behaviour (settle 0 → success, full refund) lives in
 :class:`~solana_pay_kit.protocols.x402.upto.X402Upto`; the fail-closed withhold is this
@@ -22,15 +24,22 @@ app-layer policy, exactly the two-layer split the spec allows.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from solana_pay_kit.errors import InvalidProofError
+
+logger = logging.getLogger("solana_pay_kit")
+
 __all__ = [
     "Charge",
     "UsageOutcome",
     "finalize_usage",
+    "finalize_batch",
+    "batch_challenge",
     "charge_from",
     "fetch_recent_blockhash",
     "fetch_recent_blockhash_and_slot",
@@ -131,6 +140,69 @@ async def finalize_usage(engine: Any, verified: Any, charge: Charge) -> UsageOut
         settlement_headers=engine.settlement_headers(settlement),
         transaction=cast("dict[str, Any]", settlement).get("transaction", ""),
     )
+
+
+async def finalize_batch(engine: Any, verified: Any, charge: Charge | None) -> UsageOutcome:
+    """Charge an x402 ``batch-settlement`` request after its handler succeeded.
+
+    Client-signed requests charge the price their voucher covers. Server-signed
+    requests charge the metered amount: an explicit ``charge(0)`` serves at the
+    unchanged cumulative, while a missing charge fails closed (the engine
+    releases the reservation and the body is withheld with a 402
+    ``settlement_failed``). A commit the engine refuses also withholds the body.
+    """
+    metered = verified.server_signed and charge is not None and charge.was_charged()
+    actual = charge.settled_base_units() if metered and charge is not None else None
+    try:
+        settlement = await engine.commit(verified, actual)
+    except InvalidProofError as exc:
+        return UsageOutcome(ok=False, status=402, code=exc.code, detail=str(exc))
+    return UsageOutcome(
+        ok=True,
+        status=200,
+        settlement_headers=engine.settlement_headers(settlement),
+        transaction=cast("dict[str, Any]", settlement).get("transaction", ""),
+    )
+
+
+def batch_challenge(
+    engine: Any,
+    gate: Any,
+    request: Any,
+    resource: str,
+    *,
+    voucher_signer: str | None = None,
+    error: InvalidProofError | None = None,
+    accepts: list[Any] | None = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """The 402 ``batch-settlement`` challenge a shim renders, as ``(headers, JSON body)``.
+
+    ``error`` adds its code to both; ``accepts`` replaces the route's accepts
+    with a corrective's (they carry the channel state the client resyncs from).
+
+    The body carries the wire contract only: the code is what a client acts on
+    (the Rust and Python clients read the header envelope's ``error`` and the
+    ``accepts``, never a message), while the refusal's own text can quote an
+    RPC or a simulation, so it is logged here instead of served.
+    """
+    offered = accepts if accepts is not None else engine.accepts_entries(gate, request, voucher_signer=voucher_signer)
+    code = None if error is None else error.code
+    body: dict[str, Any] = {"error": "payment_required", "resource": resource, "accepts": offered}
+    if error is not None:
+        body["code"] = code
+        logger.warning(
+            "solana_pay_kit: refusing %s on channel %s with %s: %s", resource, _challenge_channel(offered), code, error
+        )
+    return engine.challenge_headers(gate, request, error=code, accepts=offered), body
+
+
+def _challenge_channel(offered: list[Any]) -> str:
+    """The channel a corrective's accepts name, for the log line; ``"-"`` when they name none."""
+    for accept in offered:
+        state = cast("Mapping[str, Any]", accept).get("extra", {}).get("channelState")
+        if isinstance(state, Mapping):
+            return str(cast("Mapping[str, Any]", state).get("channelId", "-"))
+    return "-"
 
 
 def charge_from(request: Any) -> Charge | None:

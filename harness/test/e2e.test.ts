@@ -2,6 +2,7 @@ import net from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
+  getAddressDecoder,
   getBase64Codec,
   getCompiledTransactionMessageDecoder,
   getTransactionDecoder,
@@ -82,6 +83,8 @@ let surfnet: Surfnet | undefined;
 let surfnetDrainTimer: NodeJS.Timeout | undefined;
 let harnessEnv: Record<string, string> | undefined;
 let splitRecipients: Record<string, string> = {};
+// Public keys behind the x402 batch-settlement env, for on-chain assertions.
+let batchKeys: BatchKeys | undefined;
 
 type CompiledInstruction = {
   accountIndices: readonly number[];
@@ -168,7 +171,9 @@ function startSurfnetForScenarios(
   scenarios: readonly HarnessScenario[],
 ): Surfnet {
   const needsPaymentChannels = scenarios.some(
-    (scenario) => scenario.intent === "x402-upto",
+    (scenario) =>
+      scenario.intent === "x402-upto" ||
+      scenario.intent === "x402-batch-settlement",
   );
   if (!needsPaymentChannels) {
     return Surfnet.start();
@@ -191,7 +196,12 @@ function startSurfnetForScenarios(
       DEFAULT_SURFPOOL_DATASOURCE_RPC_URL,
   });
   started.streamAccount(PAYMENT_CHANNEL_PROGRAM, {
-    includeOwnedAccounts: true,
+    // Streaming the program's owned accounts re-reads them from the remote
+    // datasource, which hides a channel batch-settlement just opened locally
+    // (its server reads the channel back after every broadcast).
+    includeOwnedAccounts: !scenarios.some(
+      (scenario) => scenario.intent === "x402-batch-settlement",
+    ),
   });
 
   return started;
@@ -409,6 +419,46 @@ beforeAll(async () => {
     ),
     PAYMENT_CHANNELS_PROGRAM_ID: PAYMENT_CHANNEL_PROGRAM,
   };
+
+  // x402 batch-settlement: a dedicated fee payer sponsors every transaction and
+  // holds the zero-share payee seat. Its USDC account, payTo's and the
+  // payment-channels treasury owner's must exist before the first deposit.
+  const batchScenarios = activeScenarios.filter(
+    (scenario) => scenario.intent === "x402-batch-settlement",
+  );
+  if (batchScenarios.length > 0) {
+    const batchFeePayer = Surfnet.newKeypair();
+    const batchPayTo = Surfnet.newKeypair();
+    const batchOperator = Surfnet.newKeypair();
+    surfnet.fundSol(batchFeePayer.publicKey, CLIENT_SOL_FUND_LAMPORTS);
+    surfnet.fundSol(client.publicKey, CLIENT_SOL_FUND_LAMPORTS);
+    for (const scenario of batchScenarios) {
+      const programAddress = tokenProgramAddress(scenario.tokenProgram);
+      for (const owner of [
+        batchFeePayer.publicKey,
+        batchPayTo.publicKey,
+        PAYMENT_CHANNEL_TREASURY_OWNER,
+      ]) {
+        surfnet.fundToken(owner, scenario.asset, 0, programAddress);
+      }
+    }
+    batchKeys = {
+      client: client.publicKey,
+      feePayer: batchFeePayer.publicKey,
+      operator: batchOperator.publicKey,
+      payTo: batchPayTo.publicKey,
+    };
+    harnessEnv = {
+      ...harnessEnv,
+      X402_HARNESS_BATCH_PAY_TO: batchPayTo.publicKey,
+      X402_HARNESS_BATCH_FEE_PAYER_SECRET_KEY: JSON.stringify(
+        Array.from(batchFeePayer.secretKey),
+      ),
+      X402_HARNESS_BATCH_OPERATOR_SECRET_KEY: JSON.stringify(
+        Array.from(batchOperator.secretKey),
+      ),
+    };
+  }
 });
 
 afterEach(async () => {
@@ -532,6 +582,16 @@ describe("mpp harness", () => {
             }
 
             const scenarioEnv = environmentForScenario(harnessEnv, scenario);
+            if (scenario.intent === "x402-batch-settlement") {
+              await runBatchPair(
+                surfnet,
+                serverImplementation,
+                clientImplementation,
+                scenario,
+                scenarioEnv,
+              );
+              return;
+            }
             const scenarioTokenProgram = tokenProgramAddress(
               scenario.tokenProgram,
             );
@@ -911,6 +971,34 @@ function environmentForScenario(
       // environment variable yet.
       env.X402_HARNESS_FACILITATOR_SECRET_KEY =
         env.X402_HARNESS_UPTO_FEE_PAYER_SECRET_KEY;
+    }
+  } else if (scenario.intent === "x402-batch-settlement") {
+    env.PAY_KIT_HARNESS_PROTOCOL = "x402-batch";
+    env.X402_HARNESS_BATCH_FLOW = scenario.batchFlow ?? "basic";
+    env.X402_HARNESS_MINT = scenario.asset;
+    env.X402_HARNESS_NETWORK = scenario.network;
+    env.X402_HARNESS_PRICE = scenario.price;
+    env.X402_HARNESS_RESOURCE_PATH = scenario.resourcePath;
+    env.X402_HARNESS_SETTLEMENT_HEADER = scenario.settlementHeader;
+    env.X402_HARNESS_PAY_TO = env.X402_HARNESS_BATCH_PAY_TO;
+    env.X402_HARNESS_FEE_PAYER_SECRET_KEY =
+      env.X402_HARNESS_BATCH_FEE_PAYER_SECRET_KEY;
+    env.X402_HARNESS_FACILITATOR_SECRET_KEY =
+      env.X402_HARNESS_BATCH_FEE_PAYER_SECRET_KEY;
+    if (scenario.actualAmount) {
+      env.X402_HARNESS_ACTUAL_AMOUNT = scenario.actualAmount;
+    }
+    // Python-only: the server offers the operator's metered accept; only the
+    // server-signed client trusts that operator.
+    if (
+      scenario.batchFlow === "server-signed" ||
+      scenario.batchFlow === "untrusted-fallback"
+    ) {
+      env.X402_HARNESS_OPERATOR_SECRET_KEY =
+        env.X402_HARNESS_BATCH_OPERATOR_SECRET_KEY;
+    }
+    if (scenario.batchFlow === "server-signed" && batchKeys) {
+      env.X402_HARNESS_TRUSTED_OPERATORS = batchKeys.operator;
     }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
@@ -1505,4 +1593,174 @@ function splitDeltas(
     deltas[key] = after[key] - before[key];
   }
   return deltas;
+}
+
+// -- x402 batch-settlement -------------------------------------------------------
+
+type BatchKeys = {
+  client: string;
+  feePayer: string;
+  operator: string;
+  payTo: string;
+};
+
+type BatchRequestRecord = {
+  index: number;
+  kind: string;
+  status: number;
+  chargedCumulativeAmount: string | null;
+  error: string | null;
+};
+
+type BatchResultBody = {
+  flow: string;
+  channelId: string | null;
+  openSignature: string | null;
+  deposit: string;
+  price: string;
+  requests: BatchRequestRecord[];
+  redeem?: { status: number; body: unknown };
+  refund?: { status: number; body: unknown };
+};
+
+// Channel account offsets (account-type byte 0, then the program's Channel
+// layout): status 3, deposit 12, settled 20, payout watermark 28,
+// closureStartedAt 36, payer 88, payee 120, authorizedSigner 152, rentPayer 216.
+type BatchChannel = {
+  status: number;
+  deposit: bigint;
+  settled: bigint;
+  payoutWatermark: bigint;
+  closureStartedAt: bigint;
+  payer: string;
+  payee: string;
+  authorizedSigner: string;
+  rentPayer: string;
+};
+
+const CHANNEL_STATUS_OPEN = 0;
+const CHANNEL_STATUS_CLOSING = 2;
+
+async function readBatchChannel(
+  surfnet: Surfnet,
+  channelId: string,
+): Promise<BatchChannel> {
+  const rpc = createSolanaRpc(surfnet.rpcUrl);
+  const account = await rpc
+    .getAccountInfo(channelId as never, { encoding: "base64" })
+    .send();
+  expect(account.value, `channel ${channelId} exists`).not.toBeNull();
+  expect(account.value?.owner, "channel owner").toBe(PAYMENT_CHANNEL_PROGRAM);
+  const data = getBase64Codec().encode(account.value!.data[0]) as Uint8Array;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const key = (offset: number) =>
+    getAddressDecoder().decode(data.subarray(offset, offset + 32));
+  return {
+    status: data[3],
+    deposit: view.getBigUint64(12, true),
+    settled: view.getBigUint64(20, true),
+    payoutWatermark: view.getBigUint64(28, true),
+    closureStartedAt: view.getBigInt64(36, true),
+    payer: key(88),
+    payee: key(120),
+    authorizedSigner: key(152),
+    rentPayer: key(216),
+  };
+}
+
+// Pays `requests` times, then redeems or refunds per `batchFlow`, and checks
+// the result line against the chain: the channel's seats, its escrow and
+// watermarks, and payTo's balance after a redeem.
+async function runBatchPair(
+  surfnet: Surfnet,
+  serverImplementation: (typeof serverImplementations)[number],
+  clientImplementation: (typeof clientImplementations)[number],
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+): Promise<void> {
+  if (!batchKeys) {
+    throw new Error("batch-settlement keys were not initialized");
+  }
+  const flow = scenario.batchFlow ?? "basic";
+  const requests = 3;
+  const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
+  const payToBefore = await getTokenBalance(
+    surfnet,
+    batchKeys.payTo,
+    scenario.asset,
+    tokenProgram,
+  );
+
+  const server = await startServer(serverImplementation, scenarioEnv);
+  runningServers.push(server);
+  const targetUrl = `http://127.0.0.1:${server.ready.port}${scenario.resourcePath}`;
+  const result = await runClient(clientImplementation, targetUrl, {
+    ...scenarioEnv,
+    X402_HARNESS_TARGET_URL: targetUrl,
+  });
+  const payload = JSON.stringify(result, null, 2);
+  expect(result.ok, payload).toBe(true);
+  expect(result.status, payload).toBe(200);
+
+  const body = result.responseBody as BatchResultBody;
+  const kinds =
+    flow === "top-up"
+      ? ["deposit", "topUp", "voucher"]
+      : flow === "server-signed"
+        ? ["deposit", "authorization", "authorization"]
+        : ["deposit", "voucher", "voucher"];
+  expect(body.flow).toBe(flow);
+  expect(
+    body.requests.map((request) => request.kind),
+    payload,
+  ).toEqual(kinds);
+  expect(body.requests.every((request) => request.error === null)).toBe(true);
+  const perRequest = BigInt(scenario.actualAmount ?? scenario.amount);
+  const charged = perRequest * BigInt(requests);
+  expect(body.requests.at(-1)?.chargedCumulativeAmount).toBe(String(charged));
+  expect(typeof result.settlement).toBe("string");
+  expect(result.settlement).toBe(body.openSignature);
+
+  const redeems = flow === "redeem" || flow === "server-signed";
+  if (redeems) {
+    expect(body.redeem?.status, payload).toBe(200);
+  }
+  if (flow === "refund") {
+    expect(body.refund?.status, payload).toBe(200);
+    expect(body.refund?.body).toBe("channel close initiated");
+  }
+
+  expect(body.channelId).toBeTruthy();
+  const channel = await readBatchChannel(surfnet, body.channelId!);
+  expect(channel.payer, "channel payer").toBe(batchKeys.client);
+  expect(channel.payee, "payee is the fee payer").toBe(batchKeys.feePayer);
+  expect(channel.rentPayer, "rent payer is the fee payer").toBe(
+    batchKeys.feePayer,
+  );
+  expect(channel.authorizedSigner, "authorized signer").toBe(
+    flow === "server-signed" ? batchKeys.operator : batchKeys.client,
+  );
+  expect(channel.deposit, "escrow").toBe(
+    BigInt(scenario.amount) * BigInt(requests),
+  );
+  if (flow === "refund") {
+    // The server claims what it charged, then starts the payer's close.
+    expect(channel.status).toBe(CHANNEL_STATUS_CLOSING);
+    expect(channel.settled).toBe(charged);
+    expect(channel.closureStartedAt > 0n).toBe(true);
+  } else {
+    expect(channel.status).toBe(CHANNEL_STATUS_OPEN);
+    expect(channel.settled).toBe(redeems ? charged : 0n);
+    expect(channel.payoutWatermark).toBe(redeems ? charged : 0n);
+  }
+
+  const payToAfter = await getTokenBalance(
+    surfnet,
+    batchKeys.payTo,
+    scenario.asset,
+    tokenProgram,
+  );
+  expect(payToAfter - payToBefore, "payTo delta").toBe(
+    redeems ? charged : 0n,
+  );
 }

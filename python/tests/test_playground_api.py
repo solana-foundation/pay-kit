@@ -42,6 +42,8 @@ def test_discovery_advertises_offers(client: TestClient) -> None:
     summarize_offers = doc["paths"]["/api/v1/summarize"]["post"]["x-payment-info"]["offers"]
     assert summarize_offers[0]["scheme"] == "upto"
     assert summarize_offers[0]["intent"] == "usage"
+    tick_offers = doc["paths"]["/api/v1/tick"]["get"]["x-payment-info"]["offers"]
+    assert tick_offers[0]["scheme"] == "batch-settlement" and tick_offers[0]["method"] == "x402"
 
 
 def test_docs_index_is_free(client: TestClient) -> None:
@@ -82,3 +84,17 @@ def test_summarize_route_challenges_with_upto(client: TestClient) -> None:
     assert extra["withdrawDelay"] == 900
     assert "assetTransferMethod" not in extra
     assert "facilitatorAddress" not in extra
+
+
+def test_tick_route_challenges_with_batch_settlement(client: TestClient) -> None:
+    """The batch-settlement route challenges before the handler runs.
+
+    x402-only, so the challenge is the ``payment-required`` header, and its
+    single accept is the client-signed one (no operator key is configured).
+    """
+    resp = client.get("/api/v1/tick")
+    assert resp.status_code == 402
+    assert any(k.lower() == "payment-required" for k in resp.headers)
+    accepts = resp.json()["accepts"]
+    assert [accept["scheme"] for accept in accepts] == ["batch-settlement"]
+    assert "voucherSigner" not in accepts[0]["extra"] and accepts[0]["extra"]["withdrawDelay"] >= 900

@@ -7,11 +7,15 @@ license = "MIT"
 publish = false
 
 [dependencies]
-solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client"] }
+solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client", "axum"] }
+# The batch-settlement server bin mounts the PayKit axum gate.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 serde_json = "1"
 base64 = "0.22"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
+# Surfaces the batch gate's verification warnings on stderr.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # RPC and transaction types are imported by their own crate names.
 solana-rpc-client = { version = "4.1", default-features = false }
 solana-transaction = { version = "~4.1", default-features = false }
@@ -39,3 +43,11 @@ path = "src/bin/x402_harness_upto_client.rs"
 [[bin]]
 name = "x402_harness_upto_server"
 path = "src/bin/x402_harness_upto_server.rs"
+
+[[bin]]
+name = "x402_harness_batch_client"
+path = "src/bin/x402_harness_batch_client.rs"
+
+[[bin]]
+name = "x402_harness_batch_server"
+path = "src/bin/x402_harness_batch_server.rs"

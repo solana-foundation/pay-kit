@@ -3,12 +3,29 @@ import { chargeScenarios } from "./intents/charge";
 import { sessionScenarios } from "./intents/session";
 import { x402ExactScenarios } from "./intents/x402-exact";
 import { x402UptoScenarios } from "./intents/x402-upto";
+import { x402BatchSettlementScenarios } from "./intents/x402-batch-settlement";
 
 export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
-export type HarnessIntent = "charge" | "x402-exact" | "session" | "x402-upto";
+export type HarnessIntent =
+  | "charge"
+  | "x402-exact"
+  | "session"
+  | "x402-upto"
+  | "x402-batch-settlement";
+
+// What an x402 `batch-settlement` client does after paying its requests
+// (`X402_HARNESS_BATCH_FLOW`). `server-signed` and `untrusted-fallback` are
+// Python-only.
+export type BatchFlow =
+  | "basic"
+  | "top-up"
+  | "redeem"
+  | "refund"
+  | "server-signed"
+  | "untrusted-fallback";
 
 export type HarnessScenarioSplit = {
   recipientKey: string;
@@ -37,6 +54,8 @@ export type HarnessScenario = {
   // Optional metered amount for usage (`x402-upto`) scenarios. When omitted,
   // settlement assertions use `amount` as the final settled delta.
   actualAmount?: string;
+  // Required for `x402-batch-settlement` scenarios: the client flow.
+  batchFlow?: BatchFlow;
   // The literal value the harness sends to each adapter as
   // `MPP_HARNESS_MINT`. In `pubkey` mode (default) this is a 32+ char
   // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol
@@ -167,6 +186,7 @@ export const harnessScenarios: readonly HarnessScenario[] = [
   ...x402ExactScenarios,
   ...sessionScenarios,
   ...x402UptoScenarios,
+  ...x402BatchSettlementScenarios,
 ];
 
 export const harnessScenario: HarnessScenario = {

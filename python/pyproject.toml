@@ -15,6 +15,9 @@ dependencies = [
     "solana>=0.35",
     "pydantic>=2",
     "pydantic-settings>=2",
+    # The batch-settlement wire TypedDicts are validated by pydantic, which
+    # needs typing_extensions.TypedDict on Python < 3.12.
+    "typing-extensions>=4.6",
     # Required by the codama-py generated payment-channels client
     # (solana_pay_kit/protocols/programs/paymentchannels).
     "anchorpy>=0.21",
@@ -102,8 +105,22 @@ strict = [
     "src/solana_pay_kit/protocols/x402/upto/__init__.py",
     "src/solana_pay_kit/protocols/x402/upto/types.py",
     "src/solana_pay_kit/protocols/x402/upto/verify.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/__init__.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/errors.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/types.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/signatures.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/verify.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/tx_policy.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/store.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/onchain.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/engine.py",
+    "src/solana_pay_kit/protocols/x402/batch_settlement/redemption.py",
     "src/solana_pay_kit/protocols/x402/client/upto/__init__.py",
     "src/solana_pay_kit/protocols/x402/client/upto/payment.py",
+    "src/solana_pay_kit/protocols/x402/client/batch_settlement/__init__.py",
+    "src/solana_pay_kit/protocols/x402/client/batch_settlement/payment.py",
+    "src/solana_pay_kit/protocols/x402/client/batch_settlement/transport.py",
+    "src/solana_pay_kit/protocols/x402/client/batch_settlement/trust.py",
 ]
 reportMissingTypeStubs = false
 include = ["src", "tests"]

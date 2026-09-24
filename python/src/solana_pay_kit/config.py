@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import warnings
 from collections.abc import Mapping
+from decimal import ROUND_FLOOR, Decimal
 from typing import Annotated, Any, Literal, Self
 
 import pydantic
@@ -35,6 +37,7 @@ from solana_pay_kit.price import Price
 from solana_pay_kit.signer import LocalSigner, Signer
 
 __all__ = [
+    "BatchSettlementConfig",
     "Config",
     "PayConfig",
     "X402Config",
@@ -91,6 +94,71 @@ def _deprecation_warning_for(key: str, suggestion: str) -> None:
     logger.warning(message)
 
 
+# The scheme's ``withdrawDelay`` bounds (batch_settlement.types.MIN/MAX_WITHDRAW_DELAY_SECONDS);
+# kept here so importing config never loads the protocol package.
+_BATCH_MIN_WITHDRAW_DELAY = 900
+_BATCH_MAX_WITHDRAW_DELAY = 2_592_000
+_ATOMIC_AMOUNT = re.compile(r"[0-9]+")
+_USD_AMOUNT = re.compile(r"\$[0-9]+(\.[0-9]+)?")
+_STABLECOIN_DECIMALS = 6
+
+
+class BatchSettlementConfig(pydantic.BaseModel):
+    """Server knobs for x402 ``batch-settlement``; frozen, unknown keys refused."""
+
+    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
+
+    #: Forced-close grace period advertised as ``withdrawDelay``; ``None`` = ``max(900, max_timeout_seconds)``.
+    withdraw_delay: int | None = None
+    #: HTTP completion window advertised as ``maxTimeoutSeconds``.
+    max_timeout_seconds: int = 300
+    #: Receiver-authorizer key advertised as ``extra.receiverAuthorizer``; omitted when ``None``.
+    receiver_authorizer: str | None = None
+    #: How long a channel snapshot read from chain lets vouchers verify without another read.
+    onchain_state_ttl_seconds: int = 30
+    #: Operator key that signs vouchers for metered requests; enables the server-signed accept.
+    operator: LocalSigner | None = None
+    #: ``extra.minDeposit`` override: atomic units, or ``"$x"`` (USD, floored to atomic units).
+    min_deposit: str | None = None
+    #: Refuse a ``deposit`` below the advertised ``minDeposit`` (``deposit_below_min_deposit``).
+    enforce_min_deposit: bool = False
+    #: Receiver-authorizer key that signs ``CloseAuthorization``s for a seal; ``None`` = the fee payer.
+    close_authorizer: LocalSigner | None = None
+    #: Seal an open channel idle this long (with its latest voucher), advertised as ``maxIdleSecs``; ``None`` = never.
+    max_idle_secs: int | None = None
+    #: Channels per claim or distribute transaction; clamped to ``1..=4``.
+    max_channels_per_batch: int = 4
+
+    @pydantic.model_validator(mode="after")
+    def _check_delay(self) -> BatchSettlementConfig:
+        units = self.min_deposit_units()
+        if units is not None and units <= 0:
+            raise ConfigurationError(f"batch min_deposit {self.min_deposit!r} must be a positive amount")
+        delay = self.effective_withdraw_delay()
+        if self.max_timeout_seconds <= 0 or not _BATCH_MIN_WITHDRAW_DELAY <= delay <= _BATCH_MAX_WITHDRAW_DELAY:
+            raise ConfigurationError(f"batch withdraw_delay {delay} is outside 900..=2592000 seconds")
+        if delay < self.max_timeout_seconds:
+            raise ConfigurationError(f"batch withdraw_delay {delay} is shorter than max_timeout_seconds")
+        return self
+
+    def effective_withdraw_delay(self) -> int:
+        """The advertised grace period."""
+        if self.withdraw_delay is not None:
+            return self.withdraw_delay
+        return max(_BATCH_MIN_WITHDRAW_DELAY, self.max_timeout_seconds)
+
+    def min_deposit_units(self) -> int | None:
+        """``min_deposit`` in atomic units: ``"123"`` as is, ``"$1.5"`` as USD (6 decimals, floored)."""
+        value = self.min_deposit
+        if value is None:
+            return None
+        if _ATOMIC_AMOUNT.fullmatch(value):
+            return int(value)
+        if _USD_AMOUNT.fullmatch(value):
+            return int((Decimal(value[1:]) * 10**_STABLECOIN_DECIMALS).to_integral_value(rounding=ROUND_FLOOR))
+        raise ConfigurationError(f"batch min_deposit {value!r} must be atomic units or a USD amount like '$1.50'")
+
+
 class X402Config(pydantic.BaseModel):
     """x402-protocol knobs: facilitator delegation, scheme, and signer override."""
 
@@ -99,6 +167,8 @@ class X402Config(pydantic.BaseModel):
     facilitator_url: str | None = None
     scheme: Literal["exact"] = "exact"
     signer: LocalSigner | None = None
+    #: ``batch-settlement`` server knobs; ``None`` uses the :class:`BatchSettlementConfig` defaults.
+    batch: BatchSettlementConfig | None = None
 
     def is_delegated(self) -> bool:
         """``True`` when a non-empty facilitator URL routes verify/settle off-host."""

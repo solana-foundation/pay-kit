@@ -36,6 +36,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError("solana_pay_kit.fastapi requires FastAPI; install with 'solana_pay_kit[fastapi]'") from exc
 
+import logging
 import weakref
 
 from starlette.routing import Match
@@ -44,7 +45,14 @@ from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, payment
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
-from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
+from solana_pay_kit.usage import (
+    CHARGE_ATTR,
+    Charge,
+    batch_challenge,
+    fetch_recent_blockhash_and_slot,
+    finalize_batch,
+    finalize_usage,
+)
 
 if TYPE_CHECKING:
     from solana_pay_kit.config import Config, PayConfig
@@ -52,9 +60,12 @@ if TYPE_CHECKING:
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
     from solana_pay_kit.protocols.mpp.server import Session, SessionChallengeOptions
+    from solana_pay_kit.protocols.x402.batch_settlement.engine import X402BatchSettlement
+    from solana_pay_kit.protocols.x402.batch_settlement.types import BatchRequirements, VoucherSigner
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
 __all__ = [
+    "RequireBatch",
     "RequirePayment",
     "RequireSession",
     "RequireUsage",
@@ -73,6 +84,11 @@ __all__ = [
 #: ``(engine, verified, charge, gate)`` set by :func:`RequireUsage` and drained
 #: by the usage-settlement middleware after the handler returns.
 _USAGE_STATE_ATTR = "paykit_usage_pending"
+
+#: Request-state attribute holding a pending ``batch-settlement`` commit
+#: ``(engine, verified, charge, gate)`` set by :func:`RequireBatch` and drained
+#: by the batch middleware after the handler returns.
+_BATCH_STATE_ATTR = "paykit_batch_pending"
 
 #: App-state marker set by :func:`install_exception_handler` once the usage
 #: settle-after middleware is registered. :func:`RequireUsage` checks it and
@@ -106,6 +122,8 @@ def _upto_engine(config: Config) -> X402Upto:
 
 #: Header that carries each settlement header's name through the response hook.
 _SETTLEMENT_STATE_ATTR = "paykit_settlement_headers"
+logger = logging.getLogger("solana_pay_kit")
+
 
 GateRef = "Gate | DynamicGate | Price | str | Callable[[Request], Gate]"
 
@@ -288,6 +306,75 @@ def RequireUsage(  # noqa: N802 - factory reads as a dependency constructor
     return dependency
 
 
+def RequireBatch(  # noqa: N802 - factory reads as a dependency constructor
+    gate_ref: Gate | Callable[[Request], Gate],
+    *,
+    config: Config | None = None,
+    voucher_signer: VoucherSigner | None = None,
+) -> Callable[..., Any]:
+    """Build a FastAPI dependency that gates a route behind x402 ``batch-settlement``.
+
+    On a missing or invalid payment it raises ``HTTPException`` carrying the
+    402 challenge (with the corrective state when the client's cumulative is
+    stale). On success it reserves the request's price on the channel and
+    returns a :class:`~solana_pay_kit.usage.Charge`; the batch middleware
+    commits after a 2xx handler and releases the reservation otherwise.
+    Server-signed requests are metered: the handler MUST call
+    ``charge.charge(actual)`` (``0`` is allowed), else the body is withheld.
+    A refund is answered here and the handler never runs.
+    ``voucher_signer`` pins the route to one mode.
+    """
+
+    async def dependency(request: Request) -> Charge:
+        from solana_pay_kit.gate import Gate as _Gate
+        from solana_pay_kit.protocols.x402.batch_settlement import batch_engine
+        from solana_pay_kit.protocols.x402.batch_settlement.engine import CorrectiveRequired, VerifiedBatchRequest
+
+        # Without the middleware the reservation would never be committed.
+        if not getattr(request.app.state, _USAGE_READY_ATTR, False):
+            raise RuntimeError(
+                "solana_pay_kit.fastapi.RequireBatch needs the settlement middleware; "
+                "call solana_pay_kit.fastapi.install(app) or install_exception_handler(app) at startup."
+            )
+        engine = batch_engine(config if config is not None else _config())
+        gate = gate_ref if isinstance(gate_ref, _Gate) else gate_ref(request)
+        if not engine.detect_batch(request):
+            raise _http_exception(_batch_challenge(engine, gate, request, voucher_signer))
+        try:
+            verified = await engine.verify_and_reserve(gate, request, voucher_signer=voucher_signer)
+        except CorrectiveRequired as exc:
+            raise _http_exception(_batch_challenge(engine, gate, request, voucher_signer, exc, exc.accepts)) from exc
+        except InvalidProofError as exc:
+            raise _http_exception(_batch_challenge(engine, gate, request, voucher_signer, exc)) from exc
+        if not isinstance(verified, VerifiedBatchRequest):
+            # A refund is a payment-control operation: the handler is bypassed.
+            raise HTTPException(200, detail="channel close initiated", headers=engine.settlement_headers(verified))
+        charge = Charge(verified.ceiling)
+        setattr(request.state, CHARGE_ATTR, charge)
+        setattr(request.state, _BATCH_STATE_ATTR, (engine, verified, charge, gate))
+        return charge
+
+    return dependency
+
+
+def _batch_challenge(
+    engine: X402BatchSettlement,
+    gate: Gate,
+    request: Request,
+    voucher_signer: VoucherSigner | None,
+    exc: InvalidProofError | None = None,
+    accepts: list[BatchRequirements] | None = None,
+) -> PaymentRequiredError:
+    """A 402 carrying the ``batch-settlement`` challenge, its error code and any corrective accepts."""
+    headers, body = batch_challenge(
+        engine, gate, request, request.url.path, voucher_signer=voucher_signer, error=exc, accepts=accepts
+    )
+    err = PaymentRequiredError("solana_pay_kit: payment required")
+    err.challenge_headers = headers  # type: ignore[attr-defined]
+    err.body = body  # type: ignore[attr-defined]
+    return err
+
+
 def _usage_challenge(
     engine: X402Upto,
     gate: Gate,
@@ -303,7 +390,7 @@ def _usage_challenge(
     }
     if exc is not None:
         body["code"] = exc.code or "invalid_proof"
-        body["message"] = str(exc)
+        logger.warning("solana_pay_kit: refused an x402 upto credential: %s", exc)
     err.challenge_headers = engine.challenge_headers(gate, request)  # type: ignore[attr-defined]
     err.body = body  # type: ignore[attr-defined]
     return err
@@ -528,8 +615,9 @@ def install_exception_handler(app: Any) -> None:
         engine, verified, charge, gate = pending
         outcome = await finalize_usage(engine, verified, charge)
         if not outcome.ok:
+            logger.warning("solana_pay_kit: withholding an x402 upto body: %s", outcome.detail)
             return JSONResponse(
-                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                {"error": "payment_required", "code": outcome.code},
                 status_code=outcome.status,
                 headers=engine.challenge_headers(gate, request),
             )
@@ -537,7 +625,45 @@ def install_exception_handler(app: Any) -> None:
             response.headers[name] = value
         return response
 
-    # Mark the app so RequireUsage knows the settle-after middleware is live.
+    @app.middleware("http")
+    async def _paykit_batch_commit(  # pyright: ignore[reportUnusedFunction]  # registered via @app.middleware
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        import contextlib
+
+        from fastapi.responses import JSONResponse
+
+        try:
+            response = await call_next(request)
+        except BaseException:
+            pending = getattr(request.state, _BATCH_STATE_ATTR, None)
+            if pending is not None:
+                setattr(request.state, _BATCH_STATE_ATTR, None)
+                # A failed handler charges nothing; the reservation also expires on its own.
+                with contextlib.suppress(Exception):
+                    await pending[0].release(pending[1])
+            raise
+        pending = getattr(request.state, _BATCH_STATE_ATTR, None)
+        if pending is None:
+            return response
+        setattr(request.state, _BATCH_STATE_ATTR, None)
+        engine, verified, charge, gate = pending
+        if not 200 <= response.status_code < 300:
+            await engine.release(verified)
+            return response
+        outcome = await finalize_batch(engine, verified, charge)
+        if not outcome.ok:
+            logger.warning("solana_pay_kit: withholding a batch-settlement body: %s", outcome.detail)
+            return JSONResponse(
+                {"error": "payment_required", "code": outcome.code},
+                status_code=outcome.status,
+                headers=engine.challenge_headers(gate, request, error=outcome.code),
+            )
+        for name, value in outcome.settlement_headers.items():
+            response.headers[name] = value
+        return response
+
+    # Mark the app so RequireUsage and RequireBatch know the settle-after middleware is live.
     if hasattr(app, "state"):
         setattr(app.state, _USAGE_READY_ATTR, True)
 
@@ -635,7 +761,8 @@ def _http_exception(exc: PayKitError) -> HTTPException:
         detail = cast("dict[str, Any]", body)
     else:
         code = getattr(exc, "code", None)
-        detail = {"error": code or "payment_error", "message": str(exc)}
+        logger.warning("solana_pay_kit: refusing a request: %s", exc)
+        detail = {"error": code or "payment_error"}
 
     return HTTPException(
         status_code=status,

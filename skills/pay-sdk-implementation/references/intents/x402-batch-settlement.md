@@ -1,7 +1,11 @@
 # `x402/batch-settlement`
 
-**Status: implemented in the public references.** This scheme serves requests
-against cumulative off-chain vouchers and redeems them on chain in batches.
+**Status: implemented in Rust and Python, with cross-language harness
+coverage.** This scheme serves requests against cumulative off-chain vouchers
+and redeems them on chain in batches. The harness intent
+`x402-batch-settlement` runs the client-signed basic, top-up, redeem and refund
+flows across every Python and Rust client/server pair on the payment-channels
+program; the server-signed (operator) mode is Python-to-Python only.
 
 Spec: <https://x402.org>
 
@@ -13,6 +17,14 @@ Spec: <https://x402.org>
 - Server lifecycle and batch redemption:
   `rust/crates/kit/src/x402/server/batch_settlement.rs`
 - Rust public usage: the batch-settlement section in `rust/README.md`
+- Python: `python/src/solana_pay_kit/protocols/x402/batch_settlement/` (server
+  engine, stores, redemption worker) and
+  `python/src/solana_pay_kit/protocols/x402/client/batch_settlement/` (client,
+  trust policy, httpx transport); framework wiring is `require_batch`
+- Harness adapters: `rust/crates/harness-bins/src/bin/x402_harness_batch_*.rs`,
+  `harness/python-x402-batch-client/`, and the batch branch of
+  `harness/python-server/server.py`; conformance vectors in
+  `harness/vectors/x402-batch-settlement.json`
 - Current harness coverage status: `harness/README.md` and
   `harness/test/intent-selection.test.ts`
 
@@ -28,8 +40,9 @@ before defining scope.
 3. Add persistent state with atomic compare-and-set semantics.
 4. Add client voucher generation and server-side off-chain acceptance.
 5. Add idempotent batch redemption and distribution.
-6. Add a scoped batch-settlement harness intent and scenarios before claiming
-   cross-language compatibility; the current harness rejects that selector.
+6. Register the new adapters for the `x402-batch-settlement` harness intent
+   (same env contract and result line as the Rust bins) before claiming
+   cross-language compatibility.
 
 ## Guardrails
 
@@ -44,9 +57,11 @@ before defining scope.
 
 ## Transaction versions
 
-Solana message versions `0` and `1` (SIMD-0385) are accepted; legacy
-messages are rejected before any instruction is inspected. The server
-advertises the versions it accepts as `transactionVersions` (an array of
+Solana message versions `0` and `1` (SIMD-0385) are accepted. A legacy
+(unprefixed) message is deprecated: it is never advertised and no pay-kit
+client builds one, but servers keep accepting it from existing clients and
+police it as version 0 (same 1232-byte limit, ComputeBudget instructions in
+the body, no address lookup tables). The server advertises the versions it accepts as `transactionVersions` (an array of
 `0` and/or `1`) — in MPP `methodDetails`, in x402 `extra` — and omits the
 field when it accepts version 0 only. Clients build the highest advertised
 version, `0` when the field is absent, and never use address lookup

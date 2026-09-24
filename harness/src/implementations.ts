@@ -281,6 +281,37 @@ export const clientImplementations: ImplementationDefinition[] = [
     reportsAs: "rust",
   },
   {
+    id: "rust-x402-batch",
+    label: "Rust x402 batch-settlement client",
+    role: "client",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "x402_harness_batch_client",
+    ],
+    enabled: isEnabled("rust-x402-batch", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-batch-settlement"],
+    reportsAs: "rust",
+  },
+  {
+    id: "python-x402-batch",
+    label: "Python pay_kit x402 batch-settlement client",
+    role: "client",
+    // Same env contract and result line as the Rust batch client, plus the
+    // Python-only server-signed / untrusted-fallback flows. Opt in via
+    // `X402_HARNESS_CLIENTS=python-x402-batch`.
+    command: ["python3", "python-x402-batch-client/main.py"],
+    enabled: isEnabled("python-x402-batch", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-batch-settlement"],
+    reportsAs: "python",
+  },
+  {
     id: "python-x402-upto",
     label: "Python pay_kit x402 upto client",
     role: "client",
@@ -513,6 +544,43 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("python-x402-upto", "X402_HARNESS_SERVERS", false),
     intents: ["x402-upto"],
+    reportsAs: "python",
+  },
+  {
+    id: "rust-x402-batch",
+    label: "Rust x402 batch-settlement server",
+    role: "server",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "x402_harness_batch_server",
+    ],
+    enabled: isEnabled("rust-x402-batch", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-batch-settlement"],
+    reportsAs: "rust",
+  },
+  {
+    id: "python-x402-batch",
+    label: "Python PayKit x402 batch-settlement server",
+    role: "server",
+    // Same umbrella server as `python`; PAY_KIT_HARNESS_PROTOCOL=x402-batch
+    // mounts the batch route plus the test-only redeem route.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-server/server.py",
+    ],
+    enabled: isEnabled("python-x402-batch", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-batch-settlement"],
     reportsAs: "python",
   },
 ];

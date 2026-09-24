@@ -12,6 +12,7 @@ Routes:
 - `GET  /api/v1/joke`           MPP charge with a platform split (x402 auto-disabled).
 - `GET  /api/v1/stream`         MPP session: open a channel, stream metered SSE deliveries.
 - `POST /api/v1/summarize`     x402 `upto`: authorize a ceiling, bill metered tokens.
+- `GET  /api/v1/tick`          x402 `batch-settlement`: one channel, many cheap requests.
 - `GET  /sessions/receipt/{id}` poll a session channel's settle status (out-of-band settlement).
 - `GET  /api/v1/docs[...]`      unpaid SDK reference markdown (when generated).
 - `POST /api/v1/faucet/airdrop` localnet-only USDC faucet for client wallets.
@@ -22,6 +23,14 @@ The session side-channel (`POST /__402/session/deliveries` and `/commit`) is
 mounted for the metered-voucher flow.
 
 The x402 `upto` usage gate is served at `POST /api/v1/summarize` (mirrors the TS playground). The MPP `subscription` gate (TS `/api/v1/feed`) is left out: the Python SDK does not ship that gate kind yet.
+
+`GET /api/v1/tick` is the x402 `batch-settlement` gate: the client escrows once
+in a payment channel and then pays each tick with a cumulative voucher, which
+the server verifies off chain and redeems in batches. Client-signed by default;
+set `PAY_KIT_BATCH_OPERATOR_SECRET_KEY` to a JSON keypair array and the route
+also offers the metered server-signed accept, where the handler reports the
+amount. Redemption is a server job, not part of this example: run
+`solana_pay_kit.x402_batch()` on a schedule to claim and distribute.
 
 Run:
 
@@ -38,4 +47,5 @@ Drive it:
 curl -i http://127.0.0.1:3000/api/v1/fortune     # 402 payment required
 pay curl http://127.0.0.1:3000/api/v1/fortune    # pays and succeeds
 curl -i -X POST http://127.0.0.1:3000/api/v1/summarize  # 402 x402 upto challenge
+curl -i http://127.0.0.1:3000/api/v1/tick               # 402 batch-settlement challenge
 ```

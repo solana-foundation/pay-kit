@@ -10,6 +10,7 @@ Python SDK ships today.
     GET  /api/v1/joke             MPP charge with a platform split (x402 auto-off)
     GET  /api/v1/stream           MPP session: open a channel, stream metered SSE
     POST /api/v1/summarize        x402 upto: authorize a ceiling, bill metered tokens
+    GET  /api/v1/tick             x402 batch-settlement: one channel, many cheap requests
     GET  /api/v1/docs[...]        unpaid SDK reference (docs.py)
     POST /api/v1/faucet/airdrop   localnet-only USDC faucet (sandbox.py)
     GET  /openapi.json            OpenAPI 3.1 discovery (x-payment-info offers)
@@ -29,6 +30,7 @@ Drive it:
     curl -i http://127.0.0.1:3000/api/v1/fortune     # 402 payment required
     pay curl http://127.0.0.1:3000/api/v1/fortune     # pays and succeeds
     curl -i -X POST http://127.0.0.1:3000/api/v1/summarize  # 402 x402 upto challenge
+    curl -i http://127.0.0.1:3000/api/v1/tick               # 402 batch-settlement challenge
 """
 
 from __future__ import annotations
@@ -41,17 +43,25 @@ from fastapi import Depends, FastAPI, Request
 import solana_pay_kit
 from solana_pay_kit import Gate, Pricing, usd
 from solana_pay_kit._paycore.protocol import Protocol
-from solana_pay_kit.fastapi import Charge, Payment, RequirePayment, RequireUsage, install
+from solana_pay_kit.config import BatchSettlementConfig, X402Config
+from solana_pay_kit.fastapi import Charge, Payment, RequireBatch, RequirePayment, RequireUsage, install
+from solana_pay_kit.signer import Signer
 
 from . import discovery
 from .docs import register_docs
 from .sandbox import fund_sandbox, fund_usdc, register_faucet
+
+#: A batch-settlement operator key (a JSON keypair array) turns on the metered
+#: server-signed accept; without it the route is client-signed only, like the
+#: harness server's X402_HARNESS_OPERATOR_SECRET_KEY knob.
+_BATCH_OPERATOR = os.getenv("PAY_KIT_BATCH_OPERATOR_SECRET_KEY")
 
 solana_pay_kit.configure(
     network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"),
     # Point at a specific Solana RPC (e.g. a local surfnet) when set; otherwise
     # the network default is used. Mirrors the TS playground's RPC_URL knob.
     rpc_url=os.getenv("PAY_KIT_RPC_URL") or None,
+    x402=X402Config(batch=BatchSettlementConfig(operator=Signer.json(_BATCH_OPERATOR) if _BATCH_OPERATOR else None)),
 )
 
 # Imported after configure() so the session method builds from the resolved
@@ -109,11 +119,23 @@ require_summarize = Depends(RequireUsage(summarize_gate))
 #: Base units billed per summarized token (matches the TS playground).
 PRICE_PER_TOKEN = 100
 
+# x402 `batch-settlement` gate (GET /api/v1/tick): one escrow channel pays for a
+# long run of cheap requests, each carrying a cumulative voucher.
+tick_gate = Gate.build(
+    name="tick",
+    amount=usd("0.001"),
+    description="Market tick, paid from a batch-settlement channel",
+    default_pay_to=_RECIPIENT,
+    accept=(Protocol.X402,),
+)
+require_tick = Depends(RequireBatch(tick_gate))
+
 JOKES = (
     "Why do programmers prefer dark mode? Because light attracts bugs.",
     'A SQL query walks into a bar, sees two tables, and asks: "Can I JOIN you?"',
     "There are 10 kinds of people: those who understand binary and those who don't.",
 )
+TICKS = ("SOL 184.20", "SOL 184.35", "SOL 183.90", "SOL 185.05")
 FORTUNES = (
     "A smooth long journey! Great expectations.",
     "Your code will compile on the first try today.",
@@ -167,6 +189,18 @@ async def summarize(request: Request, charge: Charge = require_summarize) -> dic
     billed = tokens * PRICE_PER_TOKEN
     charge.charge(billed)
     return {"billedBaseUnits": str(billed), "summarizedBytes": len(text), "tokens": str(tokens)}
+
+
+@app.get("/api/v1/tick")
+async def tick(charge: Charge = require_tick) -> dict[str, object]:
+    """x402 ``batch-settlement``: one more step on the channel this client opened.
+
+    A client-signed request is charged exactly what its voucher covers. With an
+    operator key configured the route also offers the server-signed accept, and
+    those requests are metered here: a tick always costs the full price.
+    """
+    charge.charge(charge.max_base_units)
+    return {"priceBaseUnits": str(charge.max_base_units), "tick": random.choice(TICKS)}
 
 
 @app.get("/api/v1/health")
@@ -234,6 +268,12 @@ _OPENAPI = discovery.build_openapi_document(
             "path": "/api/v1/summarize",
             "summary": summarize_gate.description,
             "offers": [discovery.upto_offer(summarize_gate, _cfg)],
+        },
+        {
+            "method": "GET",
+            "path": "/api/v1/tick",
+            "summary": tick_gate.description,
+            "offers": [discovery.batch_offer(tick_gate, _cfg)],
         },
     ],
 )

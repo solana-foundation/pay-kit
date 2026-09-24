@@ -26,6 +26,12 @@ describe("harness intent selection", () => {
     expect(selectHarnessIntents("x402-upto")).toEqual(["x402-upto"]);
   });
 
+  it("accepts the implemented x402-batch-settlement intent", () => {
+    expect(selectHarnessIntents("x402-batch-settlement")).toEqual([
+      "x402-batch-settlement",
+    ]);
+  });
+
   it("accepts all intents at once", () => {
     expect(selectHarnessIntents("charge,x402-exact,session,x402-upto")).toEqual([
       "charge",
@@ -93,6 +99,24 @@ describe("harness scenario selection", () => {
         (scenario) => scenario.id,
       ),
     ).toEqual(["x402-upto-basic", "x402-upto-zero-actual"]);
+  });
+
+  it("returns x402-batch-settlement scenarios when explicitly requested", () => {
+    const scenarios = selectHarnessScenarios("x402-batch-settlement", undefined);
+    expect(scenarios.map((scenario) => [scenario.id, scenario.batchFlow])).toEqual([
+      ["x402-batch-basic", "basic"],
+      ["x402-batch-top-up", "top-up"],
+      ["x402-batch-redeem", "redeem"],
+      ["x402-batch-refund", "refund"],
+      ["x402-batch-server-signed", "server-signed"],
+      ["x402-batch-untrusted-fallback", "untrusted-fallback"],
+    ]);
+    // The Rust bins sign client vouchers only: the server-signed flows are
+    // pinned to the Python adapters.
+    for (const scenario of scenarios.slice(4)) {
+      expect(scenario.clientIds).toEqual(["python-x402-batch"]);
+      expect(scenario.serverIds).toEqual(["python-x402-batch"]);
+    }
   });
 
   it("runs one requested scenario", () => {

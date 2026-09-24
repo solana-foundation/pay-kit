@@ -12,6 +12,8 @@ This module intentionally implements only the methods the server needs:
 * ``send_raw_transaction``
 * ``get_signature_statuses``
 * ``get_transaction``
+* ``simulate_transaction``, ``get_multiple_accounts`` and
+  ``get_program_accounts`` (x402 ``batch-settlement``)
 
 For anything else, callers can continue to use ``solana.rpc.async_api``.
 """
@@ -21,7 +23,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 import httpx
 
@@ -30,6 +33,13 @@ from solana_pay_kit._paycore.errors import PaymentError
 
 class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
+
+
+class MalformedAccountError(_RpcError):
+    """``getAccountInfo`` answered with an account object this client cannot
+    read: no non-empty ``owner`` string, or a ``data`` field of an unexpected
+    shape. The account is VISIBLE, so this is an answer and not replica lag -
+    callers must fail on it rather than re-read."""
 
 
 class _RpcResponse:
@@ -70,6 +80,25 @@ class _BlockhashValue:
 
     def __init__(self, blockhash: str) -> None:
         self.blockhash = blockhash
+
+
+#: ``getMultipleAccounts`` address cap per request (Solana JSON-RPC limit).
+_MAX_MULTIPLE_ACCOUNTS = 100
+
+
+def _decode_account(value: Any) -> tuple[bytes, str]:
+    """Decode one RPC account object into ``(data, owner)``, raising :class:`MalformedAccountError` when unreadable."""
+    owner = value.get("owner") if isinstance(value, dict) else None
+    if not isinstance(owner, str) or not owner:
+        raise MalformedAccountError("RPC returned an account with no owner", code="payment_invalid")
+    data_field = value.get("data")
+    encoded = data_field[0] if isinstance(data_field, list) and data_field else data_field
+    if not isinstance(encoded, str):
+        raise MalformedAccountError("RPC returned an account with an unreadable data field", code="payment_invalid")
+    try:
+        return base64.b64decode(encoded, validate=True), owner
+    except ValueError as exc:
+        raise MalformedAccountError(f"RPC returned undecodable account data: {exc}", code="payment_invalid") from exc
 
 
 class SolanaRpc:
@@ -132,6 +161,81 @@ class SolanaRpc:
             slot = None
         return _RpcResponse(_BlockhashValue(blockhash), context=_RpcContext(slot))
 
+    async def simulate_transaction(self, raw_tx: bytes, commitment: str = "confirmed") -> dict[str, Any]:
+        """Simulate the exact wire bytes and return the RPC ``value`` object.
+
+        Base64 encoding, signatures unchecked, the transaction's own blockhash
+        kept, as in the Rust ``core::rpc::simulate_transaction``. Callers
+        read ``value["err"]`` (``None`` on success) and ``value["logs"]``.
+        """
+        encoded = base64.b64encode(raw_tx).decode("ascii")
+        result = await self._call(
+            "simulateTransaction",
+            [
+                encoded,
+                {"encoding": "base64", "commitment": commitment, "sigVerify": False, "replaceRecentBlockhash": False},
+            ],
+        )
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, dict):
+            raise _RpcError("simulateTransaction returned no value", code="payment_invalid")
+        return value
+
+    async def get_multiple_accounts(
+        self, addresses: list[str], commitment: str = "confirmed"
+    ) -> list[tuple[bytes, str] | None]:
+        """Fetch ``(data, owner)`` for each address, in order; ``None`` marks an absent account.
+
+        Chunked at the RPC's 100-address cap. A visible account this client
+        cannot read raises :class:`MalformedAccountError`, so ``None`` keeps
+        meaning "not there" and stays the only read a caller may retry.
+        """
+        out: list[tuple[bytes, str] | None] = []
+        for start in range(0, len(addresses), _MAX_MULTIPLE_ACCOUNTS):
+            chunk = addresses[start : start + _MAX_MULTIPLE_ACCOUNTS]
+            result = await self._call("getMultipleAccounts", [chunk, {"encoding": "base64", "commitment": commitment}])
+            values = result.get("value") if isinstance(result, dict) else None
+            if not isinstance(values, list) or len(values) != len(chunk):
+                raise _RpcError("getMultipleAccounts returned a malformed value list", code="payment_invalid")
+            out.extend(None if value is None else _decode_account(value) for value in values)
+        return out
+
+    async def get_program_accounts(
+        self,
+        program_id: str,
+        *,
+        data_size: int,
+        memcmp: list[tuple[int, str]],
+        commitment: str = "confirmed",
+    ) -> list[tuple[str, bytes]]:
+        """Return ``(address, data)`` for every ``program_id`` account of ``data_size`` bytes matching each
+        ``(offset, base58 bytes)`` filter.
+
+        Entries this client cannot read are skipped rather than failing the
+        whole scan: a discovery result is never trusted on its own, and the
+        caller re-derives every address before acting on it.
+        """
+        filters: list[dict[str, Any]] = [{"dataSize": data_size}]
+        filters.extend({"memcmp": {"offset": offset, "bytes": value}} for offset, value in memcmp)
+        result = await self._call(
+            "getProgramAccounts",
+            [program_id, {"encoding": "base64", "commitment": commitment, "filters": filters}],
+        )
+        if not isinstance(result, list):
+            raise _RpcError("getProgramAccounts returned a non-list result", code="payment_invalid")
+        out: list[tuple[str, bytes]] = []
+        for entry in result:
+            address = entry.get("pubkey") if isinstance(entry, dict) else None
+            account = entry.get("account") if isinstance(entry, dict) else None
+            if not isinstance(address, str):
+                continue
+            try:
+                data, _owner = _decode_account(account)
+            except MalformedAccountError:
+                continue
+            out.append((address, data))
+        return out
+
     async def get_slot(self, commitment: str = "confirmed") -> int:
         """Fetch the current slot. Used by SERVERS at challenge-issuance time:
         the program requires ``openSlot <= clock.slot`` with a 1500-slot
@@ -144,6 +248,14 @@ class SolanaRpc:
         if not isinstance(result, int) or result < 0:
             raise _RpcError("getSlot returned a non-integer slot", code="payment_invalid")
         return result
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """Whether a transaction built on ``blockhash`` can still land (``isBlockhashValid``)."""
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, bool):
+            raise _RpcError("isBlockhashValid returned a non-boolean value", code="payment_invalid")
+        return value
 
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
         """Fetch an account's raw data bytes and owner (base58), or ``None`` when
@@ -236,3 +348,70 @@ class SolanaRpc:
             f"timed out awaiting confirmation for {signature}",
             code="transaction-not-found",
         )
+
+
+# -- channel-read replica lag -----------------------------------------------
+
+# An RPC provider can answer getSignatureStatuses and getAccountInfo from
+# different replicas, so an account written by a just-confirmed transaction can
+# still read back MISSING on the replica that serves the follow-up read.
+# Re-reading absorbs that, and only that: an account that is visible but does
+# not say what the caller expected is an answer, not lag.
+#
+# LINEAR backoff, not exponential: replica lag is a small multiple of Solana's
+# ~400ms slot time, so doubling spends the budget on single waits far longer
+# than the lag being absorbed. Six attempts at a 200ms step schedule
+# 200/400/600/800/1000ms - 3.0s total, 1s maximum single wait.
+CHANNEL_READ_ATTEMPTS = 6
+CHANNEL_READ_BACKOFF_STEP_SECONDS = 0.2
+
+_T = TypeVar("_T")
+
+
+def resolve_channel_read_policy(
+    max_attempts: int | None,
+    backoff_step_ms: int | None,
+) -> tuple[int, float]:
+    """Resolve the optional channel-read knobs to ``(attempts, step_seconds)``.
+
+    Unset or non-positive takes the default, so a caller may pass a zero value
+    (an unset field in a language without optionals) without disabling the
+    retry.
+    """
+    attempts = CHANNEL_READ_ATTEMPTS
+    if not isinstance(max_attempts, bool) and isinstance(max_attempts, int) and max_attempts > 0:
+        attempts = max_attempts
+    step_seconds = CHANNEL_READ_BACKOFF_STEP_SECONDS
+    if not isinstance(backoff_step_ms, bool) and isinstance(backoff_step_ms, int) and backoff_step_ms > 0:
+        step_seconds = backoff_step_ms / 1000
+    return attempts, step_seconds
+
+
+async def read_with_replica_retry(
+    read: Callable[[], Awaitable[_T]],
+    attempts: int = CHANNEL_READ_ATTEMPTS,
+    backoff_step_seconds: float = CHANNEL_READ_BACKOFF_STEP_SECONDS,
+) -> _T:
+    """Re-read until the read returns something (``value is not None``).
+
+    The not-yet-visible read is the ONLY lag symptom this absorbs, and there is
+    deliberately no hook to widen it. A visible-but-wrong value is an answer,
+    not lag: it is returned straight away and the caller raises on that first
+    observation. Re-sampling a wrong-but-visible value over the backoff window
+    can only ever flip reject into accept, on state a concurrent writer may
+    have moved in the meantime. Anything ``read`` raises propagates immediately
+    and is never retried.
+
+    The last read is returned as-is once ``attempts`` is exhausted, so the
+    caller keeps its own error for the still-invisible case. Sleeps only
+    *between* attempts: the wait before attempt N+1 is
+    ``backoff_step_seconds * N``, and there is no sleep after the final
+    attempt.
+    """
+    attempt = 1
+    while True:
+        value = await read()
+        if attempt >= attempts or value is not None:
+            return value
+        await asyncio.sleep(backoff_step_seconds * attempt)
+        attempt += 1

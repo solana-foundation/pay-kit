@@ -31,6 +31,9 @@ import json
 import sys
 from typing import Any
 
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+
+from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID, find_channel_pda
 from solana_pay_kit._paycore.solana import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
@@ -53,6 +56,11 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     VoucherData,
 )
 from solana_pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
+from solana_pay_kit.protocols.x402.batch_settlement.signatures import (
+    authorization_message,
+    close_authorization_digest,
+    voucher_message,
+)
 from solana_pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
     build_payment_header,
@@ -639,12 +647,70 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unsupported-mode: {mode}")
 
 
+# ── x402-batch-settlement intent ───────────────────────────────────────────
+#
+# Byte-exact signed-message encodings and the channel PDA, each computed by
+# the production SDK encoder (batch_settlement.signatures and
+# _paycore.paymentchannels.find_channel_pda) and frozen against the x402
+# PR #23 TypeScript encoders.
+
+
+def _run_batch_settlement(vector: dict[str, Any]) -> dict[str, Any]:
+    if vector.get("mode") != "canonical-bytes":
+        raise ValueError(f"unsupported-mode: {vector.get('mode')}")
+    inp = vector.get("input") or {}
+
+    if v := inp.get("batchVoucherMessage"):
+        raw = voucher_message(v["channelId"], int(v["maxClaimableAmount"]), int(v["expiresAt"]))
+    elif a := inp.get("batchAuthorizationMessage"):
+        raw = authorization_message(
+            channel_id=a["channelId"],
+            payer=a["payer"],
+            operator=a["operator"],
+            request_id=a["requestId"],
+            authorized_amount=int(a["authorizedAmount"]),
+            expires_at=int(a["expiresAt"]),
+        )
+    elif c := inp.get("batchCloseAuthorizationDigest"):
+        raw = close_authorization_digest(
+            network=c["network"],
+            fee_payer=c["feePayer"],
+            channel_id=c["channelId"],
+            max_claimable_amount=int(c["maxClaimableAmount"]),
+            voucher_expires_at=int(c["voucherExpiresAt"]),
+            valid_before=int(c["validBefore"]),
+            program_id=c.get("programId", PAYMENT_CHANNELS_PROGRAM_ID),
+        )
+    elif p := inp.get("batchChannelPda"):
+        pda, _bump = find_channel_pda(
+            Pubkey.from_string(p["payer"]),
+            Pubkey.from_string(p["payee"]),
+            Pubkey.from_string(p["mint"]),
+            Pubkey.from_string(p["authorizedSigner"]),
+            int(p["salt"]),
+            int(p["openSlot"]),
+            program_id=Pubkey.from_string(p.get("programId", PAYMENT_CHANNELS_PROGRAM_ID)),
+        )
+        raw = bytes(pda)
+    else:
+        raise ValueError("invalid payload: no x402-batch-settlement input")
+
+    return {
+        "id": vector.get("id", ""),
+        "outcome": "accept",
+        "exactBytes": {"bytes": list(raw), "base64Url": base64url_encode(raw)},
+    }
+
+
 def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
 
     if vector.get("intent") == "x402-exact":
         return _run_x402(vector)
+
+    if vector.get("intent") == "x402-batch-settlement":
+        return _run_batch_settlement(vector)
 
     if mode == "canonical-bytes":
         return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}

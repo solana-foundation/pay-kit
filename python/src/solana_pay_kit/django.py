@@ -23,8 +23,8 @@ WSGI/ASGI boundary on its own.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import logging
 import weakref
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -32,10 +32,18 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, is_paid
 from solana_pay_kit._middleware import payment as _core_payment
+from solana_pay_kit._paycore.loops import run_blocking
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
-from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
+from solana_pay_kit.usage import (
+    CHARGE_ATTR,
+    Charge,
+    batch_challenge,
+    fetch_recent_blockhash_and_slot,
+    finalize_batch,
+    finalize_usage,
+)
 
 if TYPE_CHECKING:
     from django.http import (  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs (django-stubs is third-party)
@@ -48,6 +56,8 @@ if TYPE_CHECKING:
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
+    from solana_pay_kit.protocols.x402.batch_settlement.engine import X402BatchSettlement
+    from solana_pay_kit.protocols.x402.batch_settlement.types import BatchRequirements, VoucherSigner
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
     GateRef = Gate | DynamicGate | Price | str | Callable[[HttpRequest], Gate]
@@ -57,6 +67,8 @@ __all__ = [
     "require_payment",
     "require_usage",
     "RequireUsage",
+    "require_batch",
+    "RequireBatch",
     "PaymentMiddleware",
     "is_paid",
     "payment",
@@ -69,6 +81,8 @@ _T = TypeVar("_T")
 #: Request attribute a URLconf wrapper or middleware may set to bind a gate to
 #: a view when the :class:`PaymentMiddleware` stack form is used.
 GATE_ATTR = "paykit_gate"
+logger = logging.getLogger("solana_pay_kit")
+
 
 #: One x402 ``upto`` engine per Config - it owns the per-channel in-flight
 #: reservation set, so it must be a singleton (a fresh engine per request would
@@ -189,6 +203,86 @@ def require_usage(
 RequireUsage = require_usage
 
 
+def require_batch(
+    gate_ref: UsageGateRef,
+    *,
+    config: Config | None = None,
+    voucher_signer: VoucherSigner | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate a Django view to require an x402 ``batch-settlement`` payment.
+
+    Before the view it verifies the voucher (or payer proof) and reserves the
+    price on the channel, attaching a :class:`~solana_pay_kit.usage.Charge` to
+    ``request.charge``. After a 2xx view it commits the charge; otherwise the
+    reservation is released. Server-signed requests are metered: the view MUST
+    call ``charge.charge(actual)`` (``0`` is allowed), else the body is
+    withheld (402). A refund is answered without running the view.
+    """
+
+    def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(view)
+        def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+            from django.http import (  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
+                HttpResponse,
+                JsonResponse,
+            )
+
+            from solana_pay_kit.gate import Gate as _Gate
+            from solana_pay_kit.protocols.x402.batch_settlement import batch_engine
+            from solana_pay_kit.protocols.x402.batch_settlement.engine import CorrectiveRequired, VerifiedBatchRequest
+
+            engine = batch_engine(config if config is not None else _config())
+            gate = gate_ref if isinstance(gate_ref, _Gate) else gate_ref(request)
+            if not engine.detect_batch(request):
+                return _batch_challenge_response(engine, gate, request, voucher_signer)
+            try:
+                verified = _run(engine.verify_and_reserve(gate, request, voucher_signer=voucher_signer))
+            except CorrectiveRequired as exc:
+                return _batch_challenge_response(engine, gate, request, voucher_signer, exc, exc.accepts)
+            except InvalidProofError as exc:
+                return _batch_challenge_response(engine, gate, request, voucher_signer, exc)
+            except PayKitError as exc:
+                return _error_response(exc)
+            if not isinstance(verified, VerifiedBatchRequest):
+                # A refund is a payment-control operation: the view is bypassed.
+                closed = HttpResponse(b"channel close initiated", status=200)
+                for key, value in engine.settlement_headers(verified).items():
+                    closed[key] = value
+                return closed
+
+            meter = Charge(verified.ceiling)
+            _attach_charge(request, meter)
+            try:
+                response = view(request, *args, **kwargs)
+            except BaseException:
+                # A failed view charges nothing; the reservation also expires on its own.
+                with contextlib.suppress(Exception):
+                    _run(engine.release(verified))
+                raise
+            if not 200 <= response.status_code < 300:
+                _run(engine.release(verified))
+                return response
+            outcome = _run(finalize_batch(engine, verified, meter))
+            if not outcome.ok:
+                logger.warning("solana_pay_kit: withholding a batch-settlement body: %s", outcome.detail)
+                body = {"error": "payment_required", "code": outcome.code}
+                withheld = JsonResponse(body, status=outcome.status)
+                for key, value in engine.challenge_headers(gate, request, error=outcome.code).items():
+                    withheld[key] = value
+                return withheld
+            for key, value in outcome.settlement_headers.items():
+                response[key] = value
+            return response
+
+        return wrapper
+
+    return decorator
+
+
+#: FastAPI-parity alias; the Django form is a view decorator, not a dependency.
+RequireBatch = require_batch
+
+
 class PaymentMiddleware:
     """Django MIDDLEWARE-stack form gating views that declare a gate.
 
@@ -279,7 +373,7 @@ def _error_response(exc: PayKitError) -> JsonResponse:
     body: dict[str, Any] = (
         cast("dict[str, Any]", raw_body)
         if isinstance(raw_body, dict)
-        else {"error": getattr(exc, "code", "payment_error"), "message": str(exc)}
+        else {"error": getattr(exc, "code", "payment_error")}
     )
 
     response = JsonResponse(body, status=status)
@@ -306,9 +400,29 @@ def _usage_challenge_response(
     }
     if exc is not None:
         body["code"] = exc.code or "invalid_proof"
-        body["message"] = str(exc)
+        logger.warning("solana_pay_kit: refused an x402 upto credential: %s", exc)
     response = JsonResponse(body, status=402)
     for key, value in engine.challenge_headers(gate, request).items():
+        response[key] = value
+    return response
+
+
+def _batch_challenge_response(
+    engine: X402BatchSettlement,
+    gate: Gate,
+    request: HttpRequest,
+    voucher_signer: VoucherSigner | None,
+    exc: InvalidProofError | None = None,
+    accepts: list[BatchRequirements] | None = None,
+) -> JsonResponse:
+    """Render a 402 carrying the ``batch-settlement`` challenge (corrective accepts when given)."""
+    from django.http import JsonResponse  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
+
+    headers, body = batch_challenge(
+        engine, gate, request, request.path, voucher_signer=voucher_signer, error=exc, accepts=accepts
+    )
+    response = JsonResponse(body, status=402)
+    for key, value in headers.items():
         response[key] = value
     return response
 
@@ -322,11 +436,8 @@ def _usage_outcome_response(
     """Withhold the body with a 402 upto challenge when settlement fails closed."""
     from django.http import JsonResponse  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
 
-    body: dict[str, Any] = {
-        "error": "payment_required",
-        "code": outcome.code,
-        "message": outcome.detail or "",
-    }
+    logger.warning("solana_pay_kit: withholding an x402 upto body: %s", outcome.detail)
+    body: dict[str, Any] = {"error": "payment_required", "code": outcome.code}
     response = JsonResponse(body, status=outcome.status)
     for key, value in engine.challenge_headers(gate, request).items():
         response[key] = value
@@ -345,26 +456,4 @@ def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     Uses :func:`asyncio.run` when no loop is running; spins a dedicated loop in
     a fresh thread when called from within a running loop (ASGI handlers).
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    import threading
-
-    result: dict[str, _T] = {}
-    error: dict[str, BaseException] = {}
-
-    def _runner() -> None:
-        try:
-            result["value"] = asyncio.run(coro)
-        except BaseException as exc:  # re-raised on the calling thread below
-            error["error"] = exc
-
-    thread = threading.Thread(target=_runner)
-    thread.start()
-    thread.join()
-    raised = error.get("error")
-    if raised is not None:
-        raise raised
-    return result["value"]
+    return run_blocking(coro)

@@ -86,6 +86,13 @@ from solana_pay_kit.protocols.mpp.server.charge import (  # noqa: E402
 )
 from solana_pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
 from solana_pay_kit.protocols.x402 import X402Adapter  # noqa: E402
+from solana_pay_kit.protocols.x402.batch_settlement.engine import (  # noqa: E402
+    BatchSettlementConfig,
+    CorrectiveRequired,
+    VerifiedBatchRequest,
+    X402BatchSettlement,
+)
+from solana_pay_kit.protocols.x402.batch_settlement.store import MemoryBatchChannelStore  # noqa: E402
 from solana_pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
 from solana_pay_kit.usage import Charge, finalize_usage  # noqa: E402
 
@@ -188,6 +195,8 @@ def _detect_protocol() -> str:
     explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
     if explicit in ("x402-upto", "upto"):
         return "upto"
+    if explicit in ("x402-batch", "batch-settlement"):
+        return "batch-settlement"
     if explicit in ("x402", "mpp", "charge", "session"):
         return "mpp" if explicit == "charge" else explicit
     x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
@@ -211,6 +220,8 @@ class _Adapter:
             self._build_x402()
         elif self.protocol == "upto":
             self._build_upto()
+        elif self.protocol == "batch-settlement":
+            self._build_batch()
         elif self.protocol == "session":
             self._build_session()
         else:
@@ -281,6 +292,52 @@ class _Adapter:
             config,
             channel_program=program_id,
             recent_state_provider=lambda: _fetch_recent_state_sync(rpc_url),
+        )
+        self.routes = {self.resource_path: self.price}
+        self.replay_path = ""
+
+    # -- x402 batch-settlement --------------------------------------------------
+
+    def _build_batch(self) -> None:
+        """The batch-settlement route, same env contract as the Rust ``x402_harness_batch_server``.
+
+        ``X402_HARNESS_OPERATOR_SECRET_KEY`` (Python-only) adds the server-signed
+        accept; the client-signed accept stays first.
+        """
+        rpc_url = require_env("X402_HARNESS_RPC_URL")
+        pay_to = require_env("X402_HARNESS_PAY_TO")
+        fee_payer_json = os.environ.get("X402_HARNESS_FEE_PAYER_SECRET_KEY") or require_env(
+            "X402_HARNESS_FACILITATOR_SECRET_KEY"
+        )
+        mint = optional_env("X402_HARNESS_MINT", "USDC")
+        network_raw = optional_env("X402_HARNESS_NETWORK", "localnet")
+        self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/batch")
+        self.settlement_header = optional_env(
+            "X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
+        ).lower()
+        self.price = optional_env("X402_HARNESS_PRICE", "0.10").strip().lstrip("$")
+        # Server-signed requests charge this metered amount (base units); default the full price.
+        actual = os.environ.get("X402_HARNESS_ACTUAL_AMOUNT")
+        self.actual_amount = int(actual) if actual else None
+        operator_json = os.environ.get("X402_HARNESS_OPERATOR_SECRET_KEY")
+        self.coin = _coin_for_mint(mint)
+        config = Config(
+            network=_resolve_network(network_raw),
+            accept=(Protocol.X402,),
+            stablecoins=(self.coin,),
+            rpc_url=rpc_url,
+            operator=Operator(recipient=pay_to, signer=Signer.json(fee_payer_json), fee_payer=True),
+            preflight=False,
+        ).model_copy()
+        self.config = config
+        self.pay_to = pay_to
+        self.batch_store = MemoryBatchChannelStore()
+        self.batch_engine = X402BatchSettlement(
+            config,
+            settings=BatchSettlementConfig(operator=Signer.json(operator_json) if operator_json else None),
+            channel_store=self.batch_store,
+            recent_state_provider=lambda: _fetch_recent_state_sync(rpc_url),
+            program_id=os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or None,
         )
         self.routes = {self.resource_path: self.price}
         self.replay_path = ""
@@ -490,6 +547,8 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
         if adapter.protocol == "upto":
             self._handle_upto(adapter, adapter.gate_for(self.path), request)
+        elif adapter.protocol == "batch-settlement":
+            self._handle_batch(adapter, adapter.gate_for(self.path), request)
         elif adapter.x402:
             self._handle_x402(adapter, adapter.gate_for(self.path), request)
         else:
@@ -497,6 +556,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         adapter = self.adapter
+        if adapter.protocol == "batch-settlement" and self.path == "/__harness/batch/redeem":
+            self._handle_batch_redeem(adapter)
+            return
         if adapter.protocol == "session":
             if self.path == adapter.resource_path:
                 self._handle_session(adapter)
@@ -582,6 +644,82 @@ class HarnessHandler(BaseHTTPRequestHandler):
             {"ok": True, "paid": True, "protocol": "x402-upto", "transaction": outcome.transaction},
             extra_headers=headers,
         )
+
+    def _handle_batch(self, adapter: _Adapter, gate: Gate, request: dict[str, Any]) -> None:
+        engine = adapter.batch_engine
+
+        def challenge(error: InvalidProofError | None = None, accepts: Any = None) -> None:
+            code = None if error is None else error.code
+            offered = accepts if accepts is not None else engine.accepts_entries(gate, request)
+            body: dict[str, Any] = {"error": "payment_required", "resource": self.path, "accepts": offered}
+            if error is not None:
+                body.update({"code": code, "message": str(error)})
+            headers = engine.challenge_headers(gate, request, error=code, accepts=offered)
+            self._send_json(402, body, extra_headers=headers)
+
+        if not engine.detect_batch(request):
+            challenge()
+            return
+        try:
+            verified = asyncio.run(engine.verify_and_reserve(gate, request))
+        except CorrectiveRequired as err:
+            challenge(err, err.accepts)
+            return
+        except InvalidProofError as err:
+            challenge(err)
+            return
+        if not isinstance(verified, VerifiedBatchRequest):
+            # A refund is a payment-control operation: the resource is not served.
+            headers = engine.settlement_headers(verified)
+            headers[adapter.settlement_header] = verified["transaction"]
+            self._send_text(200, "channel close initiated", headers)
+            return
+        # Serve, then charge: the voucher's price, or the metered amount in server-signed mode.
+        actual = None
+        if verified.server_signed:
+            actual = verified.ceiling if adapter.actual_amount is None else adapter.actual_amount
+        try:
+            settled = asyncio.run(engine.commit(verified, actual))
+        except InvalidProofError as err:
+            challenge(err)
+            return
+        headers = engine.settlement_headers(settled)
+        headers[adapter.settlement_header] = settled["transaction"]
+        body = {"ok": True, "paid": True, "channelId": verified.channel_id, "amount": adapter.price}
+        self._send_json(200, body, extra_headers=headers)
+
+    def _handle_batch_redeem(self, adapter: _Adapter) -> None:
+        """Test-only: claim then settle every stored channel, like the Rust server's redeem route.
+
+        ``claim`` and ``settle`` list the channels each pass moved (the Rust server lists signatures).
+        """
+
+        async def redeem() -> dict[str, Any]:
+            channels = [record.channel_id for record in await adapter.batch_store.list()]
+            worker = adapter.batch_engine.redemption()
+            claimed = await worker.claim(channels)
+            distributed = await worker.settle(channels)
+            errors = [*claimed.errors, *distributed.errors]
+            if errors:
+                raise RuntimeError("; ".join(f"{channel}: {detail}" for channel, detail in errors))
+            return {"channels": channels, "claim": claimed.claimed, "settle": distributed.distributed}
+
+        try:
+            self._send_json(200, asyncio.run(redeem()))
+        except Exception as exc:  # noqa: BLE001 - the harness reads the reason from the body
+            print(f"harness python batch server redeem error: {exc}", file=sys.stderr)
+            self._send_json(500, {"error": str(exc)})
+
+    def _send_text(self, status: int, text: str, extra_headers: dict[str, str]) -> None:
+        payload = text.encode("utf-8")
+        self.send_response(status)
+        headers = {name.lower(): value for name, value in extra_headers.items()}
+        headers.update({"content-type": "text/plain; charset=utf-8", "content-length": str(len(payload))})
+        headers["connection"] = "close"
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _handle_session(self, adapter: _Adapter) -> None:
         auth = self.headers.get("authorization", "")

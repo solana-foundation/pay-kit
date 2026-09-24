@@ -1554,6 +1554,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "solana" },
     { name = "solders" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -1600,6 +1601,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "solana", specifier = ">=0.35" },
     { name = "solders", specifier = ">=0.22" },
+    { name = "typing-extensions", specifier = ">=4.6" },
     { name = "uvicorn", marker = "extra == 'playground'", specifier = ">=0.30" },
     { name = "yfinance", marker = "extra == 'playground'", specifier = ">=0.2.40" },
 ]

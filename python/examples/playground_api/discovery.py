@@ -153,6 +153,27 @@ def upto_offer(gate: Gate, config: Config, *, currency: str = "USDC") -> dict[st
     )
 
 
+def batch_offer(gate: Gate, config: Config, *, currency: str = "USDC") -> dict[str, Any]:
+    """The single x402 `batch-settlement` discovery offer (one channel, many requests).
+
+    Offer `description` is a per-request price hint: the escrow a client opens
+    covers many of these, and the 402 challenge carries the real terms.
+    """
+    network_label = _mints_network(config)
+    amount = base_units(gate.total(), currency=currency, network=network_label)
+    return _offer(
+        amount=amount,
+        currency=currency,
+        description=f"{gate.total().amount_string()} {currency} per request, from one channel",
+        feePayer=config.operator.signer.pubkey(),
+        intent="usage",
+        method="x402",
+        network=config.network.caip2(),
+        payTo=gate.pay_to,
+        scheme="batch-settlement",
+    )
+
+
 def build_openapi_document(
     *,
     info: dict[str, str] | None = None,

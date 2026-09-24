@@ -14,7 +14,7 @@
     "@solana/kit": "^6.5.0",
     "@solana/mpp": "file:../typescript/packages/mpp",
     "@solana/pay-kit": "file:../typescript/packages/pay-kit",
-    "@solana/surfpool": "1.4.0",
+    "@solana/surfpool": "1.5.0",
     "mppx": "^0.5.5"
   },
   "devDependencies": {
