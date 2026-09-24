@@ -1,0 +1,1336 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "RFC 3339 §5.6",
+  "description": "Challenge expires timestamp parsing (RFC 3339 date-time)",
+  "commands": {
+    "parse": "parse-expires"
+  },
+  "scenarios": [
+    {
+      "name": "jsts_date_time_001",
+      "description": "a valid date-time string",
+      "tags": ["happy-path", "secfrac"],
+      "input": "1963-06-19T08:30:06.283185Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_002",
+      "description": "a valid date-time string without second fraction",
+      "tags": ["happy-path"],
+      "input": "1963-06-19T08:30:06Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_003",
+      "description": "a valid date-time string with plus offset",
+      "tags": ["happy-path", "secfrac", "offset"],
+      "input": "1937-01-01T12:00:27.87+00:20",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_004",
+      "description": "a valid date-time string with minus offset",
+      "tags": ["happy-path", "secfrac", "offset"],
+      "input": "1990-12-31T15:59:50.123-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_005",
+      "description": "a valid date-time with a leap second, UTC",
+      "tags": ["happy-path", "leap-second"],
+      "input": "1998-12-31T23:59:60Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_006",
+      "description": "a valid date-time with a leap second, with minus offset",
+      "tags": ["happy-path", "leap-second", "offset"],
+      "input": "1998-12-31T15:59:60.123-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_007",
+      "description": "an invalid date-time past leap second, UTC",
+      "tags": ["error", "leap-second"],
+      "input": "1998-12-31T23:59:61Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_008",
+      "description": "an invalid date-time with leap second on a wrong minute, UTC",
+      "tags": ["error", "leap-second"],
+      "input": "1998-12-31T23:58:60Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_009",
+      "description": "an invalid date-time with leap second on a wrong hour, UTC",
+      "tags": ["error", "leap-second"],
+      "input": "1998-12-31T22:59:60Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_010",
+      "description": "an invalid day in date-time string",
+      "tags": ["error", "calendar"],
+      "input": "1990-02-31T15:59:59.123-08:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_011",
+      "description": "an invalid offset in date-time string",
+      "tags": ["error", "offset", "boundary"],
+      "input": "1990-12-31T15:59:59-24:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_012",
+      "description": "an invalid closing Z after time-zone offset",
+      "tags": ["error", "offset", "trailing-text"],
+      "input": "1963-06-19T08:30:06.28123+01:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_013",
+      "description": "an invalid hour in date-time string",
+      "tags": ["error", "time-of-day"],
+      "input": "1990-12-31T24:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_014",
+      "description": "an invalid minute in date-time string",
+      "tags": ["error", "time-of-day"],
+      "input": "1990-12-31T15:60:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_015",
+      "description": "an invalid offset minute in date-time string",
+      "tags": ["error", "offset", "boundary"],
+      "input": "1990-12-31T10:00:00+10:60",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_016",
+      "description": "an invalid date-time string",
+      "tags": ["error", "structure"],
+      "input": "06/19/1963 08:30:06 PST",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_017",
+      "description": "case-insensitive T and Z",
+      "tags": ["happy-path", "case"],
+      "input": "1963-06-19t08:30:06.283185z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_018",
+      "description": "only RFC3339 not all of ISO 8601 are valid",
+      "tags": ["error", "structure"],
+      "input": "2013-350T01:01:01",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_019",
+      "description": "invalid non-padded month dates",
+      "tags": ["error", "calendar", "structure"],
+      "input": "1963-6-19T08:30:06.283185Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_020",
+      "description": "invalid non-padded day dates",
+      "tags": ["error", "calendar", "structure"],
+      "input": "1963-06-1T08:30:06.283185Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_021",
+      "description": "invalid non-ASCII '৪' (a Bengali 4) in date portion",
+      "tags": ["error", "unicode"],
+      "input": "1963-06-1৪T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_022",
+      "description": "invalid non-ASCII '৪' (a Bengali 4) in time portion",
+      "tags": ["error", "unicode"],
+      "input": "1963-06-11T0৪:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_023",
+      "description": "invalid extended year",
+      "tags": ["error", "year-boundary"],
+      "input": "+11963-06-19T08:30:06.283185Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_024",
+      "description": "a numeric offset without minutes is invalid",
+      "tags": ["error", "offset"],
+      "input": "1985-04-12T23:20:50+01",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_025",
+      "description": "hour 24 is invalid even with a leap second",
+      "tags": ["error", "leap-second", "time-of-day"],
+      "input": "2016-12-31T24:59:60+01:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jsts_date_time_026",
+      "description": "a second fraction of fifteen nines is valid",
+      "tags": ["happy-path", "secfrac"],
+      "input": "1985-04-12T00:59:59.999999999999999Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "jsts_date_time_027",
+      "description": "a trailing newline is invalid",
+      "tags": ["error", "trailing-text", "whitespace"],
+      "input": "1985-04-12T23:20:50Z\n",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parsetests_2010_02_04t21_00_57_08_00",
+      "description": "Timestamp with a negative offset and no fraction",
+      "tags": ["happy-path", "offset"],
+      "input": "2010-02-04T21:00:57-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_parsetests_2010_02_04t21_00_57_012345678_08_00",
+      "description": "Nanosecond fraction with a negative offset",
+      "tags": ["happy-path", "secfrac", "offset"],
+      "input": "2010-02-04T21:00:57.012345678-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_parseerror_2006_01_02t15_04_05z07_00",
+      "description": "Rejects a layout string used as a value",
+      "tags": ["error", "trailing-text"],
+      "input": "2006-01-02T15:04:05Z07:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_2006_01_02t15_04_abc",
+      "description": "Rejects text where the seconds field belongs",
+      "tags": ["error", "structure"],
+      "input": "2006-01-02T15:04_abc",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_2006_01_02t15_04_05_abc",
+      "description": "Rejects text where the offset belongs",
+      "tags": ["error", "offset"],
+      "input": "2006-01-02T15:04:05_abc",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_2006_01_02t15_04_05z_abc",
+      "description": "Rejects trailing text after the Z designator",
+      "tags": ["error", "trailing-text"],
+      "input": "2006-01-02T15:04:05Z_abc",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_2010_02_04t21_00_67_012345678_08_00",
+      "description": "Rejects a seconds value of 67",
+      "tags": ["error", "time-of-day"],
+      "input": "2010-02-04T21:00:67.012345678-08:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_0000_01_01t00_00_0_00_00",
+      "description": "Rejects a fraction standing in for the seconds",
+      "tags": ["error", "secfrac"],
+      "input": "0000-01-01T00:00:.0+00:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_double_quote_char",
+      "description": "Rejects a bare double-quote character",
+      "tags": ["error", "structure"],
+      "input": "\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_0000_01_01t00_00_00_00_0",
+      "description": "Rejects a sign inside the offset minute field",
+      "tags": ["error", "offset"],
+      "input": "0000-01-01T00:00:00+00:+0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_parseerror_0000_01_01t00_00_00_0_00",
+      "description": "Rejects two signs at the head of the offset",
+      "tags": ["error", "offset"],
+      "input": "0000-01-01T00:00:00+-0:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_000000000",
+      "description": "Nine fractional digits, all zero",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.000000000Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_000000001",
+      "description": "Nine fractional digits, one nanosecond",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.000000001Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_100000000",
+      "description": "Nine fractional digits, one tenth of a second",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.100000000Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_100000001",
+      "description": "Nine fractional digits, tenth plus a nanosecond",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.100000001Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_999999999",
+      "description": "Nine fractional digits, all nines",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.999999999Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_9digits_012345678",
+      "description": "Nine fractional digits with a leading zero",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.012345678Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_0000000000",
+      "description": "Ten fractional digits, all zero",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.0000000000Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_0000000001",
+      "description": "Ten fractional digits below nanosecond resolution",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.0000000001Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_1000000000",
+      "description": "Ten fractional digits, one tenth of a second",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.1000000000Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_1000000009",
+      "description": "Ten fractional digits, last digit truncated away",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.1000000009Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_9999999999",
+      "description": "Ten fractional digits, all nines",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.9999999999Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_10digits_0123456789",
+      "description": "Ten fractional digits with a leading zero",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.0123456789Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_11digits_10000000000",
+      "description": "Eleven fractional digits, one tenth of a second",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.10000000000Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_11digits_00123456789",
+      "description": "Eleven fractional digits with two leading zeros",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.00123456789Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_12digits_000123456789",
+      "description": "Twelve fractional digits with three leading zeros",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.000123456789Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "go_longfrac_16digits_9999999999999999",
+      "description": "Sixteen fractional digits, all nines",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2021-09-29T16:04:33.9999999999999999Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_max_syntactic_plus_23_59",
+      "description": "Offset +23:59, the largest the grammar generates",
+      "tags": ["happy-path", "offset", "boundary"],
+      "input": "2026-01-29T12:00:00+23:59",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_min_syntactic_minus_23_59",
+      "description": "Offset -23:59, the smallest the grammar generates",
+      "tags": ["happy-path", "offset", "boundary"],
+      "input": "2026-01-29T12:00:00-23:59",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "leap_second_offset_rolls_local_date_forward",
+      "description": "Leap second whose offset rolls the local date forward",
+      "tags": ["happy-path", "leap-second", "date-rollover"],
+      "input": "1999-01-01T00:59:60+01:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "leap_second_offset_rolls_local_date_forward_wrong_offset",
+      "description": "Rejects a :60 second one hour off the leap second point",
+      "tags": ["error", "leap-second", "date-rollover"],
+      "input": "1999-01-01T00:59:60+02:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "rfc_5_8_example_fractional_z",
+      "description": "RFC 3339 §5.8 worked example, fraction in UTC",
+      "tags": ["happy-path", "rfc-example", "secfrac"],
+      "input": "1985-04-12T23:20:50.52Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "rfc_5_8_example_negative_offset",
+      "description": "RFC 3339 §5.8 worked example, -08:00 offset",
+      "tags": ["happy-path", "rfc-example", "offset"],
+      "input": "1996-12-19T16:39:57-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "rfc_5_8_example_leap_second_z",
+      "description": "RFC 3339 §5.8 worked example, leap second in UTC",
+      "tags": ["happy-path", "rfc-example", "leap-second"],
+      "input": "1990-12-31T23:59:60Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "rfc_5_8_example_leap_second_offset",
+      "description": "RFC 3339 §5.8 worked example, leap second at -08:00",
+      "tags": ["happy-path", "rfc-example", "leap-second"],
+      "input": "1990-12-31T15:59:60-08:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "leap_second_june_month_end",
+      "description": "Leap second at a June month end",
+      "tags": ["happy-path", "leap-second"],
+      "input": "1972-06-30T23:59:60Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "lowercase_t_separator",
+      "description": "Lower-case t as the date and time separator",
+      "tags": ["happy-path", "case"],
+      "input": "1985-04-12t23:20:50.52Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "lowercase_z_offset",
+      "description": "Lower-case z as the UTC designator",
+      "tags": ["happy-path", "case"],
+      "input": "1985-04-12T23:20:50.52z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "lowercase_t_and_z",
+      "description": "Both the separator and the designator lower case",
+      "tags": ["happy-path", "case"],
+      "input": "1985-04-12t23:20:50.52z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_1_digit",
+      "description": "One fractional digit",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.0Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_7_digits",
+      "description": "Seven fractional digits",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.1234567Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_8_digits",
+      "description": "Eight fractional digits",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.12345678Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_9_digits",
+      "description": "Nine fractional digits",
+      "tags": ["happy-path", "secfrac"],
+      "input": "2021-09-29T16:04:33.123456789Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_point_with_no_digits",
+      "description": "Rejects a decimal point with no digits after it",
+      "tags": ["error", "secfrac"],
+      "input": "2021-09-29T16:04:33.Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "secfrac_comma_separator",
+      "description": "Rejects a comma as the fraction separator",
+      "tags": ["error", "secfrac", "separator"],
+      "input": "2021-09-29T16:04:33,5Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_plus_zero",
+      "description": "Offset +00:00",
+      "tags": ["happy-path", "offset"],
+      "input": "2026-01-29T12:00:00+00:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_minus_zero",
+      "description": "Offset -00:00, the unknown local offset",
+      "tags": ["happy-path", "offset"],
+      "input": "2026-01-29T12:00:00-00:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_plus_fourteen",
+      "description": "Offset +14:00, the eastmost real timezone",
+      "tags": ["happy-path", "offset"],
+      "input": "2026-01-29T12:00:00+14:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_minus_twelve",
+      "description": "Offset -12:00, the westmost real timezone",
+      "tags": ["happy-path", "offset"],
+      "input": "2026-01-29T12:00:00-12:00",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "offset_hour_out_of_range",
+      "description": "Rejects an offset hour of 24",
+      "tags": ["error", "offset", "boundary"],
+      "input": "2026-01-29T12:00:00+24:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_minute_out_of_range",
+      "description": "Rejects an offset minute of 60",
+      "tags": ["error", "offset", "boundary"],
+      "input": "2026-01-29T12:00:00+00:60",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_missing_colon",
+      "description": "Rejects an offset written without the colon",
+      "tags": ["error", "offset", "separator"],
+      "input": "2026-01-29T12:00:00+0000",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_hour_only",
+      "description": "Rejects an offset written as the hour alone",
+      "tags": ["error", "offset"],
+      "input": "2026-01-29T12:00:00-08",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_absent",
+      "description": "Rejects a timestamp with no offset at all",
+      "tags": ["error", "offset"],
+      "input": "2026-01-29T12:00:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_alphabetic_zone",
+      "description": "Rejects an alphabetic zone abbreviation",
+      "tags": ["error", "offset"],
+      "input": "2026-01-29T12:00:00PST",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "year_9999",
+      "description": "Year 9999, the largest four-digit year",
+      "tags": ["happy-path", "year-boundary"],
+      "input": "9999-12-31T23:59:59Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "year_10000",
+      "description": "Rejects a five-digit year",
+      "tags": ["error", "year-boundary"],
+      "input": "10000-01-01T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "year_0000",
+      "description": "Year 0000, the smallest four-digit year",
+      "tags": ["happy-path", "year-boundary"],
+      "input": "0000-01-01T00:00:00Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "year_two_digit",
+      "description": "Rejects a two-digit year",
+      "tags": ["error", "year-boundary"],
+      "input": "26-01-29T12:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "year_sign_prefixed",
+      "description": "Rejects an ISO 8601 expanded-year sign prefix",
+      "tags": ["error", "year-boundary"],
+      "input": "+2026-01-29T12:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "feb_30",
+      "description": "Rejects February 30th",
+      "tags": ["error", "calendar"],
+      "input": "2026-02-30T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "sep_31",
+      "description": "Rejects September 31st",
+      "tags": ["error", "calendar"],
+      "input": "2026-09-31T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "leap_year_2000_feb_29",
+      "description": "February 29th in 2000, a leap year by the 400 rule",
+      "tags": ["happy-path", "calendar", "leap-year"],
+      "input": "2000-02-29T00:00:00Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "non_leap_year_1900_feb_29",
+      "description": "Rejects February 29th in 1900, not a leap year",
+      "tags": ["error", "calendar", "leap-year"],
+      "input": "1900-02-29T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "leap_year_2024_feb_29",
+      "description": "February 29th in 2024, an ordinary leap year",
+      "tags": ["happy-path", "calendar", "leap-year"],
+      "input": "2024-02-29T00:00:00Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "non_leap_year_2026_feb_29",
+      "description": "Rejects February 29th in a non-leap year",
+      "tags": ["error", "calendar", "leap-year"],
+      "input": "2026-02-29T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "apr_31",
+      "description": "Rejects April 31st",
+      "tags": ["error", "calendar"],
+      "input": "2026-04-31T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "jan_31",
+      "description": "January 31st, the longest month at its last day",
+      "tags": ["happy-path", "calendar"],
+      "input": "2026-01-31T00:00:00Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "month_00",
+      "description": "Rejects month 00",
+      "tags": ["error", "calendar"],
+      "input": "2026-00-15T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "month_13",
+      "description": "Rejects month 13",
+      "tags": ["error", "calendar"],
+      "input": "2026-13-15T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "mday_00",
+      "description": "Rejects day 00",
+      "tags": ["error", "calendar"],
+      "input": "2026-01-00T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "mday_32",
+      "description": "Rejects day 32",
+      "tags": ["error", "calendar"],
+      "input": "2026-01-32T00:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "time_00_00_00",
+      "description": "Midnight, every time field at its minimum",
+      "tags": ["happy-path", "time-of-day"],
+      "input": "2026-01-29T00:00:00Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "time_23_59_59",
+      "description": "The last non-leap second of the day",
+      "tags": ["happy-path", "time-of-day"],
+      "input": "2026-01-29T23:59:59Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "hour_24",
+      "description": "Rejects hour 24",
+      "tags": ["error", "time-of-day"],
+      "input": "2026-01-29T24:00:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "minute_60",
+      "description": "Rejects minute 60",
+      "tags": ["error", "time-of-day"],
+      "input": "2026-01-29T12:60:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "second_61",
+      "description": "Rejects second 61",
+      "tags": ["error", "time-of-day"],
+      "input": "2026-01-29T12:00:61Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "seconds_omitted",
+      "description": "Rejects a timestamp with the seconds omitted",
+      "tags": ["error", "time-of-day"],
+      "input": "2026-01-29T12:00Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "basic_format_no_separators",
+      "description": "Rejects ISO 8601 basic format with no separators",
+      "tags": ["error", "structure", "separator"],
+      "input": "20260129T120000Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "date_only",
+      "description": "Rejects a bare date with no time part",
+      "tags": ["error", "structure"],
+      "input": "2026-01-29",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "non_date_string",
+      "description": "Rejects arbitrary non-date text",
+      "tags": ["error", "structure"],
+      "input": "not-a-timestamp",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "trailing_garbage_after_offset",
+      "description": "Rejects trailing text after a complete timestamp",
+      "tags": ["error", "trailing-text"],
+      "input": "2026-01-29T12:00:00Z_abc",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "trailing_newline_after_offset",
+      "description": "Rejects a trailing newline after a complete timestamp",
+      "tags": ["error", "trailing-text", "whitespace"],
+      "input": "2026-01-29T12:00:00Z\n",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "trailing_duplicate_z",
+      "description": "Rejects a second UTC designator",
+      "tags": ["error", "trailing-text"],
+      "input": "2026-01-29T12:00:00ZZ",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "second_elided_secfrac_retained",
+      "description": "Rejects a fraction standing in for the seconds",
+      "tags": ["error", "secfrac", "time-of-day"],
+      "input": "2026-01-29T12:00:.0Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_signed_minute",
+      "description": "Rejects a sign inside the offset minute field",
+      "tags": ["error", "offset"],
+      "input": "2026-01-29T12:00:00+00:+0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "offset_double_sign",
+      "description": "Rejects two signs at the head of the offset",
+      "tags": ["error", "offset"],
+      "input": "2026-01-29T12:00:00+-0:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "secfrac_10_digits",
+      "description": "Ten fractional digits, one past nanosecond resolution",
+      "tags": ["happy-path", "secfrac", "precision-loss"],
+      "input": "2026-01-29T12:00:00.1234567890Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "secfrac_19_digits_exceeds_int64",
+      "description": "Nineteen fractional digits, past the int64 maximum",
+      "tags": ["happy-path", "secfrac", "overflow"],
+      "input": "2026-01-29T12:00:00.9999999999999999999Z",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "bare_date_no_time",
+      "description": "Rejects a well-formed bare date with no time part",
+      "tags": ["error", "wrong-production"],
+      "input": "1963-06-19",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_date_leap_day",
+      "description": "Rejects a bare leap day, valid as a date but not a timestamp",
+      "tags": ["error", "wrong-production", "calendar"],
+      "input": "2020-02-29",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_time_zulu",
+      "description": "Rejects a well-formed bare time with no date part",
+      "tags": ["error", "wrong-production"],
+      "input": "08:30:06Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_time_lowercase_z",
+      "description": "Rejects a bare time closed with a lower-case z",
+      "tags": ["error", "wrong-production", "case"],
+      "input": "08:30:06z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_time_numeric_offset",
+      "description": "Rejects a bare time carrying a numeric offset",
+      "tags": ["error", "wrong-production", "offset"],
+      "input": "08:30:06-08:00",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_time_secfrac",
+      "description": "Rejects a bare time carrying a second fraction",
+      "tags": ["error", "wrong-production", "secfrac"],
+      "input": "23:20:50.52Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "bare_time_leap_second",
+      "description": "Rejects a bare time carrying a leap second",
+      "tags": ["error", "wrong-production", "leap-second"],
+      "input": "23:59:60Z",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "empty_string",
+      "description": "Rejects the empty string",
+      "tags": ["error", "structure"],
+      "input": "",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    }
+  ]
+}
