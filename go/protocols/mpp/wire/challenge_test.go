@@ -51,6 +51,73 @@ func TestIsExpiredEmptyString(t *testing.T) {
 	}
 }
 
+func TestIsExpiredRFC3339Corpus(t *testing.T) {
+	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1"})
+	before := time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		expires string
+		accept  bool
+	}{
+		{"jsts_date_time_005", "1998-12-31T23:59:60Z", true},
+		{"jsts_date_time_006", "1998-12-31T15:59:60.123-08:00", true},
+		{"jsts_date_time_011", "1990-12-31T15:59:59-24:00", false},
+		{"jsts_date_time_015", "1990-12-31T10:00:00+10:60", false},
+		{"jsts_date_time_017", "1963-06-19t08:30:06.283185z", true},
+		{"leap_second_june_month_end", "1972-06-30T23:59:60Z", true},
+		{"leap_second_offset_rolls_local_date_forward", "1999-01-01T00:59:60+01:00", true},
+		{"lowercase_t_and_z", "1985-04-12t23:20:50.52z", true},
+		{"lowercase_t_separator", "1985-04-12t23:20:50.52Z", true},
+		{"lowercase_z_offset", "1985-04-12T23:20:50.52z", true},
+		{"offset_hour_out_of_range", "2026-01-29T12:00:00+24:00", false},
+		{"offset_minute_out_of_range", "2026-01-29T12:00:00+00:60", false},
+		{"rfc_5_8_example_leap_second_offset", "1990-12-31T15:59:60-08:00", true},
+		{"rfc_5_8_example_leap_second_z", "1990-12-31T23:59:60Z", true},
+		{"secfrac_comma_separator", "2021-09-29T16:04:33,5Z", false},
+		{"leap_second_not_at_utc_month_end", "1998-12-31T23:58:60Z", false},
+		{"leap_second_not_on_utc_month_last_day", "1998-12-30T23:59:60Z", false},
+		{"leap_second_not_in_utc_hour_23", "1998-12-31T22:59:60Z", false},
+		{"day_out_of_range", "2026-02-30T00:00:00Z", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			challenge := NewChallengeWithSecretFull("s", "r", NewMethodName("solana"), NewIntentName("charge"), request, tc.expires, "", "", nil)
+			if expired := challenge.IsExpired(before); expired == tc.accept {
+				t.Fatalf("IsExpired(%q) = %v, want %v", tc.expires, expired, !tc.accept)
+			}
+		})
+	}
+}
+
+// The leap second maps to the last nanosecond of :59, not the start of it, so
+// the challenge is still live at .999999998 and dead from .999999999 on
+// (IsExpired is inclusive at equality). One nanosecond either way pins it.
+func TestIsExpiredLeapSecondBoundary(t *testing.T) {
+	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1"})
+	mapped := time.Date(1990, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	tests := []struct {
+		name    string
+		expires string
+		now     time.Time
+		expired bool
+	}{
+		{"z_one_ns_before_mapped", "1990-12-31T23:59:60Z", mapped.Add(-time.Nanosecond), false},
+		{"z_at_mapped", "1990-12-31T23:59:60Z", mapped, true},
+		{"z_one_ns_after_mapped", "1990-12-31T23:59:60Z", mapped.Add(time.Nanosecond), true},
+		{"offset_one_ns_before_mapped", "1990-12-31T15:59:60-08:00", mapped.Add(-time.Nanosecond), false},
+		{"offset_at_mapped", "1990-12-31T15:59:60-08:00", mapped, true},
+		{"offset_one_ns_after_mapped", "1990-12-31T15:59:60-08:00", mapped.Add(time.Nanosecond), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			challenge := NewChallengeWithSecretFull("s", "r", NewMethodName("solana"), NewIntentName("charge"), request, tc.expires, "", "", nil)
+			if expired := challenge.IsExpired(tc.now); expired != tc.expired {
+				t.Fatalf("IsExpired(%q) at %s = %v, want %v", tc.expires, tc.now.Format(time.RFC3339Nano), expired, tc.expired)
+			}
+		})
+	}
+}
+
 func TestIsExpiredInvalidTimestamp(t *testing.T) {
 	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1"})
 	challenge := NewChallengeWithSecretFull("s", "r", NewMethodName("solana"), NewIntentName("charge"), request, "not-a-date", "", "", nil)
