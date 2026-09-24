@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const baseURL = 'http://localhost:5173'
+const baseURL = process.env.PLAYGROUND_BASE_URL ?? 'http://localhost:5173'
 
 export default defineConfig({
   forbidOnly: !!process.env.CI,
