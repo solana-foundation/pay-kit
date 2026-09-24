@@ -1349,7 +1349,7 @@ async function broadcastTransaction(rpcUrl: string, base64Tx: string): Promise<s
             id: 1,
             jsonrpc: '2.0',
             method: 'sendTransaction',
-            params: [base64Tx, { encoding: 'base64', skipPreflight: false }],
+            params: [base64Tx, { encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
