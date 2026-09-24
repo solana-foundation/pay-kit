@@ -65,6 +65,40 @@ class X402HttpClientTest {
         return Base64.getEncoder().encodeToString(json.toByteArray())
     }
 
+    @Test
+    fun originalBuilderCallFormsStillPaySplOfferWithDecimalsHint() = runBlocking {
+        var blockhashCalls = 0
+        val blockhash = { blockhashCalls++; ByteArray(32) }
+        val clients = listOf(
+            PayKitClient.Builder().signer(signer)
+                .x402(rpcBlockhashProvider = blockhash).build(),
+            PayKitClient.Builder().signer(signer)
+                .x402({ blockhash() }).build(),
+        )
+        val challenge = """{"accepts":[{
+            "scheme":"exact",
+            "network":"${Network.SOLANA_MAINNET}",
+            "asset":"So11111111111111111111111111111111111111112",
+            "amount":"1000",
+            "payTo":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "extra":{"decimals":9}
+        }]}"""
+        for (client in clients) {
+            server.enqueue(MockResponse().setResponseCode(402).setBody(challenge))
+            server.enqueue(MockResponse().setResponseCode(200))
+            val result = client.get(server.url("/paid").toString())
+            try {
+                assertEquals(200, result.status)
+                assertTrue(result.paymentSent)
+            } finally {
+                result.response.close()
+            }
+            server.takeRequest()
+            assertNotNull(server.takeRequest().getHeader("Payment-Signature"))
+        }
+        assertEquals(2, blockhashCalls)
+    }
+
     // ── Non-402 passthrough ───────────────────────────────────────────────────
 
     @Test
@@ -368,5 +402,36 @@ class X402RpcClientTest {
             ),
         )
         assertFailsWith<Exception> { client().fetchRecentBlockhash() }
+    }
+
+    @Test
+    fun parsesMintDecimalsFromByte44() {
+        // 82 zero bytes with byte 44 = 9 (wrapped SOL): base64 below.
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"data":["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==","base64"],"executable":false,"lamports":1,"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","rentEpoch":10}}}""",
+            ),
+        )
+        assertEquals(9.toUByte(), client().fetchMintDecimals("So11111111111111111111111111111111111111112"))
+    }
+
+    @Test
+    fun throwsWhenMintAccountIsMissing() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":null}}""",
+            ),
+        )
+        assertFailsWith<Exception> { client().fetchMintDecimals("So11111111111111111111111111111111111111112") }
+    }
+
+    @Test
+    fun throwsWhenMintDataIsTooShort() {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"data":["AA==","base64"],"executable":false,"lamports":1,"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","rentEpoch":10}}}""",
+            ),
+        )
+        assertFailsWith<Exception> { client().fetchMintDecimals("So11111111111111111111111111111111111111112") }
     }
 }
