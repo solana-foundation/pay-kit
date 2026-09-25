@@ -11,6 +11,9 @@
 #   protocols/x402/protocol/schemes/exact/types.rb     -> protocol/schemes/exact/types.rs
 #   protocols/x402/protocol/schemes/exact/verify.rb    -> protocol/schemes/exact/verify.rs
 #   protocols/x402/server/exact.rb                     -> server/exact.rs
+#   protocols/x402/protocol/schemes/upto/types.rb      -> protocol/schemes/upto/types.rs
+#   protocols/x402/protocol/schemes/upto/verify.rb     -> protocol/schemes/upto/verify.rs
+#   protocols/x402/server/upto.rb                      -> protocol/schemes/upto (engine)
 #
 # Ruby is server-only: no client surface is exposed.
 
@@ -21,6 +24,9 @@ require_relative "error"
 require_relative "protocol/schemes/exact/types"
 require_relative "protocol/schemes/exact/verify"
 require_relative "server/exact"
+require_relative "protocol/schemes/upto/types"
+require_relative "protocol/schemes/upto/verify"
+require_relative "server/upto"
 
 module PayKit::Protocols::X402
   module Protocol

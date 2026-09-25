@@ -22,6 +22,9 @@ require_relative "pay_core/solana/public_key"
 require_relative "pay_core/solana/ata"
 require_relative "pay_core/solana/account"
 require_relative "pay_core/solana/transaction"
+require_relative "pay_core/solana/instruction"
+require_relative "pay_core/solana/message_builder"
+require_relative "pay_core/solana/payment_channels"
 require_relative "pay_core/solana/rpc"
 
 module PayCore
