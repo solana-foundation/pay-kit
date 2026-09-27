@@ -41,6 +41,10 @@ fn rpc_url() -> String {
     std::env::var("SURFNET_RPC").unwrap_or_else(|_| DEFAULT_RPC.to_string())
 }
 
+fn url_probe() -> String {
+    rpc_url()
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -62,6 +66,18 @@ async fn channel_funded_composed_charge_settles_to_merchant() {
     let async_rpc = AsyncRpcClient::new(url.clone());
     if async_rpc.get_slot().await.is_err() {
         eprintln!("skipping composed charge test: surfnet unreachable at {url}");
+        return;
+    }
+
+    // The cheatcode RPC is a separate surface from the public RPC and panics
+    // inside `testkit::cheat` on transport failure; probe it once so a
+    // degraded surfnet skips instead of failing.
+    let probe = Pubkey::new_unique();
+    if tokio::spawn(async move { testkit::fund_sol(&url_probe(), &probe, 1).await })
+        .await
+        .is_err()
+    {
+        eprintln!("skipping composed charge test: surfnet cheatcodes unavailable at {url}");
         return;
     }
 

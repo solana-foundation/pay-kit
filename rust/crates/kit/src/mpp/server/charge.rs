@@ -1449,13 +1449,12 @@ impl Mpp {
                 "Simulation failed: {err:?}{log_detail}"
             )));
         }
-        let instructions = compiled_instructions_with_inner(tx, sim.inner_instructions.as_deref())?;
-        let top_level_len = tx.message.instructions().len();
+        let inner = simulated_inner_instructions_as_parsed(tx, sim.inner_instructions.as_deref())?;
         let fee_payer = expected_fee_payer(tx, method_details)?;
         verify_composed_legs(
-            &instructions,
-            top_level_len,
+            tx.message.instructions(),
             tx.message.static_account_keys(),
+            &inner,
             request,
             method_details,
             fee_payer.as_ref(),
@@ -2244,15 +2243,19 @@ fn verify_composed_transaction_pre_broadcast(
     Ok(())
 }
 
-/// Spec step 6: match every required payment leg (primary and splits) and
-/// every requested memo among `instructions` — the top-level instructions
-/// followed by the simulated (or confirmed) inner instructions — then require
-/// that every top-level base-set token, System or Memo instruction was one of
-/// those legs. `top_level_len` is the number of leading top-level entries.
+/// Spec step 6: match every required payment leg (primary and splits) among
+/// the top-level instructions (compiled, decoded here) and the inner
+/// instructions a simulation or a confirmed transaction reported (parsed
+/// JSON, the shape `getTransaction` with `jsonParsed` uses and the shape
+/// `simulateTransaction` returns for inner instructions). Each leg is matched
+/// to one distinct instruction: a top-level match is tried first, then the
+/// inner list. Requested memos MUST be top level. Finally, every top-level
+/// base-set token, System or Memo instruction must have been one of those
+/// legs; inner instructions are the accepted program's own behavior.
 fn verify_composed_legs(
-    instructions: &[CompiledInstruction],
-    top_level_len: usize,
+    top_level: &[CompiledInstruction],
     account_keys: &[Pubkey],
+    inner: &[serde_json::Value],
     request: &ChargeRequest,
     method_details: &MethodDetails,
     fee_payer: Option<&Pubkey>,
@@ -2289,26 +2292,46 @@ fn verify_composed_legs(
         legs.push((split_pk, amount));
     }
 
-    let mut matched = HashSet::new();
+    // A "No matching …" error from the top-level matcher means "try the inner
+    // list"; any other error (fee payer as authority or source) is final.
+    fn not_found(err: &VerificationError) -> bool {
+        err.message.starts_with("No matching")
+    }
+
+    let fee_payer_str = fee_payer.map(ToString::to_string);
+    let mut matched_top = HashSet::new();
+    let mut matched_inner = HashSet::new();
     let is_native_sol = request.currency.to_uppercase() == "SOL";
     if is_native_sol {
         for (recipient, amount) in &legs {
-            verify_sol_transfer_instructions(
-                instructions,
+            match verify_sol_transfer_instructions(
+                top_level,
                 account_keys,
                 recipient,
                 *amount,
                 fee_payer,
-                &mut matched,
+                &mut matched_top,
+            ) {
+                Ok(()) => continue,
+                Err(err) if not_found(&err) => {}
+                Err(err) => return Err(err),
+            }
+            find_sol_transfer(
+                inner,
+                &recipient.to_string(),
+                *amount,
+                fee_payer_str.as_deref(),
+                &mut matched_inner,
             )?;
         }
     } else {
         let expected_mint =
             resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
         let expected_token_program = expected_token_program(method_details)?;
+        let token_program_str = expected_token_program.as_ref().map(ToString::to_string);
         for (recipient, amount) in &legs {
-            verify_spl_transfer_instructions(
-                instructions,
+            match verify_spl_transfer_instructions(
+                top_level,
                 account_keys,
                 recipient,
                 &expected_mint,
@@ -2316,27 +2339,39 @@ fn verify_composed_legs(
                 expected_token_program.as_ref(),
                 method_details.decimals,
                 fee_payer,
-                &mut matched,
+                &mut matched_top,
+            ) {
+                Ok(()) => continue,
+                Err(err) if not_found(&err) => {}
+                Err(err) => return Err(err),
+            }
+            find_spl_transfer(
+                inner,
+                &recipient.to_string(),
+                &expected_mint.to_string(),
+                *amount,
+                token_program_str.as_deref(),
+                fee_payer_str.as_deref(),
+                &mut matched_inner,
             )?;
         }
     }
     verify_memo_instructions(
-        instructions,
+        top_level,
         account_keys,
         request.external_id.as_deref(),
         splits,
-        &mut matched,
+        &mut matched_top,
     )?;
 
     // Spec step 4: a top-level base-set value or memo instruction is allowed
-    // only as a matched leg. Inner instructions are the accepted program's
-    // own behavior and are not policed.
+    // only as a matched leg.
     let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
     let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
     let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
     let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
-    for (index, ix) in instructions.iter().take(top_level_len).enumerate() {
-        if matched.contains(&index) {
+    for (index, ix) in top_level.iter().enumerate() {
+        if matched_top.contains(&index) {
             continue;
         }
         let program = account_keys
@@ -2361,39 +2396,45 @@ fn verify_composed_legs(
     Ok(())
 }
 
-/// Top-level instructions followed by the inner instructions a simulation
-/// reported, all as compiled instructions over the transaction's static
-/// account keys (composed transactions carry no address lookup tables, so
-/// inner account indexes resolve against the same key list).
-fn compiled_instructions_with_inner(
+/// The inner instructions a simulation reported, as the parsed JSON objects
+/// the post-confirmation matchers already understand. Agave returns
+/// simulated inner instructions parsed (`ParsedInstruction`, or
+/// `PartiallyDecoded` for programs it cannot parse), the same shape
+/// `getTransaction` with `jsonParsed` uses. A compiled entry is resolved to
+/// its program id so it is still visible; it cannot match a payment leg.
+fn simulated_inner_instructions_as_parsed(
     tx: &VersionedTransaction,
     inner: Option<&[solana_transaction_status_client_types::UiInnerInstructions]>,
-) -> Result<Vec<CompiledInstruction>, VerificationError> {
-    let mut all: Vec<CompiledInstruction> = tx.message.instructions().to_vec();
+) -> Result<Vec<serde_json::Value>, VerificationError> {
+    let account_keys = tx.message.static_account_keys();
+    let mut out = Vec::new();
     for group in inner.unwrap_or(&[]) {
         for ix in &group.instructions {
-            match ix {
+            let value = match ix {
+                UiInstruction::Parsed(parsed) => serde_json::to_value(parsed).map_err(|e| {
+                    VerificationError::new(format!(
+                        "Failed to serialize simulated inner instruction: {e}"
+                    ))
+                })?,
                 UiInstruction::Compiled(compiled) => {
-                    let data = bs58::decode(&compiled.data).into_vec().map_err(|e| {
-                        VerificationError::invalid_payload(format!(
-                            "Simulation returned an undecodable inner instruction: {e}"
-                        ))
-                    })?;
-                    all.push(CompiledInstruction {
-                        program_id_index: compiled.program_id_index,
-                        accounts: compiled.accounts.clone(),
-                        data,
-                    });
+                    let program_id = account_keys
+                        .get(compiled.program_id_index as usize)
+                        .ok_or_else(|| {
+                            VerificationError::invalid_payload(
+                                "Simulated inner instruction has an invalid program index",
+                            )
+                        })?;
+                    serde_json::json!({
+                        "programId": program_id.to_string(),
+                        "accounts": compiled.accounts,
+                        "data": compiled.data,
+                    })
                 }
-                UiInstruction::Parsed(_) => {
-                    return Err(VerificationError::invalid_payload(
-                        "Simulation returned parsed inner instructions; expected compiled",
-                    ));
-                }
-            }
+            };
+            out.push(value);
         }
     }
-    Ok(all)
+    Ok(out)
 }
 
 struct AtaCreationPolicy {
@@ -9378,26 +9419,42 @@ mod tests {
         }
     }
 
-    fn key_index(tx: &VersionedTransaction, key: &Pubkey) -> u8 {
-        tx.message
-            .static_account_keys()
-            .iter()
-            .position(|k| k == key)
-            .expect("key present in message") as u8
+    /// A parsed inner `transferChecked`, as `simulateTransaction` and
+    /// `getTransaction` (`jsonParsed`) report it.
+    fn parsed_inner_transfer_checked(
+        source: &Pubkey,
+        mint: &Pubkey,
+        destination: &Pubkey,
+        authority: &Pubkey,
+        amount: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "program": "spl-token",
+            "programId": programs::TOKEN_PROGRAM,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "source": source.to_string(),
+                    "mint": mint.to_string(),
+                    "destination": destination.to_string(),
+                    "authority": authority.to_string(),
+                    "tokenAmount": { "amount": amount.to_string(), "decimals": 6 }
+                }
+            },
+            "stackHeight": 2
+        })
     }
 
     /// A composed channel-funded charge: Ed25519 + channel program at the top
     /// level, with the payment leg as an inner `transferChecked` from the
-    /// channel escrow (authority = channel PDA) to the recipient's ATA. The
-    /// inner instruction references the same static account keys as the
-    /// top-level channel instruction, exactly as the runtime reports it.
+    /// channel escrow (authority = channel PDA) to the recipient's ATA.
     fn composed_channel_charge(
         fee_payer: &Pubkey,
         recipient: &Pubkey,
         mint: &Pubkey,
         amount: u64,
         extra_top_level: Vec<Instruction>,
-    ) -> (VersionedTransaction, Vec<CompiledInstruction>) {
+    ) -> (VersionedTransaction, Vec<serde_json::Value>) {
         let tp = token_program_id();
         let channel_pda = Pubkey::new_unique();
         let escrow_ata = derive_ata(&channel_pda, mint, &tp);
@@ -9411,22 +9468,14 @@ mod tests {
         ];
         instructions.extend(extra_top_level);
         let tx = dummy_tx(instructions, fee_payer);
-        let mut data = vec![12u8];
-        data.extend_from_slice(&amount.to_le_bytes());
-        data.push(6);
-        let inner = CompiledInstruction {
-            program_id_index: key_index(&tx, &tp),
-            accounts: vec![
-                key_index(&tx, &escrow_ata),
-                key_index(&tx, mint),
-                key_index(&tx, &dest_ata),
-                key_index(&tx, &channel_pda),
-            ],
-            data,
-        };
-        let mut all = tx.message.instructions().to_vec();
-        all.push(inner);
-        (tx, all)
+        let inner = vec![parsed_inner_transfer_checked(
+            &escrow_ata,
+            mint,
+            &dest_ata,
+            &channel_pda,
+            amount,
+        )];
+        (tx, inner)
     }
 
     fn usdc_mint() -> Pubkey {
@@ -9563,7 +9612,7 @@ mod tests {
             TxProfile::Composed
         );
 
-        // Sponsor passed as an account of the composed instruction: rejected
+        // Sponsor passed as an account of a composed instruction: rejected
         // before any signature, however the program would use it.
         let (dirty, _) = composed_channel_charge(
             &gateway,
@@ -9593,15 +9642,15 @@ mod tests {
         let payer = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let mint = usdc_mint();
-        let (tx, all) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![]);
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![]);
         let keys = tx.message.static_account_keys();
-        let top_level_len = tx.message.instructions().len();
+        let top_level = tx.message.instructions();
         let method_details = usdc_method_details();
 
         verify_composed_legs(
-            &all,
-            top_level_len,
+            top_level,
             keys,
+            &inner,
             &charge_request(250_000, &mint.to_string(), &recipient),
             &method_details,
             None,
@@ -9609,9 +9658,9 @@ mod tests {
         .unwrap();
 
         let err = verify_composed_legs(
-            &all,
-            top_level_len,
+            top_level,
             keys,
+            &inner,
             &charge_request(250_001, &mint.to_string(), &recipient),
             &method_details,
             None,
@@ -9623,17 +9672,55 @@ mod tests {
             err.message
         );
 
-        // Without the inner instruction (simulation showed no transfer) the
-        // leg is missing.
+        // Simulation showed no inner transfer: the leg is missing.
         assert!(verify_composed_legs(
-            &all[..top_level_len],
-            top_level_len,
+            top_level,
             keys,
+            &[],
             &charge_request(250_000, &mint.to_string(), &recipient),
             &method_details,
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn composed_legs_accept_a_top_level_leg_alongside_inner_ones() {
+        // A split paid by a direct top-level transfer while the primary comes
+        // from the channel: both legs match, each to a distinct instruction.
+        let payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let platform = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let tp = token_program_id();
+        let split = spl_transfer_checked_ix(
+            &derive_ata(&payer, &mint, &tp),
+            &mint,
+            &derive_ata(&platform, &mint, &tp),
+            &payer,
+            50_000,
+            6,
+        );
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 200_000, vec![split]);
+        let method_details = MethodDetails {
+            splits: Some(vec![Split {
+                recipient: platform.to_string(),
+                amount: "50000".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..usdc_method_details()
+        };
+        verify_composed_legs(
+            tx.message.instructions(),
+            tx.message.static_account_keys(),
+            &inner,
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &method_details,
+            None,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -9653,11 +9740,11 @@ mod tests {
             5,
             6,
         );
-        let (tx, all) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![stray]);
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![stray]);
         let err = verify_composed_legs(
-            &all,
-            tx.message.instructions().len(),
+            tx.message.instructions(),
             tx.message.static_account_keys(),
+            &inner,
             &charge_request(250_000, &mint.to_string(), &recipient),
             &usdc_method_details(),
             None,
@@ -9675,14 +9762,12 @@ mod tests {
         let gateway = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let mint = usdc_mint();
-        let (tx, mut all) = composed_channel_charge(&gateway, &recipient, &mint, 250_000, vec![]);
-        // Rewrite the inner leg's authority to the sponsor.
-        let last = all.last_mut().unwrap();
-        last.accounts[3] = key_index(&tx, &gateway);
+        let (tx, mut inner) = composed_channel_charge(&gateway, &recipient, &mint, 250_000, vec![]);
+        inner[0]["parsed"]["info"]["authority"] = serde_json::json!(gateway.to_string());
         let err = verify_composed_legs(
-            &all,
-            tx.message.instructions().len(),
+            tx.message.instructions(),
             tx.message.static_account_keys(),
+            &inner,
             &charge_request(250_000, &mint.to_string(), &recipient),
             &usdc_method_details(),
             Some(&gateway),
@@ -9696,31 +9781,39 @@ mod tests {
     }
 
     #[test]
-    fn compiled_instructions_with_inner_decodes_simulation_output() {
-        use solana_transaction_status_client_types::{UiCompiledInstruction, UiInnerInstructions};
+    fn simulated_inner_instructions_keep_parsed_shape_and_resolve_compiled_ids() {
+        use solana_transaction_status_client_types::{
+            ParsedInstruction, UiCompiledInstruction, UiInnerInstructions, UiParsedInstruction,
+        };
         let payer = Pubkey::new_unique();
-        let tx = dummy_tx(
-            vec![opaque_ix(channel_program_id(), vec![Pubkey::new_unique()])],
-            &payer,
-        );
+        let touched = Pubkey::new_unique();
+        let tx = dummy_tx(vec![opaque_ix(channel_program_id(), vec![touched])], &payer);
         let inner = vec![UiInnerInstructions {
             index: 0,
-            instructions: vec![UiInstruction::Compiled(UiCompiledInstruction {
-                program_id_index: 1,
-                accounts: vec![0, 1],
-                data: bs58::encode([12u8, 1, 0]).into_string(),
-                stack_height: Some(2),
-            })],
+            instructions: vec![
+                UiInstruction::Parsed(UiParsedInstruction::Parsed(ParsedInstruction {
+                    program: "spl-token".to_string(),
+                    program_id: programs::TOKEN_PROGRAM.to_string(),
+                    parsed: serde_json::json!({ "type": "transferChecked", "info": {} }),
+                    stack_height: Some(2),
+                })),
+                UiInstruction::Compiled(UiCompiledInstruction {
+                    program_id_index: 1,
+                    accounts: vec![0],
+                    data: "3Bxs".to_string(),
+                    stack_height: Some(2),
+                }),
+            ],
         }];
-        let all = compiled_instructions_with_inner(&tx, Some(&inner)).unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[1].program_id_index, 1);
-        assert_eq!(all[1].accounts, vec![0, 1]);
-        assert_eq!(all[1].data, vec![12, 1, 0]);
-        assert_eq!(
-            compiled_instructions_with_inner(&tx, None).unwrap().len(),
-            1
-        );
+        let out = simulated_inner_instructions_as_parsed(&tx, Some(&inner)).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(parsed_program_id(&out[0]), Some(programs::TOKEN_PROGRAM));
+        assert_eq!(out[0]["parsed"]["type"], "transferChecked");
+        let expected = tx.message.static_account_keys()[1].to_string();
+        assert_eq!(out[1]["programId"], expected);
+        assert!(simulated_inner_instructions_as_parsed(&tx, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
