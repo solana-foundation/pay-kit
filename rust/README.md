@@ -174,6 +174,20 @@ Payment` credential, decodes the client-signed transaction and checks recipient,
 amount, mint, splits, ATA, memos, and compute budget, optionally co-signs as fee
 payer, broadcasts, polls to `confirmed`, and emits `Payment-Receipt`.
 
+A pull-mode charge may also be a *composed transaction*: instead of a transfer
+the client signs itself, an accepted program produces the payment — typically
+as an inner instruction. The server detects composition from the top-level
+programs and switches to outcome verification: the fee payer must appear in no
+instruction, compute caps bound the fee, the transaction is simulated with
+inner instructions and every payment leg must land, then the confirmed
+transaction is re-checked. The Ed25519 program and the payment-channel program
+are always accepted (the spec's default composed set), so a client can pay a
+merchant straight from a payment channel whose payee is that merchant with
+`ChannelFundedCharge` + `build_composed_charge_transaction`, and the merchant
+configures nothing. `Config.allowed_programs` advertises additional operator-
+reviewed programs as `methodDetails.allowedPrograms`; `Config.accept_composed =
+false` restores the strict direct-transfer layout only.
+
 ## x402
 
 [x402](https://x402.org) revives HTTP `402 Payment Required`. The Rust
