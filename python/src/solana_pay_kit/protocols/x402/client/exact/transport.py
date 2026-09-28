@@ -42,6 +42,9 @@ class PaymentTransport(httpx.AsyncBaseTransport):
     Wraps an inner transport and, on a 402 carrying an x402 ``exact`` challenge
     (``payment-required`` header or ``accepts[]`` JSON body), builds the
     ``PAYMENT-SIGNATURE`` header and retries the request once.
+
+    Request bodies must be finite and are buffered in memory before the first
+    send so the paid retry can replay them.
     """
 
     def __init__(
@@ -62,6 +65,9 @@ class PaymentTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Handle a request, retrying once with a credential on a 402 challenge."""
+        # Preserve one-shot bodies for the paid retry, as in the permissioned
+        # transport. httpx replaces the consumed stream with a replayable one.
+        await request.aread()
         response = await self._inner.handle_async_request(request)
         if response.status_code != 402:
             return response
