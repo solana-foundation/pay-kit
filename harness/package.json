@@ -15,7 +15,7 @@
     "@solana/mpp": "file:../typescript/packages/mpp",
     "@solana/pay-kit": "file:../typescript/packages/pay-kit",
     "@solana/surfpool": "1.4.0",
-    "mppx": "^0.5.5"
+    "mppx": "^0.8.2"
   },
   "devDependencies": {
     "@solana-program/token": "^0.11.0",
@@ -25,6 +25,6 @@
     "express": "^4.21.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   }
 }
