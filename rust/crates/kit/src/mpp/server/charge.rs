@@ -37,6 +37,7 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction_status_client_types::UiInstruction;
 use std::str::FromStr;
 
 use crate::core::tx::{TxV1Mode, TxVersion};
@@ -244,6 +245,19 @@ pub struct Config {
     /// gate runs first and covers the non-fee-sponsored case the audit
     /// flagged.
     pub accept_push_mode: bool,
+    /// Additional programs accepted at the top level of a *composed*
+    /// transaction, beyond the base set and the default composed set (the
+    /// Ed25519 program and the payment-channel program, always accepted and
+    /// never advertised). Advertised as `methodDetails.allowedPrograms`.
+    /// Operator policy: list only programs reviewed for fee-payer safety
+    /// (spec, "Composed Transactions and Sponsor Abuse"). Usually empty.
+    pub allowed_programs: Vec<String>,
+    /// Accept composed transactions at all (default `true`). A composed
+    /// transaction is verified by outcome: fee-payer isolation, bounded fee,
+    /// and the challenged payment proven in simulation (inner instructions
+    /// included) before broadcast, then re-checked after confirmation. Set
+    /// `false` to accept the strict direct-transfer layout only.
+    pub accept_composed: bool,
 }
 
 impl Default for Config {
@@ -262,6 +276,8 @@ impl Default for Config {
             store: None,
             html: false,
             accept_push_mode: false,
+            allowed_programs: Vec::new(),
+            accept_composed: true,
         }
     }
 }
@@ -316,6 +332,11 @@ pub struct Mpp {
     pub(crate) html: bool,
     /// Audit #5: opt-in for push-mode credentials.
     pub(crate) accept_push_mode: bool,
+    /// Operator-listed programs accepted in composed transactions beyond the
+    /// always-accepted default composed set. See [`Config::allowed_programs`].
+    pub(crate) allowed_programs: Vec<Pubkey>,
+    /// Whether composed transactions are accepted. See [`Config::accept_composed`].
+    pub(crate) accept_composed: bool,
     /// Optional shared cache of a recent blockhash, refreshed out of band, so
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ always
     /// fetch directly (prior behaviour).
@@ -367,6 +388,8 @@ impl Mpp {
         let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
         let token_program =
             resolve_server_token_program(&rpc, &config.currency, Some(&config.network))?;
+        let allowed_programs =
+            crate::mpp::protocol::solana::validate_allowed_programs(&config.allowed_programs)?;
 
         Ok(Mpp {
             // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
@@ -386,6 +409,8 @@ impl Mpp {
             store,
             html: config.html,
             accept_push_mode: config.accept_push_mode,
+            allowed_programs,
+            accept_composed: config.accept_composed,
             blockhash_cache: None,
         })
     }
@@ -552,6 +577,18 @@ impl Mpp {
             details.insert(
                 "transactionVersions".into(),
                 serde_json::to_value(versions).unwrap(),
+            );
+        }
+        // Only operator extensions are advertised; the default composed set is
+        // always accepted and never listed (spec, "Composed Transactions").
+        if !self.allowed_programs.is_empty() {
+            details.insert(
+                "allowedPrograms".into(),
+                serde_json::json!(self
+                    .allowed_programs
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()),
             );
         }
 
@@ -1202,19 +1239,31 @@ impl Mpp {
         check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
-        verify_versioned_transaction_pre_broadcast(
+        let profile = verify_versioned_transaction_pre_broadcast(
             &tx,
             request,
             method_details,
             &self.accepted_versions,
+            self.composed_policy(),
         )?;
-        tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
+        tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", ?profile, "verify_pull");
 
         // Co-sign if server is fee payer (only after verification passes).
         if method_details.fee_payer.unwrap_or(false) {
             self.cosign_fee_payer_slot(&mut tx).await?;
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
+
+        // A composed transaction's payment legs live in inner instructions the
+        // static decode cannot see: prove them in simulation before the fee
+        // payer's signature leaves this process (spec, "Composed Transaction
+        // Verification" steps 5-6). The fee payer is already isolated from
+        // every instruction, so a passing simulation means the sponsor pays a
+        // capped fee for a transaction that pays it the challenged amount.
+        if profile == TxProfile::Composed {
+            self.verify_composed_outcome_by_simulation(&tx, request, method_details)?;
+            tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "composed_simulation", "verify_pull");
+        }
 
         // Broadcast with the node's preflight simulation (skip_preflight stays
         // off) rather than a separate simulate round-trip: on success the tx is
@@ -1360,6 +1409,58 @@ impl Mpp {
         Ok(signature.to_string())
     }
 
+    /// How this server treats composed transactions.
+    fn composed_policy(&self) -> ComposedPolicy<'_> {
+        ComposedPolicy {
+            accept: self.accept_composed,
+            extra_programs: &self.allowed_programs,
+        }
+    }
+
+    /// Outcome verification of a composed transaction before broadcast:
+    /// simulate with inner instructions and match every required payment leg
+    /// (primary and splits) among top-level and inner instructions.
+    fn verify_composed_outcome_by_simulation(
+        &self,
+        tx: &VersionedTransaction,
+        request: &ChargeRequest,
+        method_details: &MethodDetails,
+    ) -> Result<(), VerificationError> {
+        let response = crate::core::rpc::simulate_transaction_with_inner_instructions(
+            &self.rpc, tx,
+        )
+        .map_err(|e| VerificationError::network_error(format!("Simulation RPC error: {e}")))?;
+        let sim = response.value;
+        if let Some(err) = &sim.err {
+            let logs = sim
+                .logs
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter(|l| l.contains("Error") || l.contains("error") || l.contains("failed"))
+                .cloned()
+                .collect::<Vec<_>>();
+            let log_detail = if logs.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", logs.join("; "))
+            };
+            return Err(VerificationError::transaction_failed(format!(
+                "Simulation failed: {err:?}{log_detail}"
+            )));
+        }
+        let inner = simulated_inner_instructions_as_parsed(tx, sim.inner_instructions.as_deref())?;
+        let fee_payer = expected_fee_payer(tx, method_details)?;
+        verify_composed_legs(
+            tx.message.instructions(),
+            tx.message.static_account_keys(),
+            &inner,
+            request,
+            method_details,
+            fee_payer.as_ref(),
+        )
+    }
+
     /// Poll for `Confirmed` commitment on a signature that broadcast_pull
     /// already accepted. Surfpool typically confirms within a single tick;
     /// a real RPC may need up to ~32 slots (~12 seconds).
@@ -1477,7 +1578,27 @@ impl Mpp {
         })?;
 
         let is_native_sol = request.currency.to_uppercase() == "SOL";
-        let instructions = extract_parsed_instructions(&tx)?;
+        let (top_level, inner) = extract_parsed_instruction_groups(&tx)?;
+        // Re-classify from the confirmed transaction (spec, "Composed
+        // Transaction Verification" step 7): the top-level program check is
+        // applied again here, independent of the pre-broadcast decision.
+        let profile = classify_parsed_transaction_profile(
+            &top_level,
+            method_details,
+            self.composed_policy(),
+        )?;
+        let accepted_programs =
+            accepted_composed_program_strings(method_details, self.composed_policy())?;
+        let top_level_len = top_level.len();
+        let mut instructions = top_level;
+        instructions.extend(inner);
+        // Strict transactions keep today's whole-transaction allow-list; a
+        // composed transaction's inner instructions are the accepted program's
+        // own behavior and only its top level is policed.
+        let allowlist_end = match profile {
+            TxProfile::Strict => instructions.len(),
+            TxProfile::Composed => top_level_len,
+        };
         let expected_ata_payer = if method_details.fee_payer.unwrap_or(false) {
             method_details.fee_payer_key.as_deref()
         } else {
@@ -1527,14 +1648,15 @@ impl Mpp {
                 splits,
                 &mut matched,
             )?;
-            validate_parsed_instruction_allowlist(
-                &instructions,
+            validate_parsed_instruction_allowlist_with(
+                &instructions[..allowlist_end],
                 &matched,
                 None,
                 &allowed_ata_owners,
                 None,
                 expected_ata_payer,
                 &required_ata_owners,
+                &accepted_programs,
             )?;
         } else {
             let expected_mint =
@@ -1578,14 +1700,15 @@ impl Mpp {
                 splits,
                 &mut matched,
             )?;
-            validate_parsed_instruction_allowlist(
-                &instructions,
+            validate_parsed_instruction_allowlist_with(
+                &instructions[..allowlist_end],
                 &matched,
                 Some(&expected_mint.to_string()),
                 &allowed_ata_owners,
                 Some(expected_token_program),
                 expected_ata_payer,
                 &required_ata_owners,
+                &accepted_programs,
             )?;
         }
 
@@ -1662,7 +1785,9 @@ fn verify_transaction_pre_broadcast(
         request,
         method_details,
         &[TxVersion::V0, TxVersion::V1],
+        ComposedPolicy::DEFAULT,
     )
+    .map(|_| ())
 }
 
 fn verify_versioned_transaction_pre_broadcast(
@@ -1670,7 +1795,8 @@ fn verify_versioned_transaction_pre_broadcast(
     request: &ChargeRequest,
     method_details: &MethodDetails,
     accepted_versions: &[TxVersion],
-) -> Result<(), VerificationError> {
+    policy: ComposedPolicy<'_>,
+) -> Result<TxProfile, VerificationError> {
     // Envelope first: accepted version, no lookup tables, size within the
     // version's limit. Then, for version 1, the header compute config is held
     // to the same caps the ComputeBudget instructions get on version 0.
@@ -1687,6 +1813,14 @@ fn verify_versioned_transaction_pre_broadcast(
         },
     )
     .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+
+    // Composed transactions (an accepted non-base program at the top level)
+    // are verified by outcome: only the checks that do not need the payment
+    // legs run here; the legs are proven in simulation by the caller.
+    if classify_transaction_profile(tx, method_details, policy)? == TxProfile::Composed {
+        verify_composed_transaction_pre_broadcast(tx, request, method_details)?;
+        return Ok(TxProfile::Composed);
+    }
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
@@ -1736,7 +1870,7 @@ fn verify_versioned_transaction_pre_broadcast(
 
     if is_native_sol {
         verify_sol_transfer_instructions(
-            tx,
+            tx.message.instructions(),
             account_keys,
             &recipient_pk,
             primary_amount,
@@ -1753,7 +1887,7 @@ fn verify_versioned_transaction_pre_broadcast(
                 .parse()
                 .map_err(|_| VerificationError::invalid_amount("Invalid split amount"))?;
             verify_sol_transfer_instructions(
-                tx,
+                tx.message.instructions(),
                 account_keys,
                 expected_recipients.last().unwrap(),
                 amt,
@@ -1762,7 +1896,7 @@ fn verify_versioned_transaction_pre_broadcast(
             )?;
         }
         verify_memo_instructions(
-            tx,
+            tx.message.instructions(),
             account_keys,
             request.external_id.as_deref(),
             splits,
@@ -1790,7 +1924,7 @@ fn verify_versioned_transaction_pre_broadcast(
         }
         let expected_token_program = expected_token_program(method_details)?;
         verify_spl_transfer_instructions(
-            tx,
+            tx.message.instructions(),
             account_keys,
             &recipient_pk,
             &expected_mint,
@@ -1810,7 +1944,7 @@ fn verify_versioned_transaction_pre_broadcast(
                 .parse()
                 .map_err(|_| VerificationError::invalid_amount("Invalid split amount"))?;
             verify_spl_transfer_instructions(
-                tx,
+                tx.message.instructions(),
                 account_keys,
                 expected_recipients.last().unwrap(),
                 &expected_mint,
@@ -1822,7 +1956,7 @@ fn verify_versioned_transaction_pre_broadcast(
             )?;
         }
         verify_memo_instructions(
-            tx,
+            tx.message.instructions(),
             account_keys,
             request.external_id.as_deref(),
             splits,
@@ -1840,7 +1974,467 @@ fn verify_versioned_transaction_pre_broadcast(
         )?;
     }
 
+    Ok(TxProfile::Strict)
+}
+
+// ── Composed transactions ──
+//
+// Spec, "Composed Transaction Verification": a pull-mode transaction whose
+// top-level instructions invoke an accepted non-base program (the default
+// composed set — Ed25519 + the payment-channel program — or an operator-listed
+// program) is verified by outcome rather than by decoding a fixed transfer
+// layout. The four invariants that keep a fee sponsor safe: the accepted set
+// is operator policy bound into the challenge; the fee payer appears in no
+// instruction; compute caps bound the fee; the payment is proven in simulation
+// before the sponsor signs and re-checked after confirmation.
+
+/// How a server treats composed transactions.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposedPolicy<'a> {
+    /// Accept composed transactions at all.
+    pub accept: bool,
+    /// Operator-listed programs beyond the default composed set. A program
+    /// the challenge lists is accepted only if it is also here (the challenge
+    /// is HMAC-bound, so this is a belt-and-braces intersection).
+    pub extra_programs: &'a [Pubkey],
+}
+
+#[cfg(test)]
+impl ComposedPolicy<'static> {
+    /// Composed transactions accepted, no operator extensions.
+    pub const DEFAULT: ComposedPolicy<'static> = ComposedPolicy {
+        accept: true,
+        extra_programs: &[],
+    };
+}
+
+/// Which verification path a pull-mode transaction takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxProfile {
+    /// Direct transfer: verified by decoding the top-level instructions.
+    Strict,
+    /// At least one top-level instruction invokes an accepted non-base
+    /// program: verified by outcome.
+    Composed,
+}
+
+fn parse_challenge_allowed_programs(
+    method_details: &MethodDetails,
+) -> Result<Vec<Pubkey>, VerificationError> {
+    let Some(list) = method_details.allowed_programs.as_deref() else {
+        return Ok(Vec::new());
+    };
+    if list.len() > crate::mpp::protocol::solana::MAX_ALLOWED_PROGRAMS {
+        return Err(VerificationError::invalid_payload(format!(
+            "allowedPrograms has {} entries (maximum {})",
+            list.len(),
+            crate::mpp::protocol::solana::MAX_ALLOWED_PROGRAMS
+        )));
+    }
+    list.iter()
+        .map(|entry| {
+            Pubkey::from_str(entry).map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Invalid allowedPrograms entry `{entry}`: {e}"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Every non-base program accepted at the top level of a composed
+/// transaction under `method_details` and `policy`: the default composed set
+/// plus challenge-listed programs the operator also configured.
+fn accepted_composed_programs(
+    method_details: &MethodDetails,
+    policy: ComposedPolicy<'_>,
+) -> Result<Vec<Pubkey>, VerificationError> {
+    let mut accepted = crate::mpp::protocol::solana::default_composed_programs().to_vec();
+    for program in parse_challenge_allowed_programs(method_details)? {
+        if policy.extra_programs.contains(&program) && !accepted.contains(&program) {
+            accepted.push(program);
+        }
+    }
+    Ok(accepted)
+}
+
+fn accepted_composed_program_strings(
+    method_details: &MethodDetails,
+    policy: ComposedPolicy<'_>,
+) -> Result<HashSet<String>, VerificationError> {
+    Ok(accepted_composed_programs(method_details, policy)?
+        .iter()
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn classify_programs<'p>(
+    programs: impl Iterator<Item = Result<&'p Pubkey, VerificationError>>,
+    method_details: &MethodDetails,
+    policy: ComposedPolicy<'_>,
+) -> Result<TxProfile, VerificationError> {
+    let accepted = accepted_composed_programs(method_details, policy)?;
+    let mut composed = false;
+    for program in programs {
+        let program = program?;
+        if crate::mpp::protocol::solana::is_base_program(program) {
+            continue;
+        }
+        if !accepted.contains(program) {
+            // Same wording as the strict allow-list so error classifiers agree.
+            return Err(VerificationError::invalid_payload(format!(
+                "Unexpected program instruction in payment transaction: {program}"
+            )));
+        }
+        composed = true;
+    }
+    if composed && !policy.accept {
+        return Err(VerificationError::invalid_payload(
+            "Composed transactions are disabled on this server (Config.accept_composed is false)",
+        ));
+    }
+    Ok(if composed {
+        TxProfile::Composed
+    } else {
+        TxProfile::Strict
+    })
+}
+
+/// Classify a decoded transaction from its top-level programs.
+fn classify_transaction_profile(
+    tx: &VersionedTransaction,
+    method_details: &MethodDetails,
+    policy: ComposedPolicy<'_>,
+) -> Result<TxProfile, VerificationError> {
+    let account_keys = tx.message.static_account_keys();
+    classify_programs(
+        tx.message.instructions().iter().map(|ix| {
+            account_keys
+                .get(ix.program_id_index as usize)
+                .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))
+        }),
+        method_details,
+        policy,
+    )
+}
+
+/// Classify a confirmed transaction from its parsed top-level instructions.
+fn classify_parsed_transaction_profile(
+    top_level: &[serde_json::Value],
+    method_details: &MethodDetails,
+    policy: ComposedPolicy<'_>,
+) -> Result<TxProfile, VerificationError> {
+    let programs: Vec<Result<Pubkey, VerificationError>> = top_level
+        .iter()
+        .map(|ix| {
+            let id = parsed_program_id(ix).ok_or_else(|| {
+                VerificationError::invalid_payload(
+                    "Confirmed transaction has an instruction without a program id",
+                )
+            })?;
+            Pubkey::from_str(id).map_err(|e| {
+                VerificationError::invalid_payload(format!("Invalid program id `{id}`: {e}"))
+            })
+        })
+        .collect();
+    classify_programs(
+        programs.iter().map(|r| r.as_ref().map_err(Clone::clone)),
+        method_details,
+        policy,
+    )
+}
+
+/// Spec step 3: a sponsoring fee payer appears only as fee payer. Never in an
+/// instruction's account list (any role) and never as a program id, so no
+/// instruction at any depth can debit it, use it as authority, or fund rent
+/// from it. The runtime then debits it for the transaction fee alone.
+fn assert_fee_payer_isolated(
+    tx: &VersionedTransaction,
+    account_keys: &[Pubkey],
+    fee_payer: &Pubkey,
+) -> Result<(), VerificationError> {
+    for ix in tx.message.instructions() {
+        let program = account_keys
+            .get(ix.program_id_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
+        if program == fee_payer {
+            return Err(VerificationError::invalid_payload(
+                "Fee payer must not be referenced as a program in a composed transaction",
+            ));
+        }
+        for index in &ix.accounts {
+            if account_keys.get(*index as usize) == Some(fee_payer) {
+                return Err(VerificationError::invalid_payload(
+                    "Fee payer must not appear in any instruction of a composed transaction",
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// Pre-broadcast checks for a composed transaction that do not need the
+/// payment legs (spec steps 2-4): fee-payer policy and isolation, compute
+/// budget caps, and the top-level ATA-creation policy. Legs are matched after
+/// simulation by [`verify_composed_legs`].
+fn verify_composed_transaction_pre_broadcast(
+    tx: &VersionedTransaction,
+    request: &ChargeRequest,
+    method_details: &MethodDetails,
+) -> Result<(), VerificationError> {
+    let compute_budget_program = Pubkey::from_str(programs::COMPUTE_BUDGET_PROGRAM).unwrap();
+    let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+    let account_keys = tx.message.static_account_keys();
+    let splits = method_details.splits.as_deref().unwrap_or(&[]);
+    if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
+        return Err(VerificationError::too_many_splits(format!(
+            "Too many splits: {} (maximum {})",
+            splits.len(),
+            crate::mpp::protocol::solana::MAX_SPLITS,
+        )));
+    }
+    let fee_payer = expected_fee_payer(tx, method_details)?;
+    if let Some(fee_payer) = fee_payer.as_ref() {
+        assert_fee_payer_isolated(tx, account_keys, fee_payer)?;
+    }
+    let is_native_sol = request.currency.to_uppercase() == "SOL";
+    let expected_mint = if is_native_sol {
+        None
+    } else {
+        Some(resolve_expected_mint(
+            &request.currency,
+            method_details.network.as_deref(),
+        )?)
+    };
+    let expected_token_program = expected_token_program(method_details)?;
+    let ata_policy = expected_ata_creation_policy(splits, fee_payer.as_ref())?;
+    let tx_fee_payer = account_keys
+        .first()
+        .ok_or_else(|| VerificationError::invalid_payload("Transaction has no fee payer"))?;
+    let expected_ata_payer = fee_payer.as_ref().unwrap_or(tx_fee_payer);
+    let mut created_ata_owners = HashSet::new();
+    for ix in tx.message.instructions() {
+        let program = account_keys
+            .get(ix.program_id_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
+        if program == &compute_budget_program {
+            validate_compute_budget_instruction(ix, fee_payer.is_some())?;
+        } else if program == &ata_program {
+            let owner = validate_create_ata_idempotent_instruction(
+                ix,
+                account_keys,
+                expected_mint.as_ref(),
+                &ata_policy.allowed_owners,
+                expected_token_program.as_ref(),
+                expected_ata_payer,
+            )?;
+            created_ata_owners.insert(owner);
+        }
+        // Token, System, Memo and accepted programs: their legs are matched
+        // against the simulated inner instructions in verify_composed_legs.
+    }
+    for owner in &ata_policy.required_owners {
+        if !created_ata_owners.contains(owner) {
+            return Err(VerificationError::invalid_payload(format!(
+                "Missing required ATA creation instruction for split recipient {owner}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Spec step 6: match every required payment leg (primary and splits) among
+/// the top-level instructions (compiled, decoded here) and the inner
+/// instructions a simulation or a confirmed transaction reported (parsed
+/// JSON, the shape `getTransaction` with `jsonParsed` uses and the shape
+/// `simulateTransaction` returns for inner instructions). Each leg is matched
+/// to one distinct instruction: a top-level match is tried first, then the
+/// inner list. Requested memos MUST be top level. Finally, every top-level
+/// base-set token, System or Memo instruction must have been one of those
+/// legs; inner instructions are the accepted program's own behavior.
+fn verify_composed_legs(
+    top_level: &[CompiledInstruction],
+    account_keys: &[Pubkey],
+    inner: &[serde_json::Value],
+    request: &ChargeRequest,
+    method_details: &MethodDetails,
+    fee_payer: Option<&Pubkey>,
+) -> Result<(), VerificationError> {
+    let splits = method_details.splits.as_deref().unwrap_or(&[]);
+    let total_amount: u64 = request.amount.parse().map_err(|_| {
+        VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
+    })?;
+    let splits_total = crate::mpp::protocol::solana::checked_sum_split_amounts(splits)
+        .ok_or_else(|| VerificationError::invalid_amount("Split amounts overflow u64"))?;
+    let primary_amount = total_amount
+        .checked_sub(splits_total)
+        .ok_or_else(|| VerificationError::invalid_amount("Split amounts exceed total amount"))?;
+    if primary_amount == 0 {
+        return Err(VerificationError::invalid_amount(
+            "Primary amount is zero after splits",
+        ));
+    }
+    let recipient = request
+        .recipient
+        .as_deref()
+        .ok_or_else(|| VerificationError::invalid_recipient("No recipient in charge request"))?;
+    let recipient_pk = Pubkey::from_str(recipient)
+        .map_err(|e| VerificationError::invalid_recipient(format!("Invalid recipient: {e}")))?;
+    let mut legs = vec![(recipient_pk, primary_amount)];
+    for split in splits {
+        let split_pk = Pubkey::from_str(&split.recipient).map_err(|e| {
+            VerificationError::invalid_recipient(format!("Invalid split recipient: {e}"))
+        })?;
+        let amount: u64 = split
+            .amount
+            .parse()
+            .map_err(|_| VerificationError::invalid_amount("Invalid split amount"))?;
+        legs.push((split_pk, amount));
+    }
+
+    // A "No matching …" error from the top-level matcher means "try the inner
+    // list"; any other error (fee payer as authority or source) is final.
+    fn not_found(err: &VerificationError) -> bool {
+        err.message.starts_with("No matching")
+    }
+
+    let fee_payer_str = fee_payer.map(ToString::to_string);
+    let mut matched_top = HashSet::new();
+    let mut matched_inner = HashSet::new();
+    let is_native_sol = request.currency.to_uppercase() == "SOL";
+    if is_native_sol {
+        for (recipient, amount) in &legs {
+            match verify_sol_transfer_instructions(
+                top_level,
+                account_keys,
+                recipient,
+                *amount,
+                fee_payer,
+                &mut matched_top,
+            ) {
+                Ok(()) => continue,
+                Err(err) if not_found(&err) => {}
+                Err(err) => return Err(err),
+            }
+            find_sol_transfer(
+                inner,
+                &recipient.to_string(),
+                *amount,
+                fee_payer_str.as_deref(),
+                &mut matched_inner,
+            )?;
+        }
+    } else {
+        let expected_mint =
+            resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
+        let expected_token_program = expected_token_program(method_details)?;
+        let token_program_str = expected_token_program.as_ref().map(ToString::to_string);
+        for (recipient, amount) in &legs {
+            match verify_spl_transfer_instructions(
+                top_level,
+                account_keys,
+                recipient,
+                &expected_mint,
+                *amount,
+                expected_token_program.as_ref(),
+                method_details.decimals,
+                fee_payer,
+                &mut matched_top,
+            ) {
+                Ok(()) => continue,
+                Err(err) if not_found(&err) => {}
+                Err(err) => return Err(err),
+            }
+            find_spl_transfer(
+                inner,
+                &recipient.to_string(),
+                &expected_mint.to_string(),
+                *amount,
+                token_program_str.as_deref(),
+                fee_payer_str.as_deref(),
+                &mut matched_inner,
+            )?;
+        }
+    }
+    verify_memo_instructions(
+        top_level,
+        account_keys,
+        request.external_id.as_deref(),
+        splits,
+        &mut matched_top,
+    )?;
+
+    // Spec step 4: a top-level base-set value or memo instruction is allowed
+    // only as a matched leg.
+    let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
+    let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+    let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+    let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
+    for (index, ix) in top_level.iter().enumerate() {
+        if matched_top.contains(&index) {
+            continue;
+        }
+        let program = account_keys
+            .get(ix.program_id_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
+        if program == &system_program {
+            return Err(VerificationError::invalid_payload(
+                "Unexpected System Program instruction in payment transaction",
+            ));
+        }
+        if program == &token_program || program == &token_2022_program {
+            return Err(VerificationError::invalid_payload(
+                "Unexpected Token Program instruction in payment transaction",
+            ));
+        }
+        if program == &memo_program {
+            return Err(VerificationError::invalid_payload(
+                "Unexpected Memo Program instruction in payment transaction",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The inner instructions a simulation reported, as the parsed JSON objects
+/// the post-confirmation matchers already understand. Agave returns
+/// simulated inner instructions parsed (`ParsedInstruction`, or
+/// `PartiallyDecoded` for programs it cannot parse), the same shape
+/// `getTransaction` with `jsonParsed` uses. A compiled entry is resolved to
+/// its program id so it is still visible; it cannot match a payment leg.
+fn simulated_inner_instructions_as_parsed(
+    tx: &VersionedTransaction,
+    inner: Option<&[solana_transaction_status_client_types::UiInnerInstructions]>,
+) -> Result<Vec<serde_json::Value>, VerificationError> {
+    let account_keys = tx.message.static_account_keys();
+    let mut out = Vec::new();
+    for group in inner.unwrap_or(&[]) {
+        for ix in &group.instructions {
+            let value = match ix {
+                UiInstruction::Parsed(parsed) => serde_json::to_value(parsed).map_err(|e| {
+                    VerificationError::new(format!(
+                        "Failed to serialize simulated inner instruction: {e}"
+                    ))
+                })?,
+                UiInstruction::Compiled(compiled) => {
+                    let program_id = account_keys
+                        .get(compiled.program_id_index as usize)
+                        .ok_or_else(|| {
+                            VerificationError::invalid_payload(
+                                "Simulated inner instruction has an invalid program index",
+                            )
+                        })?;
+                    serde_json::json!({
+                        "programId": program_id.to_string(),
+                        "accounts": compiled.accounts,
+                        "data": compiled.data,
+                    })
+                }
+            };
+            out.push(value);
+        }
+    }
+    Ok(out)
 }
 
 struct AtaCreationPolicy {
@@ -2324,7 +2918,7 @@ fn validate_create_ata_idempotent_instruction(
 
 /// Check that the transaction contains a System Program transfer of `amount` to `recipient`.
 fn verify_sol_transfer_instructions(
-    tx: &VersionedTransaction,
+    instructions: &[CompiledInstruction],
     account_keys: &[Pubkey],
     recipient: &Pubkey,
     amount: u64,
@@ -2333,7 +2927,7 @@ fn verify_sol_transfer_instructions(
 ) -> Result<(), VerificationError> {
     let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
 
-    for (index, ix) in tx.message.instructions().iter().enumerate() {
+    for (index, ix) in instructions.iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
             continue;
         }
@@ -2378,7 +2972,7 @@ fn verify_sol_transfer_instructions(
 }
 
 fn verify_memo_instructions(
-    tx: &VersionedTransaction,
+    instructions: &[CompiledInstruction],
     account_keys: &[Pubkey],
     external_id: Option<&str>,
     splits: &[Split],
@@ -2394,7 +2988,7 @@ fn verify_memo_instructions(
         }
 
         let mut found = false;
-        for (index, ix) in tx.message.instructions().iter().enumerate() {
+        for (index, ix) in instructions.iter().enumerate() {
             if matched_instruction_indexes.contains(&index) {
                 continue;
             }
@@ -2419,7 +3013,7 @@ fn verify_memo_instructions(
 /// Check that the transaction contains an SPL Token transferChecked of `amount` to `recipient`'s ATA.
 #[allow(clippy::too_many_arguments)]
 fn verify_spl_transfer_instructions(
-    tx: &VersionedTransaction,
+    instructions: &[CompiledInstruction],
     account_keys: &[Pubkey],
     recipient: &Pubkey,
     expected_mint: &Pubkey,
@@ -2433,7 +3027,7 @@ fn verify_spl_transfer_instructions(
     let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
     let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
 
-    for (index, ix) in tx.message.instructions().iter().enumerate() {
+    for (index, ix) in instructions.iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
             continue;
         }
@@ -2740,6 +3334,7 @@ fn verify_ata_owner(
     expected_ata == ata_pk
 }
 
+#[cfg(test)]
 fn validate_parsed_instruction_allowlist(
     instructions: &[serde_json::Value],
     matched_payment_instruction_indexes: &HashSet<usize>,
@@ -2748,6 +3343,32 @@ fn validate_parsed_instruction_allowlist(
     expected_token_program: Option<&str>,
     expected_ata_payer: Option<&str>,
     required_ata_owners: &HashSet<String>,
+) -> Result<(), VerificationError> {
+    validate_parsed_instruction_allowlist_with(
+        instructions,
+        matched_payment_instruction_indexes,
+        expected_mint,
+        allowed_ata_owners,
+        expected_token_program,
+        expected_ata_payer,
+        required_ata_owners,
+        &HashSet::new(),
+    )
+}
+
+/// [`validate_parsed_instruction_allowlist`] that additionally accepts the
+/// programs in `accepted_programs` (a composed transaction's default composed
+/// set plus operator-listed programs). Strict callers pass an empty set.
+#[allow(clippy::too_many_arguments)]
+fn validate_parsed_instruction_allowlist_with(
+    instructions: &[serde_json::Value],
+    matched_payment_instruction_indexes: &HashSet<usize>,
+    expected_mint: Option<&str>,
+    allowed_ata_owners: &HashSet<String>,
+    expected_token_program: Option<&str>,
+    expected_ata_payer: Option<&str>,
+    required_ata_owners: &HashSet<String>,
+    accepted_programs: &HashSet<String>,
 ) -> Result<(), VerificationError> {
     let mut created_ata_owners = HashSet::new();
 
@@ -2796,6 +3417,10 @@ fn validate_parsed_instruction_allowlist(
                 expected_ata_payer,
             )?;
             created_ata_owners.insert(owner);
+            continue;
+        }
+
+        if program_id.is_some_and(|program_id| accepted_programs.contains(program_id)) {
             continue;
         }
 
@@ -3139,21 +3764,22 @@ pub(crate) fn resolve_expected_mint(
         .map_err(|e| VerificationError::invalid_payload(format!("Invalid currency/mint: {e}")))
 }
 
-/// Extract parsed instructions from an encoded transaction.
-fn extract_parsed_instructions(
+/// Extract parsed instructions from an encoded transaction: the top-level
+/// instructions and, separately, the inner instructions from `meta`.
+fn extract_parsed_instruction_groups(
     tx: &solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta,
-) -> Result<Vec<serde_json::Value>, VerificationError> {
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), VerificationError> {
     let tx_json = serde_json::to_value(&tx.transaction.transaction)
         .map_err(|e| VerificationError::new(format!("Failed to serialize transaction: {e}")))?;
 
-    let mut all = tx_json
+    let top_level = tx_json
         .get("message")
         .and_then(|m| m.get("instructions"))
         .and_then(|i| i.as_array())
         .cloned()
         .unwrap_or_default();
 
-    // Include inner instructions.
+    let mut inner_all = Vec::new();
     if let Some(meta) = &tx.transaction.meta {
         let meta_json = serde_json::to_value(meta)
             .map_err(|e| VerificationError::new(format!("Failed to serialize meta: {e}")))?;
@@ -3163,13 +3789,13 @@ fn extract_parsed_instructions(
         {
             for group in inner {
                 if let Some(ixs) = group.get("instructions").and_then(|i| i.as_array()) {
-                    all.extend(ixs.iter().cloned());
+                    inner_all.extend(ixs.iter().cloned());
                 }
             }
         }
     }
 
-    Ok(all)
+    Ok((top_level, inner_all))
 }
 
 // ── VerificationError ──
@@ -4220,7 +4846,8 @@ mod tests {
             &tx,
             &request,
             &method_details,
-            &[TxVersion::V0]
+            &[TxVersion::V0],
+            ComposedPolicy::DEFAULT,
         )
         .is_ok());
     }
@@ -4248,6 +4875,7 @@ mod tests {
             &request,
             &method_details,
             &[TxVersion::V0],
+            ComposedPolicy::DEFAULT,
         )
         .unwrap_err();
         assert!(err.message.contains("address lookup tables"));
@@ -8765,5 +9393,531 @@ mod tests {
         let details = request.method_details.unwrap();
         assert_eq!(details["network"], "devnet");
         assert_eq!(details["decimals"], 6);
+    }
+
+    // ── Composed transactions (spec, "Composed Transaction Verification") ──
+
+    fn ed25519_program_id() -> Pubkey {
+        Pubkey::from_str(programs::ED25519_PROGRAM).unwrap()
+    }
+
+    fn channel_program_id() -> Pubkey {
+        crate::core::payment_channels::default_program_id()
+    }
+
+    /// An instruction of `program` touching `accounts` (all writable,
+    /// non-signer) with opaque data, standing in for a program whose
+    /// semantics the verifier does not decode.
+    fn opaque_ix(program: Pubkey, accounts: Vec<Pubkey>) -> Instruction {
+        Instruction {
+            program_id: program,
+            accounts: accounts
+                .into_iter()
+                .map(|key| AccountMeta::new(key, false))
+                .collect(),
+            data: vec![0xC0, 0xFF, 0xEE],
+        }
+    }
+
+    /// A parsed inner `transferChecked`, as `simulateTransaction` and
+    /// `getTransaction` (`jsonParsed`) report it.
+    fn parsed_inner_transfer_checked(
+        source: &Pubkey,
+        mint: &Pubkey,
+        destination: &Pubkey,
+        authority: &Pubkey,
+        amount: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "program": "spl-token",
+            "programId": programs::TOKEN_PROGRAM,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "source": source.to_string(),
+                    "mint": mint.to_string(),
+                    "destination": destination.to_string(),
+                    "authority": authority.to_string(),
+                    "tokenAmount": { "amount": amount.to_string(), "decimals": 6 }
+                }
+            },
+            "stackHeight": 2
+        })
+    }
+
+    /// A composed channel-funded charge: Ed25519 + channel program at the top
+    /// level, with the payment leg as an inner `transferChecked` from the
+    /// channel escrow (authority = channel PDA) to the recipient's ATA.
+    fn composed_channel_charge(
+        fee_payer: &Pubkey,
+        recipient: &Pubkey,
+        mint: &Pubkey,
+        amount: u64,
+        extra_top_level: Vec<Instruction>,
+    ) -> (VersionedTransaction, Vec<serde_json::Value>) {
+        let tp = token_program_id();
+        let channel_pda = Pubkey::new_unique();
+        let escrow_ata = derive_ata(&channel_pda, mint, &tp);
+        let dest_ata = derive_ata(recipient, mint, &tp);
+        let mut instructions = vec![
+            opaque_ix(ed25519_program_id(), vec![]),
+            opaque_ix(
+                channel_program_id(),
+                vec![channel_pda, escrow_ata, dest_ata, *mint, tp],
+            ),
+        ];
+        instructions.extend(extra_top_level);
+        let tx = dummy_tx(instructions, fee_payer);
+        let inner = vec![parsed_inner_transfer_checked(
+            &escrow_ata,
+            mint,
+            &dest_ata,
+            &channel_pda,
+            amount,
+        )];
+        (tx, inner)
+    }
+
+    fn usdc_mint() -> Pubkey {
+        Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap()
+    }
+
+    fn usdc_method_details() -> MethodDetails {
+        MethodDetails {
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn classify_direct_transfer_is_strict() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let tp = token_program_id();
+        let tx = dummy_tx(
+            vec![spl_transfer_checked_ix(
+                &derive_ata(&sender, &mint, &tp),
+                &mint,
+                &derive_ata(&recipient, &mint, &tp),
+                &sender,
+                1,
+                6,
+            )],
+            &sender,
+        );
+        assert_eq!(
+            classify_transaction_profile(&tx, &MethodDetails::default(), ComposedPolicy::DEFAULT)
+                .unwrap(),
+            TxProfile::Strict
+        );
+    }
+
+    #[test]
+    fn classify_default_composed_set_needs_no_advertisement() {
+        let payer = Pubkey::new_unique();
+        let tx = dummy_tx(
+            vec![
+                opaque_ix(ed25519_program_id(), vec![]),
+                opaque_ix(channel_program_id(), vec![Pubkey::new_unique()]),
+            ],
+            &payer,
+        );
+        assert_eq!(
+            classify_transaction_profile(&tx, &MethodDetails::default(), ComposedPolicy::DEFAULT)
+                .unwrap(),
+            TxProfile::Composed
+        );
+    }
+
+    #[test]
+    fn classify_unknown_program_uses_strict_wording() {
+        let payer = Pubkey::new_unique();
+        let rogue = Pubkey::new_unique();
+        let tx = dummy_tx(vec![opaque_ix(rogue, vec![])], &payer);
+        let err =
+            classify_transaction_profile(&tx, &MethodDetails::default(), ComposedPolicy::DEFAULT)
+                .unwrap_err();
+        assert!(
+            err.message.contains(&format!(
+                "Unexpected program instruction in payment transaction: {rogue}"
+            )),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn classify_challenge_listed_program_requires_operator_policy_too() {
+        let payer = Pubkey::new_unique();
+        let extra = Pubkey::new_unique();
+        let tx = dummy_tx(vec![opaque_ix(extra, vec![])], &payer);
+        let method_details = MethodDetails {
+            allowed_programs: Some(vec![extra.to_string()]),
+            ..Default::default()
+        };
+        // Listed in the challenge but not configured on this server: rejected.
+        assert!(
+            classify_transaction_profile(&tx, &method_details, ComposedPolicy::DEFAULT).is_err()
+        );
+        // Listed in both: composed.
+        let extras = [extra];
+        let policy = ComposedPolicy {
+            accept: true,
+            extra_programs: &extras,
+        };
+        assert_eq!(
+            classify_transaction_profile(&tx, &method_details, policy).unwrap(),
+            TxProfile::Composed
+        );
+    }
+
+    #[test]
+    fn classify_respects_accept_composed_false() {
+        let payer = Pubkey::new_unique();
+        let tx = dummy_tx(vec![opaque_ix(channel_program_id(), vec![])], &payer);
+        let policy = ComposedPolicy {
+            accept: false,
+            extra_programs: &[],
+        };
+        let err = classify_transaction_profile(&tx, &MethodDetails::default(), policy).unwrap_err();
+        assert!(err.message.contains("disabled"), "{}", err.message);
+    }
+
+    #[test]
+    fn composed_pre_broadcast_isolates_the_sponsor() {
+        let gateway = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let sponsored = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(gateway.to_string()),
+            ..usdc_method_details()
+        };
+        let request = charge_request(250_000, &mint.to_string(), &recipient);
+
+        // Sponsor absent from every instruction: accepted as composed, legs
+        // deferred to simulation.
+        let (clean, _) = composed_channel_charge(&gateway, &recipient, &mint, 250_000, vec![]);
+        assert_eq!(
+            verify_versioned_transaction_pre_broadcast(
+                &clean,
+                &request,
+                &sponsored,
+                &[TxVersion::V0],
+                ComposedPolicy::DEFAULT,
+            )
+            .unwrap(),
+            TxProfile::Composed
+        );
+
+        // Sponsor passed as an account of a composed instruction: rejected
+        // before any signature, however the program would use it.
+        let (dirty, _) = composed_channel_charge(
+            &gateway,
+            &recipient,
+            &mint,
+            250_000,
+            vec![opaque_ix(channel_program_id(), vec![gateway])],
+        );
+        let err = verify_versioned_transaction_pre_broadcast(
+            &dirty,
+            &request,
+            &sponsored,
+            &[TxVersion::V0],
+            ComposedPolicy::DEFAULT,
+        )
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("Fee payer must not appear in any instruction"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn composed_legs_match_inner_transfer_and_reject_wrong_amount() {
+        let payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![]);
+        let keys = tx.message.static_account_keys();
+        let top_level = tx.message.instructions();
+        let method_details = usdc_method_details();
+
+        verify_composed_legs(
+            top_level,
+            keys,
+            &inner,
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &method_details,
+            None,
+        )
+        .unwrap();
+
+        let err = verify_composed_legs(
+            top_level,
+            keys,
+            &inner,
+            &charge_request(250_001, &mint.to_string(), &recipient),
+            &method_details,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("No matching SPL transferChecked"),
+            "{}",
+            err.message
+        );
+
+        // Simulation showed no inner transfer: the leg is missing.
+        assert!(verify_composed_legs(
+            top_level,
+            keys,
+            &[],
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &method_details,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn composed_legs_accept_a_top_level_leg_alongside_inner_ones() {
+        // A split paid by a direct top-level transfer while the primary comes
+        // from the channel: both legs match, each to a distinct instruction.
+        let payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let platform = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let tp = token_program_id();
+        let split = spl_transfer_checked_ix(
+            &derive_ata(&payer, &mint, &tp),
+            &mint,
+            &derive_ata(&platform, &mint, &tp),
+            &payer,
+            50_000,
+            6,
+        );
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 200_000, vec![split]);
+        let method_details = MethodDetails {
+            splits: Some(vec![Split {
+                recipient: platform.to_string(),
+                amount: "50000".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..usdc_method_details()
+        };
+        verify_composed_legs(
+            tx.message.instructions(),
+            tx.message.static_account_keys(),
+            &inner,
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &method_details,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn composed_legs_reject_unmatched_top_level_token_instruction() {
+        let payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let stranger = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let tp = token_program_id();
+        // A stray top-level transfer to someone else rides along with a valid
+        // inner leg: the top-level base-set rule still applies.
+        let stray = spl_transfer_checked_ix(
+            &derive_ata(&payer, &mint, &tp),
+            &mint,
+            &derive_ata(&stranger, &mint, &tp),
+            &payer,
+            5,
+            6,
+        );
+        let (tx, inner) = composed_channel_charge(&payer, &recipient, &mint, 250_000, vec![stray]);
+        let err = verify_composed_legs(
+            tx.message.instructions(),
+            tx.message.static_account_keys(),
+            &inner,
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &usdc_method_details(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("Unexpected Token Program instruction"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn composed_legs_reject_sponsor_as_inner_authority() {
+        let gateway = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = usdc_mint();
+        let (tx, mut inner) = composed_channel_charge(&gateway, &recipient, &mint, 250_000, vec![]);
+        inner[0]["parsed"]["info"]["authority"] = serde_json::json!(gateway.to_string());
+        let err = verify_composed_legs(
+            tx.message.instructions(),
+            tx.message.static_account_keys(),
+            &inner,
+            &charge_request(250_000, &mint.to_string(), &recipient),
+            &usdc_method_details(),
+            Some(&gateway),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("Fee payer cannot authorize"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn simulated_inner_instructions_keep_parsed_shape_and_resolve_compiled_ids() {
+        use solana_transaction_status_client_types::{
+            ParsedInstruction, UiCompiledInstruction, UiInnerInstructions, UiParsedInstruction,
+        };
+        let payer = Pubkey::new_unique();
+        let touched = Pubkey::new_unique();
+        let tx = dummy_tx(vec![opaque_ix(channel_program_id(), vec![touched])], &payer);
+        let inner = vec![UiInnerInstructions {
+            index: 0,
+            instructions: vec![
+                UiInstruction::Parsed(UiParsedInstruction::Parsed(ParsedInstruction {
+                    program: "spl-token".to_string(),
+                    program_id: programs::TOKEN_PROGRAM.to_string(),
+                    parsed: serde_json::json!({ "type": "transferChecked", "info": {} }),
+                    stack_height: Some(2),
+                })),
+                UiInstruction::Compiled(UiCompiledInstruction {
+                    program_id_index: 1,
+                    accounts: vec![0],
+                    data: "3Bxs".to_string(),
+                    stack_height: Some(2),
+                }),
+            ],
+        }];
+        let out = simulated_inner_instructions_as_parsed(&tx, Some(&inner)).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(parsed_program_id(&out[0]), Some(programs::TOKEN_PROGRAM));
+        assert_eq!(out[0]["parsed"]["type"], "transferChecked");
+        let expected = tx.message.static_account_keys()[1].to_string();
+        assert_eq!(out[1]["programId"], expected);
+        assert!(simulated_inner_instructions_as_parsed(&tx, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn parsed_composed_transaction_is_policed_at_the_top_level_only() {
+        let owner = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let tp = programs::TOKEN_PROGRAM;
+        let owner_pk = Pubkey::from_str(owner).unwrap();
+        let owner_ata = derive_ata(&owner_pk, &usdc_mint(), &token_program_id());
+        let channel = channel_program_id().to_string();
+
+        let top_level = vec![
+            serde_json::json!({ "programId": programs::ED25519_PROGRAM, "accounts": [], "data": "" }),
+            serde_json::json!({ "programId": channel, "accounts": [], "data": "" }),
+        ];
+        let inner = vec![serde_json::json!({
+            "programId": tp,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "destination": owner_ata.to_string(),
+                    "mint": mint,
+                    "tokenAmount": { "amount": "250000" }
+                }
+            }
+        })];
+        let method_details = usdc_method_details();
+        assert_eq!(
+            classify_parsed_transaction_profile(
+                &top_level,
+                &method_details,
+                ComposedPolicy::DEFAULT
+            )
+            .unwrap(),
+            TxProfile::Composed
+        );
+        let accepted =
+            accepted_composed_program_strings(&method_details, ComposedPolicy::DEFAULT).unwrap();
+
+        let mut instructions = top_level.clone();
+        instructions.extend(inner);
+        let matched =
+            verify_spl_transfers(&instructions, owner, mint, 250_000, &[], Some(tp), None).unwrap();
+        validate_parsed_instruction_allowlist_with(
+            &instructions[..2],
+            &matched,
+            Some(mint),
+            &HashSet::new(),
+            Some(tp),
+            None,
+            &HashSet::new(),
+            &accepted,
+        )
+        .unwrap();
+
+        // An unknown top-level program in the confirmed transaction is still
+        // rejected (spec step 7 re-applies the top-level check).
+        let rogue = vec![serde_json::json!({ "programId": Pubkey::new_unique().to_string() })];
+        assert!(classify_parsed_transaction_profile(
+            &rogue,
+            &method_details,
+            ComposedPolicy::DEFAULT
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn challenge_advertises_only_operator_extensions() {
+        // Default: the default composed set is accepted but never advertised.
+        let challenge = test_mpp().charge("1.00").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        assert!(request
+            .method_details
+            .unwrap()
+            .get("allowedPrograms")
+            .is_none());
+
+        // Operator extension: advertised verbatim.
+        let extra = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            allowed_programs: vec![extra.to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp.charge("1.00").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        assert_eq!(
+            request.method_details.unwrap()["allowedPrograms"],
+            serde_json::json!([extra.to_string()])
+        );
+
+        // Listing an always-accepted program is a boot-time misconfiguration.
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            allowed_programs: vec![channel_program_id().to_string()],
+            ..Default::default()
+        })
+        .err()
+        .expect("must reject");
+        assert!(err.to_string().contains("always accepted"), "{err}");
     }
 }

@@ -1,6 +1,7 @@
 //! Client-side implementations for the charge, session, and subscription intents.
 
 pub mod authenticate;
+pub mod channel_funded;
 mod charge;
 #[cfg(feature = "confidential")]
 pub(crate) mod confidential;
@@ -15,6 +16,7 @@ pub use authenticate::{
     build_credential as build_authenticate_credential,
     build_credential_header as build_authenticate_credential_header,
 };
+pub use channel_funded::ChannelFundedCharge;
 pub use charge::*;
 pub use http_stream::*;
 pub use session::{

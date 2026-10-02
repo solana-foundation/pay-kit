@@ -59,6 +59,11 @@ path = "tests/settlement_onchain.rs"
 required-features = ["testkit"]
 
 [[test]]
+name = "composed_charge_surfnet"
+path = "tests/composed_charge_surfnet.rs"
+required-features = ["testkit"]
+
+[[test]]
 name = "confidential_integration"
 path = "tests/confidential_integration.rs"
 required-features = ["confidential", "worker"]

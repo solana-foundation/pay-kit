@@ -146,6 +146,11 @@ pub struct SelectChargeChallengeOptions<'a> {
     /// challenges (and challenges whose token program we can't determine
     /// from `methodDetails`) are skipped.
     pub allow_unknown_token_2022: bool,
+    /// Non-base programs the client's funding source invokes at the top level
+    /// of a composed transaction (see [`composed_programs_accepted`]).
+    /// Challenges that do not accept every one of them are skipped. Empty for
+    /// a direct transfer.
+    pub required_programs: &'a [Pubkey],
 }
 
 /// Build a charge transaction from challenge parameters and additional client options.
@@ -383,6 +388,165 @@ pub async fn build_prepared_charge(
         transaction,
         fee_payer,
         blockhash,
+    })
+}
+
+/// Programs a composed transaction may invoke at the top level under this
+/// challenge: the default composed set (always accepted, never advertised)
+/// plus the challenge's `allowedPrograms`, if any. See the spec's "Composed
+/// Transactions" section.
+pub fn accepted_composed_programs(method_details: &MethodDetails) -> Result<Vec<Pubkey>, Error> {
+    let mut accepted = crate::mpp::protocol::solana::default_composed_programs().to_vec();
+    for entry in method_details.allowed_programs.as_deref().unwrap_or(&[]) {
+        accepted.push(
+            Pubkey::from_str(entry).map_err(|e| {
+                Error::Other(format!("invalid allowedPrograms entry `{entry}`: {e}"))
+            })?,
+        );
+    }
+    Ok(accepted)
+}
+
+/// Whether every program in `programs` is either a base-set program or
+/// accepted by the challenge for composed transactions.
+pub fn composed_programs_accepted(method_details: &MethodDetails, programs: &[Pubkey]) -> bool {
+    let Ok(accepted) = accepted_composed_programs(method_details) else {
+        return false;
+    };
+    programs
+        .iter()
+        .all(|p| crate::mpp::protocol::solana::is_base_program(p) || accepted.contains(p))
+}
+
+/// Build the unsigned transaction for a *composed* charge: the caller
+/// supplies the instructions that produce the payment (for example
+/// [`ChannelFundedCharge::instructions`](super::ChannelFundedCharge::instructions))
+/// and this function adds the compute budget, fee payer, blockhash, and
+/// version negotiation exactly as [`build_prepared_charge`] does for a direct
+/// transfer.
+///
+/// Fails before any signing when an instruction invokes a program the
+/// challenge does not accept, or when a sponsored fee payer would appear in
+/// an instruction (the spec's fee-payer isolation rule).
+pub async fn build_prepared_composed_charge(
+    signer_pubkey: Pubkey,
+    rpc: &RpcClient,
+    method_details: &MethodDetails,
+    instructions: Vec<Instruction>,
+    options: &BuildChargeTransactionOptions,
+) -> Result<PreparedCharge, Error> {
+    if instructions.is_empty() {
+        return Err(Error::Other(
+            "composed charge needs at least one instruction".into(),
+        ));
+    }
+    let accepted = accepted_composed_programs(method_details)?;
+    for ix in &instructions {
+        if !crate::mpp::protocol::solana::is_base_program(&ix.program_id)
+            && !accepted.contains(&ix.program_id)
+        {
+            return Err(Error::Other(format!(
+                "program {} is not accepted by this challenge (not in the default composed set or allowedPrograms)",
+                ix.program_id
+            )));
+        }
+    }
+
+    let use_fee_payer =
+        method_details.fee_payer.unwrap_or(false) && method_details.fee_payer_key.is_some();
+    let fee_payer_pubkey = if use_fee_payer {
+        let key = method_details.fee_payer_key.as_ref().unwrap();
+        Some(Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?)
+    } else {
+        None
+    };
+    if let Some(fee_payer) = fee_payer_pubkey.as_ref() {
+        // Fee-payer isolation: the sponsor may appear only as fee payer, so no
+        // instruction at any depth can debit it. The server rejects the same.
+        let referenced = instructions.iter().any(|ix| {
+            ix.program_id == *fee_payer || ix.accounts.iter().any(|a| a.pubkey == *fee_payer)
+        });
+        if referenced {
+            return Err(Error::Other(
+                "composed charge instructions must not reference the server fee payer".into(),
+            ));
+        }
+    }
+
+    options.compute_budget.validate()?;
+    let budget = crate::core::tx::ComputeBudget::new(
+        options.compute_budget.compute_unit_limit,
+        options.compute_budget.compute_unit_price_micro_lamports,
+    );
+    let blockhash = resolve_blockhash(rpc, method_details)?;
+    let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
+    let version = crate::core::tx::negotiate(
+        method_details.transaction_versions.as_deref(),
+        options.max_tx_version,
+    )?;
+    let transaction = crate::core::tx::build_unsigned_unchecked(
+        version,
+        &fee_payer,
+        &instructions,
+        blockhash,
+        Some(&budget),
+    )?;
+    check_transaction_size(&transaction)?;
+    Ok(PreparedCharge {
+        transaction,
+        fee_payer,
+        blockhash,
+    })
+}
+
+/// Build and sign a composed charge credential from caller-supplied payment
+/// instructions. The signer signs only if it is a required signer of the
+/// resulting message: a sponsored transaction whose composed instructions are
+/// all permissionless carries no client signature at all, which the spec
+/// permits.
+pub async fn build_composed_charge_transaction(
+    signer: &dyn TransactionSigner,
+    rpc: &RpcClient,
+    method_details: &MethodDetails,
+    instructions: Vec<Instruction>,
+    options: BuildChargeTransactionOptions,
+) -> Result<CredentialPayload, Error> {
+    if method_details.confidential.unwrap_or(false) {
+        return Err(Error::Other(
+            "confidential challenges cannot be paid with a composed transaction".into(),
+        ));
+    }
+    if let Some(expected) = options.expected_network.as_deref() {
+        let actual = method_details.network.as_deref().unwrap_or("mainnet");
+        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
+            && matches!(expected, "mainnet" | "mainnet-beta");
+        if actual != expected && !both_mainnet {
+            return Err(Error::Other(format!(
+                "Challenge network `{actual}` does not match client expected_network `{expected}`"
+            )));
+        }
+    }
+
+    let signer_pubkey = signer.pubkey();
+    let prepared =
+        build_prepared_composed_charge(signer_pubkey, rpc, method_details, instructions, &options)
+            .await?;
+    let mut tx = prepared.transaction;
+    let required = tx.message.header().num_required_signatures as usize;
+    let signs = tx
+        .message
+        .static_account_keys()
+        .iter()
+        .take(required)
+        .any(|key| key == &signer_pubkey);
+    if signs {
+        crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
+            .await
+            .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
+    }
+    let encoded = crate::core::tx::encode(&tx)?;
+    Ok(CredentialPayload::Transaction {
+        transaction: encoded,
     })
 }
 
@@ -630,6 +794,10 @@ pub fn select_charge_challenge<'a>(
         if !options.allow_unknown_token_2022
             && challenge_is_unknown_token_2022(&request, &method_details)
         {
+            continue;
+        }
+
+        if !composed_programs_accepted(&method_details, options.required_programs) {
             continue;
         }
 
@@ -3575,5 +3743,191 @@ mod tests {
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid method details"));
+    }
+
+    // ── Composed transactions ──
+
+    fn composed_details(allowed: Option<Vec<String>>, sponsor: Option<Pubkey>) -> MethodDetails {
+        MethodDetails {
+            decimals: Some(6),
+            network: Some("mainnet".to_string()),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: sponsor.map(|_| true),
+            fee_payer_key: sponsor.map(|k| k.to_string()),
+            allowed_programs: allowed,
+            ..Default::default()
+        }
+    }
+
+    fn opaque(program: Pubkey, accounts: Vec<Pubkey>) -> Instruction {
+        Instruction {
+            program_id: program,
+            accounts: accounts
+                .into_iter()
+                .map(|k| AccountMeta::new(k, false))
+                .collect(),
+            data: vec![1, 2, 3],
+        }
+    }
+
+    #[test]
+    fn composed_programs_accepted_covers_default_set_and_listed_extensions() {
+        let ed = Pubkey::from_str(programs::ED25519_PROGRAM).unwrap();
+        let channel = crate::core::payment_channels::default_program_id();
+        let token = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let extra = Pubkey::new_unique();
+
+        let plain = composed_details(None, None);
+        assert!(composed_programs_accepted(&plain, &[]));
+        assert!(composed_programs_accepted(&plain, &[ed, channel, token]));
+        assert!(!composed_programs_accepted(&plain, &[extra]));
+
+        let listing = composed_details(Some(vec![extra.to_string()]), None);
+        assert!(composed_programs_accepted(&listing, &[ed, extra]));
+
+        let malformed = composed_details(Some(vec!["nope".to_string()]), None);
+        assert!(!composed_programs_accepted(&malformed, &[ed]));
+    }
+
+    #[tokio::test]
+    async fn composed_charge_builder_enforces_program_set_and_sponsor_isolation() {
+        let rpc = RpcClient::new("http://localhost:1".to_string());
+        let signer = Pubkey::new_unique();
+        let channel = crate::core::payment_channels::default_program_id();
+        let ed = Pubkey::from_str(programs::ED25519_PROGRAM).unwrap();
+        let options = BuildChargeTransactionOptions::default();
+
+        // Default composed set: accepted without any advertisement; the
+        // signer pays its own fee. Two compute-budget instructions precede
+        // the caller's two.
+        let plain = composed_details(None, None);
+        let prepared = build_prepared_composed_charge(
+            signer,
+            &rpc,
+            &plain,
+            vec![
+                opaque(ed, vec![]),
+                opaque(channel, vec![Pubkey::new_unique()]),
+            ],
+            &options,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.fee_payer, signer);
+        assert_eq!(prepared.transaction.message.instructions().len(), 4);
+
+        // Unlisted program: refused before anything is signed.
+        let rogue = Pubkey::new_unique();
+        let err = build_prepared_composed_charge(
+            signer,
+            &rpc,
+            &plain,
+            vec![opaque(rogue, vec![])],
+            &options,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not accepted"), "{err}");
+
+        // Listed by the challenge: accepted.
+        let listing = composed_details(Some(vec![rogue.to_string()]), None);
+        build_prepared_composed_charge(
+            signer,
+            &rpc,
+            &listing,
+            vec![opaque(rogue, vec![])],
+            &options,
+        )
+        .await
+        .unwrap();
+
+        // Sponsored: the gateway is the fee payer and may appear nowhere else.
+        let gateway = Pubkey::new_unique();
+        let sponsored = composed_details(None, Some(gateway));
+        let prepared = build_prepared_composed_charge(
+            signer,
+            &rpc,
+            &sponsored,
+            vec![opaque(channel, vec![])],
+            &options,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.fee_payer, gateway);
+        let err = build_prepared_composed_charge(
+            signer,
+            &rpc,
+            &sponsored,
+            vec![opaque(channel, vec![gateway])],
+            &options,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must not reference the server fee payer"),
+            "{err}"
+        );
+
+        assert!(
+            build_prepared_composed_charge(signer, &rpc, &plain, vec![], &options)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn select_charge_challenge_requires_listed_programs() {
+        let extra = Pubkey::new_unique();
+        let plain = selection_challenge("plain", "solana", "USDC", "mainnet");
+        let details = MethodDetails {
+            decimals: Some(6),
+            network: Some("mainnet".to_string()),
+            allowed_programs: Some(vec![extra.to_string()]),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "1000".to_string(),
+            currency: "USDC".to_string(),
+            method_details: Some(serde_json::to_value(details).unwrap()),
+            recipient: Some(RECIPIENT.to_string()),
+            ..Default::default()
+        };
+        let listing = PaymentChallenge::new(
+            "listing",
+            "test",
+            "solana",
+            "charge",
+            Base64UrlJson::from_typed(&request).unwrap(),
+        );
+        let challenges = vec![plain, listing];
+
+        // A funding source that needs `extra` skips the plain challenge.
+        let required = [extra];
+        let selected = select_charge_challenge(
+            &challenges,
+            SelectChargeChallengeOptions {
+                network: Some("mainnet"),
+                required_programs: &required,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.id, "listing");
+
+        // The default composed set is accepted everywhere: first wins.
+        let defaults = crate::mpp::protocol::solana::default_composed_programs();
+        let selected = select_charge_challenge(
+            &challenges,
+            SelectChargeChallengeOptions {
+                network: Some("mainnet"),
+                required_programs: &defaults,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.id, "plain");
     }
 }

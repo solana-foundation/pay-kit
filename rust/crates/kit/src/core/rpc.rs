@@ -106,6 +106,29 @@ pub fn simulate_transaction(
     )
 }
 
+/// Simulate `tx` and return the inner (cross-program) instructions it would
+/// emit, for outcome verification of a composed transaction. Signatures are
+/// not checked and the blockhash is replaced, so the result reflects program
+/// behavior rather than envelope freshness; the `send_transaction` preflight
+/// that follows re-checks both.
+pub fn simulate_transaction_with_inner_instructions(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+) -> Result<Response<RpcSimulateTransactionResult>, ClientError> {
+    let config = RpcSimulateTransactionConfig {
+        sig_verify: false,
+        replace_recent_blockhash: true,
+        commitment: Some(rpc.commitment()),
+        encoding: Some(UiTransactionEncoding::Base64),
+        inner_instructions: true,
+        ..RpcSimulateTransactionConfig::default()
+    };
+    rpc.send(
+        RpcRequest::SimulateTransaction,
+        json!([encoded(tx)?, config]),
+    )
+}
+
 /// Broadcast with node preflight, then poll the signature at the client's
 /// commitment every 500 ms until it lands, fails, or its blockhash expires:
 /// what `RpcClient::send_and_confirm_transaction` does.

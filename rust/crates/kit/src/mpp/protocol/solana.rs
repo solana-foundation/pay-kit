@@ -10,6 +10,10 @@ pub mod programs {
     pub const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
     pub const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
     pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+    /// Native Ed25519 signature-verification program. Part of the default
+    /// composed set (see [`default_composed_programs`]): payment-channel
+    /// vouchers are verified through it.
+    pub const ED25519_PROGRAM: &str = "Ed25519SigVerify111111111111111111111111111";
 }
 
 /// Well-known stablecoin mint addresses.
@@ -423,6 +427,7 @@ mod tests {
                 memo: Some("test memo".to_string()),
             }]),
             recent_blockhash: Some("BlockhashXyz".to_string()),
+            allowed_programs: None,
             confidential: None,
             auditor_elgamal_pubkey: None,
             recipient_elgamal_pubkey: None,
@@ -956,6 +961,77 @@ mod tests {
     }
 }
 
+/// Maximum number of entries in `methodDetails.allowedPrograms`.
+pub const MAX_ALLOWED_PROGRAMS: usize = 8;
+
+/// The base instruction set of a Solana charge transaction: the programs a
+/// direct transfer may invoke at the top level (System, SPL Token,
+/// Token-2022, Associated Token Account, Memo, Compute Budget). Any other
+/// top-level program makes the transaction *composed* and switches the
+/// server to outcome verification (spec, "Composed Transaction
+/// Verification").
+pub fn is_base_program(program: &solana_pubkey::Pubkey) -> bool {
+    let program = program.to_string();
+    matches!(
+        program.as_str(),
+        programs::SYSTEM_PROGRAM
+            | programs::TOKEN_PROGRAM
+            | programs::TOKEN_2022_PROGRAM
+            | programs::ASSOCIATED_TOKEN_PROGRAM
+            | programs::MEMO_PROGRAM
+            | programs::COMPUTE_BUDGET_PROGRAM
+    )
+}
+
+/// The default composed set: programs every server accepts at the top level
+/// of a composed transaction without advertising them (spec, "Composed
+/// Transactions"). The Ed25519 signature-verification program and the
+/// payment-channel program together let a client pay a charge from a
+/// channel whose committed payee is the merchant.
+pub fn default_composed_programs() -> [solana_pubkey::Pubkey; 2] {
+    [
+        std::str::FromStr::from_str(programs::ED25519_PROGRAM).expect("valid ed25519 program id"),
+        crate::core::payment_channels::default_program_id(),
+    ]
+}
+
+/// Parse and validate an operator-supplied `allowedPrograms` extension list:
+/// at most [`MAX_ALLOWED_PROGRAMS`] valid, distinct program IDs, none of
+/// which is a base-set or default-composed-set program (those are always
+/// accepted and never advertised).
+pub fn validate_allowed_programs(
+    list: &[String],
+) -> Result<Vec<solana_pubkey::Pubkey>, crate::mpp::error::Error> {
+    use crate::mpp::error::Error;
+    if list.len() > MAX_ALLOWED_PROGRAMS {
+        return Err(Error::InvalidConfig(format!(
+            "allowedPrograms has {} entries (maximum {MAX_ALLOWED_PROGRAMS})",
+            list.len()
+        )));
+    }
+    let defaults = default_composed_programs();
+    let mut out: Vec<solana_pubkey::Pubkey> = Vec::with_capacity(list.len());
+    for entry in list {
+        let program = std::str::FromStr::from_str(entry).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "allowedPrograms entry `{entry}` is not a pubkey: {e}"
+            ))
+        })?;
+        if is_base_program(&program) || defaults.contains(&program) {
+            return Err(Error::InvalidConfig(format!(
+                "allowedPrograms entry `{entry}` is always accepted and must not be listed"
+            )));
+        }
+        if out.contains(&program) {
+            return Err(Error::InvalidConfig(format!(
+                "allowedPrograms entry `{entry}` is listed twice"
+            )));
+        }
+        out.push(program);
+    }
+    Ok(out)
+}
+
 /// Solana-specific method details in the challenge request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -989,6 +1065,13 @@ pub struct MethodDetails {
     /// Server-provided recent blockhash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
+
+    /// Additional programs the server accepts at the top level of a composed
+    /// transaction, beyond the base set and the default composed set (which
+    /// are never advertised). Operator policy; see
+    /// [`validate_allowed_programs`] and [`default_composed_programs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_programs: Option<Vec<String>>,
 
     /// If true, the charge MUST settle as a Token-2022 confidential transfer
     /// (the amount is encrypted on-chain). Requires a Token-2022 mint with the
@@ -1197,4 +1280,86 @@ pub enum CredentialPayload {
         /// transfer instruction.
         transactions: Vec<String>,
     },
+}
+
+#[cfg(test)]
+mod composed_tests {
+    use super::*;
+
+    // ── Composed transactions: allowedPrograms + default composed set ──
+
+    #[test]
+    fn base_and_default_composed_programs_are_disjoint_and_recognized() {
+        for base in [
+            programs::SYSTEM_PROGRAM,
+            programs::TOKEN_PROGRAM,
+            programs::TOKEN_2022_PROGRAM,
+            programs::ASSOCIATED_TOKEN_PROGRAM,
+            programs::MEMO_PROGRAM,
+            programs::COMPUTE_BUDGET_PROGRAM,
+        ] {
+            let key = <solana_pubkey::Pubkey as std::str::FromStr>::from_str(base).unwrap();
+            assert!(is_base_program(&key), "{base}");
+            assert!(!default_composed_programs().contains(&key), "{base}");
+        }
+        let defaults = default_composed_programs();
+        assert_eq!(
+            defaults[0],
+            <solana_pubkey::Pubkey as std::str::FromStr>::from_str(programs::ED25519_PROGRAM)
+                .unwrap()
+        );
+        assert_eq!(
+            defaults[1],
+            crate::core::payment_channels::default_program_id()
+        );
+        for program in defaults {
+            assert!(!is_base_program(&program));
+        }
+    }
+
+    #[test]
+    fn validate_allowed_programs_accepts_reviewed_extensions_only() {
+        let extra = solana_pubkey::Pubkey::new_unique();
+        assert_eq!(
+            validate_allowed_programs(&[extra.to_string()]).unwrap(),
+            vec![extra]
+        );
+        assert!(validate_allowed_programs(&[]).unwrap().is_empty());
+
+        // Always-accepted programs must not be listed.
+        for always in [
+            programs::TOKEN_PROGRAM.to_string(),
+            programs::ED25519_PROGRAM.to_string(),
+            crate::core::payment_channels::default_program_id().to_string(),
+        ] {
+            let err = validate_allowed_programs(&[always.clone()]).unwrap_err();
+            assert!(
+                err.to_string().contains("always accepted"),
+                "{always}: {err}"
+            );
+        }
+        // Not a pubkey, duplicates, and too many entries.
+        assert!(validate_allowed_programs(&["nope".to_string()]).is_err());
+        assert!(validate_allowed_programs(&[extra.to_string(), extra.to_string()]).is_err());
+        let many: Vec<String> = (0..=MAX_ALLOWED_PROGRAMS)
+            .map(|_| solana_pubkey::Pubkey::new_unique().to_string())
+            .collect();
+        assert!(validate_allowed_programs(&many).is_err());
+    }
+
+    #[test]
+    fn method_details_allowed_programs_round_trips_camel_case() {
+        let details = MethodDetails {
+            allowed_programs: Some(vec!["A".repeat(32)]),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&details).unwrap();
+        assert!(json.get("allowedPrograms").is_some());
+        assert!(json.get("allowed_programs").is_none());
+        let back: MethodDetails = serde_json::from_value(json).unwrap();
+        assert_eq!(back.allowed_programs, details.allowed_programs);
+        // Absent on the wire decodes to None and is not emitted.
+        let none = serde_json::to_value(MethodDetails::default()).unwrap();
+        assert!(none.get("allowedPrograms").is_none());
+    }
 }
