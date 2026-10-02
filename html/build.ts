@@ -63,42 +63,77 @@ async function main() {
   const Html = await import('./node_modules/mppx/dist/server/internal/html/config.js');
   const { serviceWorker: serviceWorkerContent } = await import('./node_modules/mppx/dist/server/internal/html/serviceWorker.gen.js');
 
-  const theme = Html.mergeDefined({
-    favicon: undefined,
-    fontUrl: undefined,
-    logo: { dark: 'https://solana.com/src/img/branding/solanaLogoMark.svg', light: 'https://solana.com/src/img/branding/solanaLogoMark.svg' },
-    ...Html.defaultTheme,
-  }, {});
-  const text = Html.sanitizeRecord(Html.mergeDefined(Html.defaultText, {}));
+  const { theme, text } = Html.resolveOptions({
+    config: {},
+    content: '',
+    formatAmount: () => '',
+    text: undefined,
+    theme: {
+      logo: {
+        dark: 'https://solana.com/src/img/branding/solanaLogoMark.svg',
+        light: 'https://solana.com/src/img/branding/solanaLogoMark.svg',
+      },
+    },
+  });
 
-  // Template uses mustache-style placeholders that servers replace at runtime
-  const htmlTemplate = Html.html`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="robots" content="noindex" />
-    <meta name="color-scheme" content="${theme.colorScheme}" />
-    <title>${text.title}</title>
-    ${Html.favicon(theme, '')} ${Html.font(theme)} ${Html.style(theme)}
-  </head>
-  <body>
-    <main>
-      <header class="${Html.classNames.header}">
-        ${Html.logo(theme)}
-        <span>${text.paymentRequired}</span>
-      </header>
-      <section class="${Html.classNames.summary}" aria-label="Payment summary">
-        <h1 class="${Html.classNames.summaryAmount}">{{AMOUNT}}</h1>
-        {{DESCRIPTION}}
-        {{EXPIRES}}
-      </section>
-      <div id="${Html.rootId}" aria-label="Payment form"></div>
-      <script id="__MPP_DATA__" type="application/json">{{DATA_JSON}}</script>
-      <script>${paymentUIRaw}</script>
-    </main>
-  </body>
-</html>`;
+  const amountMarker = '__MPP_AMOUNT__';
+  const descriptionMarker = '__MPP_DESCRIPTION__';
+  const expires = '2000-01-01T00:00:00.000Z';
+  const challenge = {
+    description: descriptionMarker,
+    expires,
+    id: '__MPP_CHALLENGE__',
+    intent: 'charge',
+    method: 'template',
+    realm: '',
+    request: {},
+  };
+  const dataMap = {
+    __MPP_DATA__: {
+      challenge,
+      config: {},
+      formattedAmount: amountMarker,
+      label: '',
+      rootId: Html.ids.root,
+      text,
+      theme,
+    },
+  };
+  const renderedTemplate = Html.render({
+    entries: [
+      {
+        challenge,
+        content: paymentUI,
+      },
+    ],
+    dataMap,
+    formattedAmount: amountMarker,
+    text,
+    theme,
+  });
+
+  // Replace the synthetic render data with placeholders filled by each server at runtime.
+  const htmlTemplate = renderedTemplate
+    .replace(amountMarker, '{{AMOUNT}}')
+    // Preserve the standalone-server data element contract. The payment UI
+    // accepts both this ID and mppx's native __MPPX_DATA__ ID.
+    .replace('id="__MPPX_DATA__"', 'id="__MPP_DATA__"')
+    .replace(
+      `<p class="${Html.classNames.summaryDescription}">${descriptionMarker}</p>`,
+      '{{DESCRIPTION}}',
+    )
+    .replace(
+      `<p class="${Html.classNames.summaryExpires}">${text.expires} <time datetime="${expires}">${new Date(expires).toLocaleString()}</time></p>`,
+      '{{EXPIRES}}',
+    )
+    .replace(JSON.stringify(dataMap), '{{DATA_JSON}}')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n');
+
+  for (const marker of ['{{AMOUNT}}', '{{DESCRIPTION}}', '{{EXPIRES}}', '{{DATA_JSON}}']) {
+    if (!htmlTemplate.includes(marker)) throw new Error(`Failed to generate ${marker} placeholder`);
+  }
 
   // Also generate the service worker content from mppx
   const mppxServiceWorker = serviceWorkerContent;
@@ -137,7 +172,7 @@ async function main() {
   );
 
   // Python: write template + service worker as raw files for importlib.resources
-  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'pay_kit', 'protocols', 'mpp', 'server', 'html');
+  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'solana_pay_kit', 'protocols', 'mpp', 'server', 'html');
   mkdirSync(pyDir, { recursive: true });
   writeFileSync(resolve(pyDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(pyDir, 'service_worker.gen.js'), mppxServiceWorker);
