@@ -115,14 +115,17 @@ pub struct BatchExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_slot: Option<u64>,
 
-    /// Voucher-signing mode: `"client"` (default) or `"server"`. This SDK
-    /// implements client mode only — its server never advertises `"server"`
-    /// and its client refuses such an accept (spec §4.1, §8).
+    /// Server-suggested escrow target in atomic units. Clients may clamp this
+    /// to a stricter local limit, especially for server-signed channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_deposit: Option<String>,
+
+    /// Voucher-signing mode: `"client"` (default) or `"server"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voucher_signer: Option<String>,
 
     /// Base58 resource-operator key; REQUIRED in server mode and MUST be absent
-    /// in client mode. Parsed for wire completeness, never produced here.
+    /// in client mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
 
@@ -298,9 +301,8 @@ impl BatchVoucher {
 /// a bearer credential authorizing one metered request up to `authorizedAmount`
 /// on a channel whose `authorized_signer` is the operator.
 ///
-/// Defined for wire completeness. This SDK neither issues nor accepts one: its
-/// server offers client-signed vouchers only and answers a server-mode payload
-/// with `invalid_batch_settlement_svm_payload_type`.
+/// Clients issue this proof only after an explicit local trust grant for the
+/// advertised operator. Resource-server support is independent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchAuthorization {
@@ -377,8 +379,7 @@ pub enum BatchPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voucher: Option<BatchVoucher>,
         deposit: BatchDeposit,
-        /// Server-mode payer proof, carried instead of `voucher` there. Parsed
-        /// so the refusal can name the right code; never accepted here.
+        /// Server-mode payer proof, carried instead of `voucher` there.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         authorization: Option<BatchAuthorization>,
     },
@@ -390,8 +391,7 @@ pub enum BatchPayload {
     },
 
     /// Server-mode steady-state request: an expiring payer proof instead of a
-    /// client-signed voucher. Parsed for wire completeness and refused with
-    /// `invalid_batch_settlement_svm_payload_type`.
+    /// client-signed voucher.
     Authorization {
         channel_config: BatchChannelConfig,
         authorization: BatchAuthorization,
@@ -672,6 +672,7 @@ mod tests {
             memo: Some("invoice-123".to_string()),
             recent_blockhash: None,
             recent_slot: Some(341_000_000),
+            min_deposit: None,
             channel_state: None,
             voucher_state: None,
             transaction_versions: None,

@@ -12,7 +12,9 @@
 //!
 //! See `specs/schemes/batch-settlement/scheme_batch_settlement_svm.md` §5.
 
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_hash::Hash;
 use solana_instruction::Instruction;
@@ -25,14 +27,54 @@ use crate::core::payment_channels as pc;
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
     check_corrective_voucher_state, check_token_program, check_withdraw_delay, derive_channel_id,
-    errors as codes, BatchChannelConfig, BatchDeposit, BatchError, BatchPayload,
-    BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements, BatchSettlementResponse,
-    BatchVoucher, BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
+    errors as codes, BatchAuthorization, BatchChannelConfig, BatchDeposit, BatchError,
+    BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements,
+    BatchSettlementResponse, BatchVoucher, BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
 /// Minimum random Memo nonce, in bytes, before hex encoding.
 const MEMO_NONCE_BYTES: usize = 16;
+
+/// Domain separator for the payer proof used by server-signed channels.
+const AUTHORIZATION_DOMAIN: &[u8] = b"x402-batch-authorization-v2";
+
+/// Prefix of the payer-signed Memo that binds an open channel to the server's
+/// receiver authorizer.
+const RECEIVER_BINDING_MEMO_PREFIX: &str = "x402:batch-settlement:svm:rcvauth:v1:";
+
+/// Explicit, local trust grants for server-signed channels.
+///
+/// In server mode the operator becomes the channel's onchain
+/// `authorized_signer` and can claim up to the full deposit. A 402 response is
+/// therefore never sufficient authority by itself: callers must allowlist the
+/// exact operator and bound the total escrow it may control.
+#[derive(Debug, Clone, Default)]
+pub struct ServerSignedChannelsPolicy {
+    operators: HashMap<Pubkey, u64>,
+}
+
+impl ServerSignedChannelsPolicy {
+    /// Create an empty policy, which trusts no server-signed operator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Trust `operator` up to `max_deposit` atomic units per channel.
+    pub fn allow_operator(mut self, operator: Pubkey, max_deposit: u64) -> Result<Self, Error> {
+        if max_deposit == 0 {
+            return Err(Error::Other(
+                "server-signed max_deposit must be positive".into(),
+            ));
+        }
+        self.operators.insert(operator, max_deposit);
+        Ok(self)
+    }
+
+    fn max_deposit_for(&self, operator: &Pubkey) -> Option<u64> {
+        self.operators.get(operator).copied()
+    }
+}
 
 fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
     BatchError::new(code, detail).into()
@@ -58,6 +100,12 @@ pub struct BatchTerms {
     /// The message version to build: the highest the sponsor advertises in
     /// `extra.transactionVersions` (`0` when it advertises none).
     pub tx_version: crate::core::tx::TxVersion,
+    /// Resource operator holding voucher authority in server mode.
+    pub operator: Option<Pubkey>,
+    /// Maximum total escrow locally granted to `operator`.
+    pub server_signed_max_deposit: Option<u64>,
+    /// Lifetime of a single-use server-mode payer authorization.
+    pub authorization_ttl_seconds: u64,
 }
 
 /// Validate a challenge's terms without touching the network.
@@ -71,21 +119,53 @@ pub fn resolve_terms_with_token_program(
     token_program: Pubkey,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
+    resolve_terms_with_token_program_and_policy(requirements, token_program, max_tx_version, None)
+}
+
+/// Validate challenge terms with an optional, locally configured grant for
+/// server-signed channels.
+pub fn resolve_terms_with_token_program_and_policy(
+    requirements: &BatchRequirements,
+    token_program: Pubkey,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
+    server_signed_policy: Option<&ServerSignedChannelsPolicy>,
+) -> Result<BatchTerms, Error> {
     let extra = &requirements.extra;
     crate::x402::protocol::schemes::batch_settlement::check_payment_flow(
         extra.payment_flow.as_deref(),
     )?;
-    // Server mode would record the operator as the channel's onchain
-    // `authorized_signer`, able to claim up to the whole deposit without any
-    // further signature from this client. This client signs its own vouchers
-    // and never delegates that authority; a 402 cannot opt it in (spec §8).
-    if extra.voucher_signer.as_deref() == Some("server") || extra.operator.is_some() {
-        return Err(Error::Other(
-            "batch-settlement accept requires a server-signed channel (extra.voucherSigner \
-             \"server\"); this client signs its own vouchers only — pay a client-signed accept"
-                .into(),
-        ));
-    }
+    let (operator, server_signed_max_deposit) = match extra.voucher_signer.as_deref() {
+        None | Some("client") => {
+            if extra.operator.is_some() {
+                return Err(Error::Other(
+                    "extra.operator is only valid when extra.voucherSigner is \"server\"".into(),
+                ));
+            }
+            (None, None)
+        }
+        Some("server") => {
+            let operator_text = extra.operator.as_deref().ok_or_else(|| {
+                Error::Other(
+                    "extra.operator is required when extra.voucherSigner is \"server\"".into(),
+                )
+            })?;
+            let operator = pc::parse_pubkey(operator_text)?;
+            let max_deposit = server_signed_policy
+                .and_then(|policy| policy.max_deposit_for(&operator))
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "server-signed batch operator {operator_text} is not trusted; add an \
+                         explicit local operator grant with a maximum deposit"
+                    ))
+                })?;
+            (Some(operator), Some(max_deposit))
+        }
+        Some(other) => {
+            return Err(Error::Other(format!(
+                "extra.voucherSigner must be \"client\" or \"server\", got {other:?}"
+            )))
+        }
+    };
     check_withdraw_delay(extra.withdraw_delay, requirements.max_timeout_seconds)?;
     let declared = check_token_program(&extra.token_program)?;
     if declared != token_program {
@@ -103,9 +183,13 @@ pub fn resolve_terms_with_token_program(
     // The seller's memo is pinned byte-for-byte when declared; otherwise the
     // sponsor requires a random hex nonce, which correlates the transaction
     // without smuggling a payload it never agreed to.
-    let memo = match &extra.memo {
-        Some(memo) => memo.clone(),
-        None => random_hex_nonce(),
+    let memo = if let Some(receiver_authorizer) = extra.receiver_authorizer.as_deref() {
+        format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
+    } else {
+        match &extra.memo {
+            Some(memo) => memo.clone(),
+            None => random_hex_nonce(),
+        }
     };
     Ok(BatchTerms {
         fee_payer,
@@ -119,6 +203,9 @@ pub fn resolve_terms_with_token_program(
             extra.transaction_versions.as_deref(),
             max_tx_version,
         )?,
+        operator,
+        server_signed_max_deposit,
+        authorization_ttl_seconds: requirements.max_timeout_seconds.max(1),
     })
 }
 
@@ -133,14 +220,25 @@ pub fn resolve_terms(
     requirements: &BatchRequirements,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
+    resolve_terms_with_policy(rpc, requirements, max_tx_version, None)
+}
+
+/// Resolve challenge terms, including an explicit server-signed trust policy.
+pub fn resolve_terms_with_policy(
+    rpc: &RpcClient,
+    requirements: &BatchRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
+    server_signed_policy: Option<&ServerSignedChannelsPolicy>,
+) -> Result<BatchTerms, Error> {
     let mint = pc::parse_pubkey(&requirements.asset)?;
     let account = rpc
         .get_account(&mint)
         .map_err(|e| Error::Rpc(format!("mint fetch failed: {e}")))?;
-    resolve_terms_with_token_program(
+    resolve_terms_with_token_program_and_policy(
         requirements,
         pc::from_address(&account.owner),
         max_tx_version,
+        server_signed_policy,
     )
 }
 
@@ -229,6 +327,32 @@ impl BatchChannel {
         })
     }
 
+    /// Build a single-use payer proof for a server-signed channel.
+    pub async fn authorization_payload(
+        &self,
+        signer: &dyn SolanaSigner,
+        amount: u64,
+        expires_at: i64,
+    ) -> Result<BatchPayload, Error> {
+        if self.config.voucher_signer.as_deref() != Some("server") {
+            return Err(Error::Other(
+                "client-signed channels do not use payer authorizations".into(),
+            ));
+        }
+        Ok(BatchPayload::Authorization {
+            channel_config: self.config.clone(),
+            authorization: sign_authorization(
+                signer,
+                &self.channel_id,
+                &pc::parse_pubkey(&self.config.payer_authorizer)?,
+                &random_hex_nonce(),
+                amount,
+                expires_at,
+            )
+            .await?,
+        })
+    }
+
     /// Adopt the server's confirmed state from a successful `PAYMENT-RESPONSE`.
     ///
     /// The response must confirm the exact commitment that was sent: a
@@ -314,6 +438,105 @@ impl BatchChannel {
         Ok(())
     }
 
+    /// Adopt a metered response for a server-signed request.
+    ///
+    /// The operator chooses the actual charge after serving, but it must stay
+    /// within this request's payer-signed ceiling and advance the confirmed
+    /// cumulative watermark by exactly that amount.
+    pub fn apply_authorization_response(
+        &mut self,
+        response: &BatchSettlementResponse,
+        authorization: &BatchAuthorization,
+    ) -> Result<(), Error> {
+        if !response.success {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                response
+                    .error_reason
+                    .clone()
+                    .unwrap_or_else(|| "settlement failed".to_string()),
+            ));
+        }
+        if authorization.channel_id != pc::pubkey_string(&self.channel_id)
+            || authorization.payer != self.config.payer
+        {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_ID_MISMATCH,
+                "PAYMENT-RESPONSE does not correspond to the submitted authorization",
+            ));
+        }
+        let authorized = authorization
+            .authorized_amount
+            .parse::<u64>()
+            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid authorizedAmount"))?;
+        let extra = response.extra.as_ref().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                "PAYMENT-RESPONSE has no extra",
+            )
+        })?;
+        if extra
+            .commitment_id
+            .as_deref()
+            .is_none_or(|id| id.is_empty())
+        {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                "PAYMENT-RESPONSE carries no commitmentId",
+            ));
+        }
+        let charged = extra
+            .charged_amount
+            .as_deref()
+            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "missing chargedAmount"))?
+            .parse::<u64>()
+            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid chargedAmount"))?;
+        if charged > authorized {
+            return Err(batch_err(
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                format!("server charged {charged}, above authorized ceiling {authorized}"),
+            ));
+        }
+        let state = extra.channel_state.as_ref().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                "PAYMENT-RESPONSE has no channelState",
+            )
+        })?;
+        let cumulative = state
+            .charged_cumulative_amount
+            .as_deref()
+            .ok_or_else(|| {
+                batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    "PAYMENT-RESPONSE channelState has no chargedCumulativeAmount",
+                )
+            })?
+            .parse::<u64>()
+            .map_err(|_| {
+                batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    "invalid chargedCumulativeAmount",
+                )
+            })?;
+        let expected = self
+            .charged_cumulative_amount
+            .checked_add(charged)
+            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "cumulative overflow"))?;
+        if cumulative != expected {
+            return Err(batch_err(
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                format!("server confirmed cumulative {cumulative}, expected {expected}"),
+            ));
+        }
+        self.deposit = state
+            .balance
+            .parse::<u64>()
+            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid channelState.balance"))?;
+        self.charged_cumulative_amount = cumulative;
+        Ok(())
+    }
+
     /// Resynchronize from a corrective 402 after a cumulative-amount mismatch.
     ///
     /// The server's snapshot is adopted only against a voucher this client's own
@@ -390,6 +613,86 @@ pub async fn sign_voucher(
     })
 }
 
+/// Encode the canonical server-mode payer proof message.
+pub fn authorization_message_bytes(
+    channel_id: &Pubkey,
+    payer: &Pubkey,
+    operator: &Pubkey,
+    request_id: &str,
+    authorized_amount: u64,
+    expires_at: i64,
+) -> Result<Vec<u8>, Error> {
+    let request_id = request_id.as_bytes();
+    if request_id.is_empty() || request_id.len() > 256 {
+        return Err(Error::Other(
+            "batch authorization requestId must encode to 1 through 256 bytes".into(),
+        ));
+    }
+    if expires_at <= 0 {
+        return Err(Error::Other(
+            "batch authorization expiresAt must be positive".into(),
+        ));
+    }
+    let request_len = u16::try_from(request_id.len())
+        .map_err(|_| Error::Other("batch authorization requestId is too long".into()))?;
+    let mut message = Vec::with_capacity(AUTHORIZATION_DOMAIN.len() + 114 + request_id.len());
+    message.extend_from_slice(AUTHORIZATION_DOMAIN);
+    message.extend_from_slice(channel_id.as_ref());
+    message.extend_from_slice(payer.as_ref());
+    message.extend_from_slice(operator.as_ref());
+    message.extend_from_slice(&request_len.to_le_bytes());
+    message.extend_from_slice(request_id);
+    message.extend_from_slice(&authorized_amount.to_le_bytes());
+    message.extend_from_slice(&expires_at.to_le_bytes());
+    Ok(message)
+}
+
+/// Sign an expiring, single-request payer proof for `operator`.
+pub async fn sign_authorization(
+    signer: &dyn SolanaSigner,
+    channel_id: &Pubkey,
+    operator: &Pubkey,
+    request_id: &str,
+    authorized_amount: u64,
+    expires_at: i64,
+) -> Result<BatchAuthorization, Error> {
+    let payer = signer.pubkey();
+    let message = authorization_message_bytes(
+        channel_id,
+        &payer,
+        operator,
+        request_id,
+        authorized_amount,
+        expires_at,
+    )?;
+    let signature: [u8; 64] = signer
+        .sign_message(&message)
+        .await
+        .map_err(|e| Error::Other(format!("batch authorization signing failed: {e}")))?
+        .into();
+    Ok(BatchAuthorization {
+        kind: "proof".to_string(),
+        channel_id: pc::pubkey_string(channel_id),
+        payer: pc::pubkey_string(&payer),
+        request_id: request_id.to_string(),
+        authorized_amount: authorized_amount.to_string(),
+        expires_at,
+        signature: crate::core::base58::encode_64(&signature),
+    })
+}
+
+fn authorization_expires_at(ttl_seconds: u64) -> Result<i64, Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| Error::Other(format!("system clock is before Unix epoch: {e}")))?
+        .as_secs();
+    let expires = now
+        .checked_add(ttl_seconds.max(1))
+        .ok_or_else(|| Error::Other("batch authorization expiry overflow".into()))?;
+    i64::try_from(expires)
+        .map_err(|_| Error::Other("batch authorization expiry exceeds i64".into()))
+}
+
 /// Build the first `deposit` payload: a channel `open` plus the first voucher.
 ///
 /// The payer key doubles as the `payerAuthorizer`. The sponsor is the
@@ -408,11 +711,25 @@ pub async fn build_deposit(
             "deposit must cover at least one request".into(),
         ));
     }
+    if let Some(max_deposit) = terms.server_signed_max_deposit {
+        if deposit_amount > max_deposit {
+            return Err(Error::Other(format!(
+                "deposit {deposit_amount} exceeds server-signed operator grant {max_deposit}"
+            )));
+        }
+    }
     let payer = signer.pubkey();
     if payer == terms.fee_payer {
         return Err(batch_err(
             codes::INVALID_FEE_PAYER_MISMATCH,
             "the channel payer must not be the sponsor",
+        ));
+    }
+    let payer_authorizer = terms.operator.unwrap_or(payer);
+    if payer_authorizer == terms.fee_payer {
+        return Err(batch_err(
+            codes::INVALID_FEE_PAYER_MISMATCH,
+            "the channel voucher signer must not be the sponsor",
         ));
     }
     let salt = pc::random_salt();
@@ -422,7 +739,7 @@ pub async fn build_deposit(
         // to `payTo` through the single explicit distribution entry below.
         &terms.fee_payer,
         &terms.mint,
-        &payer,
+        &payer_authorizer,
         salt,
         open_slot,
         deposit_amount,
@@ -442,28 +759,47 @@ pub async fn build_deposit(
 
     let config = BatchChannelConfig {
         payer: pc::pubkey_string(&payer),
-        payer_authorizer: pc::pubkey_string(&payer),
+        payer_authorizer: pc::pubkey_string(&payer_authorizer),
         receiver: requirements.pay_to.clone(),
         receiver_authorizer: requirements.extra.receiver_authorizer.clone(),
         token: requirements.asset.clone(),
         withdraw_delay: terms.withdraw_delay,
         salt: salt.to_string(),
         open_slot,
-        // Client mode: this client keeps its own voucher-signing authority.
-        voucher_signer: None,
+        voucher_signer: terms.operator.map(|_| "server".to_string()),
     };
-    let voucher = sign_voucher(signer, &open.channel_id, terms.amount).await?;
+    let (voucher, authorization) = if let Some(operator) = terms.operator {
+        (
+            None,
+            Some(
+                sign_authorization(
+                    signer,
+                    &open.channel_id,
+                    &operator,
+                    &random_hex_nonce(),
+                    terms.amount,
+                    authorization_expires_at(terms.authorization_ttl_seconds)?,
+                )
+                .await?,
+            ),
+        )
+    } else {
+        (
+            Some(sign_voucher(signer, &open.channel_id, terms.amount).await?),
+            None,
+        )
+    };
     let channel = BatchChannel::new(open.channel_id, config.clone(), 0, deposit_amount);
     Ok((
         channel,
         BatchPayload::Deposit {
             channel_config: config,
-            voucher: Some(voucher),
+            voucher,
             deposit: BatchDeposit {
                 amount: deposit_amount.to_string(),
                 transaction: open.transaction,
             },
-            authorization: None,
+            authorization,
         },
     ))
 }
@@ -477,6 +813,17 @@ pub async fn build_top_up(
     top_up_amount: u64,
     blockhash: Hash,
 ) -> Result<BatchPayload, Error> {
+    if let Some(max_deposit) = terms.server_signed_max_deposit {
+        let total = channel
+            .deposit
+            .checked_add(top_up_amount)
+            .ok_or_else(|| Error::Other("server-signed channel deposit overflow".into()))?;
+        if total > max_deposit {
+            return Err(Error::Other(format!(
+                "top-up would raise server-signed escrow to {total}, above operator grant {max_deposit}"
+            )));
+        }
+    }
     let payer = signer.pubkey();
     let instructions = vec![
         pc::build_top_up_instruction(
@@ -497,15 +844,35 @@ pub async fn build_top_up(
         blockhash,
     )
     .await?;
-    let voucher = channel.sign_next_voucher(signer, terms.amount).await?;
+    let (voucher, authorization) = if let Some(operator) = terms.operator {
+        (
+            None,
+            Some(
+                sign_authorization(
+                    signer,
+                    &channel.channel_id,
+                    &operator,
+                    &random_hex_nonce(),
+                    terms.amount,
+                    authorization_expires_at(terms.authorization_ttl_seconds)?,
+                )
+                .await?,
+            ),
+        )
+    } else {
+        (
+            Some(channel.sign_next_voucher(signer, terms.amount).await?),
+            None,
+        )
+    };
     Ok(BatchPayload::Deposit {
         channel_config: channel.config.clone(),
-        voucher: Some(voucher),
+        voucher,
         deposit: BatchDeposit {
             amount: top_up_amount.to_string(),
             transaction,
         },
-        authorization: None,
+        authorization,
     })
 }
 
@@ -597,6 +964,17 @@ pub fn parse_challenge(
     headers: &[(String, String)],
     body: Option<&str>,
 ) -> Option<(BatchRequirements, Option<String>)> {
+    parse_challenge_with_policy(headers, body, None)
+}
+
+/// Parse a challenge, preferring server-signed terms only when their operator
+/// has an explicit local trust grant. Untrusted server-mode offers are dropped
+/// so a client-signed offer for the same resource can be selected instead.
+pub fn parse_challenge_with_policy(
+    headers: &[(String, String)],
+    body: Option<&str>,
+    server_signed_policy: Option<&ServerSignedChannelsPolicy>,
+) -> Option<(BatchRequirements, Option<String>)> {
     let from_header = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(PAYMENT_REQUIRED_HEADER))
@@ -607,16 +985,34 @@ pub fn parse_challenge(
     let envelope = from_header
         .or_else(|| body.and_then(|b| serde_json::from_str::<BatchRequiredEnvelope>(b).ok()))?;
     let error = envelope.error.clone();
-    // A server offering server-signed metering is expected to list the same
-    // resource client-signed as well; this client only ever pays the latter.
-    let requirement = envelope.accepts.into_iter().find(|r| {
-        r.scheme == BATCH_SETTLEMENT_SCHEME
-            && r.extra.voucher_signer.as_deref() != Some("server")
-            // An operator key alone is the same delegation; `resolve_terms`
-            // would refuse it, so skip it here too instead of stranding a
-            // usable client-signed accept behind it.
-            && r.extra.operator.is_none()
-    })?;
+    let accepts: Vec<_> = envelope
+        .accepts
+        .into_iter()
+        .filter(|r| r.scheme == BATCH_SETTLEMENT_SCHEME)
+        .collect();
+    let trusted_server = accepts.iter().find(|requirements| {
+        if requirements.extra.voucher_signer.as_deref() != Some("server") {
+            return false;
+        }
+        let Some(operator) = requirements
+            .extra
+            .operator
+            .as_deref()
+            .and_then(|value| Pubkey::from_str(value).ok())
+        else {
+            return false;
+        };
+        server_signed_policy
+            .and_then(|policy| policy.max_deposit_for(&operator))
+            .is_some()
+    });
+    let client_signed = accepts.iter().find(|requirements| {
+        matches!(
+            requirements.extra.voucher_signer.as_deref(),
+            None | Some("client")
+        ) && requirements.extra.operator.is_none()
+    });
+    let requirement = trusted_server.or(client_signed)?.clone();
     Some((requirement, error))
 }
 
@@ -720,6 +1116,7 @@ mod tests {
                 memo: Some("invoice-1".to_string()),
                 recent_blockhash: None,
                 recent_slot: Some(341_000_000),
+                min_deposit: None,
                 channel_state: None,
                 voucher_state: None,
                 transaction_versions: None,
@@ -806,6 +1203,116 @@ mod tests {
         };
         let body = serde_json::to_string(&only_metered).unwrap();
         assert!(parse_challenge(&[], Some(&body)).is_none());
+    }
+
+    #[test]
+    fn trusted_server_signed_accept_is_preferred_and_capped() {
+        let fee_payer = Pubkey::new_unique();
+        let operator = Pubkey::new_unique();
+        let mut metered = requirements(&fee_payer);
+        metered.extra.voucher_signer = Some("server".to_string());
+        metered.extra.operator = Some(pc::pubkey_string(&operator));
+        metered.extra.min_deposit = Some("10000".to_string());
+        let envelope = BatchRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![requirements(&fee_payer), metered.clone()],
+            error: None,
+        };
+        let body = serde_json::to_string(&envelope).unwrap();
+        let policy = ServerSignedChannelsPolicy::new()
+            .allow_operator(operator, 50_000)
+            .unwrap();
+        let (chosen, _) = parse_challenge_with_policy(&[], Some(&body), Some(&policy)).unwrap();
+        assert_eq!(chosen.extra.voucher_signer.as_deref(), Some("server"));
+        let terms = resolve_terms_with_token_program_and_policy(
+            &chosen,
+            pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
+            Some(&policy),
+        )
+        .unwrap();
+        assert_eq!(terms.operator, Some(operator));
+        assert_eq!(terms.server_signed_max_deposit, Some(50_000));
+        assert_eq!(chosen.extra.min_deposit.as_deref(), Some("10000"));
+    }
+
+    #[tokio::test]
+    async fn server_signed_deposit_uses_operator_and_payer_proof() {
+        let signer = TestSigner::new(9);
+        let fee_payer = Pubkey::new_unique();
+        let operator = Pubkey::new_unique();
+        let receiver_authorizer = Pubkey::new_unique();
+        let mut requirements = requirements(&fee_payer);
+        requirements.extra.memo = None;
+        requirements.extra.receiver_authorizer = Some(pc::pubkey_string(&receiver_authorizer));
+        requirements.extra.voucher_signer = Some("server".to_string());
+        requirements.extra.operator = Some(pc::pubkey_string(&operator));
+        let policy = ServerSignedChannelsPolicy::new()
+            .allow_operator(operator, 10_000)
+            .unwrap();
+        let terms = resolve_terms_with_token_program_and_policy(
+            &requirements,
+            pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
+            Some(&policy),
+        )
+        .unwrap();
+        assert_eq!(
+            terms.memo,
+            format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
+        );
+
+        let (channel, payload) = build_deposit(
+            &signer,
+            &requirements,
+            &terms,
+            10_000,
+            Hash::new_unique(),
+            341_000_000,
+        )
+        .await
+        .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            voucher,
+            authorization,
+            ..
+        } = payload
+        else {
+            panic!("expected deposit");
+        };
+        assert!(voucher.is_none());
+        assert_eq!(
+            channel_config.payer_authorizer,
+            pc::pubkey_string(&operator)
+        );
+        assert_eq!(channel_config.voucher_signer.as_deref(), Some("server"));
+        let authorization = authorization.expect("server deposit carries a payer proof");
+        assert_eq!(authorization.authorized_amount, "1000");
+        let message = authorization_message_bytes(
+            channel.channel_id(),
+            &signer.pubkey(),
+            &operator,
+            &authorization.request_id,
+            1_000,
+            authorization.expires_at,
+        )
+        .unwrap();
+        let signature = Signature::from_str(&authorization.signature).unwrap();
+        assert!(signature.verify(signer.pubkey().as_ref(), &message));
+
+        let err = build_deposit(
+            &signer,
+            &requirements,
+            &terms,
+            10_001,
+            Hash::new_unique(),
+            341_000_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("operator grant"));
     }
 
     #[test]

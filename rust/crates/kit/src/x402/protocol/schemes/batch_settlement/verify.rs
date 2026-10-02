@@ -490,6 +490,7 @@ mod tests {
                 memo: None,
                 recent_blockhash: None,
                 recent_slot: None,
+                min_deposit: None,
                 channel_state: None,
                 voucher_state: None,
                 transaction_versions: None,
