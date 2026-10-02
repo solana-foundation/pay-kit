@@ -260,6 +260,9 @@ pub struct BatchChannel {
     config: BatchChannelConfig,
     charged_cumulative_amount: u64,
     deposit: u64,
+    /// Whether `charged_cumulative_amount` includes every offchain charge.
+    /// Chain recovery initially knows only the settled watermark.
+    history_complete: bool,
 }
 
 /// Discover the newest compatible open channel owned by `payer`.
@@ -358,7 +361,7 @@ pub fn discover_channel(
         newest = Some((
             address,
             channel.open_slot,
-            BatchChannel::new(
+            BatchChannel::recovered(
                 address,
                 channel_config,
                 channel.settlement.settled,
@@ -382,6 +385,22 @@ impl BatchChannel {
             config,
             charged_cumulative_amount,
             deposit,
+            history_complete: true,
+        }
+    }
+
+    fn recovered(
+        channel_id: Pubkey,
+        config: BatchChannelConfig,
+        charged_cumulative_amount: u64,
+        deposit: u64,
+    ) -> Self {
+        Self {
+            channel_id,
+            config,
+            charged_cumulative_amount,
+            deposit,
+            history_complete: false,
         }
     }
 
@@ -639,6 +658,15 @@ impl BatchChannel {
             })?
             .parse::<u64>()
             .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid chargedAmount"))?;
+        let cumulative_delta = cumulative - self.charged_cumulative_amount;
+        if self.history_complete && cumulative_delta != charged {
+            return Err(batch_err(
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                format!(
+                    "server voucher advanced by {cumulative_delta}, but chargedAmount is {charged}"
+                ),
+            ));
+        }
         if charged > authorized {
             return Err(batch_err(
                 codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
@@ -682,6 +710,7 @@ impl BatchChannel {
             self.deposit = deposit;
         }
         self.charged_cumulative_amount = cumulative;
+        self.history_complete = true;
         Ok(())
     }
 
@@ -1493,6 +1522,22 @@ mod tests {
             .expect("signed server voucher confirms the open charge");
         assert_eq!(channel.charged_cumulative_amount(), 750);
 
+        // Once local history is synchronized, chargedAmount must equal the
+        // signed cumulative increase. A bounded chargedAmount cannot disguise
+        // an operator voucher that consumes the rest of the deposit.
+        let mut overstated_channel = channel.clone();
+        let overstated_voucher = sign_voucher(&operator_signer, channel.channel_id(), 10_000)
+            .await
+            .unwrap();
+        let mut overstated_response = response.clone();
+        let overstated_extra = overstated_response.extra.as_mut().unwrap();
+        overstated_extra.charged_amount = Some("1000".to_string());
+        overstated_extra.voucher = Some(overstated_voucher);
+        assert!(overstated_channel
+            .apply_authorization_response(&overstated_response, &authorization)
+            .is_err());
+        assert_eq!(overstated_channel.charged_cumulative_amount(), 750);
+
         let top_up = build_top_up(&signer, &channel, &terms, 1_000, Hash::new_unique())
             .await
             .expect("server-signed top-up builds");
@@ -1548,7 +1593,7 @@ mod tests {
         // chargedAmount is bounded by this authorization; the signed cumulative
         // may legitimately include earlier authorizations.
         let mut recovered =
-            BatchChannel::new(*channel.channel_id(), channel.config().clone(), 0, 11_000);
+            BatchChannel::recovered(*channel.channel_id(), channel.config().clone(), 0, 11_000);
         let recovered_payload = recovered
             .authorization_payload(
                 &signer,
