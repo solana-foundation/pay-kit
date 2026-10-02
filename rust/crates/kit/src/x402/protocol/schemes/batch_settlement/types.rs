@@ -605,6 +605,12 @@ pub struct BatchSettlementExtra {
     /// Current channel snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_state: Option<ChannelStateSnapshot>,
+
+    /// Server-signed cumulative voucher confirming a metered authorization.
+    /// Present when `voucherSigner` is `"server"`; clients verify this proof
+    /// instead of trusting an optional reported cumulative watermark.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voucher: Option<BatchVoucher>,
 }
 
 /// The `PAYMENT-RESPONSE` settlement result.
@@ -894,6 +900,7 @@ mod tests {
                     withdraw_requested_at: 0,
                     charged_cumulative_amount: Some("5000".to_string()),
                 }),
+                voucher: None,
             }),
         };
         let json = serde_json::to_value(&response).unwrap();

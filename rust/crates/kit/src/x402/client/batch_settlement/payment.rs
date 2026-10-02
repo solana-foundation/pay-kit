@@ -26,9 +26,9 @@ use crate::core::payment_channels as pc;
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
-    check_corrective_voucher_state, check_token_program, check_withdraw_delay, derive_channel_id,
-    errors as codes, BatchAuthorization, BatchChannelConfig, BatchDeposit, BatchError,
-    BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements,
+    check_corrective_voucher_state, check_token_program, check_voucher, check_withdraw_delay,
+    derive_channel_id, errors as codes, BatchAuthorization, BatchChannelConfig, BatchDeposit,
+    BatchError, BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements,
     BatchSettlementResponse, BatchVoucher, BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
@@ -488,54 +488,54 @@ impl BatchChannel {
                 "PAYMENT-RESPONSE carries no commitmentId",
             ));
         }
-        let charged = extra
-            .charged_amount
-            .as_deref()
-            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "missing chargedAmount"))?
-            .parse::<u64>()
-            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid chargedAmount"))?;
+        let voucher = extra.voucher.as_ref().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_VOUCHER_SIGNATURE,
+                "server-signed PAYMENT-RESPONSE carries no voucher",
+            )
+        })?;
+        let cumulative = check_voucher(voucher, &self.config, &self.channel_id)?;
+        if cumulative < self.charged_cumulative_amount {
+            return Err(batch_err(
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                format!(
+                    "server voucher cumulative {cumulative} is below local cumulative {}",
+                    self.charged_cumulative_amount
+                ),
+            ));
+        }
+        let charged = cumulative - self.charged_cumulative_amount;
         if charged > authorized {
             return Err(batch_err(
                 codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
                 format!("server charged {charged}, above authorized ceiling {authorized}"),
             ));
         }
-        let state = extra.channel_state.as_ref().ok_or_else(|| {
-            batch_err(
-                codes::INVALID_CHANNEL_STATE,
-                "PAYMENT-RESPONSE has no channelState",
-            )
-        })?;
-        let cumulative = state
-            .charged_cumulative_amount
-            .as_deref()
-            .ok_or_else(|| {
-                batch_err(
-                    codes::INVALID_CHANNEL_STATE,
-                    "PAYMENT-RESPONSE channelState has no chargedCumulativeAmount",
-                )
-            })?
-            .parse::<u64>()
-            .map_err(|_| {
+        if let Some(reported) = extra
+            .channel_state
+            .as_ref()
+            .and_then(|state| state.charged_cumulative_amount.as_deref())
+        {
+            let reported = reported.parse::<u64>().map_err(|_| {
                 batch_err(
                     codes::INVALID_CHANNEL_STATE,
                     "invalid chargedCumulativeAmount",
                 )
             })?;
-        let expected = self
-            .charged_cumulative_amount
-            .checked_add(charged)
-            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "cumulative overflow"))?;
-        if cumulative != expected {
-            return Err(batch_err(
-                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
-                format!("server confirmed cumulative {cumulative}, expected {expected}"),
-            ));
+            if reported != cumulative {
+                return Err(batch_err(
+                    codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                    format!(
+                        "server reported cumulative {reported}, signed voucher confirms {cumulative}"
+                    ),
+                ));
+            }
         }
-        self.deposit = state
-            .balance
-            .parse::<u64>()
-            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid channelState.balance"))?;
+        if let Some(state) = extra.channel_state.as_ref() {
+            self.deposit = state.balance.parse::<u64>().map_err(|_| {
+                batch_err(codes::INVALID_CHANNEL_STATE, "invalid channelState.balance")
+            })?;
+        }
         self.charged_cumulative_amount = cumulative;
         Ok(())
     }
@@ -1244,7 +1244,8 @@ mod tests {
     async fn server_signed_deposit_uses_operator_and_payer_proof() {
         let signer = TestSigner::new(9);
         let fee_payer = Pubkey::new_unique();
-        let operator = Pubkey::new_unique();
+        let operator_signer = TestSigner::new(10);
+        let operator = operator_signer.pubkey();
         let receiver_authorizer = Pubkey::new_unique();
         let mut requirements = requirements(&fee_payer);
         requirements.extra.memo = None;
@@ -1271,7 +1272,7 @@ mod tests {
             .bytes()
             .all(|b| b.is_ascii_hexdigit()));
 
-        let (channel, payload) = build_deposit(
+        let (mut channel, payload) = build_deposit(
             &signer,
             &requirements,
             &terms,
@@ -1309,6 +1310,37 @@ mod tests {
         .unwrap();
         let signature = Signature::from_str(&authorization.signature).unwrap();
         assert!(signature.verify(signer.pubkey().as_ref(), &message));
+
+        // Server mode is confirmed by the operator's signed voucher. The
+        // channel snapshot's cumulative watermark is optional on the wire,
+        // including on BlockRun's successful open response.
+        let confirmed_voucher = sign_voucher(&operator_signer, channel.channel_id(), 750)
+            .await
+            .unwrap();
+        let response = BatchSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: Some(pc::pubkey_string(&signer.pubkey())),
+            transaction: String::new(),
+            network: requirements.network.clone(),
+            amount: String::new(),
+            extra: Some(BatchSettlementExtra {
+                commitment_id: Some("server-receipt".to_string()),
+                charged_amount: Some("750".to_string()),
+                channel_state: Some(ChannelStateSnapshot {
+                    channel_id: pc::pubkey_string(channel.channel_id()),
+                    balance: "10000".to_string(),
+                    total_claimed: "0".to_string(),
+                    withdraw_requested_at: 0,
+                    charged_cumulative_amount: None,
+                }),
+                voucher: Some(confirmed_voucher),
+            }),
+        };
+        channel
+            .apply_authorization_response(&response, &authorization)
+            .expect("signed server voucher confirms the open charge");
+        assert_eq!(channel.charged_cumulative_amount(), 750);
 
         let top_up = build_top_up(&signer, &channel, &terms, 1_000, Hash::new_unique())
             .await
@@ -1531,6 +1563,7 @@ mod tests {
                     withdraw_requested_at: 0,
                     charged_cumulative_amount: Some(cumulative.to_string()),
                 }),
+                voucher: None,
             }),
         };
 

@@ -2084,6 +2084,7 @@ impl X402BatchSettlement {
                         commitment_id: None,
                         charged_amount: None,
                         channel_state: Some(Self::snapshot(&state)),
+                        voucher: None,
                     }),
                 })
             }
@@ -3269,6 +3270,7 @@ fn accepted_response(
             commitment_id: Some(commitment_id),
             charged_amount: Some(charged_amount.to_string()),
             channel_state: Some(X402BatchSettlement::snapshot(state)),
+            voucher: None,
         }),
     }
 }
@@ -4876,6 +4878,7 @@ mod tests {
                 commitment_id: Some("chan:5000".to_string()),
                 charged_amount: Some("1000".to_string()),
                 channel_state: None,
+                voucher: None,
             }),
         };
         let (name, value) = handler.settlement_header(&response).unwrap();
