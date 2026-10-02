@@ -27,7 +27,7 @@
     "@solana/prettier-config-solana": "^0.0.6",
     "@typescript-eslint/eslint-plugin": "^8.57.1",
     "@typescript-eslint/parser": "^8.57.1",
-    "@vitest/coverage-v8": "4.1.0",
+    "@vitest/coverage-v8": "4.1.11",
     "eslint": "^9.39.4",
     "prettier": "^3.8.1",
     "typedoc": "^0.28.0",
