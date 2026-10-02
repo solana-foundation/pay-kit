@@ -219,7 +219,11 @@ export function subscription(parameters: subscription.Parameters) {
             if (broadcast) {
                 onProgress?.({ type: 'paying' });
                 const signature = await rpc
-                    .sendTransaction(encodedTx, { encoding: 'base64', skipPreflight: false })
+                    .sendTransaction(encodedTx, {
+                        encoding: 'base64',
+                        preflightCommitment: 'confirmed',
+                        skipPreflight: false,
+                    })
                     .send();
                 onProgress?.({ signature, type: 'confirming' });
                 await confirmTransaction(rpc, signature);
@@ -483,7 +487,9 @@ export async function initializeSubscriptionAuthority(parameters: {
         msg => appendTransactionMessageInstructions([createAta, init], msg),
     );
     const transaction = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(message));
-    const signature = await rpc.sendTransaction(transaction, { encoding: 'base64', skipPreflight: false }).send();
+    const signature = await rpc
+        .sendTransaction(transaction, { encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false })
+        .send();
     await confirmTransaction(rpc, signature);
     const initialized = await fetchAuthorityInitId(rpc, authority, programAddress);
     if (initialized === null) throw new Error('SubscriptionAuthority account missing after initialization');

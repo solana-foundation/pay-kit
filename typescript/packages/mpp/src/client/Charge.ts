@@ -127,6 +127,7 @@ export function charge(parameters: charge.Parameters) {
                 const signature = await rpc
                     .sendTransaction(encodedTx, {
                         encoding: 'base64',
+                        preflightCommitment: 'confirmed',
                         skipPreflight: false,
                     })
                     .send();
