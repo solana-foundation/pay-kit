@@ -558,6 +558,22 @@ impl BatchChannel {
         response: &BatchSettlementResponse,
         authorization: &BatchAuthorization,
     ) -> Result<(), Error> {
+        self.apply_authorization_response_with_deposit(response, authorization, None)
+    }
+
+    /// Adopt a server-signed response and an optional client-proven escrow
+    /// ceiling.
+    ///
+    /// `confirmed_deposit` is the total deposit after a successful `deposit`
+    /// payload, as derived from the transaction the payer signed. The server's
+    /// `channelState.balance` is only advisory and may be omitted, so it must
+    /// not decide whether the next request needs another top-up.
+    pub fn apply_authorization_response_with_deposit(
+        &mut self,
+        response: &BatchSettlementResponse,
+        authorization: &BatchAuthorization,
+        confirmed_deposit: Option<u64>,
+    ) -> Result<(), Error> {
         if !response.success {
             return Err(batch_err(
                 codes::INVALID_CHANNEL_STATE,
@@ -638,10 +654,14 @@ impl BatchChannel {
                 ));
             }
         }
-        if let Some(state) = extra.channel_state.as_ref() {
-            self.deposit = state.balance.parse::<u64>().map_err(|_| {
-                batch_err(codes::INVALID_CHANNEL_STATE, "invalid channelState.balance")
-            })?;
+        if let Some(deposit) = confirmed_deposit {
+            if deposit < self.deposit {
+                return Err(batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    "confirmed deposit is below the current escrow ceiling",
+                ));
+            }
+            self.deposit = deposit;
         }
         self.charged_cumulative_amount = cumulative;
         Ok(())
@@ -1452,7 +1472,12 @@ mod tests {
         let top_up = build_top_up(&signer, &channel, &terms, 1_000, Hash::new_unique())
             .await
             .expect("server-signed top-up builds");
-        let BatchPayload::Deposit { deposit, .. } = top_up else {
+        let BatchPayload::Deposit {
+            deposit,
+            authorization: Some(top_up_authorization),
+            ..
+        } = top_up
+        else {
             panic!("expected top-up deposit");
         };
         let transaction = pc::decode_transaction(&deposit.transaction).unwrap();
@@ -1466,6 +1491,33 @@ mod tests {
         assert_eq!(memo.len(), MEMO_NONCE_BYTES * 2);
         assert!(memo.bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(!memo.starts_with(RECEIVER_BINDING_MEMO_PREFIX));
+
+        let top_up_voucher = sign_voucher(&operator_signer, channel.channel_id(), 1_500)
+            .await
+            .unwrap();
+        let top_up_response = BatchSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: Some(pc::pubkey_string(&signer.pubkey())),
+            transaction: String::new(),
+            network: requirements.network.clone(),
+            amount: String::new(),
+            extra: Some(BatchSettlementExtra {
+                commitment_id: Some("top-up-receipt".to_string()),
+                charged_amount: Some("750".to_string()),
+                channel_state: None,
+                voucher: Some(top_up_voucher),
+            }),
+        };
+        channel
+            .apply_authorization_response_with_deposit(
+                &top_up_response,
+                &top_up_authorization,
+                Some(11_000),
+            )
+            .expect("signed top-up determines the escrow ceiling without channelState");
+        assert_eq!(channel.charged_cumulative_amount(), 1_500);
+        assert_eq!(channel.deposit(), 11_000);
 
         let err = build_deposit(
             &signer,
