@@ -417,6 +417,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Start Surfnet
         working-directory: .
+        env:
+          # Fork the canonical sandbox so the local, single-instance RPC has
+          # the payment-channel and subscription programs without inheriting
+          # the hosted load balancer's cross-request blockhash races.
+          SURFPOOL_REMOTE_RPC_URL: https://402.surfnet.dev:8899
         run: |
           node harness/start-surfnet-proxy.mjs &
           ready=0
@@ -448,11 +453,8 @@ jobs:
         run: pnpm test:e2e
         env:
           PLAYGROUND_DISABLE_SIDECAR: "1"
-          # The hosted payment sandbox has the canonical payment-channel and
-          # subscription programs deployed; the lightweight CI Surfnet used by
-          # unit tests intentionally does not.
-          RPC_URL: https://402.surfnet.dev:8899
-          VITE_RPC_URL: https://402.surfnet.dev:8899
+          RPC_URL: http://localhost:8899
+          VITE_RPC_URL: http://localhost:8899
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7
