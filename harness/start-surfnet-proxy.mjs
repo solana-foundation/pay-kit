@@ -5,7 +5,10 @@ import { Surfnet } from "@solana/surfpool";
 
 const rpcPort = Number(process.env.SURFPOOL_PROXY_RPC_PORT ?? 8899);
 const wsPort = Number(process.env.SURFPOOL_PROXY_WS_PORT ?? 8900);
-const surfnet = Surfnet.start();
+// Keep blockhashes alive for roughly the same amount of wall-clock time as on
+// Solana. Surfnet's fast default clock can otherwise burn through the 120-slot
+// validity window while a browser wallet is signing an interactive payment.
+const surfnet = Surfnet.startWithConfig({ slotTimeMs: 400 });
 const rpcTarget = new URL(surfnet.rpcUrl);
 const wsTarget = new URL(surfnet.wsUrl);
 
