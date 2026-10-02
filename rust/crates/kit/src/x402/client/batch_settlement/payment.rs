@@ -261,6 +261,113 @@ pub struct BatchChannel {
     deposit: u64,
 }
 
+/// Discover the newest compatible open channel owned by `payer`.
+///
+/// Channel state is recoverable from the chain after a client restart. Every
+/// candidate is filtered by payer and then fully rebound to the current offer,
+/// including its PDA and distribution commitment, before it is adopted.
+pub fn discover_channel(
+    rpc: &RpcClient,
+    payer: &Pubkey,
+    requirements: &BatchRequirements,
+    terms: &BatchTerms,
+) -> Result<Option<BatchChannel>, Error> {
+    use solana_account_decoder_client_types::UiAccountEncoding;
+    use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+    use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+    use solana_rpc_client_api::request::RpcRequest;
+    use solana_rpc_client_api::response::RpcKeyedAccount;
+
+    let program_id = pc::default_program_id();
+    let config = RpcProgramAccountsConfig {
+        filters: Some(vec![
+            RpcFilterType::DataSize(pc::CHANNEL_ACCOUNT_SIZE as u64),
+            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                pc::CHANNEL_PAYER_OFFSET,
+                payer.to_bytes().to_vec(),
+            )),
+        ]),
+        account_config: RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let params = serde_json::json!([program_id.to_string(), config]);
+    let keyed: Vec<RpcKeyedAccount> = rpc
+        .send(RpcRequest::GetProgramAccounts, params)
+        .map_err(|e| Error::Rpc(format!("batch channel discovery failed: {e}")))?;
+    let authorized_signer = terms.operator.unwrap_or(*payer);
+    let expected_distribution = pc::distribution_hash(&pc::sole_recipient(&terms.receiver));
+    let mut newest = None;
+
+    for entry in keyed {
+        let Ok(address) = Pubkey::from_str(&entry.pubkey) else {
+            continue;
+        };
+        let Some(data) = entry.account.data.decode() else {
+            continue;
+        };
+        let Ok(channel) = pc::generated::accounts::Channel::from_bytes(&data) else {
+            continue;
+        };
+        if channel.status != 0
+            || channel.closure_started_at != 0
+            || pc::from_address(&channel.payer) != *payer
+            || pc::from_address(&channel.payee) != terms.fee_payer
+            || pc::from_address(&channel.rent_payer) != terms.fee_payer
+            || pc::from_address(&channel.mint) != terms.mint
+            || pc::from_address(&channel.authorized_signer) != authorized_signer
+            || channel.grace_period != terms.withdraw_delay
+            || channel.distribution_hash != expected_distribution
+        {
+            continue;
+        }
+        let (derived, _) = pc::find_channel_pda(
+            payer,
+            &terms.fee_payer,
+            &terms.mint,
+            &authorized_signer,
+            channel.salt,
+            channel.open_slot,
+            &program_id,
+        );
+        if derived != address {
+            continue;
+        }
+        if newest
+            .as_ref()
+            .is_some_and(|(_, open_slot, _): &(Pubkey, u64, BatchChannel)| {
+                *open_slot >= channel.open_slot
+            })
+        {
+            continue;
+        }
+        let channel_config = BatchChannelConfig {
+            payer: pc::pubkey_string(payer),
+            payer_authorizer: pc::pubkey_string(&authorized_signer),
+            receiver: requirements.pay_to.clone(),
+            receiver_authorizer: requirements.extra.receiver_authorizer.clone(),
+            token: requirements.asset.clone(),
+            withdraw_delay: terms.withdraw_delay,
+            salt: channel.salt.to_string(),
+            open_slot: channel.open_slot,
+            voucher_signer: terms.operator.map(|_| "server".to_string()),
+        };
+        newest = Some((
+            address,
+            channel.open_slot,
+            BatchChannel::new(
+                address,
+                channel_config,
+                channel.settlement.settled,
+                channel.deposit,
+            ),
+        ));
+    }
+    Ok(newest.map(|(_, _, channel)| channel))
+}
+
 impl BatchChannel {
     /// Rebuild a tracker from persisted state.
     pub fn new(
