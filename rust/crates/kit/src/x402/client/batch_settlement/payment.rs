@@ -188,10 +188,11 @@ pub fn resolve_terms_with_token_program_and_policy(
     // sponsor requires a random hex nonce. Receiver binding is a separate,
     // open-only commitment and must not replace that nonce on later top-ups.
     let continuation_memo = extra.memo.clone().unwrap_or_else(random_hex_nonce);
-    let memo = if let Some(receiver_authorizer) = extra.receiver_authorizer.as_deref() {
-        format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
-    } else {
-        continuation_memo.clone()
+    let memo = match (operator, extra.receiver_authorizer.as_deref()) {
+        (Some(_), Some(receiver_authorizer)) => {
+            format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
+        }
+        _ => continuation_memo.clone(),
     };
     Ok(BatchTerms {
         fee_payer,
@@ -627,7 +628,17 @@ impl BatchChannel {
                 ),
             ));
         }
-        let charged = cumulative - self.charged_cumulative_amount;
+        let charged = extra
+            .charged_amount
+            .as_deref()
+            .ok_or_else(|| {
+                batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    "PAYMENT-RESPONSE has no chargedAmount",
+                )
+            })?
+            .parse::<u64>()
+            .map_err(|_| batch_err(codes::INVALID_CHANNEL_STATE, "invalid chargedAmount"))?;
         if charged > authorized {
             return Err(batch_err(
                 codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
@@ -654,7 +665,14 @@ impl BatchChannel {
                 ));
             }
         }
-        if let Some(deposit) = confirmed_deposit {
+        let deposit = confirmed_deposit.unwrap_or(self.deposit);
+        if cumulative > deposit {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                format!("server voucher cumulative {cumulative} exceeds escrow ceiling {deposit}"),
+            ));
+        }
+        if confirmed_deposit.is_some() {
             if deposit < self.deposit {
                 return Err(batch_err(
                     codes::INVALID_CHANNEL_STATE,
@@ -669,11 +687,11 @@ impl BatchChannel {
 
     /// Resynchronize from a corrective 402 after a cumulative-amount mismatch.
     ///
-    /// The server's snapshot is adopted only against a voucher this client's own
-    /// `payerAuthorizer` signed at that amount — otherwise a server could keep
-    /// raising the cumulative base and have the client sign away funds it never
-    /// spent. When the server holds no voucher, there is nothing to prove and
-    /// nothing to adopt; the caller must resynchronize from onchain state.
+    /// The server's snapshot is adopted only against a voucher the channel's
+    /// `payerAuthorizer` signed at that amount. The snapshot cannot change the
+    /// locally or onchain-confirmed deposit ceiling. When the server holds no
+    /// voucher, there is nothing to prove and nothing to adopt; the caller must
+    /// resynchronize from onchain state.
     pub fn adopt_corrective_state(
         &mut self,
         requirements: &BatchRequirements,
@@ -713,8 +731,14 @@ impl BatchChannel {
             &self.config.payer_authorizer,
             charged,
         )?;
-        if let Ok(balance) = state.balance.parse::<u64>() {
-            self.deposit = balance;
+        if adopted > self.deposit {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                format!(
+                    "corrective cumulative {adopted} exceeds local escrow ceiling {}",
+                    self.deposit
+                ),
+            ));
         }
         self.charged_cumulative_amount = adopted;
         Ok(adopted)
@@ -1519,6 +1543,50 @@ mod tests {
         assert_eq!(channel.charged_cumulative_amount(), 1_500);
         assert_eq!(channel.deposit(), 11_000);
 
+        // A restarted client knows the escrow ceiling from chain, but not
+        // operator-signed charges that have not been claimed yet. The receipt's
+        // chargedAmount is bounded by this authorization; the signed cumulative
+        // may legitimately include earlier authorizations.
+        let mut recovered =
+            BatchChannel::new(*channel.channel_id(), channel.config().clone(), 0, 11_000);
+        let recovered_payload = recovered
+            .authorization_payload(
+                &signer,
+                1_000,
+                authorization_expires_at(terms.authorization_ttl_seconds).unwrap(),
+            )
+            .await
+            .unwrap();
+        let BatchPayload::Authorization {
+            authorization: recovered_authorization,
+            ..
+        } = recovered_payload
+        else {
+            panic!("expected recovered authorization");
+        };
+        let recovered_voucher = sign_voucher(&operator_signer, channel.channel_id(), 2_500)
+            .await
+            .unwrap();
+        let recovered_response = BatchSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: Some(pc::pubkey_string(&signer.pubkey())),
+            transaction: String::new(),
+            network: requirements.network.clone(),
+            amount: String::new(),
+            extra: Some(BatchSettlementExtra {
+                commitment_id: Some("recovered-receipt".to_string()),
+                charged_amount: Some("1000".to_string()),
+                channel_state: None,
+                voucher: Some(recovered_voucher),
+            }),
+        };
+        recovered
+            .apply_authorization_response(&recovered_response, &recovered_authorization)
+            .expect("recovered channel adopts signed cumulative history");
+        assert_eq!(recovered.charged_cumulative_amount(), 2_500);
+        assert_eq!(recovered.deposit(), 11_000);
+
         let err = build_deposit(
             &signer,
             &requirements,
@@ -1542,7 +1610,15 @@ mod tests {
         assert_eq!(terms.continuation_memo.len(), MEMO_NONCE_BYTES * 2);
         assert!(terms.memo.bytes().all(|b| b.is_ascii_hexdigit()));
         // And a declared memo is passed through verbatim.
-        let requirements = self::requirements(&fee_payer);
+        let mut requirements = self::requirements(&fee_payer);
+        let terms = resolve(&requirements);
+        assert_eq!(terms.memo, "invoice-1");
+        assert_eq!(terms.continuation_memo, "invoice-1");
+
+        // Receiver binding is a server-signed open policy. Client-signed
+        // channels retain the normal declared memo even when the optional
+        // receiver authorizer is advertised.
+        requirements.extra.receiver_authorizer = Some(pc::pubkey_string(&Pubkey::new_unique()));
         let terms = resolve(&requirements);
         assert_eq!(terms.memo, "invoice-1");
         assert_eq!(terms.continuation_memo, "invoice-1");
@@ -1807,6 +1883,7 @@ mod tests {
         let proof = sign_voucher(&signer, channel.channel_id(), 3_000)
             .await
             .unwrap();
+        corrective.extra.channel_state.as_mut().unwrap().balance = "1".to_string();
         corrective.extra.voucher_state = Some(VoucherState {
             signed_max_claimable: "3000".to_string(),
             expires_at: 0,
@@ -1814,6 +1891,11 @@ mod tests {
         });
         assert_eq!(channel.adopt_corrective_state(&corrective).unwrap(), 3_000);
         assert_eq!(channel.charged_cumulative_amount(), 3_000);
+        assert_eq!(
+            channel.deposit(),
+            100_000,
+            "untrusted corrective balance must not lower the escrow ceiling"
+        );
     }
 
     #[test]
