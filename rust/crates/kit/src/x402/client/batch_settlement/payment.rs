@@ -97,6 +97,10 @@ pub struct BatchTerms {
     pub amount: u64,
     /// The Memo the setup transaction must carry.
     pub memo: String,
+    /// Memo for follow-up transactions. Receiver binding is open-only; a
+    /// top-up or refund carries the seller memo, or a fresh correlation nonce
+    /// when the seller did not declare one.
+    pub continuation_memo: String,
     /// The message version to build: the highest the sponsor advertises in
     /// `extra.transactionVersions` (`0` when it advertises none).
     pub tx_version: crate::core::tx::TxVersion,
@@ -181,15 +185,13 @@ pub fn resolve_terms_with_token_program_and_policy(
     let mint = pc::parse_pubkey(&requirements.asset)?;
     let receiver = pc::parse_pubkey(&requirements.pay_to)?;
     // The seller's memo is pinned byte-for-byte when declared; otherwise the
-    // sponsor requires a random hex nonce, which correlates the transaction
-    // without smuggling a payload it never agreed to.
+    // sponsor requires a random hex nonce. Receiver binding is a separate,
+    // open-only commitment and must not replace that nonce on later top-ups.
+    let continuation_memo = extra.memo.clone().unwrap_or_else(random_hex_nonce);
     let memo = if let Some(receiver_authorizer) = extra.receiver_authorizer.as_deref() {
         format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
     } else {
-        match &extra.memo {
-            Some(memo) => memo.clone(),
-            None => random_hex_nonce(),
-        }
+        continuation_memo.clone()
     };
     Ok(BatchTerms {
         fee_payer,
@@ -199,6 +201,7 @@ pub fn resolve_terms_with_token_program_and_policy(
         withdraw_delay: extra.withdraw_delay,
         amount: requirements.amount()?,
         memo,
+        continuation_memo,
         tx_version: crate::core::tx::negotiate(
             extra.transaction_versions.as_deref(),
             max_tx_version,
@@ -834,7 +837,7 @@ pub async fn build_top_up(
             &terms.token_program,
             &pc::default_program_id(),
         ),
-        memo_instruction(&terms.memo),
+        memo_instruction(&terms.continuation_memo),
     ];
     let transaction = sign_sponsored(
         signer,
@@ -895,7 +898,7 @@ pub async fn build_refund(
             &channel.channel_id,
             &pc::default_program_id(),
         ),
-        memo_instruction(&terms.memo),
+        memo_instruction(&terms.continuation_memo),
     ];
     Ok(BatchPayload::Refund {
         channel_config: channel.config.clone(),
@@ -1249,7 +1252,7 @@ mod tests {
         requirements.extra.voucher_signer = Some("server".to_string());
         requirements.extra.operator = Some(pc::pubkey_string(&operator));
         let policy = ServerSignedChannelsPolicy::new()
-            .allow_operator(operator, 10_000)
+            .allow_operator(operator, 20_000)
             .unwrap();
         let terms = resolve_terms_with_token_program_and_policy(
             &requirements,
@@ -1262,6 +1265,11 @@ mod tests {
             terms.memo,
             format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
         );
+        assert_eq!(terms.continuation_memo.len(), MEMO_NONCE_BYTES * 2);
+        assert!(terms
+            .continuation_memo
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit()));
 
         let (channel, payload) = build_deposit(
             &signer,
@@ -1302,11 +1310,29 @@ mod tests {
         let signature = Signature::from_str(&authorization.signature).unwrap();
         assert!(signature.verify(signer.pubkey().as_ref(), &message));
 
+        let top_up = build_top_up(&signer, &channel, &terms, 1_000, Hash::new_unique())
+            .await
+            .expect("server-signed top-up builds");
+        let BatchPayload::Deposit { deposit, .. } = top_up else {
+            panic!("expected top-up deposit");
+        };
+        let transaction = pc::decode_transaction(&deposit.transaction).unwrap();
+        let instructions = transaction.message.instructions();
+        let memo = instructions.last().expect("top-up memo");
+        assert_eq!(
+            transaction.message.static_account_keys()[memo.program_id_index as usize],
+            pc::memo_program_id()
+        );
+        let memo = std::str::from_utf8(&memo.data).unwrap();
+        assert_eq!(memo.len(), MEMO_NONCE_BYTES * 2);
+        assert!(memo.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(!memo.starts_with(RECEIVER_BINDING_MEMO_PREFIX));
+
         let err = build_deposit(
             &signer,
             &requirements,
             &terms,
-            10_001,
+            20_001,
             Hash::new_unique(),
             341_000_000,
         )
@@ -1322,10 +1348,13 @@ mod tests {
         requirements.extra.memo = None;
         let terms = resolve(&requirements);
         assert_eq!(terms.memo.len(), MEMO_NONCE_BYTES * 2);
+        assert_eq!(terms.continuation_memo.len(), MEMO_NONCE_BYTES * 2);
         assert!(terms.memo.bytes().all(|b| b.is_ascii_hexdigit()));
         // And a declared memo is passed through verbatim.
         let requirements = self::requirements(&fee_payer);
-        assert_eq!(resolve(&requirements).memo, "invoice-1");
+        let terms = resolve(&requirements);
+        assert_eq!(terms.memo, "invoice-1");
+        assert_eq!(terms.continuation_memo, "invoice-1");
     }
 
     #[tokio::test]
