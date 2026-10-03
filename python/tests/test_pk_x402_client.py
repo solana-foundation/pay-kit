@@ -28,6 +28,7 @@ from solana_pay_kit import (
     configure,
 )
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit.config import reset
 from solana_pay_kit.gate import Gate
 from solana_pay_kit.protocols.x402 import X402Adapter
@@ -485,6 +486,154 @@ async def test_build_payment_rejects_missing_asset():
     del offer["asset"]
     with pytest.raises(ValueError, match="asset"):
         await build_payment(signer, None, _entry(offer))
+
+
+class _MintInfoRpc:
+    """RPC stub exposing only get_account_info for a 9-decimal wrapped-SOL mint."""
+
+    def __init__(self, decimals: int = 9, data_len: int = 82):
+        self.decimals = decimals
+        self.data_len = data_len
+
+    async def get_account_info(self, _pubkey):
+        class _Data:
+            data = bytes(self.data_len)
+
+        class _Value:
+            value = _Data()
+
+        raw = bytearray(self.data_len)
+        raw[44] = self.decimals
+
+        class _Resp:
+            class value:  # noqa: N801 - mirrors RPC response shape
+                data = bytes(raw)
+
+        return _Resp()
+
+
+@pytest.mark.asyncio
+async def test_build_payment_fetches_decimals_from_mint_when_absent():
+    # A spec-compliant offer may omit extra.decimals; the client must fetch the
+    # authoritative value from the on-chain mint instead of rejecting (or
+    # defaulting blindly to six).
+    signer = Signer.generate()
+    offer = _offer(asset="So11111111111111111111111111111111111111112")
+    offer["extra"].pop("decimals")
+
+    class _BlockhashRpc(_MintInfoRpc):
+        async def get_latest_blockhash(self):
+            return "B" * 44
+
+    envelope = await build_payment(signer, _BlockhashRpc(), _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(envelope)))
+    assert bytes(tx.message.instructions[2].data)[9] == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decimals", [0, 9])
+async def test_build_payment_fetches_decimals_with_builtin_rpc(decimals):
+    mint = "So11111111111111111111111111111111111111112"
+    offer = _offer(asset=mint)
+    offer["extra"].pop("decimals")
+    data = bytearray(82)
+    data[44] = decimals
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert body["method"] == "getAccountInfo"
+        assert body["params"][0] == mint
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "value": {
+                        "owner": TP_USDC,
+                        "data": [base64.b64encode(data).decode(), "base64"],
+                    }
+                },
+            },
+        )
+
+    rpc = SolanaRpc("https://rpc.invalid")
+    await rpc._client.aclose()
+    rpc._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        envelope = await build_payment(Signer.generate(), rpc, _entry(offer))
+    finally:
+        await rpc.aclose()
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(envelope)))
+    assert bytes(tx.message.instructions[2].data)[9] == decimals
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account_data, expected", [(None, "not found"), (bytes(44), "too short")])
+async def test_build_payment_rejects_missing_or_short_mint_with_builtin_rpc(account_data, expected):
+    offer = _offer()
+    offer["extra"].pop("decimals")
+
+    def handle(request):
+        value = (
+            None
+            if account_data is None
+            else {
+                "owner": TP_USDC,
+                "data": [base64.b64encode(account_data).decode(), "base64"],
+            }
+        )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"value": value}})
+
+    rpc = SolanaRpc("https://rpc.invalid")
+    await rpc._client.aclose()
+    rpc._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        with pytest.raises(ValueError, match=expected):
+            await build_payment(Signer.generate(), rpc, _entry(offer))
+    finally:
+        await rpc.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["9", True, False, 9.5, -1, 256, [], {}])
+@pytest.mark.parametrize("nested_hint", [6, None])
+async def test_build_payment_rejects_malformed_top_level_decimals(invalid, nested_hint):
+    offer = _offer()
+    offer["decimals"] = invalid
+    offer["extra"]["decimals"] = nested_hint
+    # No RPC is provided: malformed hints must fail before a mint lookup.
+    with pytest.raises(ValueError, match="decimals must be an integer between 0 and 255"):
+        await build_payment(Signer.generate(), None, _entry(offer))
+
+
+@pytest.mark.asyncio
+async def test_build_payment_null_top_level_decimals_uses_nested_hint():
+    offer = _offer(decimals=9)
+    offer["decimals"] = None
+    envelope = await build_payment(Signer.generate(), None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(envelope)))
+    assert bytes(tx.message.instructions[2].data)[9] == 9
+
+
+@pytest.mark.asyncio
+async def test_build_payment_errors_when_mint_fetch_fails_and_no_decimals():
+    signer = Signer.generate()
+    offer = _offer(asset="So11111111111111111111111111111111111111112")
+    offer["extra"].pop("decimals")
+
+    class _BrokenRpc:
+        async def get_account_info(self, _pubkey):
+            raise RuntimeError("rpc down")
+
+        async def get_latest_blockhash(self):
+            return "B" * 44
+
+    with pytest.raises(ValueError, match="fetching mint"):
+        await build_payment(signer, _BrokenRpc(), _entry(offer))
 
 
 @pytest.mark.asyncio

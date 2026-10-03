@@ -5,7 +5,10 @@ import com.solana.paykit.paycore.*
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -68,6 +71,63 @@ class X402RpcClient(
                 throw MppException.InvalidTransaction("Invalid blockhash length ${decoded.size} from RPC")
             }
             return decoded
+        }
+    }
+
+    /**
+     * Fetches the authoritative SPL mint decimals over RPC: byte 44 of the
+     * base Mint layout (Token-2022 keeps that prefix, so it holds for both
+     * token programs).
+     */
+    fun fetchMintDecimals(mintBase58: String): UByte {
+        val payload = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", 1)
+            put("method", "getAccountInfo")
+            put(
+                "params",
+                buildJsonArray {
+                    add(JsonPrimitive(mintBase58))
+                    add(buildJsonObject { put("encoding", "base64") })
+                },
+            )
+        }
+        val body = json.encodeToString(JsonObject.serializer(), payload)
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(url).post(body).build()
+        okHttp.newCall(request).execute().use { response ->
+            val text = response.body?.string()
+                ?: throw MppException.InvalidTransaction("empty RPC response")
+            val parsed = try {
+                json.parseToJsonElement(text)
+            } catch (e: SerializationException) {
+                throw MppException.InvalidTransaction(
+                    "RPC response was not valid JSON (status ${response.code}): ${e.message ?: "parse error"}",
+                )
+            }
+            if (parsed !is JsonObject) {
+                throw MppException.InvalidTransaction("non-object RPC response")
+            }
+            val error = parsed["error"]
+            if (error != null) {
+                throw MppException.InvalidTransaction("RPC error: $error")
+            }
+            val value = parsed["result"]?.jsonObject?.get("value")
+            if (value == null || value is kotlinx.serialization.json.JsonNull) {
+                throw MppException.InvalidTransaction("getAccountInfo returned no account for mint $mintBase58")
+            }
+            val b64 = value.jsonObject
+                .get("data")?.jsonArray?.getOrNull(0)?.jsonPrimitive?.content
+                ?: throw MppException.InvalidTransaction("getAccountInfo returned no account data for mint $mintBase58")
+            val raw = try {
+                java.util.Base64.getDecoder().decode(b64)
+            } catch (e: IllegalArgumentException) {
+                throw MppException.InvalidTransaction("getAccountInfo returned malformed base64 for mint $mintBase58")
+            }
+            if (raw.size < 45) {
+                throw MppException.InvalidTransaction("mint $mintBase58 data too short to contain decimals")
+            }
+            return raw[44].toUByte()
         }
     }
 }

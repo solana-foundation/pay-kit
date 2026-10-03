@@ -493,7 +493,7 @@ func buildTransaction(
 		}
 		instructions = append(instructions, transfer)
 	} else {
-		transfer, err := buildSPLTransfer(signer, recipient, amount, entry)
+		transfer, err := buildSPLTransfer(ctx, rpc, signer, recipient, amount, entry)
 		if err != nil {
 			return "", err
 		}
@@ -556,12 +556,42 @@ func buildTransaction(
 	return solanatx.EncodeTransactionBase64(tx)
 }
 
+// resolveSPLDecimals returns the decimals byte for an SPL transferChecked: the
+// offer's extra.decimals hint when present (range-checked), otherwise the
+// authoritative value fetched from the on-chain mint. A malformed hint is
+// rejected rather than truncated: uint8 conversion would silently wrap.
+func resolveSPLDecimals(ctx context.Context, rpc solanatx.RPCClient, entry *x402.AcceptsEntry) (uint8, error) {
+	if entry.Extra.DecimalsSet {
+		if entry.Extra.Decimals < 0 || entry.Extra.Decimals > 255 {
+			return 0, fmt.Errorf("x402 client: extra.decimals must be between 0 and 255, got %d", entry.Extra.Decimals)
+		}
+		return uint8(entry.Extra.Decimals), nil
+	}
+	decimals, err := solanatx.ResolveMintDecimals(ctx, rpc, entry.Asset)
+	if err != nil {
+		return 0, fmt.Errorf("x402 client: %w", err)
+	}
+	return decimals, nil
+}
+
 func buildSPLTransfer(
+	ctx context.Context,
+	rpc solanatx.RPCClient,
 	signer solanatx.Signer,
 	recipient solana.PublicKey,
 	amount uint64,
 	entry *x402.AcceptsEntry,
 ) (solana.Instruction, error) {
+	// #42: a spec-compliant x402 offer may omit extra.decimals; when absent,
+	// read the authoritative value from the on-chain mint instead of rejecting.
+	// When present it stays an RPC-saving hint. On-chain transferChecked still
+	// verifies the byte against the mint, so a lying hint remains fail-closed.
+	// Defaulting blindly to six would silently build a transferChecked at the
+	// wrong divisor for any non-6-decimal mint.
+	decimals, err := resolveSPLDecimals(ctx, rpc, entry)
+	if err != nil {
+		return nil, err
+	}
 	mint, err := solana.PublicKeyFromBase58(entry.Asset)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: mint %q: %w", entry.Asset, err)
@@ -595,7 +625,7 @@ func buildSPLTransfer(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: recipient ATA: %w", err)
 	}
-	return solanatx.BuildTransferChecked(amount, uint8(entry.Extra.Decimals), sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
+	return solanatx.BuildTransferChecked(amount, decimals, sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
 }
 
 // PaymentTransport wraps an http.RoundTripper and transparently settles an
