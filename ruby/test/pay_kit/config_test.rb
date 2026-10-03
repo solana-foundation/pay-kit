@@ -291,6 +291,88 @@ class PayKitConfigTest < Minitest::Test
     end
   end
 
+  # --- configure_from_env ----------------------------------------------
+
+  def test_configure_from_env_reads_scalars_onto_frozen_config
+    config = PayKit.configure_from_env(env: {
+      "PAY_KIT_NETWORK" => "solana_devnet",
+      "PAY_KIT_RPC_URL" => "https://rpc.example.com",
+      "PAY_KIT_MPP_REALM" => "Shop",
+      "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET" => "rotate-me",
+      "PAY_KIT_MPP_EXPIRES_IN" => "90",
+      "PAY_KIT_X402_FACILITATOR_URL" => "https://facilitator.example.com"
+    })
+    assert_same PayKit.config, config
+    assert config.frozen?
+    assert_equal :solana_devnet, config.network
+    assert_equal "https://rpc.example.com", config.rpc_url
+    assert_equal "Shop", config.mpp.realm
+    assert_equal "rotate-me", config.mpp.challenge_binding_secret
+    assert_equal 90, config.mpp.expires_in
+    assert_equal "https://facilitator.example.com", config.x402.facilitator_url
+  end
+
+  def test_configure_from_env_splits_comma_lists
+    PayKit.configure_from_env(env: {"PAY_KIT_ACCEPT" => "x402, mpp", "PAY_KIT_STABLECOINS" => "USDC,PYUSD"})
+    assert_equal %i[x402 mpp], PayKit.config.accept
+    assert_equal %i[USDC PYUSD], PayKit.config.stablecoins
+  end
+
+  def test_configure_from_env_with_empty_env_keeps_defaults
+    PayKit.configure_from_env(env: {})
+    assert_equal :solana_localnet, PayKit.config.network
+    assert_equal %i[x402 mpp], PayKit.config.accept
+    assert_equal %i[USDC], PayKit.config.stablecoins
+    assert_equal 300, PayKit.config.mpp.expires_in
+  end
+
+  def test_configure_from_env_custom_prefix_ignores_default_prefix
+    PayKit.configure_from_env("APP_", env: {"APP_NETWORK" => "solana_devnet", "PAY_KIT_NETWORK" => "solana_mainnet"})
+    assert_equal :solana_devnet, PayKit.config.network
+  end
+
+  def test_configure_from_env_rejects_bad_values
+    [
+      {"PAY_KIT_NETWORK" => "bitcoin"},
+      {"PAY_KIT_PREFLIGHT" => "maybe"},
+      {"PAY_KIT_MPP_EXPIRES_IN" => "soon"},
+      {"PAY_KIT_STABLECOINS" => " , "}
+    ].each do |env|
+      PayKit.reset!
+      assert_raises(PayKit::ConfigurationError, env.inspect) { PayKit.configure_from_env(env: env) }
+    end
+  end
+
+  def test_configure_from_env_preflight_accepts_python_boolean_words
+    {"1" => true, "True" => true, "YES" => true, " on " => true,
+     "0" => false, "false" => false, "No" => false, " OFF\n" => false}.each do |value, expected|
+      PayKit.reset!
+      PayKit.configure_from_env(env: {"PAY_KIT_PREFLIGHT" => value})
+      assert_equal expected, PayKit.config.preflight, value
+    end
+  end
+
+  def test_configure_from_env_empty_rpc_url_leaves_rpc_url_unset
+    PayKit.configure_from_env(env: {"PAY_KIT_RPC_URL" => ""})
+    assert_nil PayKit.config.rpc_url
+    assert PayKit.config.using_public_rpc_default?
+  end
+
+  def test_configure_from_env_rejects_non_positive_expires_in
+    %w[0 -5].each do |value|
+      PayKit.reset!
+      assert_raises(PayKit::ConfigurationError, value) do
+        PayKit.configure_from_env(env: {"PAY_KIT_MPP_EXPIRES_IN" => value})
+      end
+    end
+  end
+
+  def test_configure_from_env_reads_lowercase_names
+    PayKit.configure_from_env(env: {"pay_kit_network" => "solana_devnet", "Pay_Kit_Rpc_Url" => "https://rpc.example.com"})
+    assert_equal :solana_devnet, PayKit.config.network
+    assert_equal "https://rpc.example.com", PayKit.config.rpc_url
+  end
+
   private
 
   # Replace `PayKit::Preflight.run` with a no-op spy for the duration of
