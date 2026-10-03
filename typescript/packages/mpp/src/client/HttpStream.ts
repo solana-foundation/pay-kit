@@ -27,12 +27,20 @@ export type MeteredSseEvent<Message = string> =
 export class SseDecoder {
     readonly #decoder = new TextDecoder();
     #buffer = '';
+    #skipLeadingLf = false;
 
     /**
      * Pushes a text or byte chunk and returns all complete SSE events.
      */
     pushChunk(chunk: Uint8Array | string): SseEvent[] {
-        this.#buffer += typeof chunk === 'string' ? chunk : this.#decoder.decode(chunk, { stream: true });
+        let text = typeof chunk === 'string' ? chunk : this.#decoder.decode(chunk, { stream: true });
+        if (text.length > 0) {
+            // A CR already ended the previous line. Ignore its optional LF,
+            // even when that LF arrives in a later chunk.
+            if (this.#skipLeadingLf && text.startsWith('\n')) text = text.slice(1);
+            this.#skipLeadingLf = text.endsWith('\r');
+            this.#buffer += text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        }
         return this.drainCompleteEvents();
     }
 
@@ -40,8 +48,8 @@ export class SseDecoder {
      * Flushes the decoder and parses any trailing event.
      */
     finish(): SseEvent[] {
-        this.#buffer += this.#decoder.decode();
-        const events = this.drainCompleteEvents();
+        const events = this.pushChunk(this.#decoder.decode());
+        this.#skipLeadingLf = false;
         if (this.#buffer.trim() === '') return events;
 
         const trailing = parseSseEventBlock(this.#buffer);
@@ -50,8 +58,6 @@ export class SseDecoder {
     }
 
     private drainCompleteEvents(): SseEvent[] {
-        this.#buffer = this.#buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
         const events: SseEvent[] = [];
         let boundary = this.#buffer.indexOf('\n\n');
         while (boundary !== -1) {
