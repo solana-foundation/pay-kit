@@ -39,6 +39,7 @@
 
 pub mod error;
 pub mod expires;
+pub mod mcp;
 pub mod program;
 pub mod protocol;
 pub mod store;

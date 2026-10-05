@@ -139,6 +139,7 @@ impl PaymentChallenge {
             intent: self.intent.clone(),
             request: self.request.clone(),
             expires: self.expires.clone(),
+            description: self.description.clone(),
             digest: self.digest.clone(),
             opaque: self.opaque.clone(),
         }
@@ -250,6 +251,8 @@ pub struct ChallengeEcho {
     pub request: Base64UrlJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

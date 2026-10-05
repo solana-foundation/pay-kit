@@ -29,6 +29,10 @@ client = ["dep:reqwest"]
 # The unified axum gate dispatches both protocols, so it needs both modules
 # plus the server side.
 axum = ["mpp", "x402", "server", "dep:axum"]
+# Ergonomic adapters for the official Rust MCP SDK. The core JSON-RPC codec
+# remains available through `mpp::mcp` without pulling rmcp into applications
+# that use another MCP implementation.
+rmcp = ["mpp", "server", "dep:rmcp"]
 gcp_kms = ["solana-keychain/gcp_kms"]
 # Ledger hardware-wallet signing over USB-HID, forwarded from solana-keychain
 # (`pay_kit::solana_keychain::ledger`). Opt-in: it links hidapi, which needs
@@ -154,6 +158,7 @@ reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
 
 # Axum extractor / unified gate (opt-in).
 axum = { version = "0.8", optional = true, default-features = false }
+rmcp = { version = "3.5", optional = true, default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

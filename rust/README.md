@@ -174,6 +174,41 @@ Payment` credential, decodes the client-signed transaction and checks recipient,
 amount, mint, splits, ATA, memos, and compute budget, optionally co-signs as fee
 payer, broadcasts, polls to `confirmed`, and emits `Payment-Receipt`.
 
+### MCP with `rmcp`
+
+Enable the `rmcp` feature to use the Payment Auth MCP transport with the
+official Rust MCP SDK. The adapter reads payment credentials from the metadata
+that `rmcp` places on `RequestContext`, returns the standard JSON-RPC `-32042`
+or `-32043` payment errors, and attaches the receipt to the normal tool result:
+
+```rust
+use rmcp::{
+    model::{CallToolRequestParams, CallToolResult, ErrorCode},
+    service::{RequestContext, RoleServer},
+    ErrorData,
+};
+use solana_pay_kit::mpp::{mcp::rmcp as payment_mcp, server::Mpp};
+
+async fn paid_tool(
+    payment: &Mpp,
+    request: CallToolRequestParams,
+    context: RequestContext<RoleServer>,
+) -> Result<CallToolResult, ErrorData> {
+    let receipt = payment_mcp::gate_charge(payment, &request, &context.meta, "0.001").await?;
+
+    let mut result = CallToolResult::success(vec![]);
+    payment_mcp::attach_receipt(&mut result, &receipt).map_err(|error| {
+        ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None)
+    })?;
+    Ok(result)
+}
+```
+
+Client code can use `payment_mcp::challenges`, `set_credential`, and `receipt`
+to implement the challenge, paid retry, and receipt flow with `rmcp` request and
+result types. The transport-neutral `mpp::mcp` module also exposes the same
+native-JSON mapping for custom MCP runtimes and session lifecycle handlers.
+
 ## x402
 
 [x402](https://x402.org) revives HTTP `402 Payment Required`. The Rust
@@ -340,6 +375,9 @@ solana-pay-kit = { version = "0.1", features = ["axum"] }
 
 # Single protocol:
 solana-pay-kit = { version = "0.1", default-features = false, features = ["mpp"] }
+
+# Payment Auth MCP transport with the official Rust MCP SDK:
+solana-pay-kit = { version = "0.1", default-features = false, features = ["rmcp"] }
 ```
 
 Feature flags:
@@ -351,6 +389,7 @@ Feature flags:
 | `server` | — | server-side verification for the enabled protocols |
 | `client` | — | client-side payment building for the enabled protocols |
 | `axum` | — | the `paid_get` / `paid_post` gate (implies `server` + both protocols) |
+| `rmcp` | — | Payment Auth MCP adapters for the official Rust MCP SDK (implies `mpp` + `server`) |
 | `gcp_kms` | — | GCP KMS signing backend |
 | `ledger` | — | Ledger hardware-wallet signing over USB-HID (`solana_keychain::ledger`; links hidapi) |
 
