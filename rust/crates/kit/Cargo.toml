@@ -86,7 +86,7 @@ otel = [
 # commit directly: path and git consumers of the kit inherit it (a workspace
 # `[patch]` would not reach them). `cargo publish` strips the git source and
 # resolves beta.1, which does not compile; publishing waits for beta.2.
-solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "ae0b5c7ab0cdf631c746cddddb89f3d725c07b6f", default-features = false, features = ["memory", "sdk-v4"] }
+solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "44b479df245167ca3b3a4e04d6d907146306d342", default-features = false, features = ["memory", "sdk-v4"] }
 
 # Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
 # which solana-keypair/solana-signature rely on.
