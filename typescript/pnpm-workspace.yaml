@@ -33,6 +33,7 @@ overrides:
   vite: '8.0.16'
   # fast-uri/hono/ip-address floors below track advisories reached via
   # @modelcontextprotocol/sdk (see `pnpm why <pkg>`); bump as new CVEs land.
+  '@modelcontextprotocol/sdk': '>=1.31.0'
   fast-uri: '>=4.1.5'
   hono: '>=4.13.5'
   ip-address: '>=10.7.2'
@@ -41,6 +42,9 @@ overrides:
   qs: '>=6.16.0'
   yaml: '>=2.8.3'
   body-parser: '>=2.3.0'
+  # GHSA-jqcg-44mw-7w3h: forwarded-header denial of service, patched in 2.0.8.
+  # Reaches us via mppx > express.
+  proxy-addr: '>=2.0.8'
   # GHSA-p95v-992w-h6c3: prototype pollution decoding untrusted TOON, patched in
   # 2.3.1. Reaches us via packages/pay-kit > mppx > incur. Pinned exactly rather
   # than floored: `incur` expects the 2.x line, and a `>=2.3.1` override would
