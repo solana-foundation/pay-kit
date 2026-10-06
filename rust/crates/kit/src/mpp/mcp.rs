@@ -125,6 +125,9 @@ impl Request {
         let mut params = self.params.clone();
         if let Some(object) = params.as_mut().and_then(Value::as_object_mut) {
             remove_credential(object);
+            if object.is_empty() {
+                params = None;
+            }
         }
         let operation = serde_json::json!({
             "method": self.method,
@@ -915,6 +918,28 @@ mod tests {
 
         request.params.as_mut().unwrap()["arguments"]["cpu"] = serde_json::json!(2);
         assert_ne!(request.operation_digest().unwrap(), expected);
+    }
+
+    #[test]
+    fn operation_digest_preserves_requests_without_params_on_paid_retry() {
+        let payment = payment_challenge();
+        let credential =
+            PaymentCredential::new(payment.to_echo(), serde_json::json!({"proof": "ok"}));
+        let mut request = Request {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(1)),
+            method: "ping".into(),
+            params: None,
+            meta: None,
+        };
+        let expected = request.operation_digest().unwrap();
+
+        request.set_credential(&credential).unwrap();
+
+        assert_eq!(request.operation_digest().unwrap(), expected);
+        let decoded = request.credential().unwrap().unwrap();
+        assert_eq!(decoded.challenge.id, credential.challenge.id);
+        assert_eq!(decoded.payload, credential.payload);
     }
 
     #[test]
