@@ -312,9 +312,18 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                         subscriptionTerms.methodDetails.network ?? 'mainnet',
                         network,
                     );
+                    const mint = subscriptionTerms.methodDetails.mint;
+                    const advertisedMint =
+                        resolveStablecoinMint(subscriptionTerms.currency, challengeNetwork) ??
+                        subscriptionTerms.currency;
+                    if (advertisedMint !== mint) {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Subscription currency does not match mint' },
+                        ]);
+                    }
                     permissions.authorize({
                         amount: challengeAmount(subscriptionTerms.amount),
-                        mint: subscriptionTerms.currency,
+                        mint,
                         network: challengeNetwork,
                         origin,
                     });
@@ -348,6 +357,11 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             const permitted: PaymentRequirements[] = [];
             for (const requirement of required.accepts ?? []) {
                 try {
+                    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Invalid x402 payment requirement' },
+                        ]);
+                    }
                     if (typeof requirement.asset !== 'string') {
                         throw new PermissionDeniedError([
                             { code: 'invalid_challenge_terms', message: 'Invalid x402 asset' },

@@ -114,15 +114,15 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
             decisions: dict[str, bool] = {}
 
             def permitted(requirement: X402AcceptsEntry) -> bool:
-                key = json.dumps(requirement, sort_keys=True)
+                # Parser-only resource metadata is not part of the wire offer.
+                wire_offer = {name: value for name, value in requirement.items() if name != "__pay_kit_resource_info__"}
+                key = json.dumps(wire_offer, sort_keys=True)
                 if key in decisions:
                     return decisions[key]
                 try:
                     network = _network(requirement.get("network"), self._network)
                     amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
-                    asset = cast("object", requirement.get("asset"))
-                    if not isinstance(asset, str):
-                        raise _invalid("invalid x402 asset")
+                    asset = _x402_asset(requirement)
                     self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
@@ -142,7 +142,7 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                 try:
                     network = _network(requirement.get("network"), self._network)
                     amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
-                    asset = requirement.get("asset")
+                    asset = _x402_asset(requirement)
                     self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
                     legacy = version == X402_VERSION_V1
                     builder = build_payment_header_legacy if legacy else build_payment_header
@@ -300,6 +300,16 @@ def _amount(value: object) -> int:
         return int(value)
     except ValueError as exc:
         raise _invalid(f"invalid payment amount: {value!r}") from exc
+
+
+def _x402_asset(requirement: X402AcceptsEntry) -> str:
+    """Authorize the same asset the exact credential builder will transfer."""
+    raw = cast("dict[str, object]", requirement)
+    asset = raw.get("asset")
+    if not isinstance(asset, str):
+        raise _invalid("invalid x402 asset")
+    currency = raw.get("currency")
+    return currency if isinstance(currency, str) and currency != "" else asset
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:

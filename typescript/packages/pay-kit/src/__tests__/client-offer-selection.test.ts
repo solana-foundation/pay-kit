@@ -50,7 +50,7 @@ vi.mock('@x402/core/client', async importOriginal => {
     };
 });
 
-import { ClientPermissions, createPayKitClient, PermissionDeniedError } from '../client/index.js';
+import { AssetPermission, ClientPermissions, createPayKitClient, PermissionDeniedError } from '../client/index.js';
 import { ConfigurationError } from '../errors.js';
 
 const RPC_URL = 'http://127.0.0.1:8899';
@@ -66,7 +66,13 @@ function charge(id: string, amount: unknown = '500000', network: unknown = 'main
     });
 }
 
-function subscription(id: string, amount: string, periodUnit = 'day', periodCount = '1'): string {
+function subscription(
+    id: string,
+    amount: string,
+    periodUnit = 'day',
+    periodCount = '1',
+    asset: { currency?: unknown; mint?: unknown } = {},
+): string {
     const mint = resolveStablecoinMint('USDC', 'mainnet');
     if (!mint) throw new Error('missing mainnet USDC mint');
     return Challenge.serialize({
@@ -76,13 +82,13 @@ function subscription(id: string, amount: string, periodUnit = 'day', periodCoun
         realm: 'test',
         request: {
             amount,
-            currency: mint,
+            currency: 'currency' in asset ? asset.currency : mint,
             recipient: UNKNOWN_MINT,
             periodCount,
             periodUnit,
             methodDetails: {
                 decimals: 6,
-                mint,
+                mint: 'mint' in asset ? asset.mint : mint,
                 network: 'mainnet',
                 planAddress: UNKNOWN_MINT,
                 puller: UNKNOWN_MINT,
@@ -152,7 +158,7 @@ function exact(amount: unknown = '500000', asset: unknown = resolveStablecoinMin
     };
 }
 
-function x402Probe(accepts: ReturnType<typeof exact>[]): Response {
+function x402Probe(accepts: unknown[]): Response {
     return new Response(null, {
         headers: { 'payment-required': btoa(JSON.stringify({ accepts, x402Version: 2 })) },
         status: 402,
@@ -280,6 +286,105 @@ describe('permissioned offer selection', () => {
     });
 
     it.each([
+        ['mismatched custom mint', { currency: 'USDC', mint: UNKNOWN_MINT }],
+        ['null mint', { currency: 'USDC', mint: null }],
+        ['numeric mint', { currency: 'USDC', mint: 1 }],
+        ['mint symbol', { currency: 'USDC', mint: 'USDC' }],
+        ['invalid address', { currency: 'USDC', mint: 'not an address' }],
+        ['non-string currency', { currency: 1 }],
+    ])('rejects a subscription with %s before choosing a matching offer', async (_name, asset) => {
+        mockFetch
+            .mockResolvedValueOnce(
+                probe([subscription('invalid', '500000', 'day', '1', asset), subscription('permitted', '500000')]),
+            )
+            .mockResolvedValueOnce(new Response('ok'));
+        const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
+        expect(createSubscriptionCredential.mock.calls[0]?.[0].challenge.id).toBe('permitted');
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects an advertised currency/mint mismatch even when both assets are permitted', async () => {
+        mockFetch.mockResolvedValue(
+            probe([
+                subscription('mismatch', '1', 'day', '1', {
+                    currency: 'USDC',
+                    mint: UNKNOWN_MINT,
+                }),
+            ]),
+        );
+        const client = await createPayKitClient({ accept: ['mpp'], permissions: false, rpcUrl: RPC_URL, signer });
+        const error = await client.fetch('https://api.test/paid').catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PermissionDeniedError);
+        expect((error as PermissionDeniedError).rejections[0]?.code).toBe('invalid_challenge_terms');
+        expect(createSubscriptionCredential).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['USDC', resolveStablecoinMint('USDC', 'mainnet')!])(
+        'allows a matching subscription currency %s',
+        async currency => {
+            mockFetch
+                .mockResolvedValueOnce(probe([subscription('permitted', '500000', 'day', '1', { currency })]))
+                .mockResolvedValueOnce(new Response('ok'));
+            const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
+            expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+            expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+        },
+    );
+
+    it.each([
+        ['default policy', ClientPermissions.builder().build(), '1', 'asset_not_allowed'],
+        [
+            'custom atomic cap',
+            ClientPermissions.builder()
+                .allowAsset(AssetPermission.withCap('mainnet', UNKNOWN_MINT, 10n))
+                .build(),
+            '11',
+            'amount_exceeds_limit',
+        ],
+    ])(
+        'denies a matching custom subscription under %s before credential construction',
+        async (_name, permissions, amount, code) => {
+            mockFetch.mockResolvedValue(
+                probe([
+                    subscription('custom', amount, 'day', '1', {
+                        currency: UNKNOWN_MINT,
+                        mint: UNKNOWN_MINT,
+                    }),
+                ]),
+            );
+            const client = await createPayKitClient({ accept: ['mpp'], permissions, rpcUrl: RPC_URL, signer });
+            const error = await client.fetch('https://api.test/paid').catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(PermissionDeniedError);
+            expect((error as PermissionDeniedError).rejections[0]?.code).toBe(code);
+            expect(createSubscriptionCredential).not.toHaveBeenCalled();
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    it('allows a matching explicitly permitted custom subscription at its atomic cap', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                probe([
+                    subscription('custom', '10', 'day', '1', {
+                        currency: UNKNOWN_MINT,
+                        mint: UNKNOWN_MINT,
+                    }),
+                ]),
+            )
+            .mockResolvedValueOnce(new Response('ok'));
+        const permissions = ClientPermissions.builder()
+            .allowAsset(AssetPermission.withCap('mainnet', UNKNOWN_MINT, 10n))
+            .build();
+        const client = await createPayKitClient({ accept: ['mpp'], permissions, rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
         ['null asset', exact('800000', null)],
         ['integer asset', exact('800000', 1)],
         ['list asset', exact('800000', [])],
@@ -314,6 +419,35 @@ describe('permissioned offer selection', () => {
         expect(error).toBeInstanceOf(PermissionDeniedError);
         expect((error as PermissionDeniedError).rejections.map(r => r.code)).toEqual(
             offers.map(() => 'invalid_challenge_terms'),
+        );
+        expect(buildX402).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['null', null],
+        ['number', 1],
+        ['boolean', true],
+        ['string', 'invalid'],
+        ['array', []],
+    ])('rejects a malformed x402 %s offer before paying its valid sibling', async (_name, invalid) => {
+        const valid = exact();
+        mockFetch.mockResolvedValueOnce(x402Probe([invalid, valid])).mockResolvedValueOnce(new Response('ok'));
+        const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(buildX402).toHaveBeenCalledTimes(1);
+        expect(buildX402.mock.calls[0]?.[0].accepts).toEqual([valid]);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports all malformed x402 offers without signing', async () => {
+        const invalid = [null, 1, true, 'invalid', []];
+        mockFetch.mockResolvedValue(x402Probe(invalid));
+        const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+        const error = await client.fetch('https://api.test/paid').catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PermissionDeniedError);
+        expect((error as PermissionDeniedError).rejections.map(r => r.code)).toEqual(
+            invalid.map(() => 'invalid_challenge_terms'),
         );
         expect(buildX402).not.toHaveBeenCalled();
         expect(mockFetch).toHaveBeenCalledTimes(1);
