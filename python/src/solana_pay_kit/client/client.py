@@ -28,6 +28,7 @@ from solana_pay_kit.protocols.x402.client.exact.payment import (
 )
 from solana_pay_kit.protocols.x402.client.exact.transport import PAYMENT_SIGNATURE_HEADER
 from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
+from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
 from solana_pay_kit.signer import LocalSigner
 
@@ -71,13 +72,14 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
 
         if "mpp" in self._protocols:
             challenges = parse_www_authenticate_all(response.headers.get_list("www-authenticate"))
-            challenge = next(
-                (item for item in challenges if item.method == "solana" and item.intent == "charge"),
-                None,
-            )
-            if challenge is not None:
+            for challenge in challenges:
+                if challenge.method != "solana" or challenge.intent != "charge":
+                    continue
                 try:
-                    raw = challenge.decode_request()
+                    raw_value = cast("object", challenge.decode_request())
+                    if not isinstance(raw_value, dict):
+                        raise _invalid("invalid MPP charge terms")
+                    raw = cast("dict[str, object]", raw_value)
                     amount = _amount(raw.get("amount"))
                     currency: object = raw.get("currency")
                     details_value: object = raw.get("methodDetails")
@@ -103,13 +105,26 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     rejections.extend(exc.rejections)
                 except Exception:  # noqa: BLE001 - an unusable MPP offer may fall back to x402
                     logger.warning("failed to build MPP payment credential", exc_info=True)
+                    break
 
         if "x402" in self._protocols:
+
+            def permitted(requirement: X402AcceptsEntry) -> bool:
+                try:
+                    network = _network(requirement.get("network"), self._network)
+                    amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
+                    self._permissions.authorize(PaymentCandidate(amount, requirement.get("asset"), network, origin))
+                except PermissionDeniedError as exc:
+                    rejections.extend(exc.rejections)
+                    return False
+                return True
+
             body = response.text if response.content else None
             requirement, version = parse_x402_challenge_with_version(
                 dict(response.headers),
                 body,
                 ChallengeSelection(network=self._network),
+                requirement_filter=permitted,
             )
             if requirement is not None:
                 try:
@@ -273,11 +288,13 @@ def _amount(value: object) -> int:
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:
-    if value in {None, "mainnet", "mainnet-beta", SOLANA_MAINNET_CAIP2}:
+    if value is not None and not isinstance(value, str):
+        raise _invalid(f"invalid Solana network: {value!r}")
+    if value in {None, "mainnet", "mainnet-beta", "solana", SOLANA_MAINNET_CAIP2}:
         return "mainnet"
     if value == "localnet":
         return "localnet"
-    if value in {"devnet", SOLANA_DEVNET_CAIP2}:
+    if value in {"devnet", "solana-devnet", SOLANA_DEVNET_CAIP2}:
         return "localnet" if configured == "localnet" else "devnet"
     raise _invalid(f"unsupported Solana network: {value!r}")
 

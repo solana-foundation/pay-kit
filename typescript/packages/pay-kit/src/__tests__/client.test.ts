@@ -44,7 +44,14 @@ describe('createPayKitClient', () => {
     });
 
     it('rejects a session intent with ConfigurationError before any signing', async () => {
-        mockFetch.mockResolvedValue(response(402, { 'www-authenticate': 'Payment intent="session"' }));
+        const challenge = Challenge.serialize({
+            id: 'session-only',
+            intent: 'session',
+            method: 'solana',
+            realm: 'test',
+            request: {},
+        });
+        mockFetch.mockResolvedValue(response(402, { 'www-authenticate': challenge }));
 
         const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
 
