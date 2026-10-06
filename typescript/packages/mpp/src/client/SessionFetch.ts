@@ -222,7 +222,7 @@ export class SessionFetchClient {
         this.emit({ open, type: 'open' });
 
         const retry = this.prepare({
-            init: withAuthorization(init, authorization),
+            init: withAuthorization(input, init, authorization),
             input: cloneFetchInput(input),
         });
         const retryResponse = await this.#fetch(retry.input, retry.init);
@@ -521,7 +521,7 @@ export function createSessionFetch(parameters: SessionFetchClient.Parameters): S
 export function stripRequestHeaders(names: readonly string[]): PrepareSessionRequest {
     const normalized = names.map(name => name.toLowerCase());
     return request => {
-        const headers = new Headers(request.init?.headers);
+        const headers = effectiveRequestHeaders(request.input, request.init);
         for (const name of normalized) {
             headers.delete(name);
         }
@@ -562,8 +562,12 @@ export async function withPatchedGlobalFetch<Value>(
     }
 }
 
-function withAuthorization(init: FetchInit, authorization: string): FetchInit {
-    const headers = new Headers(init?.headers);
+function effectiveRequestHeaders(input: FetchInput, init: FetchInit): Headers {
+    return new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+}
+
+function withAuthorization(input: FetchInput, init: FetchInit, authorization: string): FetchInit {
+    const headers = effectiveRequestHeaders(input, init);
     headers.set('authorization', authorization);
     return { ...init, headers };
 }
