@@ -10,7 +10,12 @@ import httpx
 import pytest
 
 from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
-from solana_pay_kit.client import ClientPermissions, PermissionDeniedError, PermissionedPaymentTransport
+from solana_pay_kit.client import (
+    ClientPermissions,
+    PermissionDeniedError,
+    PermissionedPaymentTransport,
+    PermissionRejection,
+)
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
@@ -136,6 +141,52 @@ async def test_mpp_preserves_server_order_among_permitted_offers(monkeypatch: py
     assert result.status_code == 200
     assert len(requests) == 2
     assert build.call_args.kwargs["challenge"].decode_request()["amount"] == "800000"
+
+
+@pytest.mark.parametrize("dual_protocol", [False, True])
+@pytest.mark.parametrize("permission_error", [False, True])
+async def test_mpp_paid_dispatch_error_does_not_try_another_offer(
+    monkeypatch: pytest.MonkeyPatch, dual_protocol: bool, permission_error: bool
+) -> None:
+    request = httpx.Request("POST", "https://api.example/paid", content=b"query")
+    error = (
+        PermissionDeniedError((PermissionRejection("invalid_challenge_terms", "inner transport error"),))
+        if permission_error
+        else httpx.ReadError("paid dispatch failed", request=request)
+    )
+    headers = [("www-authenticate", mpp("800000")), ("www-authenticate", mpp("500000"))]
+    envelope = json.dumps({"x402Version": 2, "accepts": [x402("500000")]})
+    headers.append(("payment-required", base64.b64encode(envelope.encode()).decode()))
+    requests: list[httpx.Request] = []
+
+    async def handle(sent: httpx.Request) -> httpx.Response:
+        requests.append(sent)
+        if len(requests) == 1:
+            return httpx.Response(402, headers=headers)
+        raise error
+
+    mpp_build = AsyncMock(return_value="Payment credential")
+    x402_build = AsyncMock(return_value="x402 credential")
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", mpp_build)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("mpp", "x402") if dual_protocol else ("mpp",),
+        base_transport=httpx.MockTransport(handle),
+    )
+
+    with pytest.raises(type(error)) as raised:
+        await transport.handle_async_request(request)
+
+    assert raised.value is error
+    assert len(requests) == 2
+    assert [sent.content for sent in requests] == [b"query", b"query"]
+    mpp_build.assert_awaited_once()
+    assert mpp_build.call_args.kwargs["challenge"].decode_request()["amount"] == "800000"
+    x402_build.assert_not_called()
 
 
 async def test_mpp_can_fall_back_to_x402_after_denial(monkeypatch: pytest.MonkeyPatch) -> None:
