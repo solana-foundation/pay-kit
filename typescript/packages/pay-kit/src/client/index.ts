@@ -13,6 +13,7 @@
  * x402 `ClientSvmSigner` and the MPP client methods).
  */
 import type { KeyPairSigner } from '@solana/kit';
+import { mapSubscriptionPeriodToHours, subscription as subscriptionMethod } from '@solana/mpp';
 import {
     Challenge,
     isSolanaChargeChallenge,
@@ -347,6 +348,11 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             const permitted: PaymentRequirements[] = [];
             for (const requirement of required.accepts ?? []) {
                 try {
+                    if (typeof requirement.asset !== 'string') {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Invalid x402 asset' },
+                        ]);
+                    }
                     permissions.authorize({
                         amount: challengeAmount(requirement.amount),
                         mint: requirement.asset,
@@ -419,8 +425,8 @@ function normalizeNetwork(value: string, configured: SolanaNetwork): SolanaNetwo
     ]);
 }
 
-function challengeAmount(value: string): bigint {
-    if (!/^\d+$/.test(value)) {
+function challengeAmount(value: unknown): bigint {
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) {
         throw new PermissionDeniedError([
             { code: 'invalid_challenge_terms', message: `Invalid payment amount: ${JSON.stringify(value)}` },
         ]);
@@ -428,18 +434,13 @@ function challengeAmount(value: string): bigint {
     return BigInt(value);
 }
 
-function subscriptionRequest(
-    value: unknown,
-): { amount: string; currency: string; methodDetails: { network?: string } } | undefined {
-    if (!value || typeof value !== 'object') return undefined;
-    const request = value as Record<string, unknown>;
-    if (typeof request.amount !== 'string' || typeof request.currency !== 'string') return undefined;
-    if (!request.methodDetails || typeof request.methodDetails !== 'object') return undefined;
-    const methodDetails = request.methodDetails as Record<string, unknown>;
-    if (methodDetails.network !== undefined && typeof methodDetails.network !== 'string') return undefined;
-    return {
-        amount: request.amount,
-        currency: request.currency,
-        methodDetails: { network: methodDetails.network },
-    };
+function subscriptionRequest(value: unknown) {
+    const request = subscriptionMethod.schema.request.safeParse(value);
+    if (!request.success) return undefined;
+    try {
+        mapSubscriptionPeriodToHours(request.data.periodUnit, Number(request.data.periodCount));
+    } catch {
+        return undefined;
+    }
+    return request.data;
 }

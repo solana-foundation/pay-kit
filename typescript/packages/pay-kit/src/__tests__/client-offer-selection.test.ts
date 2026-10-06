@@ -1,5 +1,5 @@
 import { generateKeyPairSigner, type KeyPairSigner } from '@solana/kit';
-import { Challenge, resolveStablecoinMint } from '@solana/mpp/client';
+import { Challenge, resolveStablecoinMint, SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '@solana/mpp/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The client captures fetch when imported, before beforeEach can run.
@@ -66,13 +66,40 @@ function charge(id: string, amount: unknown = '500000', network: unknown = 'main
     });
 }
 
-function subscription(id: string, amount: string): string {
+function subscription(id: string, amount: string, periodUnit = 'day', periodCount = '1'): string {
+    const mint = resolveStablecoinMint('USDC', 'mainnet');
+    if (!mint) throw new Error('missing mainnet USDC mint');
     return Challenge.serialize({
         id,
         intent: 'subscription',
         method: 'solana',
         realm: 'test',
-        request: { amount, currency: 'USDC', methodDetails: { network: 'mainnet' } },
+        request: {
+            amount,
+            currency: mint,
+            recipient: UNKNOWN_MINT,
+            periodCount,
+            periodUnit,
+            methodDetails: {
+                decimals: 6,
+                mint,
+                network: 'mainnet',
+                planAddress: UNKNOWN_MINT,
+                puller: UNKNOWN_MINT,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+        },
+    });
+}
+
+function incompleteSubscription(): string {
+    return Challenge.serialize({
+        id: 'missing-fields',
+        intent: 'subscription',
+        method: 'solana',
+        realm: 'test',
+        request: { amount: '1', currency: 'USDC', methodDetails: { network: 'mainnet' } },
     });
 }
 
@@ -111,6 +138,25 @@ function probe(challenges: string[], withX402 = false): Response {
         );
     }
     return new Response(null, { headers, status: 402 });
+}
+
+function exact(amount: unknown = '500000', asset: unknown = resolveStablecoinMint('USDC', 'mainnet')) {
+    return {
+        amount,
+        asset,
+        extra: {},
+        maxTimeoutSeconds: 60,
+        network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+        payTo: UNKNOWN_MINT,
+        scheme: 'exact',
+    };
+}
+
+function x402Probe(accepts: ReturnType<typeof exact>[]): Response {
+    return new Response(null, {
+        headers: { 'payment-required': btoa(JSON.stringify({ accepts, x402Version: 2 })) },
+        status: 402,
+    });
 }
 
 describe('permissioned offer selection', () => {
@@ -171,6 +217,106 @@ describe('permissioned offer selection', () => {
         expect(createCredential).not.toHaveBeenCalled();
         expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
         expect(createSubscriptionCredential.mock.calls[0]?.[0].challenge.id).toBe('permitted');
+    });
+
+    it.each([
+        ['unsupported period unit', subscription('month', '500000', 'month')],
+        ['missing required fields', incompleteSubscription()],
+        ['zero period count', subscription('zero', '500000', 'day', '0')],
+        ['invalid period count', subscription('bad', '500000', 'day', 'bad')],
+        ['too many days', subscription('366days', '500000', 'day', '366')],
+        ['too many weeks', subscription('53weeks', '500000', 'week', '53')],
+    ])('rejects a subscription with %s before building the next valid offer', async (_name, invalid) => {
+        mockFetch
+            .mockResolvedValueOnce(probe([invalid, subscription('permitted', '500000')]))
+            .mockResolvedValueOnce(new Response('ok'));
+        const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
+        expect(createSubscriptionCredential.mock.calls[0]?.[0].challenge.id).toBe('permitted');
+        expect(createCredential).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        ['unsupported period unit', subscription('month', '500000', 'month')],
+        ['missing required fields', incompleteSubscription()],
+        ['zero period count', subscription('zero', '500000', 'day', '0')],
+        ['invalid period count', subscription('bad', '500000', 'day', 'bad')],
+        ['too many days', subscription('366days', '500000', 'day', '366')],
+        ['too many weeks', subscription('53weeks', '500000', 'week', '53')],
+    ])('falls back to x402 after a subscription with %s without signing it', async (_name, invalid) => {
+        mockFetch.mockResolvedValueOnce(probe([invalid], true)).mockResolvedValueOnce(new Response('ok'));
+        const client = await createPayKitClient({ rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(createSubscriptionCredential).not.toHaveBeenCalled();
+        expect(buildX402).toHaveBeenCalledTimes(1);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        ['maximum day period', subscription('365days', '500000', 'day', '365')],
+        ['maximum week period', subscription('52weeks', '500000', 'week', '52')],
+    ])('keeps the %s subscription valid', async (_name, valid) => {
+        mockFetch.mockResolvedValueOnce(probe([valid])).mockResolvedValueOnce(new Response('ok'));
+        const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
+        expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+        expect(createSubscriptionCredential).toHaveBeenCalledTimes(1);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('denies all malformed subscriptions without constructing a credential', async () => {
+        mockFetch.mockResolvedValue(probe([subscription('month', '500000', 'month'), incompleteSubscription()]));
+        const client = await createPayKitClient({ accept: ['mpp'], rpcUrl: RPC_URL, signer });
+        const error = await client.fetch('https://api.test/paid').catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PermissionDeniedError);
+        expect((error as PermissionDeniedError).rejections.map(r => r.code)).toEqual([
+            'invalid_challenge_terms',
+            'invalid_challenge_terms',
+        ]);
+        expect(createSubscriptionCredential).not.toHaveBeenCalled();
+        expect(createCredential).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['null asset', exact('800000', null)],
+        ['integer asset', exact('800000', 1)],
+        ['list asset', exact('800000', [])],
+        ['object asset', exact('800000', {})],
+        ['boolean asset', exact('800000', true)],
+        ['numeric amount', exact(1)],
+        ['list amount', exact(['1'])],
+    ])('filters an x402 %s before selecting a valid offer in either order', async (_name, invalid) => {
+        const valid = exact();
+        for (const offers of [
+            [invalid, valid],
+            [valid, invalid],
+        ]) {
+            mockFetch.mockReset();
+            buildX402.mockClear();
+            mockFetch.mockResolvedValueOnce(x402Probe(offers)).mockResolvedValueOnce(new Response('ok'));
+            const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+            expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+            expect(buildX402).toHaveBeenCalledTimes(1);
+            expect(buildX402.mock.calls[0]?.[0].accepts).toEqual([valid]);
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+        }
+    });
+
+    it.each([
+        ['assets', [null, 1, [], {}, true].map(asset => exact('1', asset))],
+        ['amounts', [exact(1), exact(['1'])]],
+    ])('reports all malformed x402 %s without building a credential', async (_name, offers) => {
+        mockFetch.mockResolvedValue(x402Probe(offers));
+        const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+        const error = await client.fetch('https://api.test/paid').catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PermissionDeniedError);
+        expect((error as PermissionDeniedError).rejections.map(r => r.code)).toEqual(
+            offers.map(() => 'invalid_challenge_terms'),
+        );
+        expect(buildX402).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it.each([

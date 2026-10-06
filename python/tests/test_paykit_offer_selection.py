@@ -16,6 +16,7 @@ from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 UNKNOWN_MINT = "11111111111111111111111111111111"
+OVERSIZED_DECIMAL = "1" * 4301
 
 
 def mpp(amount: object = "500000", network: object = "mainnet", currency: str = "USDC") -> str:
@@ -32,7 +33,7 @@ def mpp(amount: object = "500000", network: object = "mainnet", currency: str = 
     return format_www_authenticate(challenge)
 
 
-def x402(amount: str, asset: str = "USDC", network: str = SOLANA_MAINNET_CAIP2) -> dict[str, object]:
+def x402(amount: str, asset: object = "USDC", network: str = SOLANA_MAINNET_CAIP2) -> dict[str, object]:
     """Build one supported exact offer."""
     return {
         "scheme": "exact",
@@ -52,6 +53,7 @@ async def run(
     x402_offers: list[dict[str, object]] | None = None,
     version: int = 2,
     legacy_source: str = "body",
+    include_body: bool = False,
     permissions: ClientPermissions | None = None,
 ) -> tuple[httpx.Response, list[httpx.Request], AsyncMock, AsyncMock]:
     """Probe and retry against a local in-memory transport."""
@@ -61,6 +63,8 @@ async def run(
         envelope = json.dumps({"x402Version": version, "accepts": x402_offers})
         if version == 2:
             headers.append(("payment-required", base64.b64encode(envelope.encode()).decode()))
+            if include_body:
+                body = envelope.encode()
         elif legacy_source == "header":
             headers.append(("X-PAYMENT-REQUIRED", envelope))
         else:
@@ -97,8 +101,23 @@ async def run(
         mpp("bad"),
         mpp(1),
         mpp("1", "mainnet", UNKNOWN_MINT),
+        mpp("²"),
+        mpp("٢"),
+        mpp(OVERSIZED_DECIMAL),
+        mpp("0.5"),
     ],
-    ids=["over-cap", "denied-network", "unsupported-network", "invalid-amount", "invalid-schema", "unknown-asset"],
+    ids=[
+        "over-cap",
+        "denied-network",
+        "unsupported-network",
+        "invalid-amount",
+        "invalid-schema",
+        "unknown-asset",
+        "superscript-digit",
+        "unicode-decimal",
+        "oversized-decimal",
+        "fractional-decimal",
+    ],
 )
 async def test_mpp_uses_the_next_permitted_offer(monkeypatch: pytest.MonkeyPatch, denied: str) -> None:
     result, requests, mpp_build, x402_build = await run(monkeypatch, mpp_offers=[denied, mpp()])
@@ -192,8 +211,125 @@ async def test_all_denials_are_reported_without_signing(monkeypatch: pytest.Monk
     ]
 
 
-async def test_invalid_x402_amount_does_not_hide_a_valid_offer(monkeypatch: pytest.MonkeyPatch) -> None:
-    result, requests, _, build = await run(monkeypatch, x402_offers=[x402("-1"), x402("500000")])
+async def test_header_and_body_offer_copies_do_not_duplicate_denials(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(PermissionDeniedError) as raised:
+        await run(monkeypatch, x402_offers=[x402("2000000"), x402("3000000")], include_body=True)
+    assert [rejection.code for rejection in raised.value.rejections] == ["amount_exceeds_limit"] * 2
+    assert [rejection.actual for rejection in raised.value.rejections] == [2_000_000, 3_000_000]
+
+
+@pytest.mark.parametrize(
+    "amount",
+    ["-1", "²", "٢", OVERSIZED_DECIMAL, "0.5"],
+    ids=["negative", "superscript-digit", "unicode-decimal", "oversized-decimal", "fractional-decimal"],
+)
+async def test_invalid_x402_amount_does_not_hide_a_valid_offer(monkeypatch: pytest.MonkeyPatch, amount: str) -> None:
+    result, requests, _, build = await run(monkeypatch, x402_offers=[x402(amount), x402("500000")])
     assert result.status_code == 200
     assert len(requests) == 2
+    build.assert_awaited_once()
     assert build.call_args.args[2]["amount"] == "500000"
+
+
+@pytest.mark.parametrize("protocol", ["mpp", "x402"])
+async def test_only_noncanonical_amounts_are_denied_without_signing(
+    monkeypatch: pytest.MonkeyPatch, protocol: str
+) -> None:
+    amounts = ["²", OVERSIZED_DECIMAL]
+    if protocol == "mpp":
+        headers = [("www-authenticate", mpp(amount)) for amount in amounts]
+    else:
+        envelope = json.dumps({"x402Version": 2, "accepts": [x402(amount) for amount in amounts]})
+        headers = [("payment-required", base64.b64encode(envelope.encode()).decode())]
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(402, headers=headers)
+
+    mpp_build = AsyncMock()
+    x402_build = AsyncMock()
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", mpp_build)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=(protocol,),
+        base_transport=httpx.MockTransport(handle),
+    )
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert [rejection.code for rejection in raised.value.rejections] == ["invalid_challenge_terms"] * 2
+    assert len(requests) == 1
+    mpp_build.assert_not_called()
+    x402_build.assert_not_called()
+
+
+@pytest.mark.parametrize("protocol", ["mpp", "x402"])
+@pytest.mark.parametrize("amount", ["500000", "0", "000500000"])
+async def test_ascii_decimal_amounts_remain_supported(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, amount: str
+) -> None:
+    result, requests, mpp_build, x402_build = await run(
+        monkeypatch,
+        mpp_offers=[mpp(amount)] if protocol == "mpp" else None,
+        x402_offers=[x402(amount)] if protocol == "x402" else None,
+    )
+    assert result.status_code == 200
+    assert len(requests) == 2
+    if protocol == "mpp":
+        mpp_build.assert_awaited_once()
+        assert mpp_build.call_args.kwargs["challenge"].decode_request()["amount"] == amount
+        x402_build.assert_not_called()
+    else:
+        x402_build.assert_awaited_once()
+        assert x402_build.call_args.args[2]["amount"] == amount
+        mpp_build.assert_not_called()
+
+
+@pytest.mark.parametrize("asset", [None, 1, [], {}, True], ids=["null", "integer", "list", "object", "boolean"])
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_malformed_x402_asset_does_not_hide_a_valid_offer(
+    monkeypatch: pytest.MonkeyPatch, asset: object, reverse: bool
+) -> None:
+    offers = [x402("800000", asset), x402("500000")]
+    if reverse:
+        offers.reverse()
+    result, requests, mpp_build, x402_build = await run(monkeypatch, x402_offers=offers)
+    assert result.status_code == 200
+    assert len(requests) == 2
+    x402_build.assert_awaited_once()
+    assert x402_build.call_args.args[2]["asset"] == "USDC"
+    mpp_build.assert_not_called()
+
+
+async def test_all_malformed_x402_assets_are_denied_without_signing(monkeypatch: pytest.MonkeyPatch) -> None:
+    envelope = json.dumps({"x402Version": 2, "accepts": [x402("1", asset) for asset in [None, 1, [], {}, True]]})
+    headers = {"payment-required": base64.b64encode(envelope.encode()).decode()}
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(402, headers=headers)
+
+    build = AsyncMock()
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("x402",),
+        base_transport=httpx.MockTransport(handle),
+    )
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert [rejection.code for rejection in raised.value.rejections] == ["invalid_challenge_terms"] * 5
+    assert len(requests) == 1
+    build.assert_not_called()

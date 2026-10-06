@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Self, cast
@@ -108,15 +109,25 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     break
 
         if "x402" in self._protocols:
+            # The same offers may appear in both the header and response body.
+            decisions: dict[str, bool] = {}
 
             def permitted(requirement: X402AcceptsEntry) -> bool:
+                key = json.dumps(requirement, sort_keys=True)
+                if key in decisions:
+                    return decisions[key]
                 try:
                     network = _network(requirement.get("network"), self._network)
                     amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
-                    self._permissions.authorize(PaymentCandidate(amount, requirement.get("asset"), network, origin))
+                    asset = cast("object", requirement.get("asset"))
+                    if not isinstance(asset, str):
+                        raise _invalid("invalid x402 asset")
+                    self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
+                    decisions[key] = False
                     return False
+                decisions[key] = True
                 return True
 
             body = response.text if response.content else None
@@ -282,9 +293,12 @@ class PayKitClientBuilder:
 
 
 def _amount(value: object) -> int:
-    if not isinstance(value, str) or not value.isdigit():
+    if not isinstance(value, str) or not value.isascii() or not value.isdigit():
         raise _invalid(f"invalid payment amount: {value!r}")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise _invalid(f"invalid payment amount: {value!r}") from exc
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:
