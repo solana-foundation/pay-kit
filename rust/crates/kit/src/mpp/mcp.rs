@@ -118,13 +118,14 @@ impl Request {
 
     /// Stable digest binding a challenge to this operation.
     ///
-    /// JSON-RPC envelope fields and payment credentials are excluded, so a
-    /// retry may use a new request ID and add its credential. The method,
-    /// arguments, and non-payment metadata remain bound.
+    /// JSON-RPC envelope fields, payment credentials, and transport correlation
+    /// metadata are excluded, so a retry may use a new request ID, progress
+    /// token, and credential. The method, arguments, and application metadata
+    /// remain bound.
     pub fn operation_digest(&self) -> Result<String, Error> {
         let mut params = self.params.clone();
         if let Some(object) = params.as_mut().and_then(Value::as_object_mut) {
-            remove_credential(object);
+            remove_retry_metadata(object);
             if object.is_empty() {
                 params = None;
             }
@@ -315,6 +316,7 @@ pub struct ErrorObject {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorData {
+    #[serde(default = "payment_required_status")]
     pub http_status: u16,
     pub challenges: Vec<Challenge>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -459,7 +461,7 @@ impl ErrorResponse {
                 code,
                 message: message.into(),
                 data: ErrorData {
-                    http_status: 402,
+                    http_status: payment_required_status(),
                     challenges,
                     problem: None,
                     failure,
@@ -556,6 +558,10 @@ fn jsonrpc_version() -> String {
     "2.0".into()
 }
 
+fn payment_required_status() -> u16 {
+    402
+}
+
 #[cfg(feature = "server")]
 fn bind_operation(
     challenge: PaymentChallenge,
@@ -586,11 +592,12 @@ fn bind_operation(
     ))
 }
 
-fn remove_credential(params: &mut Map<String, Value>) {
+fn remove_retry_metadata(params: &mut Map<String, Value>) {
     let Some(meta) = params.get_mut("_meta").and_then(Value::as_object_mut) else {
         return;
     };
     meta.remove(CREDENTIAL_META_KEY);
+    meta.remove("progressToken");
     if meta.is_empty() {
         params.remove("_meta");
     }
@@ -777,6 +784,63 @@ pub mod rmcp {
     mod tests {
         use super::*;
         use crate::mpp::{Base64UrlJson, PaymentChallenge};
+        use ::rmcp::{
+            model::{CallToolResponse, ClientConfig, ContentBlock, ServerConfig},
+            service::{serve_directly, RequestContext, RoleClient, RoleServer},
+            ServerHandler,
+        };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug, Default)]
+        struct RetryState {
+            digest: Option<String>,
+            progress_tokens: Vec<Value>,
+        }
+
+        #[derive(Debug, Clone, Default)]
+        struct RetryServer {
+            state: Arc<Mutex<RetryState>>,
+        }
+
+        impl ServerHandler for RetryServer {
+            async fn call_tool(
+                &self,
+                params: CallToolRequestParams,
+                context: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let digest = request(&params, &context.meta)
+                    .and_then(|request| request.operation_digest())
+                    .map_err(internal_error)?;
+                let mut state = self.state.lock().map_err(|_| {
+                    ErrorData::new(ErrorCode::INTERNAL_ERROR, "retry state poisoned", None)
+                })?;
+                state.progress_tokens.push(
+                    context
+                        .meta
+                        .get("progressToken")
+                        .cloned()
+                        .expect("rmcp should attach a progress token"),
+                );
+
+                if let Some(expected) = state.digest.as_ref() {
+                    if expected != &digest {
+                        return Err(ErrorData::new(
+                            ErrorCode(super::super::PAYMENT_VERIFICATION_FAILED_CODE as i32),
+                            "operation-mismatch",
+                            None,
+                        ));
+                    }
+                    Ok(CallToolResult::success(vec![ContentBlock::text("paid")]).into())
+                } else {
+                    state.digest = Some(digest);
+                    Err(ErrorData::new(
+                        ErrorCode(super::super::PAYMENT_REQUIRED_CODE as i32),
+                        "Payment Required",
+                        None,
+                    ))
+                }
+            }
+        }
 
         #[test]
         fn credential_and_receipt_use_rmcp_metadata() {
@@ -835,6 +899,76 @@ pub mod rmcp {
             ));
             let challenges = challenges(&error).unwrap().unwrap();
             assert_eq!(challenges[0].intent.as_str(), "session");
+        }
+
+        #[test]
+        fn extracts_payment_challenges_without_http_status() {
+            let challenge = super::super::Challenge::try_from(&PaymentChallenge::new(
+                "challenge-1",
+                "compute.example.com",
+                "solana",
+                "charge",
+                Base64UrlJson::from_value(&serde_json::json!({"amount": "1"})).unwrap(),
+            ))
+            .unwrap();
+            let error = ErrorData::new(
+                ErrorCode(super::super::PAYMENT_REQUIRED_CODE as i32),
+                "Payment Required",
+                Some(serde_json::json!({"challenges": [challenge]})),
+            );
+
+            let challenges = challenges(&error).unwrap().unwrap();
+            assert_eq!(challenges[0].intent.as_str(), "charge");
+        }
+
+        #[tokio::test]
+        async fn paid_retry_ignores_rmcp_progress_token() {
+            let (server_transport, client_transport) = tokio::io::duplex(4096);
+            let server = RetryServer::default();
+            let state = Arc::clone(&server.state);
+            let running_server = serve_directly::<RoleServer, _, _, _, _>(
+                server,
+                server_transport,
+                Some(ClientConfig::default()),
+            );
+            let server_task = tokio::spawn(async move { running_server.waiting().await });
+            let client = serve_directly::<RoleClient, _, _, _, _>(
+                (),
+                client_transport,
+                Some(ServerConfig::default().into()),
+            );
+
+            let mut params =
+                CallToolRequestParams::new("compute").with_arguments(serde_json::Map::from_iter([
+                    ("cpu".into(), serde_json::json!(1)),
+                ]));
+            let error = client.call_tool(params.clone()).await.unwrap_err();
+            assert!(matches!(
+                error,
+                ::rmcp::ServiceError::McpError(ref data)
+                    if data.code.0 == super::super::PAYMENT_REQUIRED_CODE as i32
+            ));
+
+            let payment = PaymentChallenge::new(
+                "challenge-1",
+                "compute.example.com",
+                "solana",
+                "charge",
+                Base64UrlJson::from_value(&serde_json::json!({"amount": "1"})).unwrap(),
+            );
+            let credential = PaymentCredential::new(
+                payment.to_echo(),
+                serde_json::json!({"type": "signature", "signature": "sig"}),
+            );
+            set_credential(&mut params, &credential).unwrap();
+
+            client.call_tool(params).await.unwrap();
+            client.cancel().await.unwrap();
+            server_task.await.unwrap().unwrap();
+
+            let state = state.lock().unwrap();
+            assert_eq!(state.progress_tokens.len(), 2);
+            assert_ne!(state.progress_tokens[0], state.progress_tokens[1]);
         }
     }
 }
