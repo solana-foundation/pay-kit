@@ -84,9 +84,33 @@ class PayKitGateTest < Minitest::Test
         pay_to: SELLER,
         fee_within: {PLATFORM => usd("1.00")})
 
-      refute gate.x402_accepted?
-      assert gate.mpp_accepted?
+      refute gate.accepts?(:x402)
+      assert gate.accepts?(:mpp)
     end
+  end
+
+  def test_accepts_answers_from_accept
+    PayKitTestHelpers.with_config(accept: %i[mpp]) do
+      gate = build(:report, amount: usd("0.10"))
+
+      assert gate.accepts?(:mpp)
+      assert gate.accepts?("mpp")
+      refute gate.accepts?(:x402)
+      refute gate.accepts?(:stripe)
+    end
+  end
+
+  def test_deprecated_predicates_delegate_and_warn
+    deprecated = Warning[:deprecated]
+    Warning[:deprecated] = true
+    PayKitTestHelpers.with_config(accept: %i[x402 mpp]) do
+      gate = build(:report, amount: usd("0.10"))
+
+      assert_output(nil, /accepts\?/) { assert_equal gate.accepts?(:x402), gate.x402_accepted? }
+      assert_output(nil, /accepts\?/) { assert_equal gate.accepts?(:mpp), gate.mpp_accepted? }
+    end
+  ensure
+    Warning[:deprecated] = deprecated
   end
 
   def test_explicit_x402_with_fees_raises

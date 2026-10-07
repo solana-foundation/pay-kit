@@ -154,12 +154,12 @@ module PayKit
         accepts = []
         headers = {}
 
-        if gate.x402_accepted?
+        if gate.accepts?(:x402)
           accepts << x402_adapter.accepts_entry(gate, request)
           headers.merge!(x402_adapter.challenge_headers(gate, request))
         end
 
-        if gate.mpp_accepted?
+        if gate.accepts?(:mpp)
           accepts << mpp_adapter.accepts_entry(gate, request)
           headers.merge!(mpp_adapter.challenge_headers(gate, request))
         end
@@ -172,11 +172,11 @@ module PayKit
       # Returns nil when the request has no payment header at all
       # (caller should respond with a challenge).
       def verify(gate, request)
-        if gate.x402_accepted? && x402_adapter.detect?(request)
+        if gate.accepts?(:x402) && x402_adapter.detect?(request)
           return x402_adapter.verify_and_settle(gate, request)
         end
 
-        if gate.mpp_accepted? && mpp_adapter.detect?(request)
+        if gate.accepts?(:mpp) && mpp_adapter.detect?(request)
           return mpp_adapter.verify_and_settle(gate, request)
         end
 
