@@ -1,4 +1,5 @@
 import type { HarnessScenario } from "./contracts";
+import { getNativeTarget, nativeTargets } from "./artifacts";
 import {
   clientImplementations,
   serverImplementations,
@@ -124,12 +125,30 @@ export function enumerateChargeCases(
   return cases;
 }
 
+/** Hosted runners and their native artifact ABI; producers and consumers agree. */
+export const chargePlatforms = {
+  "linux-x64": "ubuntu-latest",
+  "darwin-arm64": "macos-latest",
+} as const;
+
+/** Platform key includes architecture so incompatible artifacts cannot be reused. */
+export type ChargePlatform = keyof typeof chargePlatforms;
+
+function nativeArtifactName(platform: ChargePlatform): string {
+  return `mpp-adapters-${platform}`;
+}
+
+function nativeSelection(role: "client" | "server", ids: readonly string[]): string[] {
+  return ids.filter((id) => getNativeTarget(role, id) !== undefined);
+}
+
 /** One CI leg; selectors and the exact expected test set travel together. */
 export type ChargeShard = {
   id: string;
   runner: "ubuntu-latest" | "macos-latest";
+  platform: ChargePlatform;
+  nativeArtifact: string;
   toolchains: string[];
-  cargoBins: string;
   scenarioIds: string[];
   caseCount: number;
   env: Record<string, string>;
@@ -153,6 +172,18 @@ export function planChargeMatrix(
   for (const { id } of implementations) {
     if (!Object.hasOwn(toolchains, id)) throw new Error(`Missing toolchain for ${id}`);
   }
+  for (const [role, entries] of [["client", clients], ["server", servers]] as const) {
+    for (const { id } of entries.filter(supportsCharge)) {
+      const target = getNativeTarget(role, id);
+      if (target && target.toolchain !== toolchains[id]) {
+        throw new Error(`Native toolchain mismatch for ${role} ${id}`);
+      }
+      if (nativeTargets.some((target) => target.toolchain === toolchains[id]) &&
+          !target) {
+        throw new Error(`Missing native target for ${role} ${id}`);
+      }
+    }
+  }
   const cases = enumerateChargeCases(clients, servers, scenarios);
   const groups = new Map<string, ChargeCase[]>();
   for (const test of cases) {
@@ -172,15 +203,15 @@ export function planChargeMatrix(
     ))];
     const scenarioIds = [...new Set(tests.map((test) => test.scenarioId))];
     const required = [...new Set([...clientIds, ...serverIds].map((adapter) => toolchains[adapter]))];
-    const bins = [
-      ...(clientIds.includes("rust") ? ["mpp_harness_client"] : []),
-      ...(serverIds.includes("rust") ? ["mpp_harness_server"] : []),
-    ];
+    const platform: ChargePlatform = required.includes("swift") ? "darwin-arm64" : "linux-x64";
+    const needsNative = nativeSelection("client", clientIds).length +
+      nativeSelection("server", serverIds).length > 0;
     return {
       id,
-      runner: required.includes("swift") ? "macos-latest" : "ubuntu-latest",
+      runner: chargePlatforms[platform],
+      platform,
+      nativeArtifact: needsNative ? nativeArtifactName(platform) : "",
       toolchains: required,
-      cargoBins: bins.length ? `paykit-harness-bins:${bins.join(",")}` : "",
       scenarioIds,
       caseCount: tests.length,
       env: {
@@ -195,6 +226,42 @@ export function planChargeMatrix(
         MPP_HARNESS_EXPECTED_CASES: JSON.stringify(tests.map(chargeCaseKey).sort()),
       },
     };
+  });
+}
+
+/** One union of compiled adapter targets per platform, never per pair. */
+export type ChargeBuild = {
+  platform: ChargePlatform;
+  runner: ChargeShard["runner"];
+  nativeArtifact: string;
+  clients: string;
+  servers: string;
+  toolchains: string[];
+};
+
+/** Derive native producers from the exact charge consumers, including portability. */
+export function planChargeBuilds(shards: readonly ChargeShard[] = planChargeMatrix()): ChargeBuild[] {
+  return (Object.keys(chargePlatforms) as ChargePlatform[]).flatMap((platform) => {
+    const consumers = shards.filter((shard) => shard.platform === platform);
+    const clients = [...new Set(consumers.flatMap((shard) =>
+      nativeSelection("client", shard.env.MPP_HARNESS_CLIENTS.split(",")),
+    ))].sort();
+    const servers = [...new Set(consumers.flatMap((shard) =>
+      nativeSelection("server", shard.env.MPP_HARNESS_SERVERS.split(",")),
+    ))].sort();
+    if (!clients.length && !servers.length) return [];
+    const toolchains = [...new Set([
+      ...clients.map((id) => getNativeTarget("client", id)!.toolchain),
+      ...servers.map((id) => getNativeTarget("server", id)!.toolchain),
+    ])].sort();
+    return [{
+      platform,
+      runner: chargePlatforms[platform],
+      nativeArtifact: nativeArtifactName(platform),
+      clients: clients.join(","),
+      servers: servers.join(","),
+      toolchains,
+    }];
   });
 }
 

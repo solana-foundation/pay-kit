@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -35,22 +36,69 @@ jobs:
       # No SDK builds or language toolchains before the cheap coverage checks.
       - name: Test matrix coverage
         working-directory: harness
-        run: pnpm exec vitest run test/ci-matrix.test.ts test/replay.test.ts test/guards.test.ts test/canonical-codes.test.ts
+        run: >-
+          pnpm exec vitest run
+          test/ci-matrix.test.ts test/artifacts.test.ts test/build-adapters.test.ts
+          test/conformance-runners.test.ts test/adapter-identity.test.ts
+          test/replay.test.ts test/guards.test.ts test/canonical-codes.test.ts
       - name: Emit exact shards
         id: matrix
         working-directory: harness
         run: pnpm exec tsx emit-ci-matrix.ts
 
-  charge:
-    name: "${{ matrix.id }} (${{ matrix.caseCount }} cases)"
+  build-node:
+    name: Build portable MPP SDK once
     needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build @solana/mpp
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Install harness against built MPP SDK
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Test charge client GC regression
+        working-directory: harness
+        run: pnpm exec vitest run test/charge-client-gc.test.ts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mpp-dist
+          path: typescript/packages/mpp/dist
+          if-no-files-found: error
+
+  build-native:
+    name: "Build adapters once (${{ matrix.platform }})"
+    needs: [plan, build-node]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        if: contains(matrix.toolchains, 'rust')
+      - uses: actions/cache@v5
+        if: contains(matrix.toolchains, 'rust')
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-${{ runner.arch }}-mpp-adapters-${{ hashFiles('rust/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-mpp-adapters-
       - uses: actions/setup-go@v6
         if: contains(matrix.toolchains, 'go')
         with:
@@ -68,6 +116,43 @@ jobs:
         if: contains(matrix.toolchains, 'kotlin')
         with:
           gradle-version: "9.5.1"
+      # Swift uses the hosted macOS toolchain, matching swift.yml.
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Assert build platform
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_PLATFORM) throw new Error("Native build runner platform mismatch")'
+      - name: Build selected adapters
+        working-directory: harness
+        env:
+          BUILD_CLIENTS: ${{ matrix.clients }}
+          BUILD_SERVERS: ${{ matrix.servers }}
+        run: node --import tsx build-adapters.ts --clients "$BUILD_CLIENTS" --servers "$BUILD_SERVERS" --out "$RUNNER_TEMP/native"
+      # Tar retains executable modes and symlinks, unlike a raw artifact upload.
+      - name: Archive native adapters
+        run: tar -czf "$RUNNER_TEMP/adapters.tar.gz" -C "$RUNNER_TEMP/native" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.nativeArtifact }}
+          path: ${{ runner.temp }}/adapters.tar.gz
+          if-no-files-found: error
+
+  charge:
+    name: "${{ matrix.id }} (${{ matrix.caseCount }} cases)"
+    needs: [plan, build-node, build-native]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        if: contains(matrix.toolchains, 'kotlin')
+        with:
+          distribution: temurin
+          java-version: "17"
+          java-package: jre
       - uses: actions/setup-python@v5
         if: contains(matrix.toolchains, 'python')
         with:
@@ -85,8 +170,7 @@ jobs:
         with:
           php-version: "8.3"
           extensions: sodium
-      # Swift uses the hosted macOS toolchain, matching swift.yml. All server
-      # toolchains also install on macOS; Lua's native packages need Homebrew.
+      # Interpreted SDK dependencies remain per leg; they are not compiled adapters.
       - name: Install Lua native dependencies (Linux)
         if: contains(matrix.toolchains, 'lua') && runner.os == 'Linux'
         run: |
@@ -113,26 +197,13 @@ jobs:
           for rock in luasocket luasodium luasec lua-resty-openssl lua-cjson; do
             luarocks --lua-version=5.1 "${args[@]}" install --tree lua_modules "$rock" OPENSSL_DIR="$ssl"
           done
-      - uses: ./.github/actions/setup-harness
+      - uses: ./.github/actions/setup-harness-leg
         with:
-          cargo-bins: ${{ matrix.cargoBins }}
-          cargo-cache-key: mpp-matrix
-      - name: Build Go server
-        if: contains(matrix.env.MPP_HARNESS_SERVERS, 'go')
-        working-directory: harness/go-server
-        run: go build -o paykit-server .
-      - name: Build Go client
-        if: matrix.env.MPP_HARNESS_CLIENTS == 'go'
-        working-directory: harness/go-client
-        run: go build .
-      - name: Build Swift client
-        if: contains(matrix.toolchains, 'swift')
-        working-directory: harness/swift-client
-        run: swift build
-      - name: Build Kotlin client
-        if: contains(matrix.toolchains, 'kotlin')
-        working-directory: harness/kotlin-client
-        run: gradle installDist --no-daemon
+          native-artifact: ${{ matrix.nativeArtifact }}
+      - name: Assert runtime platform
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_PLATFORM) throw new Error("Native runtime runner platform mismatch")'
       - name: Install Python SDK
         if: contains(matrix.toolchains, 'python')
         working-directory: python
@@ -149,13 +220,17 @@ jobs:
   complete:
     name: MPP charge coverage
     if: always()
-    needs: [plan, charge]
+    needs: [plan, build-node, build-native, charge]
     runs-on: ubuntu-latest
     steps:
       - name: Require every planned shard to pass
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
+          NODE_RESULT: ${{ needs.build-node.result }}
+          NATIVE_RESULT: ${{ needs.build-native.result }}
           CHARGE_RESULT: ${{ needs.charge.result }}
         run: |
           test "$PLAN_RESULT" = success
+          test "$NODE_RESULT" = success
+          test "$NATIVE_RESULT" = success
           test "$CHARGE_RESULT" = success

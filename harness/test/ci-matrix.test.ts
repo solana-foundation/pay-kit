@@ -5,10 +5,11 @@ import {
   chargeCaseKey,
   chargeToolchains,
   enumerateChargeCases,
+  planChargeBuilds,
   planChargeMatrix,
-  supportedToolchains,
   type ChargeCase,
 } from "../src/ci-matrix";
+import { getNativeTarget } from "../src/artifacts";
 import { clientImplementations, serverImplementations } from "../src/implementations";
 import { chargeScenarios } from "../src/intents/charge";
 import type { HarnessScenario } from "../src/contracts";
@@ -25,21 +26,94 @@ function plannedKeys(scenarios: readonly HarnessScenario[] = chargeScenarios): s
 }
 
 describe("authoritative MPP charge CI plan", () => {
-  it("keeps the workflow toolchain setup and exhaustive invocation wired", () => {
+  it("builds once upstream and keeps compiler calls out of charge matrix legs", () => {
     const workflow = readFileSync(
       new URL("../../.github/workflows/mpp-matrix.yml", import.meta.url), "utf8",
     );
-    for (const toolchain of supportedToolchains) {
-      // Node/TS and optional Rust are installed by the shared setup action.
-      if (toolchain === "typescript" || toolchain === "rust") continue;
-      expect(workflow).toContain(`contains(matrix.toolchains, '${toolchain}')`);
+    const consumer = readFileSync(
+      new URL("../../.github/actions/setup-harness-leg/action.yml", import.meta.url), "utf8",
+    );
+    const charge = workflow.split("\n  charge:\n")[1]?.split("\n  complete:\n")[0];
+    expect(charge).toBeDefined();
+    for (const text of [charge!, consumer]) {
+      expect(text).not.toMatch(/cargo (?:run|build)|go (?:run|build)|swift (?:run|build)|gradle|rust-toolchain|setup-go|build-adapters\.ts|--filter @solana\/mpp build/);
+      expect(text).not.toContain("uses: ./.github/actions/setup-harness\n");
     }
-    expect(workflow).toContain("uses: ./.github/actions/setup-harness");
-    expect(workflow).toContain("cargo-bins: ${{ matrix.cargoBins }}");
+    expect(charge).toContain("uses: ./.github/actions/setup-harness-leg");
+    expect(charge).toContain("native-artifact: ${{ matrix.nativeArtifact }}");
+    expect(charge).toContain("needs: [plan, build-node, build-native]");
+    expect(charge).toContain("java-package: jre");
+    expect(consumer).toContain("HARNESS_PREBUILT_DIR");
+    expect(consumer).toContain("name: mpp-dist");
+    expect(workflow.match(/pnpm --filter @solana\/mpp build/g)).toHaveLength(1);
+    expect(workflow.match(/node --import tsx build-adapters\.ts/g)).toHaveLength(1);
+    expect(workflow).toContain('tar -czf "$RUNNER_TEMP/adapters.tar.gz"');
+    expect(workflow).toContain("matrix: ${{ fromJSON(needs.plan.outputs.build_matrix) }}");
+    expect(workflow).toContain("test/charge-client-gc.test.ts");
+    expect(workflow).toContain("test/canonical-codes.test.ts");
     expect(workflow).toContain("fail-fast: false");
     expect(workflow).toContain("matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}");
     expect(workflow).toContain("env: ${{ matrix.env }}");
+    expect(workflow).toContain("needs: [plan, build-node, build-native, charge]");
+    for (const result of ["PLAN", "NODE", "NATIVE", "CHARGE"]) {
+      expect(workflow).toContain(`test "$${result}_RESULT" = success`);
+    }
     expect(workflow).not.toContain("--testNamePattern");
+  });
+
+  it("builds every compiled role exactly once per required platform", () => {
+    const builds = planChargeBuilds();
+    expect(builds).toHaveLength(2);
+    const produced = builds.flatMap((build) => [
+      ...build.clients.split(",").filter(Boolean).map((id) => `${build.platform}:client:${id}`),
+      ...build.servers.split(",").filter(Boolean).map((id) => `${build.platform}:server:${id}`),
+    ]);
+    // Independent oracle: macOS server artifacts are required by Swift clients.
+    expect(produced.sort()).toEqual([
+      "linux-x64:client:rust", "linux-x64:client:go", "linux-x64:client:kotlin",
+      "linux-x64:server:rust", "linux-x64:server:go",
+      "darwin-arm64:client:swift", "darwin-arm64:server:rust", "darwin-arm64:server:go",
+    ].sort());
+    expect(new Set(produced).size).toBe(produced.length);
+    expect(new Set(builds.map((build) => build.nativeArtifact)).size).toBe(builds.length);
+    expect(builds.map((build) => build.toolchains)).toEqual([
+      ["go", "kotlin", "rust"], ["go", "rust", "swift"],
+    ]);
+  });
+
+  it("gives every native consumer exactly one matching platform producer", () => {
+    const shards = planChargeMatrix();
+    const builds = planChargeBuilds(shards);
+    for (const shard of shards) {
+      let nativeCount = 0;
+      for (const [role, selector] of [
+        ["client", "MPP_HARNESS_CLIENTS"], ["server", "MPP_HARNESS_SERVERS"],
+      ] as const) {
+        for (const id of shard.env[selector].split(",")) {
+          if (!getNativeTarget(role, id)) continue;
+          nativeCount++;
+          const producers = builds.filter((build) =>
+            build.nativeArtifact === shard.nativeArtifact &&
+            build.platform === shard.platform && build.runner === shard.runner &&
+            (role === "client" ? build.clients : build.servers).split(",").includes(id),
+          );
+          expect(producers, `${shard.id}: ${role} ${id}`).toHaveLength(1);
+        }
+      }
+      expect(Boolean(shard.nativeArtifact)).toBe(nativeCount > 0);
+    }
+  });
+
+  it("unions native consumers without rebuilding shared targets or interpreted SDKs", () => {
+    const shards = planChargeMatrix();
+    expect(planChargeBuilds([...shards, ...shards])).toEqual(planChargeBuilds(shards));
+    expect(planChargeBuilds(shards.filter((shard) => !shard.nativeArtifact))).toEqual([]);
+    expect(planChargeBuilds(shards.filter((shard) => shard.id === "swift-to-rust")))
+      .toEqual([{
+        platform: "darwin-arm64", runner: "macos-latest",
+        nativeArtifact: "mpp-adapters-darwin-arm64",
+        clients: "swift", servers: "rust", toolchains: ["rust", "swift"],
+      }]);
   });
 
   it("covers every eligible registry pair exactly once, including TS -> TS", () => {
@@ -147,6 +221,12 @@ describe("authoritative MPP charge CI plan", () => {
     expect(() => planChargeMatrix(undefined, undefined, undefined, {
       ...chargeToolchains, rust: "unconfigured",
     })).toThrow("Unknown toolchain");
+    expect(() => planChargeMatrix(undefined, undefined, undefined, {
+      ...chargeToolchains, rust: "go",
+    })).toThrow("Native toolchain mismatch");
+    expect(() => planChargeMatrix(newClients, serverImplementations, [basic], {
+      ...chargeToolchains, "new-sdk": "rust",
+    })).toThrow("Missing native target");
     const configured = planChargeMatrix(newClients, serverImplementations, [basic], {
       ...chargeToolchains, "new-sdk": "typescript",
     });

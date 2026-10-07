@@ -1,9 +1,15 @@
 name: Setup PayKit harness leg
 description: >-
-  Per-language harness leg setup. Reuses the build job's prebuilt @solana/mpp
-  dist (artifact) and shared cargo cache instead of rebuilding them, then
-  installs the harness. Add the language toolchain BEFORE this step and the
-  adapter build + smoke run AFTER it.
+  Install the harness against prebuilt @solana/mpp and optional native/JVM
+  adapters. This action never builds SDKs or adapters.
+
+inputs:
+  native-artifact:
+    description: >-
+      Artifact containing adapters.tar.gz for this platform. Empty skips native
+      adapters, for builder jobs that only need the portable TypeScript output.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -21,21 +27,24 @@ runs:
         node-version-file: .node-version
         cache: pnpm
         cache-dependency-path: typescript/pnpm-lock.yaml
-    # Harness smokes drive Rust adapters via `cargo run`; reuse the build job's
-    # warmed cargo cache so the dependency tree is already compiled. (macOS legs
-    # miss this cache — different runner.os — and compile Rust themselves, as
-    # they do today.)
-    - uses: dtolnay/rust-toolchain@stable
-    - name: Restore shared cargo cache
-      uses: actions/cache@v5
+    - name: Download prebuilt adapters
+      if: inputs.native-artifact != ''
+      uses: actions/download-artifact@v7
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          rust/target
-        key: ${{ runner.os }}-cargo-shared-harness-${{ hashFiles('rust/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-shared-harness-
+        name: ${{ inputs.native-artifact }}
+        path: .harness-download
+    - name: Unpack executable adapters
+      if: inputs.native-artifact != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/.harness-artifacts"
+        tar -xzf "$GITHUB_WORKSPACE/.harness-download/adapters.tar.gz" -C "$GITHUB_WORKSPACE/.harness-artifacts"
+        echo "HARNESS_PREBUILT_DIR=$GITHUB_WORKSPACE/.harness-artifacts" >> "$GITHUB_ENV"
     - name: Install harness
       working-directory: harness
       shell: bash
       run: pnpm install --frozen-lockfile
+    - name: Keep dependency installation outside adapter processes
+      shell: bash
+      run: echo "pnpm_config_verify_deps_before_run=false" >> "$GITHUB_ENV"

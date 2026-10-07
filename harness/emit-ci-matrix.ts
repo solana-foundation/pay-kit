@@ -1,9 +1,10 @@
 import { appendFileSync } from "node:fs";
-import { planChargeMatrix } from "./src/ci-matrix";
+import { planChargeBuilds, planChargeMatrix } from "./src/ci-matrix";
 
 const matrix = { include: planChargeMatrix() };
-const json = JSON.stringify(matrix);
+const buildMatrix = { include: planChargeBuilds(matrix.include) };
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${json}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT,
+    `matrix=${JSON.stringify(matrix)}\nbuild_matrix=${JSON.stringify(buildMatrix)}\n`);
 }
-console.log(JSON.stringify(matrix, null, 2));
+console.log(JSON.stringify({ matrix, build_matrix: buildMatrix }, null, 2));

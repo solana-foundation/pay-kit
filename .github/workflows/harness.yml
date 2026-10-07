@@ -1,20 +1,8 @@
 name: Harness
 
-# One shared build, then every language harness leg in parallel.
-#
-#          ┌─ ts      smoke
-#  build ──┼─ go      smoke
-# (mpp +   ├─ python  smoke
-#  all     ├─ ruby    smoke
-#  rust    ├─ lua     smoke
-#  bins    ├─ php     smoke
-#  once)   ├─ swift   smoke   (macOS)
-#          ├─ kotlin  smoke
-#          └─ …               ← legs reuse the build's mpp dist + cargo cache
-#
-# Each leg adds only its own toolchain + adapter build + smoke run; the
-# duplicated pnpm/node + build-mpp + build-rust + install + typecheck lives once
-# in the build job (see .github/actions/setup-harness and setup-harness-leg).
+# Build portable dependencies once, then native payment adapters once per OS.
+# Language legs consume artifacts, not compiler caches. Conformance runners are
+# separate from payment adapters and retain their own build/runtime setup.
 
 on:
   push:
@@ -31,12 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # Builds @solana/mpp + all Rust harness adapter bins, warms the shared
-      # cargo cache (key suffix "shared"), installs + typechecks the harness.
       - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server"
-          cargo-cache-key: shared
+      - name: Run charge client GC regression
+        working-directory: harness
+        run: pnpm exec vitest run test/charge-client-gc.test.ts
+      - name: Test native artifact build and dispatch contracts
+        working-directory: harness
+        run: pnpm exec vitest run test/artifacts.test.ts test/build-adapters.test.ts test/conformance-runners.test.ts test/adapter-identity.test.ts
       - name: Upload @solana/mpp dist
         uses: actions/upload-artifact@v7
         with:
@@ -44,13 +33,75 @@ jobs:
           path: typescript/packages/mpp/dist
           if-no-files-found: error
 
+  build-native:
+    name: Build native harness adapters (${{ matrix.runner }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Union of native adapters actually selected by the smoke steps below,
+          # including test-name filters, rather than every default-enabled adapter.
+          - runner: ubuntu-latest
+            clients: rust,rust-x402,go-x402,kotlin,kotlin-x402
+            servers: rust,rust-x402,go
+            conformance: kotlin
+          - runner: macos-latest
+            clients: swift,swift-x402
+            servers: rust,rust-x402
+            conformance: swift
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-${{ runner.arch }}-harness-native-${{ hashFiles('rust/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-harness-native-
+      - uses: actions/setup-go@v6
+        if: runner.os == 'Linux'
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-java@v5
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        if: runner.os == 'Linux'
+        with:
+          gradle-version: "9.5.1"
+      # Swift is supplied by the hosted macOS runner.
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Build native adapters and conformance runners
+        working-directory: harness
+        env:
+          CLIENTS: ${{ matrix.clients }}
+          SERVERS: ${{ matrix.servers }}
+          CONFORMANCE: ${{ matrix.conformance }}
+        run: pnpm exec tsx build-adapters.ts --clients "$CLIENTS" --servers "$SERVERS" --conformance "$CONFORMANCE" --out ../.harness-artifacts
+      - name: Package compiled harness artifacts
+        run: tar -czf adapters.tar.gz -C .harness-artifacts .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: harness-adapters-${{ runner.os }}
+          path: adapters.tar.gz
+          if-no-files-found: error
+
   ts:
     name: "Harness: TypeScript (TypeScript/Rust client/server)"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run TypeScript end-to-end harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays typescript server"
@@ -72,18 +123,13 @@ jobs:
 
   go:
     name: "Harness: Go (mpp charge + x402 exact)"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
       - uses: ./.github/actions/setup-harness-leg
-      - name: Build Go paykit harness server
-        working-directory: harness/go-server
-        run: go build -o paykit-server .
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -97,7 +143,7 @@ jobs:
 
   python:
     name: "Harness: Python"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -112,6 +158,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Sync Python uv environment
         working-directory: python
         run: uv sync --extra dev
@@ -153,7 +201,7 @@ jobs:
 
   ruby:
     name: "Harness: Ruby PayKit server (dual protocol)"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -163,6 +211,8 @@ jobs:
           bundler-cache: true
           working-directory: ruby
       - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -175,7 +225,7 @@ jobs:
 
   lua:
     name: "Harness: Lua focused matrix"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -206,6 +256,8 @@ jobs:
           luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
           luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
       - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: TS-to-Lua focused matrix
         working-directory: harness
         env:
@@ -232,7 +284,7 @@ jobs:
 
   php:
     name: "Harness: PHP"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -240,6 +292,8 @@ jobs:
         with:
           php-version: "8.3"
       - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
@@ -269,20 +323,13 @@ jobs:
 
   swift:
     name: "Harness: Swift client to TypeScript + Rust servers"
-    needs: build
+    needs: [build, build-native]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
-      # macOS can't reuse the Linux build job's cargo cache, so compile the Rust
-      # server adapter explicitly here (outside the harness's 120s adapter-output
-      # timeout) instead of letting the smoke's `cargo run` cold-compile it.
-      - name: Build Rust harness server
-        working-directory: rust
-        run: cargo build -p paykit-harness-bins --bin mpp_harness_server
-      - name: Build Swift harness client
-        working-directory: harness/swift-client
-        run: swift build
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run Swift cross-SDK conformance vectors
         working-directory: harness
         env:
@@ -303,20 +350,13 @@ jobs:
 
   swift-x402:
     name: "Harness: Swift x402 client to Rust x402 server"
-    needs: build
+    needs: [build, build-native]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
-      # macOS can't reuse the Linux build job's cargo cache; compile the Rust
-      # x402 server adapter here (outside the 120s adapter-output timeout)
-      # instead of cold-compiling it inside the smoke's `cargo run`.
-      - name: Build Rust x402 harness server
-        working-directory: rust
-        run: cargo build -p paykit-harness-bins --bin x402_harness_server
-      - name: Build Swift x402 harness client
-        working-directory: harness/swift-x402-client
-        run: swift build --quiet
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run Swift x402 client harness against Rust x402 server
         working-directory: harness
         env:
@@ -330,7 +370,7 @@ jobs:
 
   kotlin:
     name: "Harness: Kotlin client to TypeScript server"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -338,21 +378,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.5.1"
       - uses: ./.github/actions/setup-harness-leg
-      - name: Build the Kotlin conformance runner
-        working-directory: harness/kotlin-conformance
-        run: gradle installDist --no-daemon
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run Kotlin cross-SDK conformance vectors
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: kotlin
         run: pnpm exec vitest run test/conformance.test.ts
-      - name: Pre-warm Gradle for the Kotlin harness client
-        working-directory: harness/kotlin-client
-        run: gradle installDist --no-daemon
       - name: Run Kotlin client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
@@ -362,7 +395,7 @@ jobs:
 
   kotlin-x402:
     name: "Harness: Kotlin x402 client to Rust x402 server"
-    needs: build
+    needs: [build, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -370,13 +403,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.5.1"
       - uses: ./.github/actions/setup-harness-leg
-      - name: Pre-warm Gradle for the Kotlin x402 harness client
-        working-directory: harness/kotlin-x402-client
-        run: gradle installDist --no-daemon
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
       - name: Run Kotlin x402 client to Rust x402 server harness
         working-directory: harness
         env:
@@ -393,9 +422,14 @@ jobs:
   # built (the on-chain suite imports it) and a mainnet RPC to fork from.
   onchain:
     name: "Harness: on-chain settlement (mainnet fork)"
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: mpp-dist
+          path: typescript/packages/mpp/dist
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -404,11 +438,10 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
-      - name: Build @solana/mpp + @solana/pay-kit
+      - name: Build @solana/pay-kit against prebuilt MPP
         working-directory: typescript
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter @solana/mpp build
           pnpm --filter @solana/pay-kit build
       - name: Install harness
         working-directory: harness

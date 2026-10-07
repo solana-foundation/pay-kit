@@ -1,3 +1,5 @@
+import { resolveAdapterCommand } from "./artifacts.js";
+
 export type ImplementationDefinition = {
   id: string;
   label: string;
@@ -516,3 +518,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     reportsAs: "python",
   },
 ];
+
+// Shards download only selected artifacts. Resolve on access, not registry load.
+for (const implementation of [...clientImplementations, ...serverImplementations]) {
+  const developerCommand = implementation.command;
+  Object.defineProperty(implementation, "command", {
+    enumerable: true,
+    get: () => resolveAdapterCommand(
+      implementation.role, implementation.id, developerCommand,
+    ),
+  });
+}

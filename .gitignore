@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.harness-artifacts/
+.harness-download/
 .env
 *.tsbuildinfo
 

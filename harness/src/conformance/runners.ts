@@ -16,6 +16,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAdapterCommand } from "../artifacts.js";
 
 export type RunnerManifest = {
   language: string;
@@ -80,7 +81,11 @@ export function discoverRunners(): DiscoveredRunner[] {
     }
     runners.push({
       language: parsed.language,
-      command: parsed.command,
+      // Resolve only after language filtering; other platform artifacts may
+      // legitimately be absent from a consumer's download.
+      get command() {
+        return resolveAdapterCommand("conformance", parsed.language, parsed.command);
+      },
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
       intents: parsed.intents ?? DEFAULT_INTENTS,
     });

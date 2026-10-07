@@ -95,6 +95,7 @@ server adapter must not re-encode scenario expectations.
 
 ```
 src/
+  artifacts.ts       native/JVM build targets and prebuilt command resolution
   ci-matrix.ts       generated MPP charge shards and exact-case coverage checks
   contracts.ts        canonical scenario values (amounts, splits, expected status)
   implementations.ts  registry of language adapters (client / server / both)
@@ -276,6 +277,34 @@ runner checks both registration and execution against that set. CI does not use
 The workflow uses `fail-fast: false` so one failing SDK does not cancel coverage
 of the others. The final **MPP charge coverage** job requires planning and every
 shard to succeed; use that stable check name for branch protection.
+
+### Build once, execute the artifacts
+
+Each matrix workflow builds `@solana/mpp` once and publishes its portable `dist`.
+Native producers build the union of required adapters once per OS/architecture,
+then publish tar archives that preserve executable permissions. Go protocol aliases
+reuse the same binary; Kotlin artifacts include the installed distribution's JARs.
+The legacy harness also packages its compiled conformance runners.
+
+Test jobs download these outputs and set `HARNESS_PREBUILT_DIR`. They execute the
+binaries directly: no `cargo run`, `go run`, `swift run`, or Gradle payment-adapter
+builds inside a test leg. Missing or unclassified artifacts fail explicitly rather
+than falling back to a compiler. Cargo caches accelerate producers but are never
+treated as evidence that an executable is ready.
+
+Without `HARNESS_PREBUILT_DIR`, local developer commands retain their build-on-demand
+behavior. To exercise packaged Go adapters locally:
+
+```bash
+node --import tsx build-adapters.ts --clients go --servers go --out ../.harness-artifacts
+HARNESS_PREBUILT_DIR="$PWD/../.harness-artifacts" \
+  MPP_HARNESS_CLIENTS=go MPP_HARNESS_SERVERS=go \
+  MPP_HARNESS_SCENARIOS=charge-idempotent-resubmit pnpm test test/e2e.test.ts
+```
+
+Use `--conformance swift,kotlin` to package those runners when their toolchains are
+available. Compilation is shared within each workflow run; independent language
+unit-test workflows retain their own build environments.
 
 ---
 
