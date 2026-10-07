@@ -85,7 +85,7 @@ helper.test('Kong bootstrap honours empty / blank env defaults', function()
   restore_env()
   local cfg = pay_kit.config()
   helper.assert_equal(cfg.network, 'solana_devnet')
-  helper.assert_equal(cfg.mpp.expires_in, 300)         -- env_int default
+  helper.assert_equal(cfg.mpp.expires_in, 120)         -- env_int default
   helper.assert_true(#cfg.accept >= 1)
 end)
 

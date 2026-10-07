@@ -64,7 +64,7 @@ function M.setup()
     mpp = {
       realm                    = os.getenv('PAY_KIT_MPP_REALM') or 'PayKit (Kong)',
       challenge_binding_secret = os.getenv('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
-      expires_in               = env_int('PAY_KIT_MPP_EXPIRES_IN', 300),
+      expires_in               = env_int('PAY_KIT_MPP_EXPIRES_IN', 120),
     },
   }
   local ok, err = pay_kit.configure(opts)

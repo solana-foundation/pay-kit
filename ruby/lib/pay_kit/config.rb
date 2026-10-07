@@ -194,7 +194,7 @@ module PayKit
       def initialize
         @realm = "App"
         @challenge_binding_secret = nil
-        @expires_in = 300
+        @expires_in = 120
       end
 
       # Server-side HMAC secret used for stateless challenge binding
