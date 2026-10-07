@@ -6,12 +6,18 @@ import {
 } from "../src/guards";
 
 const originalCi = process.env.CI;
+const originalStrictShard = process.env.HARNESS_STRICT_SHARD;
 
 afterEach(() => {
   if (originalCi === undefined) {
     delete process.env.CI;
   } else {
     process.env.CI = originalCi;
+  }
+  if (originalStrictShard === undefined) {
+    delete process.env.HARNESS_STRICT_SHARD;
+  } else {
+    process.env.HARNESS_STRICT_SHARD = originalStrictShard;
   }
 });
 
@@ -76,6 +82,32 @@ describe("assertNonEmptyEligibility", () => {
 });
 
 describe("evaluateShardEligibility", () => {
+  it.each([
+    { clientCount: 0, serverCount: 1, pairCount: 0 },
+    { clientCount: 1, serverCount: 0, pairCount: 0 },
+    { clientCount: 1, serverCount: 1, pairCount: 0 },
+  ])("rejects an empty generated shard: %j", (shard) => {
+    process.env.HARNESS_STRICT_SHARD = "1";
+    expect(() =>
+      evaluateShardEligibility({
+        scenarioId: "charge-idempotent-resubmit",
+        shard,
+        full: { clientCount: 1, serverCount: 1, pairCount: 1 },
+      }),
+    ).toThrow(/zero/);
+  });
+
+  it("runs a nonempty generated shard", () => {
+    process.env.HARNESS_STRICT_SHARD = "1";
+    expect(
+      evaluateShardEligibility({
+        scenarioId: "charge-idempotent-resubmit",
+        shard: { clientCount: 1, serverCount: 1, pairCount: 1 },
+        full: { clientCount: 5, serverCount: 7, pairCount: 35 },
+      }),
+    ).toEqual({ verdict: "run" });
+  });
+
   it("runs when the shard has eligible clients, servers, and pairs", () => {
     expect(
       evaluateShardEligibility({

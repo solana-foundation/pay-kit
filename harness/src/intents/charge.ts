@@ -407,15 +407,11 @@ export const chargeScenarios: readonly HarnessScenario[] = [
     ],
   },
   {
-    // Same-server idempotent resubmit. Client pays server A, then
-    // re-submits the same Authorization to server A. Canonical
-    // behavior per the L4 replay store is to reject with
-    // `signature_consumed`. In pull mode both the rust and TS SDKs
-    // reserve the signature in the replay store *after* broadcast,
-    // so a same-credential resubmit actually trips the RPC's
-    // "already been processed" error before the store check fires.
-    // Both signals are mapped to canonical signature_consumed at
-    // the 402 boundary.
+    // The runner captures a real client's successful Payment request and
+    // resubmits it without asking the client SDK to pay again. Every adapter
+    // supporting charge participates. Replay must return signature_consumed;
+    // an RPC accepting a duplicate transaction is not an application-level
+    // replay rejection.
     id: "charge-idempotent-resubmit",
     intent: "charge",
     kind: "idempotent-resubmit",
@@ -427,7 +423,5 @@ export const chargeScenarios: readonly HarnessScenario[] = [
     settlementHeader: "x-fixture-settlement",
     expectedStatus: 402,
     expectedCode: "signature_consumed",
-    clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby"],
   },
 ] as const;

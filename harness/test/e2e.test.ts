@@ -8,11 +8,13 @@ import {
 } from "@solana/kit";
 import { Surfnet } from "@solana/surfpool";
 import { HarnessScenario, selectHarnessScenarios } from "../src/contracts";
+import { assertExpectedChargeCases, type ChargeCase } from "../src/ci-matrix";
 import {
   clientImplementations,
   serverImplementations,
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
+import { replaySuccessfulPayment } from "../src/replay";
 import {
   evaluateShardEligibility,
   SOCKET_UNAVAILABLE_CI_MESSAGE,
@@ -428,6 +430,10 @@ afterAll(() => {
 });
 
 describe("mpp harness", () => {
+  const registeredChargeCases: ChargeCase[] = [];
+  const executedChargeCases: ChargeCase[] = [];
+  afterAll(() => assertExpectedChargeCases(executedChargeCases));
+
   const activeServers = serverImplementations.filter(
     (implementation) => implementation.enabled,
   );
@@ -442,9 +448,14 @@ describe("mpp harness", () => {
   const socketAwareIt = (
     name: string,
     body: () => void | Promise<void>,
+    chargeCase?: ChargeCase,
   ): void => {
+    if (chargeCase) registeredChargeCases.push(chargeCase);
     if (gateMode === "run") {
-      it(name, body);
+      it(name, async () => {
+        if (chargeCase) executedChargeCases.push(chargeCase);
+        await body();
+      });
       return;
     }
     if (gateMode === "fail") {
@@ -665,6 +676,13 @@ describe("mpp harness", () => {
               }
             }
           },
+          scenario.intent === "charge"
+            ? {
+                scenarioId: scenario.id,
+                clientId: clientImplementation.id,
+                serverId: serverImplementation.id,
+              }
+            : undefined,
         );
       }
     }
@@ -674,8 +692,8 @@ describe("mpp harness", () => {
   // resubmit. These run outside the per-pair matrix because they
   // either need two distinct servers (portability) or assert a 402
   // canonical reject on a credential that was already settled
-  // (idempotent). Only the TypeScript client adapter implements the
-  // raw capture/re-submit flow today, so other clients are gated out.
+  // (idempotent). Portability still uses the TypeScript fixture's
+  // two-server flow; same-server replay is captured by the shared runner.
   const crossServerScenarios = activeScenarios.filter(
     (scenario) => scenario.kind === "cross-server-portability",
   );
@@ -768,16 +786,26 @@ describe("mpp harness", () => {
               ).toBe(scenario.expectedCode);
             }
           },
+          scenario.intent === "charge"
+            ? {
+                scenarioId: scenario.id,
+                clientId: clientImplementation.id,
+                serverId: aId,
+                targetServerId: bId,
+              }
+            : undefined,
         );
       }
     }
   }
 
   for (const scenario of idempotentScenarios) {
-    const serverFilter = (impl: { id: string }) =>
-      !scenario.serverIds || scenario.serverIds.includes(impl.id);
-    const clientFilter = (impl: { id: string }) =>
-      !scenario.clientIds || scenario.clientIds.includes(impl.id);
+    const serverFilter = (impl: { id: string; intents?: string[] }) =>
+      (impl.intents ?? ["charge"]).includes(scenario.intent) &&
+      (!scenario.serverIds || scenario.serverIds.includes(impl.id));
+    const clientFilter = (impl: { id: string; intents?: string[] }) =>
+      (impl.intents ?? ["charge"]).includes(scenario.intent) &&
+      (!scenario.clientIds || scenario.clientIds.includes(impl.id));
     const eligibleServers = activeServers.filter(serverFilter);
     const eligibleClients = activeClients.filter(clientFilter);
     const fullEligibleServers = serverImplementations.filter(serverFilter);
@@ -817,13 +845,17 @@ describe("mpp harness", () => {
             const server = await startServer(serverImplementation, env);
             runningServers.push(server);
             const url = `http://127.0.0.1:${server.ready.port}${scenario.resourcePath}`;
-            const result = await runClient(clientImplementation, url, {
-              ...env,
-              MPP_HARNESS_RESUBMIT_URL: url,
-            });
+            const result =
+              scenario.intent === "charge"
+                ? await replaySuccessfulPayment(url, (captureUrl) =>
+                    runClient(clientImplementation, captureUrl, env),
+                  )
+                : await runClient(clientImplementation, url, {
+                    ...env,
+                    MPP_HARNESS_RESUBMIT_URL: url,
+                  });
             const resultPayload = JSON.stringify(result, null, 2);
-            const firstStatus = (result as unknown as { firstStatus?: number })
-              .firstStatus;
+            const firstStatus = (result as { firstStatus?: number }).firstStatus;
             expect(
               firstStatus,
               `first pay must succeed: ${resultPayload}`,
@@ -837,10 +869,18 @@ describe("mpp harness", () => {
               ).toBe(scenario.expectedCode);
             }
           },
+          scenario.intent === "charge"
+            ? {
+                scenarioId: scenario.id,
+                clientId: clientImplementation.id,
+                serverId: serverImplementation.id,
+              }
+            : undefined,
         );
       }
     }
   }
+  assertExpectedChargeCases(registeredChargeCases);
 });
 
 function environmentForScenario(

@@ -1,0 +1,161 @@
+name: MPP charge matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mpp-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Validate and plan charge coverage
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
+      - name: Install planner dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      # No SDK builds or language toolchains before the cheap coverage checks.
+      - name: Test matrix coverage
+        working-directory: harness
+        run: pnpm exec vitest run test/ci-matrix.test.ts test/replay.test.ts test/guards.test.ts
+      - name: Emit exact shards
+        id: matrix
+        working-directory: harness
+        run: pnpm exec tsx emit-ci-matrix.ts
+
+  charge:
+    name: "${{ matrix.id }} (${{ matrix.caseCount }} cases)"
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        if: contains(matrix.toolchains, 'go')
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: |
+            go/go.sum
+            harness/go-client/go.sum
+            harness/go-server/go.sum
+      - uses: actions/setup-java@v5
+        if: contains(matrix.toolchains, 'kotlin')
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        if: contains(matrix.toolchains, 'kotlin')
+        with:
+          gradle-version: "9.5.1"
+      - uses: actions/setup-python@v5
+        if: contains(matrix.toolchains, 'python')
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+        if: contains(matrix.toolchains, 'python')
+      - uses: ruby/setup-ruby@v1
+        if: contains(matrix.toolchains, 'ruby')
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: shivammathur/setup-php@v2
+        if: contains(matrix.toolchains, 'php')
+        with:
+          php-version: "8.3"
+          extensions: sodium
+      # Swift uses the hosted macOS toolchain, matching swift.yml. All server
+      # toolchains also install on macOS; Lua's native packages need Homebrew.
+      - name: Install Lua native dependencies (Linux)
+        if: contains(matrix.toolchains, 'lua') && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+      - name: Install Lua native dependencies (macOS)
+        if: contains(matrix.toolchains, 'lua') && runner.os == 'macOS'
+        run: brew install luajit luarocks libsodium openssl@3
+      - name: Install Lua runtime rocks
+        if: contains(matrix.toolchains, 'lua')
+        working-directory: lua
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          ssl=/usr
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            args+=(--lua-dir="$(brew --prefix luajit)")
+            ssl="$(brew --prefix openssl@3)"
+            export PKG_CONFIG_PATH="$(brew --prefix libsodium)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            export CPATH="$(brew --prefix libsodium)/include:${CPATH:-}"
+            export LIBRARY_PATH="$(brew --prefix libsodium)/lib:${LIBRARY_PATH:-}"
+          fi
+          for rock in luasocket luasodium luasec lua-resty-openssl lua-cjson; do
+            luarocks --lua-version=5.1 "${args[@]}" install --tree lua_modules "$rock" OPENSSL_DIR="$ssl"
+          done
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: ${{ matrix.cargoBins }}
+          cargo-cache-key: mpp-matrix
+      - name: Build Go server
+        if: contains(matrix.env.MPP_HARNESS_SERVERS, 'go')
+        working-directory: harness/go-server
+        run: go build -o paykit-server .
+      - name: Build Go client
+        if: matrix.env.MPP_HARNESS_CLIENTS == 'go'
+        working-directory: harness/go-client
+        run: go build .
+      - name: Build Swift client
+        if: contains(matrix.toolchains, 'swift')
+        working-directory: harness/swift-client
+        run: swift build
+      - name: Build Kotlin client
+        if: contains(matrix.toolchains, 'kotlin')
+        working-directory: harness/kotlin-client
+        run: gradle installDist --no-daemon
+      - name: Install Python SDK
+        if: contains(matrix.toolchains, 'python')
+        working-directory: python
+        run: uv sync
+      - name: Install PHP SDK
+        if: contains(matrix.toolchains, 'php')
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Run exact charge shard
+        working-directory: harness
+        env: ${{ matrix.env }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
+  complete:
+    name: MPP charge coverage
+    if: always()
+    needs: [plan, charge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every planned shard to pass
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHARGE_RESULT: ${{ needs.charge.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$CHARGE_RESULT" = success

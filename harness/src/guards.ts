@@ -96,6 +96,10 @@ export type EligibilityVerdict =
 //   - full set empty on any dimension  -> throw (genuine misconfiguration).
 //   - full set non-empty but shard set empty on any dimension -> skip.
 //   - both non-empty -> run.
+//
+// Generated CI shards set HARNESS_STRICT_SHARD=1: every selected scenario is
+// assigned to that shard, so an empty intersection is a planning error, not
+// permission to skip. Local broad selections keep the permissive behavior.
 export function evaluateShardEligibility(params: {
   scenarioId: string;
   shard: { clientCount: number; serverCount: number; pairCount?: number };
@@ -111,6 +115,10 @@ export function evaluateShardEligibility(params: {
     serverCount: full.serverCount,
     pairCount: full.pairCount,
   });
+
+  if (process.env.HARNESS_STRICT_SHARD === "1") {
+    assertNonEmptyEligibility({ scenarioId, ...shard });
+  }
 
   // The full set covers this scenario, so any shard emptiness is purely a
   // consequence of the enabled-adapter subset: a legitimate shard skip.
