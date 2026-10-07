@@ -98,6 +98,7 @@ async def test_send_error_classifies_only_explicit_rpc_duplicates(message, code)
         await rpc.send_raw_transaction(b"raw")
     assert exc.value.code == code
     assert str(exc.value) == message
+    assert isinstance(rpc._client, _FakeClient)
     assert rpc._client.calls == 1
 
 
