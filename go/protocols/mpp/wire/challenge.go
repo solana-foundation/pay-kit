@@ -13,9 +13,15 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// time.Parse alone is looser than RFC 3339 §5.6 (comma secfrac, offsets past
+// 23:59) and stricter (no leap second); the grammar gate closes that gap.
+var rfc3339DateTime = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$`)
 
 // PaymentChallenge is sent by a server via WWW-Authenticate.
 type PaymentChallenge struct {
@@ -111,11 +117,40 @@ func (c PaymentChallenge) IsExpired(now time.Time) bool {
 	if strings.TrimSpace(c.Expires) == "" {
 		return false
 	}
-	expiresAt, err := time.Parse(time.RFC3339, c.Expires)
+	expiresAt, err := parseRFC3339(c.Expires)
 	if err != nil {
 		return true
 	}
 	return !expiresAt.After(now.UTC())
+}
+
+// parseRFC3339 matches the TypeScript and Python SDKs: a leap second is
+// accepted only where it ends a UTC month (§5.7) and clamps to the last
+// instant of :59, so every SDK reads the same expiry off the same wire.
+func parseRFC3339(value string) (time.Time, error) {
+	m := rfc3339DateTime.FindStringSubmatch(value)
+	if m == nil {
+		return time.Time{}, fmt.Errorf("not an RFC 3339 date-time: %q", value)
+	}
+	if m[2] > "23" || m[3] > "59" {
+		return time.Time{}, fmt.Errorf("offset out of range: %q", value)
+	}
+	leapSecond := m[1] == "60"
+	if leapSecond {
+		value = value[:17] + "59" + value[19:]
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.ToUpper(value))
+	if err != nil {
+		return time.Time{}, err
+	}
+	if leapSecond {
+		utc := parsed.UTC()
+		if utc.Hour() != 23 || utc.Minute() != 59 || utc.AddDate(0, 0, 1).Month() == utc.Month() {
+			return time.Time{}, fmt.Errorf("leap second not at a UTC month end: %q", value)
+		}
+		parsed = parsed.Truncate(time.Second).Add(time.Second - time.Nanosecond)
+	}
+	return parsed, nil
 }
 
 // NewPaymentCredential creates a typed credential payload.
