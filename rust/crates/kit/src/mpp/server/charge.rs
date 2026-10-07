@@ -773,19 +773,11 @@ impl Mpp {
         credential: &PaymentCredential,
         expected: &ChargeRequest,
     ) -> Result<Receipt, VerificationError> {
-        let request: ChargeRequest = credential
-            .challenge
-            .request
-            .decode()
-            .map_err(|e| VerificationError::new(format!("Failed to decode request: {e}")))?;
-
-        compare_expected_to_request(&request, expected)?;
-
         // Pass the route's expected request — not the credential-decoded one —
-        // through to `verify`. From this point on, on-chain settlement checks
-        // (transfer routing, splits, fee payer, token program) compare the
-        // transaction against the route's configured method_details rather
-        // than whatever the credential happens to claim.
+        // through to `verify`. It authenticates the challenge before comparing
+        // every payment-constraining field, then settles against this expected
+        // request. Do not inspect an unauthenticated request here: a foreign
+        // challenge must fail authentication, not route-specific validation.
         self.verify(credential, expected).await
     }
 
@@ -6367,6 +6359,52 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.message.contains("externalId mismatch"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_authenticates_before_route_validation() {
+        let issuer = test_mpp();
+        let verifier = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some("another-server-secret-at-least-32-bytes".to_string()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = issuer.charge("0.10").unwrap();
+        let mut expected = expected_from_challenge(&challenge);
+        expected.description = Some("Only this route's description".to_string());
+        let mut cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+
+        // Foreign credentials must fail HMAC even when route semantics differ.
+        let err = verifier
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(
+            err.message.contains("Challenge ID mismatch"),
+            "got: {err:?}"
+        );
+
+        // Even a structurally invalid request is not decoded before authentication.
+        cred.challenge.request = Base64UrlJson::from_typed(&serde_json::json!({
+            "amount": {"invalid": "type"}
+        }))
+        .unwrap();
+        let err = verifier
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(
+            err.message.contains("Challenge ID mismatch"),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
