@@ -42,12 +42,18 @@ jobs:
           if-no-files-found: error
 
   ts:
-    name: "Harness: TypeScript (Rust client/server)"
+    name: "Harness: TypeScript (TypeScript/Rust client/server)"
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
+      - name: Run TypeScript end-to-end harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays typescript server"
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: typescript
       - name: Run Rust client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
