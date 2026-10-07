@@ -8,6 +8,8 @@ overrides:
   ip-address: '10.7.2'
   'nanoid@3.3.11': '3.3.18'
   postcss: '8.5.23'
+  proxy-addr: '2.0.8'
   qs: '6.16.0'
+  source-map-js: '1.2.2'
   vite: '8.0.16'
   ws: '8.21.0'

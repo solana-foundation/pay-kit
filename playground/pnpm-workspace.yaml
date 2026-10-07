@@ -11,3 +11,4 @@ overrides:
   postcss: '8.5.23'
   react-router: '7.18.2'
   shell-quote: '1.11.0'
+  source-map-js: '1.2.2'

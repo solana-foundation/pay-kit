@@ -7,8 +7,10 @@ allowBuilds:
 
 overrides:
   '@hono/node-server': '1.19.15'
+  '@modelcontextprotocol/sdk': '1.31.0'
   fast-uri: '4.1.5'
   hono: '4.13.7'
   ip-address: '10.7.2'
+  proxy-addr: '2.0.8'
   qs: '6.16.0'
   ws: '8.21.0'
