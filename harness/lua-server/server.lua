@@ -26,6 +26,7 @@ local socket = require('socket')
 local cjson  = require('cjson.safe')
 local pay_kit = require('pay_kit')
 local signer  = require('pay_kit.signer')
+local canonical_codes = dofile('../harness/lua-server/canonical-codes.lua')
 
 local function log(msg)
   io.stderr:write('lua-server: ' .. msg .. '\n')
@@ -263,13 +264,13 @@ while true do
         elseif perr:find('charge_request_mismatch', 1, true) or
                perr:find('does not match server challenge', 1, true) then
           body.code = 'charge_request_mismatch'
-        elseif perr:find('signature_consumed', 1, true) or
-               perr:find('signature consumed', 1, true) then
+        elseif canonical_codes.is_signature_consumed(perr) then
           body.code = 'signature_consumed'
         elseif perr:find('invalid proof', 1, true) then
           body.code = 'invalid_proof'
         end
       end
+      body.code = body.code or 'payment_invalid'
       send_response(client, 402, resp_headers, body)
     end
     client:close()

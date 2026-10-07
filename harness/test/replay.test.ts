@@ -1,5 +1,6 @@
 import { createServer, type RequestListener } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { CANONICAL_CODES } from "../src/canonical-codes";
 import { replaySuccessfulPayment } from "../src/replay";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -86,6 +87,30 @@ describe("language-independent payment capture", () => {
     })).rejects.toThrow("Replay client failed; observed payment status: none");
     await expect(fetch(proxyUrl)).rejects.toThrow();
   });
+
+  it.each([...CANONICAL_CODES, "Payment private-credential"])(
+    "preserves only allowlisted diagnostic codes: %s",
+    async (code) => {
+      let requests = 0;
+      const target = await serve((_request, response) => {
+        requests++;
+        response.writeHead(requests === 1 ? 200 : 402);
+        response.end(JSON.stringify({ code, detail: "Payment private-credential" }));
+      });
+      const result = await replaySuccessfulPayment(target, async (url) => {
+        const response = await fetch(url, {
+          headers: { authorization: "Payment private-credential" },
+        });
+        await response.text();
+      });
+      expect(result).toEqual({
+        firstStatus: 200,
+        status: 402,
+        responseBody: { code: code.startsWith("Payment ") ? undefined : code },
+      });
+      expect(JSON.stringify(result)).not.toContain("private-credential");
+    },
+  );
 
   it("does not follow replay redirects", async () => {
     let requests = 0;

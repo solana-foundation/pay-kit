@@ -23,6 +23,7 @@ error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
 require __DIR__ . '/../../php/vendor/autoload.php';
+require __DIR__ . '/canonical-codes.php';
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\PayKit;
@@ -398,7 +399,13 @@ while (is_resource($listener)) {
             $authorization = $req['headers']['authorization'] ?? null;
             try {
                 $result = $handler->handle($authorization, $request);
-                write_response($conn, $result->status, $result->headers, $result->body);
+                $body = $result->body;
+                if ($result->status === 402) {
+                    $body['code'] = is_signature_consumed($body['detail'] ?? '')
+                        ? 'signature_consumed'
+                        : ($body['code'] ?? 'payment_invalid');
+                }
+                write_response($conn, $result->status, $result->headers, $body);
             } catch (Throwable $issuanceError) {
                 // Audit #21 promoted too-many-splits from a verify-time reject to
                 // a refuse-to-issue at challenge construction. The charge-splits-

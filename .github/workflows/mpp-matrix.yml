@@ -35,7 +35,7 @@ jobs:
       # No SDK builds or language toolchains before the cheap coverage checks.
       - name: Test matrix coverage
         working-directory: harness
-        run: pnpm exec vitest run test/ci-matrix.test.ts test/replay.test.ts test/guards.test.ts
+        run: pnpm exec vitest run test/ci-matrix.test.ts test/replay.test.ts test/guards.test.ts test/canonical-codes.test.ts
       - name: Emit exact shards
         id: matrix
         working-directory: harness

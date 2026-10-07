@@ -97,7 +97,14 @@ class SolanaRpc:
         data = response.json()
         if "error" in data:
             err = data["error"]
-            raise _RpcError(str(err.get("message") or err), code="payment_invalid")
+            message = str(err.get("message") or err)
+            # A duplicate broadcast can be rejected before the charge replay
+            # store is consulted. Only the RPC's explicit duplicate signal
+            # means consumed; preflight/transport failures remain invalid.
+            duplicate = method == "sendTransaction" and (
+                "already been processed" in message.lower() or "transaction already processed" in message.lower()
+            )
+            raise _RpcError(message, code="signature_consumed" if duplicate else "payment_invalid")
         return data.get("result")
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any:

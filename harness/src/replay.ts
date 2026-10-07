@@ -1,4 +1,5 @@
 import { createServer, request, type IncomingHttpHeaders } from "node:http";
+import { CANONICAL_CODES, type CanonicalErrorCode } from "./canonical-codes";
 
 function forwardedHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
   const excluded = new Set([
@@ -145,8 +146,9 @@ export async function replaySuccessfulPayment(
       responseBody &&
       typeof responseBody === "object" &&
       "code" in responseBody &&
-      responseBody.code === "signature_consumed"
-        ? "signature_consumed"
+      typeof responseBody.code === "string" &&
+      CANONICAL_CODES.includes(responseBody.code as CanonicalErrorCode)
+        ? responseBody.code
         : undefined;
     return { firstStatus: 200, status: response.status, responseBody: { code } };
   } finally {
