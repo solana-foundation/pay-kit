@@ -21,6 +21,7 @@ import {
 } from '../client/Session.js';
 import { defaultTokenProgramForCurrency, resolveStablecoinMint, stablecoinSymbolForCurrency } from '../constants.js';
 import * as Methods from '../Methods.js';
+import { parseRfc3339 } from '../shared/rfc3339.js';
 import type {
     CommitReceipt,
     MeteringDirective,
@@ -355,7 +356,7 @@ export function session(parameters: session.Parameters) {
 
 function assertChallengeOpenNotExpired(expires: string | undefined): void {
     if (expires === undefined) return;
-    const expiresAt = Date.parse(expires);
+    const expiresAt = parseRfc3339(expires);
     if (Number.isNaN(expiresAt)) throw new Error('challenge expires must be an RFC3339 timestamp');
     if (expiresAt <= Date.now()) throw new Error(`challenge expired at ${expires}`);
 }
