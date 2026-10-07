@@ -115,12 +115,10 @@ export const x402ExactScenarios: readonly HarnessScenario[] = [
     settlementHeader: "x-fixture-settlement",
     expectedStatus: 402,
     expectedCode: "signature_consumed",
-    // Driven by the TS client only: e2e.test.ts's idempotent runner
-    // requires the client to read MPP_HARNESS_RESUBMIT_URL and emit a
-    // `firstStatus` field, which the rust spine client does not do
-    // yet. Real-settling-server coverage of signature_consumed lives
-    // in the rust crate's own integration tests until the rust client
-    // grows resubmit support.
+    // This scenario covers the wire-only reference fixture. The shared runner
+    // captures its Payment-Signature header and resubmits it independently of
+    // client-side retry hooks. Real-settling coverage uses the Rust integration
+    // tests and cross-server-scenarios.test.ts.
     clientIds: ["ts-x402"],
     serverIds: ["ts-x402"],
   },

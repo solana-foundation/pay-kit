@@ -65,6 +65,33 @@ describe("language-independent payment capture", () => {
     await expect(fetch(proxyUrl)).rejects.toThrow();
   });
 
+  it("replays x402 without requiring a client-side resubmit hook", async () => {
+    const credentials: (string | string[] | undefined)[] = [];
+    const target = await serve((request, response) => {
+      credentials.push(request.headers["payment-signature"]);
+      expect(request.headers.authorization).toBeUndefined();
+      response.writeHead(credentials.length === 1 ? 200 : 402);
+      response.end(JSON.stringify({ code: "signature_consumed" }));
+    });
+    const result = await replaySuccessfulPayment(
+      target,
+      async (url) => {
+        const response = await fetch(url, {
+          headers: { "payment-signature": "private-x402-credential" },
+        });
+        await response.text();
+      },
+      "payment-signature",
+    );
+    expect(credentials).toEqual(["private-x402-credential", "private-x402-credential"]);
+    expect(result).toEqual({
+      firstStatus: 200,
+      status: 402,
+      responseBody: { code: "signature_consumed" },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-x402-credential");
+  });
+
   it.each([200, 402])("rejects missing successful Payment capture (status %i)", async (status) => {
     let requests = 0;
     const target = await serve((_request, response) => {

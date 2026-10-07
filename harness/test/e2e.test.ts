@@ -831,19 +831,14 @@ describe("mpp harness", () => {
             const server = await startServer(serverImplementation, env);
             runningServers.push(server);
             const url = `http://127.0.0.1:${server.ready.port}${scenario.resourcePath}`;
-            const result =
-              scenario.intent === "charge"
-                ? await replaySuccessfulPayment(url, (captureUrl) =>
-                    runClient(clientImplementation, captureUrl, env),
-                  )
-                : await runClient(clientImplementation, url, {
-                    ...env,
-                    MPP_HARNESS_RESUBMIT_URL: url,
-                  });
+            const result = await replaySuccessfulPayment(
+              url,
+              (captureUrl) => runClient(clientImplementation, captureUrl, env),
+              scenario.intent === "charge" ? "authorization" : "payment-signature",
+            );
             const resultPayload = JSON.stringify(result, null, 2);
-            const firstStatus = (result as { firstStatus?: number }).firstStatus;
             expect(
-              firstStatus,
+              result.firstStatus,
               `first pay must succeed: ${resultPayload}`,
             ).toBe(200);
             expect(result.status, resultPayload).toBe(scenario.expectedStatus);

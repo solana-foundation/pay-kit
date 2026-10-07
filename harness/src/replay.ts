@@ -25,11 +25,13 @@ function forwardedHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
 
 /**
  * Runs an unmodified client through a loopback forwarding endpoint, then replays
- * its successful Payment request directly to the server. Credentials stay private.
+ * its successful credential-bearing request. Supports MPP Authorization and
+ * x402 Payment-Signature headers; credentials stay private.
  */
 export async function replaySuccessfulPayment(
   target: string,
   runClient: (url: string) => Promise<unknown>,
+  credentialHeader: "authorization" | "payment-signature" = "authorization",
 ): Promise<{ firstStatus: number; status: number; responseBody: unknown }> {
   const url = new URL(target);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") {
@@ -63,7 +65,12 @@ export async function replaySuccessfulPayment(
       const method = incoming.method ?? "GET";
       const upstream = request(url, { method, headers }, (response) => {
         const status = response.statusCode ?? 502;
-        if (/^Payment\s/i.test(headers.authorization ?? "")) {
+        const credential = headers[credentialHeader];
+        if (
+          typeof credential === "string" &&
+          credential.length > 0 &&
+          (credentialHeader !== "authorization" || /^Payment\s/i.test(credential))
+        ) {
           paymentStatus = status;
           if (status === 200 && !capture) capture = { method, headers, body };
         }
