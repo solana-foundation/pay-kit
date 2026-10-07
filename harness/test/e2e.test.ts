@@ -293,21 +293,8 @@ beforeAll(async () => {
     decimals: number;
   };
   const uniqueMints = new Map<string, MintConfig>();
-  let needsSolFunding = false;
   for (const scenario of activeScenarios) {
-    // Push-mode scenarios make the client pay its own fee on-chain, so
-    // the client wallet must be pre-funded with lamports even for SPL
-    // payments. SOL-native scenarios already trigger funding below.
-    if (scenario.paymentMode === "push") {
-      needsSolFunding = true;
-    }
-    // x402-upto opens a payment-channel account. The fee payer sponsors the
-    // transaction fee and channel rent.
-    if (scenario.intent === "x402-upto") {
-      needsSolFunding = true;
-    }
     if (isSolNative(scenario)) {
-      needsSolFunding = true;
       continue;
     }
     const variant = scenario.tokenProgram ?? "TOKEN_PROGRAM";
@@ -369,11 +356,10 @@ beforeAll(async () => {
     );
   }
 
-  // G27. SOL-native scenarios need the client wallet pre-funded with
-  // lamports so the system transfer can succeed.
-  if (needsSolFunding) {
-    surfnet.fundSol(client.publicKey, CLIENT_SOL_FUND_LAMPORTS);
-  }
+  // A pull-mode server may leave transaction fees to the client (Ruby does).
+  // Fund the wallet independently of asset and payment mode so every shard
+  // can settle its first payment without relying on another active scenario.
+  surfnet.fundSol(client.publicKey, CLIENT_SOL_FUND_LAMPORTS);
   if (activeScenarios.some((scenario) => scenario.intent === "x402-upto")) {
     surfnet.fundSol(x402UptoPayTo.publicKey, CLIENT_SOL_FUND_LAMPORTS);
   }
