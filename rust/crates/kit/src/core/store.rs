@@ -534,7 +534,10 @@ pub struct ChannelLifecycle {
 /// re-encode + CAS write would destroy them for every reader. Unknown fields
 /// at the same or an older version round-trip verbatim through
 /// [`ChannelState::extra`] instead.
-pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 adds policy-scoped MPP open intents. Older request servers must
+/// reject these records rather than authorize them without the policy guard.
+pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Persisted state of a payment channel, managed by the server.
 ///
@@ -1191,10 +1194,10 @@ pub trait ChannelStore: Send + Sync {
     ///
     /// The `updater` closure receives the current state (None if absent) and
     /// returns the new state or an error. Implementations MUST guarantee the
-    /// entire modifying read-modify-write is atomic — no concurrent update can
-    /// interleave. If the updater returns the state unchanged, implementations
-    /// may skip the write and return the snapshot originally passed to the
-    /// updater; that snapshot can be stale if another writer commits afterward.
+    /// entire read-modify-write is atomic, including unchanged results. A
+    /// lock-based store must hold the lock through the updater; an optimistic
+    /// store must validate the observed state with CAS even for a no-op, and
+    /// report a conflict rather than succeed with an invalidated snapshot.
     fn update_channel(
         &self,
         channel_id: &str,
@@ -1966,9 +1969,6 @@ impl ChannelStore for RedisChannelStore {
             let current = current_raw.as_deref().map(Self::decode).transpose()?;
             let new_state = updater(current)?;
             let (new_raw, new_state) = Self::encode_for_write(new_state)?;
-            if current_raw.as_deref() == Some(new_raw.as_str()) {
-                return Ok(new_state);
-            }
             if !self
                 .compare_and_set(&channel_id, current_raw.as_deref(), &new_raw)
                 .await?
@@ -2014,9 +2014,6 @@ impl ChannelStore for RedisChannelStore {
             };
             mutator(&mut state)?;
             let (new_raw, _) = Self::encode_for_write(state)?;
-            if current_raw.as_deref() == Some(new_raw.as_str()) {
-                return Ok(());
-            }
             if !self
                 .compare_and_set(&channel_id, current_raw.as_deref(), &new_raw)
                 .await?
@@ -2818,6 +2815,96 @@ mod tests {
 
     #[cfg(feature = "redis-store")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn redis_channel_store_fences_unchanged_and_changed_mutations() {
+        let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
+            .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let store = RedisChannelStore::connect(
+            &redis_url,
+            format!("pay-kit:test:fenced:{}:{unique}", std::process::id()),
+        )
+        .await
+        .unwrap();
+
+        for in_place in [false, true] {
+            for changed in [false, true] {
+                for concurrent in [false, true] {
+                    let id = format!("{in_place}-{changed}-{concurrent}");
+                    store
+                        .put_channel(&id, make_state(&id, 1_000_000))
+                        .await
+                        .unwrap();
+                    let worker_store = store.clone();
+                    let worker_id = id.clone();
+                    let (read_tx, read_rx) = tokio::sync::oneshot::channel();
+                    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+                    let worker = tokio::spawn(async move {
+                        let mutate = move |state: &mut ChannelState| {
+                            read_tx.send(()).unwrap();
+                            // Pause after GET and before CAS, without blocking
+                            // the runtime needed by the competing writer.
+                            tokio::task::block_in_place(|| {
+                                resume_rx.recv_timeout(Duration::from_secs(10))
+                            })
+                            .unwrap();
+                            if changed {
+                                state.cumulative = 50;
+                            }
+                            Ok(())
+                        };
+                        if in_place {
+                            worker_store
+                                .mutate_channel(&worker_id, None, Box::new(mutate))
+                                .await
+                        } else {
+                            worker_store
+                                .update_channel(
+                                    &worker_id,
+                                    Box::new(move |state| {
+                                        let mut state = state.unwrap();
+                                        mutate(&mut state)?;
+                                        Ok(state)
+                                    }),
+                                )
+                                .await
+                                .map(|_| ())
+                        }
+                    });
+                    tokio::time::timeout(Duration::from_secs(10), read_rx)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if concurrent {
+                        store.mark_sealed(&id).await.unwrap();
+                    }
+                    resume_tx.send(()).unwrap();
+                    let result = worker.await.unwrap();
+                    if concurrent {
+                        assert!(matches!(
+                            result,
+                            Err(StoreError::Internal(message))
+                                if message == "Concurrent channel update; retry the request"
+                        ));
+                    } else {
+                        result.unwrap();
+                    }
+                    let persisted = store.get_channel(&id).await.unwrap().unwrap();
+                    assert_eq!(persisted.sealed, concurrent);
+                    assert_eq!(
+                        persisted.cumulative,
+                        if changed && !concurrent { 50 } else { 0 }
+                    );
+                    store.delete_channel(&id).await.unwrap();
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn redis_channel_store_roundtrip_and_atomic_watermark() {
         let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
             .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
@@ -2876,11 +2963,11 @@ mod tests {
             .await
             .unwrap();
         continue_tx.send(()).unwrap();
-        let stale_read = no_op
-            .await
-            .unwrap()
-            .expect("a no-op must not fail because another writer advanced the channel");
-        assert_eq!(stale_read.cumulative, 0);
+        assert!(matches!(
+            no_op.await.unwrap(),
+            Err(StoreError::Internal(message))
+                if message == "Concurrent channel update; retry the request"
+        ));
         assert_eq!(
             store
                 .get_channel("noop-race")

@@ -14,9 +14,10 @@
 //!    [`SessionServer::seal_params`] to get the parameters needed to
 //!    submit on-chain seal + distribute transactions.
 //!
-//! Open and top-up credentials are accepted only after their submitted
-//! transactions are decoded, bound to the challenge and persisted channel,
-//! broadcast, confirmed, and checked against the resulting on-chain state.
+//! Open credentials are fully validated before a pending intent is durably
+//! persisted, then broadcast, confirmed, and activated. Pending channels cannot
+//! authorize service. Lifecycle workers can resume a stored intent after a
+//! crash without a new client request. Top-ups likewise require confirmation.
 //!
 //! Replayed `open` payloads for an existing channel are idempotent: they
 //! never reset the voucher watermark or any other channel state.
@@ -41,6 +42,10 @@ use crate::mpp::store::{
     ChannelLifecycle, ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError,
     CHANNEL_STATE_SCHEMA_VERSION,
 };
+
+#[path = "session_binding.rs"]
+mod binding;
+pub use binding::{channel_binding, SessionConfigSnapshot};
 
 // ── Configuration ──
 
@@ -74,7 +79,7 @@ impl SessionOpenContext<'_> {
 }
 
 /// A payment split committed at channel open; distributed at close.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Split {
     pub recipient: Pubkey,
     /// Share in basis points.
@@ -103,6 +108,33 @@ pub struct OpenAcceptance {
     pub replay: bool,
     /// Confirmed transaction signature after any server fee-payer co-signing.
     pub transaction_signature: String,
+}
+
+const OPEN_INTENT_KEY: &str = "mppSessionOpenIntent";
+const OPEN_TERMINAL_KEY: &str = "mppSessionOpenTerminal";
+const OPEN_TERMINAL_ERROR: &str = "session open expired without funding; request a new channel";
+
+/// Whether an open has been retired after finalized expiry reconciliation.
+/// This is a local tombstone, not an on-chain seal. Keep the row and open a
+/// different channel; lifecycle workers must not submit transactions for it.
+pub fn session_open_is_terminal(state: &ChannelState) -> bool {
+    state.extra.contains_key(OPEN_TERMINAL_KEY)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenIntent {
+    version: u32,
+    payload: OpenPayload,
+    challenge_id: String,
+    recent_blockhash: String,
+    recent_slot: u64,
+    /// Positive finalized observation, persisted before any server broadcast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finalized_valid_at: Option<u64>,
+    /// Fully signed transaction ID (the sponsor signature for sponsored opens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transaction_signature: Option<String>,
 }
 
 /// Result of accepting a channel top-up action.
@@ -381,7 +413,7 @@ impl DeliveryRequest {
 /// production persistence backends.
 pub struct SessionServer<S: ChannelStore> {
     config: SessionConfig,
-    store: S,
+    store: binding::BoundStore<S>,
     /// Transaction message versions accepted for `open` / `topUp` and
     /// advertised in the challenge; see `core::tx`.
     accepted_versions: Vec<TxVersion>,
@@ -396,12 +428,28 @@ impl<S: ChannelStore> SessionServer<S> {
         let accepted_versions = vec![TxVersion::V0];
         Self {
             config,
-            store,
+            store: binding::BoundStore {
+                inner: store,
+                binding: None,
+            },
             accepted_versions,
             blockhash_cache: None,
             #[cfg(feature = "server")]
             tx_pipeline: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Scope every channel operation to an immutable host policy identity and
+    /// the current public configuration snapshot. Legacy channels are excluded.
+    pub fn with_channel_binding(mut self, policy: serde_json::Value) -> Self {
+        self.store.binding = Some(binding::Binding::new(policy, &self.config));
+        self
+    }
+
+    /// Check scope and activation before a host uses raw channel-store state.
+    /// Call this inside atomic host mutations, not only before starting them.
+    pub fn require_channel_binding(&self, state: &ChannelState) -> Result<()> {
+        binding::require_binding(state, &self.store.binding, false)
     }
 
     fn resolve_versions(config: &SessionConfig, mode: TxV1Mode) -> Vec<TxVersion> {
@@ -712,9 +760,10 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Accepts payment-channel opens and operated-voucher delegated-token opens.
     /// Returns the stored `ChannelState`.
     ///
-    /// When `config.rpc_url` is set, confirms the open transaction on-chain at
-    /// confirmed commitment before persisting — rejects the open if the tx is
-    /// unknown or failed. Leave `rpc_url` as `None` in unit tests.
+    /// Requires `config.rpc_url`. Validates before persisting a pending intent,
+    /// then confirms the transaction and matching on-chain state before
+    /// activation. A failed or interrupted submission leaves a recoverable
+    /// pending record, never an authorized channel.
     ///
     /// Replayed opens are idempotent: when a channel already exists for the
     /// session id with the same authorized signer, the existing state is
@@ -739,6 +788,128 @@ impl<S: ChannelStore> SessionServer<S> {
         context: SessionOpenContext<'_>,
     ) -> Result<OpenAcceptance> {
         self.process_open_inner(payload, context).await
+    }
+
+    /// Resume a validated, durably stored intent without a new client request.
+    ///
+    /// This trusted lifecycle operation ignores original challenge expiry but
+    /// reverifies the transaction and exact chain parameters. It cannot adopt
+    /// an on-chain channel without its existing pending intent.
+    pub async fn resume_pending_open(&self, channel_id: &str) -> Result<OpenAcceptance> {
+        let state = self
+            .store
+            .inner
+            .get_channel(channel_id)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| Error::Other("pending open not found".into()))?;
+        binding::require_binding(&state, &self.store.binding, true)?;
+        if !state
+            .pending_setup
+            .as_ref()
+            .is_some_and(|setup| setup.opens_channel)
+        {
+            return Err(Error::Other("channel has no pending open".into()));
+        }
+        let intent: OpenIntent = serde_json::from_value(
+            state
+                .extra
+                .get(OPEN_INTENT_KEY)
+                .ok_or_else(|| Error::Other("pending open intent missing".into()))?
+                .clone(),
+        )
+        .map_err(|_| Error::Other("invalid pending open intent".into()))?;
+        if !matches!(intent.version, 1 | 2) || intent.payload.session_id() != channel_id {
+            return Err(Error::Other("pending open intent identity mismatch".into()));
+        }
+        #[cfg(feature = "server")]
+        if intent.version == 2 {
+            if let Some(valid_at) = intent.finalized_valid_at {
+                let pipeline = self.transaction_pipeline().await?;
+                let (valid, invalid_at) = pipeline
+                    .finalized_blockhash_validity(&intent.recent_blockhash, Some(valid_at))
+                    .await
+                    .map_err(|error| Error::Rpc(format!("open expiry reconciliation: {error}")))?;
+                if !valid && invalid_at > valid_at {
+                    let params = self.payment_channel_open_params(&intent.payload)?;
+                    let prepared = prepare_open_transaction(
+                        &intent.payload,
+                        &params,
+                        &intent.recent_blockhash,
+                        self.config.fee_payer_signer.as_deref(),
+                        &self.accepted_versions,
+                    )
+                    .await?;
+                    let signature = prepared
+                        .0
+                        .signatures
+                        .first()
+                        .copied()
+                        .ok_or_else(|| Error::Other("open signature missing".into()))?;
+                    if intent.transaction_signature.as_deref()
+                        != Some(signature.to_string().as_str())
+                    {
+                        return Err(Error::Other(
+                            "open reconciliation signature mismatch".into(),
+                        ));
+                    }
+                    let address = payment_channels::derive_channel_addresses(&params).channel;
+                    if pipeline
+                        .finalized_unfunded(address, signature, invalid_at)
+                        .await
+                        .map_err(|error| {
+                            Error::Rpc(format!("open funding reconciliation: {error}"))
+                        })?
+                    {
+                        let expected = state.clone();
+                        self.store
+                            .inner
+                            .update_channel(
+                                channel_id,
+                                Box::new(move |current| {
+                                    let mut current = current.ok_or_else(|| {
+                                        StoreError::Internal("open intent disappeared".into())
+                                    })?;
+                                    // Fence the entire state, not merely its channel ID: a
+                                    // concurrent activation or mutation invalidates this proof.
+                                    let encode = |state: &ChannelState| {
+                                        serde_json::to_value(state).map_err(|error| {
+                                            StoreError::Internal(error.to_string())
+                                        })
+                                    };
+                                    if encode(&current)? != encode(&expected)? {
+                                        return Err(StoreError::Internal(
+                                            "open changed before retirement".into(),
+                                        ));
+                                    }
+                                    current.extra.insert(
+                                        OPEN_TERMINAL_KEY.into(),
+                                        serde_json::json!({
+                                            "version": 1, "finalizedInvalidAt": invalid_at,
+                                        }),
+                                    );
+                                    current.pending_setup = None;
+                                    current.lifecycle = None;
+                                    Ok(current)
+                                }),
+                            )
+                            .await
+                            .map_err(store_err)?;
+                        return Err(Error::Other(OPEN_TERMINAL_ERROR.into()));
+                    }
+                }
+            }
+        }
+        self.process_open_inner(
+            &intent.payload,
+            SessionOpenContext {
+                challenge_id: &intent.challenge_id,
+                expires: None,
+                recent_blockhash: &intent.recent_blockhash,
+                recent_slot: intent.recent_slot,
+            },
+        )
+        .await
     }
 
     async fn process_open_inner(
@@ -821,36 +992,32 @@ impl<S: ChannelStore> SessionServer<S> {
             ));
         }
 
-        let fresh_open = self
+        let existing = self
             .store
+            .inner
             .get_channel(session_id)
             .await
-            .map_err(store_err)?
-            .is_none();
+            .map_err(store_err)?;
+        if let Some(existing) = &existing {
+            binding::require_binding(existing, &self.store.binding, true)?;
+        }
+        let fresh_open = existing.is_none();
         #[cfg(feature = "server")]
         let pipeline = self.transaction_pipeline().await?;
-        #[cfg(feature = "server")]
-        let transaction_signature = verify_submit_and_fetch_open(
-            payload,
-            &params,
-            context.recent_blockhash,
-            &pipeline,
-            fresh_open,
-            self.config.fee_payer_signer.as_deref(),
-            &self.accepted_versions,
-        )
-        .await?;
         #[cfg(not(feature = "server"))]
-        let transaction_signature = verify_submit_and_fetch_open(
+        let pipeline = ();
+        let prepared = prepare_open_transaction(
             payload,
             &params,
             context.recent_blockhash,
-            &(),
-            fresh_open,
             self.config.fee_payer_signer.as_deref(),
             &self.accepted_versions,
         )
         .await?;
+        #[cfg(feature = "server")]
+        if fresh_open {
+            validate_open_slot(&pipeline, params.open_slot).await?;
+        }
 
         let authentication = payload
             .authentication
@@ -860,10 +1027,10 @@ impl<S: ChannelStore> SessionServer<S> {
             .map_err(|error| Error::Other(format!("serialize authentication: {error}")))?;
         let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
 
-        let fresh_state = ChannelState {
+        let mut fresh_state = ChannelState {
             channel_id: session_id.to_string(),
             authorized_signer: payload.authorized_signer.clone(),
-            deposit,
+            deposit: 0,
             cumulative: 0,
             sealed: false,
             highest_voucher_signature: None,
@@ -901,11 +1068,65 @@ impl<S: ChannelStore> SessionServer<S> {
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
         };
+        fresh_state.pending_setup = Some(crate::mpp::store::PendingSetup {
+            payer_signature: prepared.1.clone(),
+            deposit,
+            opens_channel: true,
+            // Reconcile instead of evicting on challenge expiry: funding may
+            // have landed immediately before the process lost its response.
+            expires_at: i64::MAX,
+        });
+        let stored_intent = existing
+            .as_ref()
+            .and_then(|state| state.extra.get(OPEN_INTENT_KEY))
+            .map(|value| serde_json::from_value::<OpenIntent>(value.clone()))
+            .transpose()
+            .map_err(|_| Error::Other("invalid pending open intent".into()))?;
+        let finalized_valid_at = stored_intent
+            .as_ref()
+            .and_then(|intent| intent.finalized_valid_at);
+        #[cfg(feature = "server")]
+        let finalized_valid_at = if fresh_open {
+            // Confirmed challenge hashes can be newer than the finalized bank.
+            // Lack of a positive observation is not a submission failure, but it
+            // permanently excludes this attempt from expiry-based retirement.
+            match pipeline
+                .finalized_blockhash_validity(context.recent_blockhash, None)
+                .await
+            {
+                Ok((true, slot)) => Some(slot),
+                _ => None,
+            }
+        } else {
+            finalized_valid_at
+        };
+        let intent = serde_json::to_value(OpenIntent {
+            version: stored_intent.as_ref().map_or(2, |intent| intent.version),
+            payload: payload.clone(),
+            challenge_id: context.challenge_id.to_string(),
+            recent_blockhash: context.recent_blockhash.to_string(),
+            recent_slot: context.recent_slot,
+            finalized_valid_at,
+            transaction_signature: if stored_intent
+                .as_ref()
+                .is_some_and(|intent| intent.version == 1)
+            {
+                None
+            } else {
+                prepared.0.signatures.first().map(ToString::to_string)
+            },
+        })
+        .map_err(|error| Error::Other(format!("serialize open intent: {error}")))?;
+        fresh_state
+            .extra
+            .insert(OPEN_INTENT_KEY.into(), intent.clone());
+        if let Some(binding) = &self.store.binding {
+            binding.insert(&mut fresh_state)?;
+        }
 
-        // Atomic check-and-insert: a replayed open re-passes all checks above
-        // (the referenced tx is genuinely confirmed), so it MUST NOT overwrite
-        // existing state — that would reset the voucher watermark and erase
-        // accepted vouchers before close.
+        // Reserve only after validating the payer's actual signed transaction.
+        // Replays cannot replace the intent/binding or reset accounting. The
+        // durable write must complete before any funding broadcast.
         let session_id_owned = session_id.to_string();
         let authorized_signer = payload.authorized_signer.clone();
         let payer = payload.payer.clone();
@@ -914,12 +1135,19 @@ impl<S: ChannelStore> SessionServer<S> {
         let authentication = payload.authentication.clone();
         let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let replay_out = std::sync::Arc::clone(&replay);
-        let state = self
-            .store
+        let expected_binding = self.store.binding.clone();
+        let expected_intent = intent.clone();
+        self
+            .store.inner
             .update_channel(
                 session_id,
                 Box::new(move |state_opt| match state_opt {
                     Some(existing) => {
+                        binding::require_binding(&existing, &expected_binding, true)
+                            .map_err(|error| StoreError::Internal(error.to_string()))?;
+                        if existing.extra.get(OPEN_INTENT_KEY).is_some_and(|stored| stored != &expected_intent) {
+                            return Err(StoreError::Internal("open intent does not match stored state".into()));
+                        }
                         if existing.sealed {
                             return Err(StoreError::Internal(format!(
                                 "Channel {session_id_owned} is already sealed"
@@ -945,7 +1173,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             )));
                         }
                         // Idempotent replay: keep existing state untouched.
-                        replay_out.store(true, std::sync::atomic::Ordering::Relaxed);
+                        replay_out.store(existing.pending_setup.is_none(), std::sync::atomic::Ordering::Relaxed);
                         Ok(existing)
                     }
                     None => Ok(fresh_state),
@@ -954,6 +1182,41 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?;
 
+        let transaction_signature =
+            submit_and_fetch_open(prepared.0, &params, &pipeline, fresh_open).await?;
+        let expected_binding = self.store.binding.clone();
+        let state = self
+            .store
+            .inner
+            .update_channel(
+                session_id,
+                Box::new(move |state| {
+                    let mut state = state
+                        .ok_or_else(|| StoreError::Internal("open intent disappeared".into()))?;
+                    binding::require_binding(&state, &expected_binding, true)
+                        .map_err(|error| StoreError::Internal(error.to_string()))?;
+                    if state
+                        .extra
+                        .get(OPEN_INTENT_KEY)
+                        .is_some_and(|stored| stored != &intent)
+                    {
+                        return Err(StoreError::Internal(
+                            "open intent changed before activation".into(),
+                        ));
+                    }
+                    if state
+                        .pending_setup
+                        .as_ref()
+                        .is_some_and(|setup| setup.opens_channel)
+                    {
+                        state.deposit = deposit;
+                        state.pending_setup = None;
+                    }
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(store_err)?;
         let replay = replay.load(std::sync::atomic::Ordering::Relaxed);
         Ok(OpenAcceptance {
             state,
@@ -1026,6 +1289,19 @@ impl<S: ChannelStore> SessionServer<S> {
     ///
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
+        self.verify_voucher_with_guard(payload, |_| Ok(())).await
+    }
+
+    /// Verify a voucher and check a host lease/capacity precondition inside
+    /// the atomic watermark-and-service-debit mutation.
+    ///
+    /// The guard sees the current record on every committing mutation. It must
+    /// be nonblocking and free of side effects; retries must recheck the lease.
+    pub async fn verify_voucher_with_guard(
+        &self,
+        payload: &VoucherPayload,
+        guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
+    ) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
         // The top-level channelId is the routing key; it must never diverge
         // from the signed voucher's inner channelId (spec: servers MUST
@@ -1061,7 +1337,9 @@ impl<S: ChannelStore> SessionServer<S> {
         // channel's forced-close grace period: a non-zero voucher expiry must
         // outlast it so the operator can still redeem on-chain after the async
         // forced-close delay.
-        let acceptance = crate::core::session::accept_voucher(
+        let amount = self.config.amount;
+        let owner = self.config.operator.clone();
+        let acceptance = crate::core::session::accept_voucher_with_commit(
             &self.store,
             &voucher.data.channel_id,
             new_cumulative,
@@ -1075,46 +1353,24 @@ impl<S: ChannelStore> SessionServer<S> {
             // fixed price, before the watermark advances — matches the
             // TypeScript/Python session servers' availability gate.
             self.config.amount,
+            move |state, replay| {
+                guard(state).map_err(|error| StoreError::Internal(error.to_string()))?;
+                let debit = if replay { 0 } else { amount };
+                state.spent_amount = state
+                    .spent_amount
+                    .checked_add(debit)
+                    .ok_or_else(|| StoreError::Internal("session spent amount overflow".into()))?;
+                let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
+                state.last_activity_at = now_ms;
+                state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                    owner: owner.clone(),
+                    close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
+                });
+                Ok(())
+            },
         )
         .await
         .map_err(Error::from)?;
-        let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
-        let owner = self.config.operator.clone();
-        // Debit the fixed per-action price, not the voucher's own cumulative
-        // jump: the client may pre-fund a voucher for more than one action's
-        // worth of `cumulativeAmount`, and `spentAmount` tracks delivered
-        // service (draft-solana-session-00 `spentAmount += cost`), not the
-        // authorized credit line. This matches `process_use`'s debit and the
-        // TypeScript/Python session servers. 0 on an idempotent replay, since
-        // no additional service is delivered.
-        let debit = if acceptance.replay {
-            0
-        } else {
-            self.config.amount
-        };
-        self.store
-            .update_channel(
-                &voucher.data.channel_id,
-                Box::new(move |state_opt| {
-                    let mut state = state_opt.ok_or_else(|| {
-                        StoreError::Internal(
-                            "Channel disappeared after voucher acceptance".to_string(),
-                        )
-                    })?;
-                    state.spent_amount =
-                        state.spent_amount.checked_add(debit).ok_or_else(|| {
-                            StoreError::Internal("session spent amount overflow".to_string())
-                        })?;
-                    state.last_activity_at = now_ms;
-                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                        owner,
-                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                    });
-                    Ok(state)
-                }),
-            )
-            .await
-            .map_err(store_err)?;
         Ok(acceptance)
     }
 
@@ -1951,15 +2207,13 @@ fn confirmed_rpc_client(rpc_url: &str) -> solana_rpc_client::rpc_client::RpcClie
 }
 
 #[cfg(feature = "server")]
-async fn verify_submit_and_fetch_open(
+async fn prepare_open_transaction(
     payload: &OpenPayload,
     params: &payment_channels::OpenChannelParams,
     challenged_blockhash: &str,
-    pipeline: &crate::core::tx_pipeline::TxPipeline,
-    fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
     accepted_versions: &[TxVersion],
-) -> Result<String> {
+) -> Result<(solana_transaction::versioned::VersionedTransaction, String)> {
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     // Envelope: accepted version, no address lookup tables, size within the
     // version's limit; then the version-1 header config against the same caps
@@ -2039,33 +2293,37 @@ async fn verify_submit_and_fetch_open(
     if let Some(signer) = fee_payer_signer {
         payment_channels::cosign_fee_payer(signer, &params.rent_payer, &mut tx).await?;
     }
+    let payer_index = tx
+        .message
+        .static_account_keys()
+        .iter()
+        .position(|key| key == &params.payer)
+        .ok_or_else(|| Error::Other("open payer is missing from transaction".into()))?;
+    let payer_signature = tx
+        .signatures
+        .get(payer_index)
+        .ok_or_else(|| Error::Other("open payer signature is missing".into()))?
+        .to_string();
+    Ok((tx, payer_signature))
+}
+
+#[cfg(feature = "server")]
+async fn submit_and_fetch_open(
+    tx: solana_transaction::versioned::VersionedTransaction,
+    params: &payment_channels::OpenChannelParams,
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
+    fresh_open: bool,
+) -> Result<String> {
     let transaction_signature = tx
         .signatures
         .first()
         .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
         .to_string();
 
-    if fresh_open {
-        let current_slot = pipeline
-            .current_slot()
+    if !fresh_open
+        && fetch_and_match_open_channel(pipeline, params, None)
             .await
-            .map_err(|error| Error::Rpc(format!("session open slot validation failed: {error}")))?;
-        if params.open_slot > current_slot {
-            return Err(Error::Other(format!(
-                "open openSlot {} is ahead of the current cluster slot {current_slot}",
-                params.open_slot
-            )));
-        }
-        if current_slot - params.open_slot > payment_channels::OPEN_SLOT_WINDOW {
-            return Err(Error::Other(format!(
-                "open openSlot {} is outside the {}-slot freshness window of the current cluster slot {current_slot}",
-                params.open_slot,
-                payment_channels::OPEN_SLOT_WINDOW
-            )));
-        }
-    } else if fetch_and_match_open_channel(pipeline, params, None)
-        .await
-        .is_ok()
+            .is_ok()
     {
         // This open already exists in the store (a resubmit — e.g. the
         // client never saw the first response), and the channel account
@@ -2090,6 +2348,29 @@ async fn verify_submit_and_fetch_open(
         (Err(error), Err(_)) => Err(Error::Rpc(format!("open submission failed: {error}"))),
     }?;
     Ok(transaction_signature)
+}
+
+#[cfg(feature = "server")]
+async fn validate_open_slot(
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
+    open_slot: u64,
+) -> Result<()> {
+    let current_slot = pipeline
+        .current_slot()
+        .await
+        .map_err(|error| Error::Rpc(format!("session open slot validation failed: {error}")))?;
+    if open_slot > current_slot {
+        return Err(Error::Other(format!(
+            "open openSlot {open_slot} is ahead of the current cluster slot {current_slot}"
+        )));
+    }
+    if current_slot - open_slot > payment_channels::OPEN_SLOT_WINDOW {
+        return Err(Error::Other(format!(
+            "open openSlot {open_slot} is outside the {}-slot freshness window of the current cluster slot {current_slot}",
+            payment_channels::OPEN_SLOT_WINDOW
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "server")]
@@ -2304,14 +2585,24 @@ async fn verify_submit_and_fetch_topup(
 }
 
 #[cfg(not(feature = "server"))]
-async fn verify_submit_and_fetch_open(
+async fn prepare_open_transaction(
     _payload: &OpenPayload,
     _params: &payment_channels::OpenChannelParams,
     _challenged_blockhash: &str,
-    _pipeline: &(),
-    _fresh_open: bool,
     _fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
     _accepted_versions: &[TxVersion],
+) -> Result<(solana_transaction::versioned::VersionedTransaction, String)> {
+    Err(Error::Other(
+        "session open verification requires the `server` feature".to_string(),
+    ))
+}
+
+#[cfg(not(feature = "server"))]
+async fn submit_and_fetch_open(
+    _tx: solana_transaction::versioned::VersionedTransaction,
+    _params: &payment_channels::OpenChannelParams,
+    _pipeline: &(),
+    _fresh_open: bool,
 ) -> Result<String> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
@@ -2701,6 +2992,10 @@ mod tests {
                         serde_json::from_slice(&bytes[body_start..body_start + content_length])
                             .unwrap();
                     let result = match request["method"].as_str().unwrap_or_default() {
+                        "isBlockhashValid" => {
+                            assert_eq!(request["params"][1]["commitment"], "finalized");
+                            Ok(json!({"context": {"slot": 42}, "value": true}))
+                        }
                         "getSlot" => Ok(json!(current_slot)),
                         "sendTransaction" => {
                             send_tx_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3206,6 +3501,663 @@ mod tests {
             )
             .await
             .is_err());
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bound_pending_open_recovers_without_client_or_current_policy() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+        use serde_json::json;
+
+        let policy = json!({"deployment": "a", "version": 1});
+        let cfg = config(VoucherSigner::Client);
+        let mut server = SessionServer::new(cfg.clone(), MemoryChannelStore::new())
+            .with_channel_binding(policy.clone());
+        let (open, params) = signed_open(&server, 4).await;
+        let channel = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: params.salt,
+            deposit: params.deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: params.grace_period,
+            distribution_hash: payment_channels::distribution_hash(&params.recipients),
+            payer: payment_channels::to_address(&params.payer),
+            payee: payment_channels::to_address(&params.payee),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer),
+            mint: payment_channels::to_address(&params.mint),
+            rent_payer: payment_channels::to_address(&params.rent_payer),
+            open_slot: params.open_slot,
+        };
+        // Funding confirms, but the account read-back fails to match. This is
+        // the same durable boundary as losing the process before activation.
+        let mut bad_readback = channel.clone();
+        bad_readback.deposit += 1;
+        let (url, rpc, sends) = rpc_for_channel(bad_readback, params.open_slot).await;
+        server.config.rpc_url = Some(url);
+        let blockhash = test_blockhash().to_string();
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &blockhash,
+            recent_slot: CHALLENGED_SLOT,
+        };
+        let mut malformed = open.clone();
+        malformed.transaction = "invalid".into();
+        assert!(server.process_open(&malformed, context).await.is_err());
+        assert!(server
+            .store
+            .inner
+            .get_channel(&open.channel_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(server.process_open(&open, context).await.is_err());
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let pending = server
+            .store
+            .inner
+            .get_channel(&open.channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.deposit, 0);
+        assert!(pending.pending_setup.is_some());
+        assert_eq!(pending.extra[OPEN_INTENT_KEY]["version"], 2);
+        assert_eq!(pending.extra[OPEN_INTENT_KEY]["finalized_valid_at"], 42);
+        assert!(pending.extra[OPEN_INTENT_KEY]["transaction_signature"].is_string());
+        assert!(server.require_channel_binding(&pending).is_err());
+        assert!(server.seal_params(&open.channel_id).await.is_err());
+        rpc.abort();
+
+        // Round-trip the durable row into a fresh store/server, after today's
+        // deployment has changed and the original slot window has expired.
+        let recovered: ChannelState =
+            serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel(&open.channel_id, recovered.clone())
+            .await
+            .unwrap();
+        let snapshot = SessionConfigSnapshot::from_channel(&recovered)
+            .unwrap()
+            .unwrap();
+        let mut changed = cfg.clone();
+        changed.recipient = Pubkey::new_unique().to_string();
+        changed.amount += 100;
+        snapshot.apply_to(&mut changed).unwrap();
+        assert_eq!(changed.recipient, cfg.recipient);
+        assert_eq!(changed.amount, cfg.amount);
+        let (url, rpc, sends) = rpc_for_channel(channel, params.open_slot + 10_000).await;
+        changed.rpc_url = Some(url);
+        let mut restarted = SessionServer::new(changed, store)
+            .with_channel_binding(json!({"deployment": "b", "version": 1}));
+        assert!(restarted
+            .resume_pending_open(&open.channel_id)
+            .await
+            .is_err());
+        restarted = restarted.with_channel_binding(policy.clone());
+        let accepted = restarted
+            .resume_pending_open(&open.channel_id)
+            .await
+            .unwrap();
+        assert_eq!(accepted.state.deposit, params.deposit);
+        assert!(accepted.state.pending_setup.is_none());
+        assert_eq!(channel_binding(&accepted.state).unwrap(), Some(policy));
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(restarted.resume_pending_open("unknown").await.is_err());
+        // A retry is a no-op and cannot reset the accounting watermark.
+        restarted
+            .store
+            .update_channel(
+                &open.channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.cumulative = 100;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let replay = restarted
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert!(replay.replay);
+        assert_eq!(replay.state.cumulative, 100);
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    async fn pending_before_broadcast(
+        server: &SessionServer<MemoryChannelStore>,
+        open: &OpenPayload,
+    ) -> ChannelState {
+        let params = server.payment_channel_open_params(open).unwrap();
+        let blockhash = test_blockhash().to_string();
+        let prepared = prepare_open_transaction(
+            open,
+            &params,
+            &blockhash,
+            server.config.fee_payer_signer.as_deref(),
+            &server.accepted_versions,
+        )
+        .await
+        .unwrap();
+        let mut pending = state(
+            open.session_id().to_string(),
+            open.authorized_signer.clone(),
+        );
+        pending.deposit = 0;
+        pending.payer = open.payer.clone();
+        pending.rent_payer = params.rent_payer.to_string();
+        pending.open_slot = Some(open.open_slot);
+        pending.opening_challenge_id = "opening".into();
+        pending.pending_setup = Some(crate::mpp::store::PendingSetup {
+            payer_signature: prepared.1,
+            deposit: params.deposit,
+            opens_channel: true,
+            expires_at: i64::MAX,
+        });
+        pending.extra.insert(
+            OPEN_INTENT_KEY.into(),
+            serde_json::to_value(OpenIntent {
+                version: 2,
+                payload: open.clone(),
+                challenge_id: "opening".into(),
+                recent_blockhash: blockhash,
+                recent_slot: CHALLENGED_SLOT,
+                finalized_valid_at: Some(42),
+                transaction_signature: Some(prepared.0.signatures[0].to_string()),
+            })
+            .unwrap(),
+        );
+        server
+            .store
+            .binding
+            .as_ref()
+            .unwrap()
+            .insert(&mut pending)
+            .unwrap();
+        pending
+    }
+
+    #[cfg(feature = "server")]
+    async fn expiry_rpc(
+        valid: bool,
+        account: serde_json::Value,
+        status: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        expiry_rpc_with_delayed_read(valid, account, status, None).await
+    }
+
+    #[cfg(feature = "server")]
+    async fn expiry_rpc_with_delayed_read(
+        valid: bool,
+        account: serde_json::Value,
+        status: serde_json::Value,
+        delayed_read: Option<(
+            serde_json::Value,
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<tokio::sync::Notify>,
+        )>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::{routing::post, Json, Router};
+        use serde_json::json;
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let account = account.clone();
+                let status = status.clone();
+                let delayed_read = delayed_read.clone();
+                async move {
+                    let result = match request["method"].as_str().unwrap() {
+                        "getMultipleAccounts" if delayed_read.is_some() => {
+                            let (account, entered, release) = delayed_read.unwrap();
+                            entered.notify_one();
+                            release.notified().await;
+                            json!({"context":{"slot":43}, "value":[account]})
+                        }
+                        "isBlockhashValid" => {
+                            assert_eq!(request["params"][1]["commitment"], "finalized");
+                            json!({"context": {"slot": 500}, "value": valid})
+                        }
+                        "getAccountInfo" => {
+                            assert_eq!(request["params"][1]["commitment"], "finalized");
+                            assert_eq!(request["params"][1]["minContextSlot"], 500);
+                            json!({"context": {"slot": 500}, "value": account})
+                        }
+                        "getSignatureStatuses" => {
+                            assert_eq!(request["params"][1]["searchTransactionHistory"], true);
+                            json!({"context": {"slot": 500}, "value": [status]})
+                        }
+                        // Conservative attempts can still attempt their original
+                        // transaction; force an immediate RPC failure, not a timeout.
+                        _ => {
+                            return Json(json!({"jsonrpc":"2.0", "id":request["id"],
+                        "error":{"code":-32000, "message":"unavailable"}}))
+                        }
+                    };
+                    Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, task)
+    }
+
+    #[cfg(feature = "server")]
+    fn channel_for_params(
+        params: &payment_channels::OpenChannelParams,
+    ) -> payment_channels::generated::generated::accounts::Channel {
+        payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: params.salt,
+            deposit: params.deposit,
+            settlement: payment_channels::generated::generated::types::SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: params.grace_period,
+            distribution_hash: payment_channels::distribution_hash(&params.recipients),
+            payer: payment_channels::to_address(&params.payer),
+            payee: payment_channels::to_address(&params.payee),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer),
+            mint: payment_channels::to_address(&params.mint),
+            rent_payer: payment_channels::to_address(&params.rent_payer),
+            open_slot: params.open_slot,
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn delayed_concurrent_activation_cannot_revive_terminal_open() {
+        use base64::Engine;
+        use serde_json::json;
+        use std::sync::Arc;
+        let mut server =
+            SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new())
+                .with_channel_binding(json!({"version":1}));
+        let (open, params) = signed_open(&server, 4).await;
+        let pending = pending_before_broadcast(&server, &open).await;
+        server
+            .store
+            .inner
+            .put_channel(&open.channel_id, pending)
+            .await
+            .unwrap();
+        let account = json!({
+            "data":[base64::engine::general_purpose::STANDARD.encode(
+                borsh::to_vec(&channel_for_params(&params)).unwrap()), "base64"],
+            "executable":false, "lamports":1,
+            "owner":payment_channels::PAYMENT_CHANNELS_PROGRAM_ID, "rentEpoch":0,
+        });
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (url, rpc) = expiry_rpc_with_delayed_read(
+            false,
+            json!(null),
+            json!(null),
+            Some((account, entered.clone(), release.clone())),
+        )
+        .await;
+        server.config.rpc_url = Some(url);
+        let server = Arc::new(server);
+        let task_server = server.clone();
+        let task_open = open.clone();
+        let task = tokio::spawn(async move {
+            let blockhash = test_blockhash().to_string();
+            task_server
+                .process_open(
+                    &task_open,
+                    SessionOpenContext {
+                        challenge_id: "opening",
+                        expires: None,
+                        recent_blockhash: &blockhash,
+                        recent_slot: CHALLENGED_SLOT,
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        assert!(server
+            .resume_pending_open(&open.channel_id)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("request a new channel"));
+        release.notify_one();
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("request a new channel"));
+        let terminal = server
+            .store
+            .inner
+            .get_channel(&open.channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(session_open_is_terminal(&terminal));
+        assert_eq!(terminal.deposit, 0);
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn expired_prebroadcast_open_becomes_guarded_tombstone_and_new_channel_is_allowed() {
+        use serde_json::json;
+        let (url, rpc) = expiry_rpc(false, json!(null), json!(null)).await;
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.rpc_url = Some(url);
+        let policy = json!({"deployment": "original", "version": 1});
+        let server =
+            SessionServer::new(cfg, MemoryChannelStore::new()).with_channel_binding(policy.clone());
+        let (open, _) = signed_open(&server, 4).await;
+        let pending = pending_before_broadcast(&server, &open).await;
+        server
+            .store
+            .inner
+            .put_channel(&open.channel_id, pending.clone())
+            .await
+            .unwrap();
+        assert!(server
+            .resume_pending_open(&open.channel_id)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("request a new channel"));
+        let terminal = server
+            .store
+            .inner
+            .get_channel(&open.channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(session_open_is_terminal(&terminal));
+        assert!(terminal.pending_setup.is_none());
+        assert!(terminal.lifecycle.is_none());
+        assert!(!terminal.sealed);
+        assert_eq!(
+            terminal.extra[OPEN_INTENT_KEY],
+            pending.extra[OPEN_INTENT_KEY]
+        );
+        assert_eq!(channel_binding(&terminal).unwrap(), Some(policy.clone()));
+        assert_eq!(
+            SessionConfigSnapshot::from_channel(&terminal).unwrap(),
+            SessionConfigSnapshot::from_channel(&pending).unwrap()
+        );
+        assert_eq!(terminal.payer, pending.payer);
+        assert_eq!(terminal.rent_payer, pending.rent_payer);
+        assert_eq!(terminal.open_slot, pending.open_slot);
+        assert!(server.require_channel_binding(&terminal).is_err());
+        assert!(server.seal_params(&open.channel_id).await.is_err());
+        // This is the same guard the delayed activation closure executes.
+        assert!(binding::require_binding(&terminal, &server.store.binding, true).is_err());
+        assert!(server
+            .store
+            .update_channel(
+                &open.channel_id,
+                Box::new(|mut state| {
+                    state.as_mut().unwrap().deposit = 10;
+                    Ok(state.unwrap())
+                })
+            )
+            .await
+            .is_err());
+        let blockhash = test_blockhash().to_string();
+        assert!(server
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: &blockhash,
+                    recent_slot: CHALLENGED_SLOT,
+                }
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("request a new channel"));
+        assert!(server
+            .resume_pending_open(&open.channel_id)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("request a new channel"));
+        // A distinct salt/channel can complete the normal open API while the
+        // original tombstone remains in this same store.
+        let (new_open, params) = signed_open(&server, 5).await;
+        assert_ne!(new_open.channel_id, open.channel_id);
+        let (url, new_rpc, _) =
+            rpc_for_channel(channel_for_params(&params), params.open_slot).await;
+        let mut cfg = server.config.clone();
+        cfg.rpc_url = Some(url);
+        let new_server = SessionServer::new(cfg, server.store.inner).with_channel_binding(policy);
+        let accepted = new_server
+            .process_open(
+                &new_open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: &blockhash,
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.deposit, params.deposit);
+        assert_eq!(
+            new_server.store.inner.list_channels().await.unwrap().len(),
+            2
+        );
+        new_rpc.abort();
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn funded_uncertain_and_legacy_opens_are_never_retired() {
+        use serde_json::json;
+        let success = json!({"slot": 499, "confirmations": null, "err": null,
+            "confirmationStatus":"finalized", "status":{"Ok":null}});
+        let nonfinal = json!({"slot": 499, "confirmations": 1, "err":"AlreadyProcessed",
+            "confirmationStatus":"confirmed", "status":{"Err":"AlreadyProcessed"}});
+        for (valid, account, status, legacy) in [
+            (false, json!({"conflicting":"account"}), json!(null), false),
+            (false, json!(null), success, false),
+            (false, json!(null), nonfinal, false),
+            (true, json!(null), json!(null), false),
+            (false, json!(null), json!(null), true),
+        ] {
+            let (url, rpc) = expiry_rpc(valid, account, status).await;
+            let mut cfg = config(VoucherSigner::Client);
+            cfg.rpc_url = Some(url.clone());
+            let pipeline = crate::core::tx_pipeline::TxPipeline::new(
+                url,
+                crate::core::tx_pipeline::TxPipelineConfig {
+                    submission_max_attempts: 1,
+                    confirmation_timeout: std::time::Duration::from_millis(10),
+                    account_read_retries: 0,
+                    ..Default::default()
+                },
+            );
+            let server = SessionServer::new(cfg, MemoryChannelStore::new())
+                .with_channel_binding(json!({"version":1}))
+                .with_tx_pipeline(pipeline);
+            let (open, _) = signed_open(&server, 4).await;
+            let mut pending = pending_before_broadcast(&server, &open).await;
+            if legacy {
+                let intent = pending
+                    .extra
+                    .get_mut(OPEN_INTENT_KEY)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap();
+                intent.insert("version".into(), json!(1));
+                intent.remove("finalized_valid_at");
+                intent.remove("transaction_signature");
+            }
+            server
+                .store
+                .inner
+                .put_channel(&open.channel_id, pending.clone())
+                .await
+                .unwrap();
+            assert!(server.resume_pending_open(&open.channel_id).await.is_err());
+            let retained = server
+                .store
+                .inner
+                .get_channel(&open.channel_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!session_open_is_terminal(&retained));
+            assert_eq!(
+                serde_json::to_value(retained).unwrap(),
+                serde_json::to_value(pending).unwrap()
+            );
+            rpc.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn bound_store_isolates_legacy_policy_and_snapshot_on_every_mutation() {
+        use serde_json::json;
+        let (mut server, mut session, channel_id) = client_server().await;
+        let legacy = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        server = server.with_channel_binding(json!({"deployment": "a", "version": 1}));
+        assert!(server.require_channel_binding(&legacy).is_err());
+        let mut bound = legacy.clone();
+        server
+            .store
+            .binding
+            .as_ref()
+            .unwrap()
+            .insert(&mut bound)
+            .unwrap();
+        server
+            .store
+            .inner
+            .update_channel(&channel_id, Box::new(move |_| Ok(bound)))
+            .await
+            .unwrap();
+        let voucher = session.sign_increment(100).await.unwrap();
+        let payload = VoucherPayload {
+            channel_id: channel_id.clone(),
+            voucher,
+        };
+        let snapshot = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        server = server.with_channel_binding(json!({"deployment": "b", "version": 1}));
+        assert!(server.verify_voucher(&payload).await.is_err());
+        assert!(server.seal_params(&channel_id).await.is_err());
+        assert!(server
+            .store
+            .update_channel(&channel_id, Box::new(|state| Ok(state.unwrap())))
+            .await
+            .is_err());
+        server.store.binding = None;
+        assert!(server.require_channel_binding(&snapshot).is_err());
+        assert!(server.verify_voucher(&payload).await.is_err());
+        assert!(server.store.mark_sealed(&channel_id).await.is_err());
+        server = server.with_channel_binding(json!({"deployment": "a", "version": 1}));
+        server.config.amount += 1;
+        server = server.with_channel_binding(json!({"deployment": "a", "version": 1}));
+        assert!(server.require_channel_binding(&snapshot).is_err());
+        let stored = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.cumulative, 0);
+        assert!(!stored.sealed);
+    }
+
+    #[tokio::test]
+    async fn guarded_voucher_failure_rolls_back_watermark_and_debit_and_rechecks_replay() {
+        let (server, mut session, channel_id) = client_server().await;
+        let voucher = session.sign_increment(100).await.unwrap();
+        let payload = VoucherPayload {
+            channel_id: channel_id.clone(),
+            voucher,
+        };
+        for reason in ["expired lease", "replaced lease", "close claimed"] {
+            let error = server
+                .verify_voucher_with_guard(&payload, move |state| {
+                    assert_eq!(state.cumulative, 0);
+                    assert_eq!(state.spent_amount, 0);
+                    Err(Error::Other(reason.into()))
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(reason));
+            let state = server
+                .store
+                .inner
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!((state.cumulative, state.spent_amount), (0, 0));
+        }
+        server
+            .verify_voucher_with_guard(&payload, |_| Ok(()))
+            .await
+            .unwrap();
+        let state = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((state.cumulative, state.spent_amount), (100, 25));
+        assert!(server
+            .verify_voucher_with_guard(&payload, |_| {
+                Err(Error::Other("lease expired before replay".into()))
+            })
+            .await
+            .is_err());
+        assert!(
+            server
+                .verify_voucher_with_guard(&payload, |_| Ok(()))
+                .await
+                .unwrap()
+                .replay
+        );
     }
 
     #[cfg(feature = "server")]

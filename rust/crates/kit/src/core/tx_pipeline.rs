@@ -1,6 +1,7 @@
 //! Shared asynchronous transaction submission, confirmation, and read-back.
 //!
-//! A pipeline owns one pooled RPC client. All callers share a confirmation
+//! A pipeline owns pooled RPC read and single-attempt submission clients.
+//! All callers share a confirmation
 //! tracker (`getSignatureStatuses`, up to 256 signatures per request) and an
 //! account read-back queue (`getMultipleAccounts`, up to 100 accounts per
 //! request). This keeps high-cardinality session opens from multiplying RPC
@@ -96,6 +97,8 @@ pub enum TxPipelineError {
     ConfirmationTimeout { signature: Signature },
     #[error("RPC submission and confirmation failed for transaction {signature}")]
     SubmissionFailed { signature: Signature },
+    #[error("transaction submission guard rejected the attempt")]
+    SubmissionGuardRejected,
     #[error("confirmed account read failed after bounded retries")]
     AccountReadFailed,
     #[error("failed to refresh the confirmed cluster slot")]
@@ -117,6 +120,7 @@ pub struct TxPipeline {
 
 struct Inner {
     rpc: Arc<RpcClient>,
+    submission_client: reqwest::Client,
     config: TxPipelineConfig,
     send_permits: Semaphore,
     next_send_at: Mutex<Instant>,
@@ -170,6 +174,13 @@ impl TxPipeline {
         Self {
             inner: Arc::new(Inner {
                 rpc,
+                submission_client: reqwest::Client::builder()
+                    .timeout(Duration::from_secs(30))
+                    .pool_idle_timeout(Duration::from_secs(30))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .retry(reqwest::retry::never())
+                    .build()
+                    .expect("build transaction submission client"),
                 send_permits: Semaphore::new(config.max_send_concurrency.max(1)),
                 next_send_at: Mutex::new(Instant::now()),
                 slot_cache: Mutex::new(None),
@@ -207,10 +218,37 @@ impl TxPipeline {
 
     /// Broadcast a locally verified transaction without preflight and return
     /// immediately. Confirmation can be awaited separately through [`Self::confirm`].
+    /// Retries are bounded by the pipeline configuration; the submission
+    /// transport does not add hidden HTTP retries or follow redirects.
     pub async fn broadcast_verified(
         &self,
         transaction: &VersionedTransaction,
     ) -> PipelineResult<Signature> {
+        self.broadcast_verified_guarded(transaction, || async { Ok(()) })
+            .await
+    }
+
+    /// Broadcast with an asynchronous ownership check immediately before every
+    /// RPC attempt, after waiting for the send permit, pacing, and retry backoff.
+    ///
+    /// Any guard error ends submission without sending that attempt. Callers
+    /// should map a lost claim or failed renewal to
+    /// [`TxPipelineError::SubmissionGuardRejected`]. Submission stays in this
+    /// future: dropping it leaves no queued or spawned submission work.
+    ///
+    /// This is a best-effort ownership boundary, not on-chain fencing. Ownership
+    /// can change between the check and the network send; an already-in-flight
+    /// request cannot be recalled by cancellation or a later guard rejection.
+    /// Transactions must be locally verified, as for [`Self::broadcast_verified`].
+    pub async fn broadcast_verified_guarded<G, F>(
+        &self,
+        transaction: &VersionedTransaction,
+        mut guard: G,
+    ) -> PipelineResult<Signature>
+    where
+        G: FnMut() -> F,
+        F: std::future::Future<Output = PipelineResult<()>>,
+    {
         let signature = transaction.signatures[0];
         // Canonical wire encoding for every message version; the RPC client's
         // own `send_transaction` serializes with bincode, which cannot encode
@@ -232,13 +270,9 @@ impl TxPipeline {
         let mut result = Err(TxPipelineError::SubmissionFailed { signature });
         for attempt in 1..=attempts {
             self.pace_submission().await;
+            guard().await?;
             result = self
-                .inner
-                .rpc
-                .send::<String>(
-                    RpcRequest::SendTransaction,
-                    serde_json::json!([encoded, config]),
-                )
+                .send_transaction_once(&encoded, config)
                 .await
                 .map_err(|_| TxPipelineError::SubmissionFailed { signature })
                 .map(|_| signature);
@@ -252,6 +286,35 @@ impl TxPipeline {
         }
         drop(permit);
         result
+    }
+
+    // The SDK's HttpSender silently retries HTTP 429 responses. Use a pooled
+    // single-attempt transport so every retry returns through pacing + guard.
+    // Redirects and reqwest's own retries are also disabled on this client.
+    async fn send_transaction_once(
+        &self,
+        encoded: &str,
+        config: RpcSendTransactionConfig,
+    ) -> Result<(), ()> {
+        let response = self
+            .inner
+            .submission_client
+            .post(self.inner.rpc.url())
+            .json(
+                &RpcRequest::SendTransaction
+                    .build_request_json(0, serde_json::json!([encoded, config])),
+            )
+            .send()
+            .await
+            .map_err(|_| ())?;
+        if !response.status().is_success() {
+            return Err(());
+        }
+        let body: serde_json::Value = response.json().await.map_err(|_| ())?;
+        if body["error"].is_object() || !body["result"].is_string() {
+            return Err(());
+        }
+        Ok(())
     }
 
     /// Await confirmed commitment for a signature through the shared batcher.
@@ -324,6 +387,74 @@ impl TxPipeline {
             .map_err(|_| TxPipelineError::BlockhashReadFailed)?;
         *cached = Some((blockhash, Instant::now()));
         Ok(blockhash)
+    }
+
+    /// Observe recent-blockhash validity on a finalized bank, retaining its slot.
+    /// A false result alone is not proof of expiry: callers must have persisted
+    /// an earlier positive finalized observation for this exact blockhash.
+    pub async fn finalized_blockhash_validity(
+        &self,
+        blockhash: &str,
+        min_context_slot: Option<u64>,
+    ) -> PipelineResult<(bool, u64)> {
+        let response: solana_rpc_client_api::response::Response<bool> = self
+            .inner
+            .rpc
+            .send(
+                RpcRequest::IsBlockhashValid,
+                serde_json::json!([blockhash, {
+                    "commitment": "finalized",
+                    "minContextSlot": min_context_slot,
+                }]),
+            )
+            .await
+            .map_err(|_| TxPipelineError::BlockhashReadFailed)?;
+        if min_context_slot.is_some_and(|slot| response.context.slot < slot) {
+            return Err(TxPipelineError::BlockhashReadFailed);
+        }
+        Ok((response.value, response.context.slot))
+    }
+
+    /// Reconcile a dead transaction only after a finalized bank has invalidated
+    /// its formerly valid blockhash. Any account or observed success/nonfinal
+    /// signature prevents retirement; RPC errors are never absence evidence.
+    pub async fn finalized_unfunded(
+        &self,
+        channel: Pubkey,
+        signature: Signature,
+        min_context_slot: u64,
+    ) -> PipelineResult<bool> {
+        let account: solana_rpc_client_api::response::Response<serde_json::Value> = self
+            .inner
+            .rpc
+            .send(
+                RpcRequest::GetAccountInfo,
+                serde_json::json!([
+                    channel.to_string(), {
+                        "commitment": "finalized",
+                        "minContextSlot": min_context_slot,
+                        "encoding": "base64",
+                    }
+                ]),
+            )
+            .await
+            .map_err(|_| TxPipelineError::AccountReadFailed)?;
+        if account.context.slot < min_context_slot || !account.value.is_null() {
+            return Ok(false);
+        }
+        let statuses = self
+            .inner
+            .rpc
+            .get_signature_statuses_with_history(&[signature])
+            .await
+            .map_err(|_| TxPipelineError::AccountReadFailed)?;
+        if statuses.context.slot < account.context.slot {
+            return Ok(false);
+        }
+        Ok(matches!(statuses.value.as_slice(), [None])
+            || matches!(statuses.value.as_slice(), [Some(status)]
+                if status.err.is_some()
+                    && status.satisfies_commitment(CommitmentConfig::finalized())))
     }
 
     async fn pace_submission(&self) {
@@ -634,6 +765,272 @@ mod tests {
         }
     }
 
+    mod guarded_submission {
+        use std::future::Future;
+        use std::sync::atomic::AtomicBool;
+        use std::task::Poll;
+
+        use axum::http::{header::LOCATION, StatusCode};
+        use axum::response::{IntoResponse, Response};
+
+        use super::*;
+
+        #[derive(Clone, Default)]
+        struct SendState {
+            calls: Arc<AtomicUsize>,
+            failures: usize,
+            http_failure: Option<StatusCode>,
+            redirect: Option<String>,
+        }
+
+        async fn send_rpc(State(state): State<SendState>, Json(request): Json<Value>) -> Response {
+            assert_eq!(request["method"], "sendTransaction");
+            let attempt = state.calls.fetch_add(1, Ordering::SeqCst);
+            if attempt < state.failures {
+                if let Some(location) = state.redirect {
+                    return (StatusCode::TEMPORARY_REDIRECT, [(LOCATION, location)])
+                        .into_response();
+                }
+                if let Some(status) = state.http_failure {
+                    return status.into_response();
+                }
+                Json(json!({
+                    "jsonrpc": "2.0", "id": request["id"],
+                    "error": { "code": -32000, "message": "retry" }
+                }))
+                .into_response()
+            } else {
+                Json(json!({
+                    "jsonrpc": "2.0", "id": request["id"],
+                    "result": Signature::new_unique().to_string()
+                }))
+                .into_response()
+            }
+        }
+
+        async fn fixture(
+            failures: usize,
+        ) -> (
+            TxPipeline,
+            SendState,
+            VersionedTransaction,
+            tokio::task::JoinHandle<()>,
+        ) {
+            fixture_with_state(SendState {
+                failures,
+                ..SendState::default()
+            })
+            .await
+        }
+
+        async fn fixture_with_state(
+            state: SendState,
+        ) -> (
+            TxPipeline,
+            SendState,
+            VersionedTransaction,
+            tokio::task::JoinHandle<()>,
+        ) {
+            let app = Router::new()
+                .route("/", post(send_rpc))
+                .with_state(state.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let pipeline = TxPipeline::new(
+                url,
+                TxPipelineConfig {
+                    max_send_concurrency: 1,
+                    submission_max_attempts: 3,
+                    submission_initial_backoff: Duration::from_millis(1),
+                    send_interval: Duration::ZERO,
+                    ..test_config()
+                },
+            );
+            let transaction = VersionedTransaction {
+                signatures: vec![Signature::new_unique()],
+                message: solana_message::VersionedMessage::Legacy(solana_message::Message::new(
+                    &[],
+                    Some(&Pubkey::new_unique()),
+                )),
+            };
+            (pipeline, state, transaction, server)
+        }
+
+        // Poll exactly once so a held gate, rather than wall-clock timing,
+        // proves that the guard has not run while submission is stalled.
+        async fn assert_pending<F: Future>(future: std::pin::Pin<&mut F>) {
+            let mut future = future;
+            std::future::poll_fn(|cx| {
+                assert!(future.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn guard_rechecks_after_semaphore_and_pacing_waits() {
+            for stall_semaphore in [true, false] {
+                let (pipeline, state, transaction, server) = fixture(0).await;
+                let permit = if stall_semaphore {
+                    Some(pipeline.inner.send_permits.acquire().await.unwrap())
+                } else {
+                    None
+                };
+                let pacing = if stall_semaphore {
+                    None
+                } else {
+                    Some(pipeline.inner.next_send_at.lock().await)
+                };
+                let owned = AtomicBool::new(true);
+                let checks = AtomicUsize::new(0);
+                let mut submission =
+                    Box::pin(pipeline.broadcast_verified_guarded(&transaction, || async {
+                        checks.fetch_add(1, Ordering::SeqCst);
+                        if owned.load(Ordering::SeqCst) {
+                            Ok(())
+                        } else {
+                            Err(TxPipelineError::SubmissionGuardRejected)
+                        }
+                    }));
+                assert_pending(submission.as_mut()).await;
+                assert_eq!(checks.load(Ordering::SeqCst), 0);
+                owned.store(false, Ordering::SeqCst);
+                drop(permit);
+                drop(pacing);
+                assert!(matches!(
+                    submission.await,
+                    Err(TxPipelineError::SubmissionGuardRejected)
+                ));
+                assert_eq!(checks.load(Ordering::SeqCst), 1);
+                assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+                server.abort();
+            }
+        }
+
+        #[tokio::test]
+        async fn guard_rejection_prevents_retry_after_failed_send() {
+            let (pipeline, state, transaction, server) = fixture(3).await;
+            let checks = AtomicUsize::new(0);
+            let result = pipeline
+                .broadcast_verified_guarded(&transaction, || async {
+                    if checks.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Ok(())
+                    } else {
+                        Err(TxPipelineError::SubmissionGuardRejected)
+                    }
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(TxPipelineError::SubmissionGuardRejected)
+            ));
+            assert_eq!(checks.load(Ordering::SeqCst), 2);
+            assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
+
+        #[tokio::test]
+        async fn valid_guard_runs_for_every_attempt_and_succeeds() {
+            let (pipeline, state, transaction, server) = fixture(2).await;
+            let checks = AtomicUsize::new(0);
+            let signature = pipeline
+                .broadcast_verified_guarded(&transaction, || async {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(signature, transaction.signatures[0]);
+            assert_eq!(checks.load(Ordering::SeqCst), 3);
+            assert_eq!(state.calls.load(Ordering::SeqCst), 3);
+            server.abort();
+        }
+
+        #[tokio::test]
+        async fn rate_limit_retries_never_bypass_guard() {
+            for lose_ownership in [true, false] {
+                let (pipeline, state, transaction, server) = fixture_with_state(SendState {
+                    failures: 2,
+                    http_failure: Some(StatusCode::TOO_MANY_REQUESTS),
+                    ..SendState::default()
+                })
+                .await;
+                let checks = AtomicUsize::new(0);
+                let result = pipeline
+                    .broadcast_verified_guarded(&transaction, || async {
+                        let check = checks.fetch_add(1, Ordering::SeqCst);
+                        if lose_ownership && check > 0 {
+                            Err(TxPipelineError::SubmissionGuardRejected)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .await;
+                if lose_ownership {
+                    assert!(matches!(
+                        result,
+                        Err(TxPipelineError::SubmissionGuardRejected)
+                    ));
+                    assert_eq!(checks.load(Ordering::SeqCst), 2);
+                    assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+                } else {
+                    assert_eq!(result.unwrap(), transaction.signatures[0]);
+                    assert_eq!(checks.load(Ordering::SeqCst), 3);
+                    assert_eq!(state.calls.load(Ordering::SeqCst), 3);
+                }
+                server.abort();
+            }
+        }
+
+        #[tokio::test]
+        async fn redirects_never_forward_transactions() {
+            let (target, target_state, _, target_server) = fixture(0).await;
+            let (pipeline, state, transaction, server) = fixture_with_state(SendState {
+                failures: 3,
+                redirect: Some(target.inner.rpc.url()),
+                ..SendState::default()
+            })
+            .await;
+            let checks = AtomicUsize::new(0);
+            let result = pipeline
+                .broadcast_verified_guarded(&transaction, || async {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(TxPipelineError::SubmissionFailed { .. })
+            ));
+            assert_eq!(checks.load(Ordering::SeqCst), 3);
+            assert_eq!(state.calls.load(Ordering::SeqCst), 3);
+            assert_eq!(target_state.calls.load(Ordering::SeqCst), 0);
+            server.abort();
+            target_server.abort();
+        }
+
+        #[tokio::test]
+        async fn dropping_stalled_submission_leaves_no_send_work() {
+            let (pipeline, state, transaction, server) = fixture(0).await;
+            let permit = pipeline.inner.send_permits.acquire().await.unwrap();
+            let checks = AtomicUsize::new(0);
+            let mut submission =
+                Box::pin(pipeline.broadcast_verified_guarded(&transaction, || async {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }));
+            assert_pending(submission.as_mut()).await;
+            drop(submission);
+            drop(permit);
+            // A succeeding unguarded send also verifies the delegation path.
+            pipeline.broadcast_verified(&transaction).await.unwrap();
+            assert_eq!(checks.load(Ordering::SeqCst), 0);
+            assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn confirmation_tracker_batches_up_to_rpc_limit() {
         let (url, state, server) = mock_rpc().await;
@@ -679,5 +1076,98 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert!(batches.iter().all(|(_, min_slot)| min_slot.is_some()));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn expiry_reconciliation_requires_ordered_finalized_absence_and_history() {
+        use axum::{routing::post, Json, Router};
+        use serde_json::json;
+        let absent = json!({"context":{"slot":101}, "value":null});
+        let null_history = json!({"context":{"slot":102}, "value":[null]});
+        let finalized_failure = json!({"context":{"slot":102}, "value":[{
+            "slot":100, "confirmations":null, "err":"AlreadyProcessed",
+            "confirmationStatus":"finalized", "status":{"Err":"AlreadyProcessed"}
+        }]});
+        let mut success = finalized_failure.clone();
+        success["value"][0]["err"] = json!(null);
+        success["value"][0]["status"] = json!({"Ok":null});
+        let mut nonfinal = finalized_failure.clone();
+        nonfinal["value"][0]["confirmationStatus"] = json!("confirmed");
+        nonfinal["value"][0]["confirmations"] = json!(1);
+        for (account, history, expected) in [
+            (absent.clone(), null_history.clone(), true),
+            (absent.clone(), finalized_failure, true),
+            (absent.clone(), success, false),
+            (absent.clone(), nonfinal, false),
+            (
+                json!({"context":{"slot":99}, "value":null}),
+                null_history.clone(),
+                false,
+            ),
+            (
+                absent.clone(),
+                json!({"context":{"slot":100}, "value":[null]}),
+                false,
+            ),
+            (
+                json!({"context":{"slot":101}, "value":{"owner":"conflict"}}),
+                null_history.clone(),
+                false,
+            ),
+            (json!({"context":{"slot":101}}), null_history.clone(), false),
+            (absent, json!({"context":{"slot":102}, "value":[]}), false),
+        ] {
+            let app = Router::new().route(
+                "/",
+                post(move |Json(request): Json<serde_json::Value>| {
+                    let account = account.clone();
+                    let history = history.clone();
+                    async move {
+                        let result = match request["method"].as_str().unwrap() {
+                            "getAccountInfo" => {
+                                assert_eq!(request["params"][1]["commitment"], "finalized");
+                                assert_eq!(request["params"][1]["minContextSlot"], 100);
+                                account
+                            }
+                            "getSignatureStatuses" => {
+                                assert_eq!(request["params"][1]["searchTransactionHistory"], true);
+                                history
+                            }
+                            "isBlockhashValid" => {
+                                assert_eq!(request["params"][1]["commitment"], "finalized");
+                                json!({"context":{"slot":100}, "value":false})
+                            }
+                            other => panic!("unexpected expiry RPC {other}"),
+                        };
+                        Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result}))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let pipeline = TxPipeline::new(
+                format!("http://{}", listener.local_addr().unwrap()),
+                test_config(),
+            );
+            let rpc = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            assert_eq!(
+                pipeline
+                    .finalized_blockhash_validity(&Hash::new_unique().to_string(), Some(99))
+                    .await
+                    .unwrap(),
+                (false, 100),
+            );
+            assert!(pipeline
+                .finalized_blockhash_validity(&Hash::new_unique().to_string(), Some(101))
+                .await
+                .is_err());
+            assert_eq!(
+                pipeline
+                    .finalized_unfunded(Pubkey::new_unique(), Signature::default(), 100)
+                    .await
+                    .unwrap_or(false),
+                expected
+            );
+            rpc.abort();
+        }
     }
 }

@@ -25,7 +25,7 @@ x402 = []
 server = []
 # Client-side transaction building + balance-aware `select` (needs serde_json
 # to decode MPP method details).
-client = ["dep:reqwest"]
+client = []
 # The unified axum gate dispatches both protocols, so it needs both modules
 # plus the server side.
 axum = ["mpp", "x402", "server", "dep:axum"]
@@ -61,7 +61,7 @@ confidential = [
 # sweeper. Needs the server (tokio) + confidential settlement primitives.
 worker = ["confidential", "server"]
 # Settlement test/demo harness (open real channels, fund, drive + observe).
-testkit = ["dep:reqwest"]
+testkit = []
 # Generated program-client account fetch helpers (RPC). Off by default — the
 # pay-kit protocol layers only use instruction/type builders.
 fetch = ["dep:solana-account"]
@@ -153,8 +153,9 @@ solana-signer = { version = "3.0", optional = true }
 # Async server run-loops + settlement worker.
 tokio = { version = "1", features = ["full"] }
 
-# HTTP client (client-side payment building + testkit cheatcodes) — optional.
-reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+# HTTP client also provides single-attempt pipeline submissions. Keep retries
+# visible to the pipeline's ownership guard instead of the RPC SDK's transport.
+reqwest = { version = "0.12.28", features = ["json", "stream"] }
 
 # Axum extractor / unified gate (opt-in).
 axum = { version = "0.8", optional = true, default-features = false }

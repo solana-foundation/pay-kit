@@ -74,13 +74,45 @@ pub async fn accept_voucher(
     settlement_window: i64,
     required_availability: u64,
 ) -> Result<VoucherAcceptance> {
+    accept_voucher_with_commit(
+        store,
+        channel_id,
+        new_cumulative,
+        expires_at,
+        signature_b58,
+        now,
+        min_voucher_delta,
+        settlement_window,
+        required_availability,
+        |_, _| Ok(()),
+    )
+    .await
+}
+
+/// Keep scheme-specific debit and preconditions in the same atomic transition
+/// as voucher acceptance. The callback also runs for idempotent replays.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn accept_voucher_with_commit(
+    store: &dyn ChannelStore,
+    channel_id: &str,
+    new_cumulative: u64,
+    expires_at: i64,
+    signature_b58: &str,
+    now: i64,
+    min_voucher_delta: u64,
+    settlement_window: i64,
+    required_availability: u64,
+    commit: impl Fn(&mut ChannelState, bool) -> std::result::Result<(), StoreError>
+        + Send
+        + Sync
+        + 'static,
+) -> Result<VoucherAcceptance> {
     // Read current state (for authorized_signer, watermark, deposit).
     let state = store
         .get_channel(channel_id)
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
-
     if state.sealed {
         return Err(Error::Other("Channel is already sealed".to_string()));
     }
@@ -93,26 +125,10 @@ pub async fn accept_voucher(
     // Idempotent replay: same cumulative AND same signature as the latest
     // voucher. Treated as a no-charge no-op (the route was already paid for) —
     // never a fresh serve.
-    if new_cumulative == state.cumulative
-        && state.highest_voucher_signature.as_deref() == Some(signature_b58)
-    {
-        verify_voucher_signature(
-            channel_id,
-            new_cumulative,
-            expires_at,
-            signature_b58,
-            &state.authorized_signer,
-            now,
-            settlement_window,
-        )?;
-        return Ok(VoucherAcceptance {
-            cumulative: new_cumulative,
-            charged: 0,
-            replay: true,
-        });
-    }
+    let initial_replay = new_cumulative == state.cumulative
+        && state.highest_voucher_signature.as_deref() == Some(signature_b58);
 
-    if new_cumulative <= state.cumulative {
+    if !initial_replay && new_cumulative <= state.cumulative {
         return Err(Error::Other(format!(
             "Voucher cumulative {new_cumulative} must exceed watermark {}",
             state.cumulative
@@ -125,8 +141,8 @@ pub async fn accept_voucher(
         )));
     }
 
-    let delta = new_cumulative - state.cumulative;
-    if min_voucher_delta > 0 && delta < min_voucher_delta {
+    let delta = new_cumulative.saturating_sub(state.cumulative);
+    if !initial_replay && min_voucher_delta > 0 && delta < min_voucher_delta {
         return Err(Error::Other(format!(
             "Voucher delta {delta} is below minimum {min_voucher_delta}"
         )));
@@ -178,7 +194,7 @@ pub async fn accept_voucher(
         .update_channel(
             channel_id,
             Box::new(move |state_opt| {
-                let state = state_opt
+                let mut state = state_opt
                     .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
                 if state.sealed {
                     return Err(StoreError::Internal(
@@ -193,6 +209,7 @@ pub async fn accept_voucher(
                 if new_cumulative == state.cumulative
                     && state.highest_voucher_signature.as_deref() == Some(&sig)
                 {
+                    commit(&mut state, true)?;
                     replayed_cl.store(true, Ordering::SeqCst);
                     return Ok(state);
                 }
@@ -215,6 +232,7 @@ pub async fn accept_voucher(
                 // Set on every committing run so a retried closure (e.g. a
                 // CAS-based store) reflects the final decision, not an earlier one.
                 replayed_cl.store(false, Ordering::SeqCst);
+                commit(&mut state, false)?;
                 Ok(ChannelState {
                     cumulative: new_cumulative,
                     highest_voucher_signature: Some(sig),
