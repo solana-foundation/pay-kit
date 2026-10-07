@@ -1829,7 +1829,7 @@ test('pull: settles when the RPC reports the broadcast transaction as legacy', a
     expect(receipt.status).toBe('success');
 });
 
-test('pull: identical challenge-bound retry recovers the settled receipt', async () => {
+test('pull: identical challenge-bound retry rejects a completed payment', async () => {
     const method = charge({
         recipient: RECIPIENT,
         network: 'devnet',
@@ -1843,11 +1843,168 @@ test('pull: identical challenge-bound retry recovers the settled receipt', async
     });
 
     const first = await method.verify({ credential, request: {} as any });
-    const recovered = await method.verify({ credential, request: {} as any });
-
-    expect(recovered.reference).toBe(first.reference);
+    expect(first.status).toBe('success');
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
     expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
     expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+});
+
+test('pull: concurrent credentials grant exactly one receipt and broadcast once', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    const credential = transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), {
+        amount: '1000000',
+    });
+    const outcomes = await Promise.allSettled(
+        Array.from({ length: 16 }, () => method.verify({ credential, request: {} as any })),
+    );
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+});
+
+test('pull: an uncertain settlement can recover once after its lease expires without rebroadcast', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    await store.put(key, {
+        binding: JSON.stringify({
+            challengeId: credential.challenge.id ?? null,
+            request: credential.challenge.request,
+        }),
+        leaseUntil: 0,
+        state: 'pending',
+    });
+
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+    expect(rpcMethods).not.toContain('simulateTransaction');
+    expect(rpcMethods).not.toContain('sendTransaction');
+});
+
+test('pull: recovers an accepted send with a lost response exactly once without rebroadcast', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    const successfulFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+        const response = await successfulFetch(url, init);
+        if (JSON.parse(init?.body as string).method === 'sendTransaction') {
+            // The node accepted the wire transaction, but the HTTP response was lost.
+            throw new Error('send response lost');
+        }
+        return response;
+    };
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('send response lost');
+    const pending = await store.get(key);
+    expect(pending).toMatchObject({ state: 'pending' });
+    await store.put(key, { ...(pending as object), leaseUntil: 0 });
+    globalThis.fetch = successfulFetch;
+
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+    expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+    expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
+});
+
+test('push cannot overwrite a pull reservation after passing its initial replay check', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = `solana-charge:consumed:${signature}`;
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    const successfulFetch = globalThis.fetch;
+    function deferred() {
+        let resolve!: () => void;
+        const promise = new Promise<void>(done => {
+            resolve = done;
+        });
+        return { promise, resolve };
+    }
+    const pushEntered = deferred();
+    const releasePush = deferred();
+    const pullReserved = deferred();
+    const releasePull = deferred();
+    let firstRead = true;
+    globalThis.fetch = async (url, init) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'getTransaction' && firstRead) {
+            firstRead = false;
+            pushEntered.resolve();
+            await releasePush.promise;
+        }
+        if (rpcMethod === 'sendTransaction') {
+            pullReserved.resolve();
+            await releasePull.promise;
+        }
+        return successfulFetch(url, init);
+    };
+    const push = method.verify({
+        credential: signatureCredential(signature, { amount: '1000000' }),
+        request: {} as any,
+    });
+    const pushRejected = expect(push).rejects.toThrow('already consumed');
+    await pushEntered.promise;
+    const pull = method.verify({
+        credential: transactionCredential(transaction, { amount: '1000000' }),
+        request: {} as any,
+    });
+    await pullReserved.promise;
+    const pending = await store.get(key);
+    expect(pending).toMatchObject({ state: 'pending' });
+    releasePush.resolve();
+    await pushRejected;
+    expect(await store.get(key)).toEqual(pending);
+    releasePull.resolve();
+    await expect(pull).resolves.toMatchObject({ status: 'success' });
+    await expect(
+        method.verify({
+            credential: signatureCredential(signature, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('already consumed');
+    expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+});
+
+test.each([false, true])('pull: atomic consumption failure grants no receipt (committed=%s)', async committed => {
+    type AtomicStore = Store.Store & {
+        update<T>(
+            key: string,
+            fn: (current: unknown) => { op: 'noop'; result: T } | { op: 'set'; result: T; value: unknown },
+        ): Promise<T>;
+    };
+    const atomicStore = store as AtomicStore;
+    const update = atomicStore.update.bind(atomicStore);
+    let updates = 0;
+    let fail = true;
+    const failingStore: AtomicStore = {
+        ...store,
+        async update(key, fn) {
+            updates++;
+            if (!fail || updates !== 2) return update(key, fn);
+            if (committed) await update(key, fn);
+            await Promise.resolve();
+            throw new Error('atomic storage unavailable');
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
+    expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'pending' });
+    fail = false;
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow(
+        committed ? 'already consumed' : 'already in progress',
+    );
 });
 
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {

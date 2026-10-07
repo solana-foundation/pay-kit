@@ -1,6 +1,6 @@
 import { resolveStablecoinMint, SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
-import { Receipt } from 'mppx';
+import { Receipt, Store } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
@@ -51,6 +51,9 @@ function schemeFor(gate: Gate): 'charge' | 'subscription' {
 export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
+    // Dynamic gates create distinct methods, but a payment is single-use across
+    // all of them. Distributed deployments must supply a shared atomic store.
+    const replayStore = config.replayStore ?? Store.memory();
 
     function handlerFor(gate: Gate): ChargeHandler {
         const coin = resolveCoin(gate.amount, config.stablecoins);
@@ -124,7 +127,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             rpcUrl: config.rpcUrl,
                             ...signer,
                             ...(splits.length > 0 ? { splits: [...splits] } : {}),
-                            ...(config.replayStore ? { store: config.replayStore } : {}),
+                            store: replayStore,
                         }),
                     ],
                     realm: config.mpp.realm,

@@ -29,9 +29,8 @@ import {
     transactionSignatureFromBase64,
 } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
-import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
-import { claimReplayKey, confirmReplayKey, inspectReplayKey } from './replay.js';
+import { claimReplayKey, consumeReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -783,40 +782,46 @@ async function verifyTransaction(
     const replayKey = `solana-charge:consumed:${signature}`;
     const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
     const replayStatus = await inspectReplayKey(store, replayKey, replayBinding);
-    if (replayStatus === 'conflict') {
+    if (replayStatus === 'conflict' || replayStatus === 'retry') {
         throw new Error('Transaction signature already consumed');
     }
     if (replayStatus === 'pending') throw new Error('Transaction settlement is already in progress; retry shortly');
 
-    let needsConfirmation = replayStatus !== 'retry';
     if (replayStatus === 'expired') {
+        // Recovery is confirmation-only: an ambiguous send must never reopen
+        // the reservation or trigger a blind rebroadcast. A crash after reserving
+        // but before sending therefore cannot recover here. If never broadcast,
+        // no funds were spent; the client needs a fresh payment challenge.
         const recoveryClaim = await claimReplayKey(store, replayKey, replayBinding);
-        if (recoveryClaim === 'conflict') throw new Error('Transaction signature already consumed');
+        if (recoveryClaim === 'conflict' || recoveryClaim === 'retry') {
+            throw new Error('Transaction signature already consumed');
+        }
         if (recoveryClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
-        needsConfirmation = recoveryClaim !== 'retry';
     } else if (replayStatus === 'available') {
         // Only a transaction with no prior settlement state reaches preflight
         // and broadcast. Exact-wire retries recover by signature above, even
         // after their blockhash or account-state preconditions have changed.
         await simulateTransaction(rpcUrl, txToSend);
-        await broadcastTransaction(rpcUrl, txToSend);
         const replayClaim = await claimReplayKey(store, replayKey, replayBinding);
-        if (replayClaim === 'conflict') throw new Error('Transaction signature already consumed');
+        if (replayClaim === 'conflict' || replayClaim === 'retry') {
+            throw new Error('Transaction signature already consumed');
+        }
         if (replayClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
-        needsConfirmation = replayClaim !== 'retry';
+        // Retain pending state if the RPC accepted the send but lost its response.
+        await broadcastTransaction(rpcUrl, txToSend);
     }
 
-    if (needsConfirmation) {
-        await waitForConfirmation(rpcUrl, signature);
-    }
+    await waitForConfirmation(rpcUrl, signature);
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
-    await confirmReplayKey(store, replayKey, replayBinding);
+    if (!(await consumeReplayKey(store, replayKey, replayBinding))) {
+        throw new Error('Transaction signature already consumed');
+    }
 
     return Receipt.from({
         method: 'solana',
@@ -844,48 +849,27 @@ async function verifySignature(
 
     const consumedKey = `solana-charge:consumed:${signature}`;
 
-    // Replay prevention. The consumed-check, on-chain verify, and consumed-mark
-    // must run atomically per signature: `mppx`'s Store has no atomic
-    // put-if-absent, so without serialization two concurrent requests carrying
-    // the same confirmed signature both pass the check, both verify the same
-    // real transaction, and both settle (one payment, two accesses). A cheap
-    // read outside the lock rejects obvious replays without queueing; the
-    // authoritative check-and-mark runs inside `withKeyLock`.
-    //
-    // Scope: single Node process. Multi-process/replica deployments sharing one
-    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
+    // Reject obvious replays before RPC work. The authoritative atomic
+    // check-and-consume below also coordinates with transaction credentials.
     if (await store.get(consumedKey)) {
         throw new Error('Transaction signature already consumed');
     }
 
-    return await withKeyLock(consumedKey, async () => {
-        // Re-check inside the lock: a concurrent request in this process may
-        // have consumed the signature since the read above.
-        if (await store.get(consumedKey)) {
-            throw new Error('Transaction signature already consumed');
-        }
+    await verifyOnChain(rpcUrl, signature, challenge, recipient);
 
-        // Fetch and verify the transaction on-chain.
-        const tx = await fetchTransaction(rpcUrl, signature);
-        if (!tx) throw new Error('Transaction not found or not yet confirmed');
-        assertReportedTransactionVersion(tx.version);
-        if (tx.meta?.err) throw new Error('Transaction failed on-chain');
+    // Failed verification must not burn a valid payment. Shared stores with
+    // update() coordinate replicas; legacy stores are single-process only.
+    if (!(await reserveReplayKey(store, consumedKey))) {
+        throw new Error('Transaction signature already consumed');
+    }
 
-        const instructions = tx.transaction.message.instructions;
-        await verifyInstructions(instructions, challenge, recipient);
-
-        // Mark consumed only after a successful verify, so a failed verify never
-        // burns a legitimately-retryable signature.
-        await store.put(consumedKey, true);
-
-        return Receipt.from({
-            method: 'solana',
-            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-            reference: signature,
-            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-            status: 'success',
-            timestamp: new Date().toISOString(),
-        });
+    return Receipt.from({
+        method: 'solana',
+        ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+        reference: signature,
+        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+        status: 'success',
+        timestamp: new Date().toISOString(),
     });
 }
 

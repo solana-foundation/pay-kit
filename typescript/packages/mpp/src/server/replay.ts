@@ -73,7 +73,32 @@ export async function claimReplayKey(store: Store.Store, key: string, binding: s
     });
 }
 
-/** Mark a challenge-bound proof as fully verified and receipt-ready. */
+/**
+ * Consume a verified charge exactly once, including when expired-lease owners
+ * finish concurrently. Atomic stores coordinate across processes; get/put-only
+ * stores are safe only within a single process.
+ */
+export async function consumeReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
+    const consume = (current: unknown) => {
+        if (!isReplayRecord(current) || current.binding !== binding || current.state !== 'pending') {
+            return { op: 'noop' as const, result: false };
+        }
+        return {
+            op: 'set' as const,
+            result: true,
+            value: { ...current, state: 'confirmed' } satisfies ReplayRecord,
+        };
+    };
+    const atomicStore = store as AtomicStore;
+    if (typeof atomicStore.update === 'function') return await atomicStore.update(key, consume);
+    return await withKeyLock(key, async () => {
+        const change = consume(await store.get(key));
+        if (change.op === 'set') await store.put(key, change.value);
+        return change.result;
+    });
+}
+
+/** Mark a challenge-bound subscription proof as fully verified and receipt-ready. */
 export async function confirmReplayKey(store: Store.Store, key: string, binding: string): Promise<void> {
     const current = await store.get(key);
     if (!isReplayRecord(current) || current.binding !== binding) {
