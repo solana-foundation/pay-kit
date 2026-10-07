@@ -100,21 +100,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
+        id: harness-setup
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays typescript server"
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust client harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust server harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
         env:

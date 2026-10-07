@@ -550,40 +550,48 @@ jobs:
           bundler-cache: true
           working-directory: ruby
       - uses: ./.github/actions/setup-harness
+        id: harness-setup
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+      # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays typescript server"
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust client harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust server harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: rust
       - name: Run Rust end-to-end harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: rust
       - name: Run Ruby server harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: ruby
       - name: Run Rust client to Ruby server harness smoke
+        if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
         env:
