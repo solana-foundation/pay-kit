@@ -12,7 +12,7 @@ and the [Machine Payments Protocol](https://paymentauth.org). Sinatra and
 Rails ride on top of a pure Rack middleware.
 
 [![Ruby](https://img.shields.io/badge/ruby-3.2%2B-red)]()
-[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)]()
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-90%25-brightgreen)]()
 
 ---
@@ -192,8 +192,46 @@ Supported on the Ruby server:
 | Intent             | Status |
 |--------------------|--------|
 | `exact`            | ✅      |
-| `upto`             | —      |
+| `upto`             | ✅      |
 | `batch-settlement` | —      |
+
+### x402 `upto` (usage-based)
+
+`upto` lets a client authorize a **maximum** while the server settles the
+**actual** metered amount (`actual ≤ max`) after the resource is consumed —
+LLM token billing, per-byte metering, dynamic compute pricing. Ruby implements
+the normative `payment-channel` profile: the client opens a channel whose
+escrow `deposit` is the ceiling and whose `authorizedSigner` is the operator;
+the facilitator broadcasts the open, serves the resource, then settles a single
+voucher for the actual amount and refunds the unused remainder when the channel
+is finalized.
+
+Mount it with the usage middleware and meter consumption into the per-request
+`Charge`:
+
+```ruby
+require "pay_kit/usage"
+
+engine = PayKit::Protocols::X402::Server::Upto.new(
+  PayKit::Protocols::X402::Server::Upto::Config.new(
+    rpc_url: rpc_url, pay_to: recipient, facilitator_secret_key: operator_secret,
+    amount: "100000", mint: usdc_mint, network: network
+  )
+)
+
+class App < Sinatra::Base
+  register PayKit::Usage::Sinatra
+  require_usage engine: ENGINE, resource_path: "/usage"
+
+  get "/usage" do
+    usage_charge.charge(metered_base_units) # actual ≤ the authorized ceiling
+    json(ok: true)
+  end
+end
+```
+
+A zero charge fail-closes (the channel still settles 0 on-chain and closes, but
+the response is a 402 with no resource body).
 
 ## MPP
 

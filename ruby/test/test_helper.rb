@@ -31,6 +31,10 @@ if ENV["COVERAGE"] == "1"
     # behaviour is exercised through the Sinatra example. Follows the
     # same pattern as `/lib/pay_kit/rack/` + `/lib/pay_kit/protocols/`.
     add_filter "/lib/pay_kit/preflight.rb"
+    # Codama-generated program clients are verified through facade golden-vector
+    # tests plus the generator syntax check, not included in hand-written code
+    # coverage gates.
+    add_filter "/lib/pay_core/solana/generated/"
     # Cross-SDK baseline target is 90 percent branch coverage. Line
     # coverage stays at 92 since the suite already exceeds that.
     minimum_coverage line: 92, branch: 90
