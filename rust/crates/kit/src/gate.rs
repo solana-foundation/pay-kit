@@ -104,6 +104,8 @@ pub struct PayKitConfig {
     /// Whether version-1 transactions (SIMD-0385) are accepted, advertised
     /// and used for settlement. `Auto` probes the feature gate once.
     pub tx_v1: TxV1Mode,
+    /// Disable advisory setup guidance on PayKit-owned 402 responses (default `false`).
+    pub disable_hint: bool,
 }
 
 impl Default for PayKitConfig {
@@ -119,6 +121,7 @@ impl Default for PayKitConfig {
             accept_push_mode: false,
             accepted_currencies: None,
             tx_v1: TxV1Mode::Auto,
+            disable_hint: false,
         }
     }
 }
@@ -140,6 +143,7 @@ pub struct PayKit {
     /// High-throughput x402 `batch-settlement` handler. `Some` only when
     /// `fee_payer_signer` is set (the operator signs settlement transactions).
     x402_batch: Option<Arc<X402BatchSettlement>>,
+    disable_hint: bool,
 }
 
 /// Default `upto` completion window (seconds) advertised in `maxTimeoutSeconds`.
@@ -253,6 +257,7 @@ impl PayKit {
             x402: Arc::new(x402),
             x402_upto,
             x402_batch,
+            disable_hint: config.disable_hint,
         })
     }
 
@@ -495,9 +500,91 @@ struct GateState {
     price: Price,
 }
 
+/// Build the shared 402 body before protocol challenge headers are attached.
+fn hint_response(pay: &PayKit, req: &Request) -> Response {
+    if pay.disable_hint {
+        return (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    }
+    let browser = recommends_browser(req.headers());
+    let mut browser_url = url::Url::parse("https://connect.pay.sh/mcp").unwrap();
+    // Advisory, untrusted context only: reuse the challenge's resource identity,
+    // without changing payment authorization or sending a request to Connect.
+    if let Some(resource) = resource_url(req) {
+        if let (Ok(parsed), Ok(uri)) = (url::Url::parse(&resource), resource.parse::<Uri>()) {
+            if matches!(parsed.scheme(), "http" | "https")
+                && uri
+                    .authority()
+                    .is_some_and(|authority| !authority.as_str().contains('@'))
+                && parsed.host_str().is_some_and(|host| !host.is_empty())
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.fragment().is_none()
+                && resource.len() <= 4096
+                && !resource.contains('\\')
+                && !resource
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace())
+            {
+                browser_url
+                    .query_pairs_mut()
+                    .append_pair("resource_uri", &resource);
+            }
+        }
+    }
+    let mut response = (
+        StatusCode::PAYMENT_REQUIRED,
+        axum::Json(serde_json::json!({
+            "error": "payment_required",
+            "hint": {
+                "recommended": if browser { "browser" } else { "cli" },
+                "message": if browser {
+                    "This endpoint requires a stablecoin payment. Open the browser setup URL to configure Pay using OAuth, then retry this request."
+                } else {
+                    "This endpoint requires a stablecoin payment. Install Pay, run pay setup, then retry this request with a payment-capable client. Ask the user before installing software or approving payments."
+                },
+                "cli": {
+                    "install": "npm install -g @solana/pay",
+                    "setup": "pay setup",
+                    "docs_url": "https://pay.sh"
+                },
+                "browser": { "url": browser_url.as_str() }
+            }
+        })),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::VARY,
+        HeaderValue::from_static("User-Agent, Sec-Fetch-Mode"),
+    );
+    response
+}
+
+fn recommends_browser(headers: &HeaderMap) -> bool {
+    // Fetch metadata takes precedence, including malformed/non-navigation values.
+    if let Some(mode) = headers.get("sec-fetch-mode") {
+        return mode
+            .to_str()
+            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("navigate"));
+    }
+    let agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|agent| agent.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if [
+        "curl", "wget", "httpie", "python", "node", "undici", "fetch", "claude", "codex",
+    ]
+    .iter()
+    .any(|client| agent.contains(client))
+    {
+        return false;
+    }
+    agent.contains("mozilla/")
+}
+
 /// Build the 402 response carrying *both* protocol challenges.
-fn challenge_response(pay: &PayKit, amount: &str) -> Response {
-    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+fn challenge_response(pay: &PayKit, amount: &str, req: &Request) -> Response {
+    let mut resp = hint_response(pay, req);
     let headers = resp.headers_mut();
 
     // MPP: WWW-Authenticate. A failure here drops the MPP challenge from the
@@ -621,7 +708,7 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                 attach_mpp_receipt(&mut resp, &receipt);
                 resp
             }
-            Err(_) => challenge_response(&state.pay, &amount),
+            Err(_) => challenge_response(&state.pay, &amount, &req),
         };
     }
 
@@ -649,15 +736,15 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                         amount = %amount,
                         "x402 payment verified but carried no settlement reference"
                     );
-                    challenge_response(&state.pay, &amount)
+                    challenge_response(&state.pay, &amount, &req)
                 }
             },
-            Err(_) => challenge_response(&state.pay, &amount),
+            Err(_) => challenge_response(&state.pay, &amount, &req),
         };
     }
 
     // No credential of either protocol — advertise both challenges.
-    challenge_response(&state.pay, &amount)
+    challenge_response(&state.pay, &amount, &req)
 }
 
 /// Gate a `GET` handler behind payment verification at `price`, accepting
@@ -699,7 +786,7 @@ where
 /// If the challenge can't be built — e.g. the operator's RPC is down so no
 /// recent blockhash is available — return a retryable `503` instead of a `402`
 /// carrying no challenge the client could act on.
-fn upto_challenge_response(upto: &X402Upto, amount: &str) -> Response {
+fn upto_challenge_response(upto: &X402Upto, amount: &str, pay: &PayKit, req: &Request) -> Response {
     let (name, value) = match upto.payment_required_header(amount) {
         Ok(header) => header,
         Err(e) => {
@@ -711,7 +798,7 @@ fn upto_challenge_response(upto: &X402Upto, amount: &str) -> Response {
                 .into_response();
         }
     };
-    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    let mut resp = hint_response(pay, req);
     match (
         HeaderName::from_bytes(name.as_bytes()),
         HeaderValue::from_str(&value),
@@ -758,7 +845,7 @@ async fn upto_gate_middleware(
         .map(str::to_string);
 
     let Some(header_value) = x402_header else {
-        return upto_challenge_response(&upto, &amount);
+        return upto_challenge_response(&upto, &amount, &state.pay, &req);
     };
 
     // Verify the authorization and broadcast + confirm the channel open.
@@ -766,7 +853,7 @@ async fn upto_gate_middleware(
         Ok(open) => open,
         Err(e) => {
             tracing::warn!(amount = %amount, error = %e, "upto open verification failed");
-            return upto_challenge_response(&upto, &amount);
+            return upto_challenge_response(&upto, &amount, &state.pay, &req);
         }
     };
 
@@ -868,41 +955,46 @@ where
 /// `failure` carries the rejected payment header and its error, so a cumulative
 /// mismatch is answered with the corrective challenge the client resynchronizes
 /// from instead of a bare re-offer it would fail against again.
-async fn batch_challenge_response(
-    batch: &X402BatchSettlement,
-    amount: &str,
-    resource: Option<&str>,
-    failure: Option<(&str, crate::x402::Error)>,
-) -> Response {
-    let header = match failure {
-        Some((payment_header, error)) => {
-            batch
-                .challenge_for_failure(payment_header, amount, &error, resource)
-                .await
+fn batch_challenge_response<'a>(
+    batch: &'a X402BatchSettlement,
+    amount: &'a str,
+    resource: Option<&'a str>,
+    failure: Option<(&'a str, crate::x402::Error)>,
+    pay: &PayKit,
+    req: &Request,
+) -> impl std::future::Future<Output = Response> + Send + 'a {
+    // Build the hint before awaiting: a borrowed request body is not Sync.
+    let mut resp = hint_response(pay, req);
+    async move {
+        let header = match failure {
+            Some((payment_header, error)) => {
+                batch
+                    .challenge_for_failure(payment_header, amount, &error, resource)
+                    .await
+            }
+            None => batch.payment_required_header(amount, resource),
+        };
+        let (name, value) = match header {
+            Ok(header) => header,
+            Err(e) => {
+                tracing::warn!(amount = %amount, error = %e, "failed to build batch-settlement challenge");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "payment challenge temporarily unavailable",
+                )
+                    .into_response();
+            }
+        };
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            resp.headers_mut().insert(n, v);
         }
-        None => batch.payment_required_header(amount, resource),
-    };
-    let (name, value) = match header {
-        Ok(header) => header,
-        Err(e) => {
-            tracing::warn!(amount = %amount, error = %e, "failed to build batch-settlement challenge");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "payment challenge temporarily unavailable",
-            )
-                .into_response();
-        }
-    };
-    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
-    if let (Ok(n), Ok(v)) = (
-        HeaderName::from_bytes(name.as_bytes()),
-        HeaderValue::from_str(&value),
-    ) {
-        resp.headers_mut().insert(n, v);
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        resp
     }
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    resp
 }
 
 /// The absolute URL of the routed request, for the x402 v2 `resource` field.
@@ -911,6 +1003,8 @@ async fn batch_challenge_response(
 /// forwarded scheme and `Host`. Both are client-supplied; the resource is an
 /// identifier echoed in the challenge, not a trust anchor — what a voucher
 /// authorizes is bound to the channel and the price, never to this string.
+/// The browser hint also echoes this untrusted context. Proxies must sanitize
+/// `Host` and `x-forwarded-proto` if deployment-canonical URLs are required.
 fn resource_url(req: &Request) -> Option<String> {
     let uri = req.uri();
     if uri.authority().is_some() {
@@ -1074,7 +1168,15 @@ async fn batch_gate_middleware(
         .map(str::to_string);
     let resource = resource_url(&req);
     let Some(header_value) = x402_header else {
-        return batch_challenge_response(&batch, &amount, resource.as_deref(), None).await;
+        return batch_challenge_response(
+            &batch,
+            &amount,
+            resource.as_deref(),
+            None,
+            &state.pay,
+            &req,
+        )
+        .await;
     };
 
     let access = match batch
@@ -1091,6 +1193,8 @@ async fn batch_gate_middleware(
                 &amount,
                 resource.as_deref(),
                 Some((&header_value, e)),
+                &state.pay,
+                &req,
             )
             .await;
         }
@@ -1350,6 +1454,192 @@ mod tests {
     const TEST_RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const TEST_SECRET: &str = "paykit-gate-test-secret-key-with-32b-padding";
 
+    #[test]
+    fn hint_classification() {
+        for (mode, agent, browser) in [
+            (None, None, false),
+            (None, Some("unknown"), false),
+            (None, Some("Mozilla/5.0"), true),
+            (Some(" Navigate "), Some("curl"), true),
+            (Some("cors"), Some("Mozilla/5.0"), false),
+            (Some(""), Some("Mozilla/5.0"), false),
+            (Some("same-origin"), None, false),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(mode) = mode {
+                headers.insert("sec-fetch-mode", mode.parse().unwrap());
+            }
+            if let Some(agent) = agent {
+                headers.insert(header::USER_AGENT, agent.parse().unwrap());
+            }
+            assert_eq!(recommends_browser(&headers), browser);
+        }
+        for client in [
+            "CURL", "Wget", "HTTPie", "Python", "Node", "Undici", "Fetch", "Claude", "Codex",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::USER_AGENT,
+                format!("Mozilla/5.0 {client}").parse().unwrap(),
+            );
+            assert!(!recommends_browser(&headers));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hint_default_and_config_optout() {
+        assert!(!PayKitConfig::default().disable_hint);
+        for disabled in [false, true] {
+            let pay = PayKit::new(PayKitConfig {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                network: "devnet".to_string(),
+                disable_hint: disabled,
+                ..Default::default()
+            })
+            .unwrap();
+            for browser in [false, true] {
+                let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri("/r")
+                            .header("sec-fetch-mode", if browser { "navigate" } else { "cors" })
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+                assert!(response.headers().contains_key(header::WWW_AUTHENTICATE));
+                assert!(response.headers().contains_key("payment-required"));
+                assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+                if disabled {
+                    assert!(!response.headers().contains_key(header::VARY));
+                    assert_eq!(
+                        response.headers()[header::CONTENT_TYPE],
+                        "text/plain; charset=utf-8"
+                    );
+                } else {
+                    assert_eq!(
+                        response.headers()[header::VARY],
+                        "User-Agent, Sec-Fetch-Mode"
+                    );
+                    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+                }
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                if disabled {
+                    assert_eq!(body.as_ref(), b"Payment Required");
+                } else {
+                    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert!(json.get("onboarding").is_none());
+                    assert_eq!(json["error"], "payment_required");
+                    assert_eq!(
+                        json["hint"]["recommended"],
+                        if browser { "browser" } else { "cli" }
+                    );
+                    assert_eq!(
+                        json["hint"]["cli"],
+                        serde_json::json!({
+                            "install": "npm install -g @solana/pay",
+                            "setup": "pay setup",
+                            "docs_url": "https://pay.sh"
+                        })
+                    );
+                    assert_eq!(
+                        json["hint"]["browser"],
+                        serde_json::json!({"url": "https://connect.pay.sh/mcp"})
+                    );
+                    assert_eq!(
+                        json["hint"]["message"],
+                        if browser {
+                            "This endpoint requires a stablecoin payment. Open the browser setup URL to configure Pay using OAuth, then retry this request."
+                        } else {
+                            "This endpoint requires a stablecoin payment. Install Pay, run pay setup, then retry this request with a payment-capable client. Ask the user before installing software or approving payments."
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exact_hint_resource_url_roundtrips_and_invalid_resources_fall_back() {
+        let pay = test_paykit();
+        let query = "/r?x=1&next=https%3A%2F%2Fother.test%2Fp%3Fa%3D1%26b%3D2&raw=%2520";
+        let absolute = format!("http://absolute.test:8080{query}");
+        let forwarded = format!("http://example.test:8080{query}");
+        let oversized = format!("/r?x={}", "x".repeat(4096));
+        for (uri, host, scheme, expected) in [
+            (
+                absolute.as_str(),
+                Some("ignored.test"),
+                Some("https"),
+                Some(absolute.as_str()),
+            ),
+            (
+                query,
+                Some("example.test:8080"),
+                Some("http"),
+                Some(forwarded.as_str()),
+            ),
+            (
+                "/r",
+                Some("example.test"),
+                None,
+                Some("https://example.test/r"),
+            ),
+            ("/r", None, None, None),
+            ("/r", Some(""), None, None),
+            ("/r", Some("[invalid"), None, None),
+            ("/r", Some("bad host"), None, None),
+            ("/r", Some("user:password@example.test"), None, None),
+            ("/r", Some("@example.test"), None, None),
+            (oversized.as_str(), Some("example.test"), None, None),
+            ("/r", Some("example.test"), Some("ftp"), None),
+            ("/r", Some("example.test"), Some("https,http"), None),
+        ] {
+            let mut request = Request::builder().uri(uri);
+            if let Some(host) = host {
+                request = request.header(header::HOST, host);
+            }
+            if let Some(scheme) = scheme {
+                request = request.header("x-forwarded-proto", scheme);
+            }
+            let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+            assert!(!response.headers().contains_key(header::LOCATION));
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(json.get("onboarding").is_none());
+            let browser =
+                url::Url::parse(json["hint"]["browser"]["url"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                browser.origin().ascii_serialization(),
+                "https://connect.pay.sh"
+            );
+            assert_eq!(browser.path(), "/mcp");
+            let pairs: Vec<_> = browser
+                .query_pairs()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            assert_eq!(
+                pairs,
+                expected
+                    .map(|value| vec![("resource_uri".to_string(), value.to_string())])
+                    .unwrap_or_default(),
+                "{uri}, {host:?}, {scheme:?}"
+            );
+            if expected.is_none() {
+                assert_eq!(browser.as_str(), "https://connect.pay.sh/mcp");
+            }
+        }
+    }
+
     fn test_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
             recipient: TEST_RECIPIENT.to_string(),
@@ -1362,6 +1652,110 @@ mod tests {
 
     async fn report(_payment: Payment) -> &'static str {
         "ok"
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upto_and_batch_challenges_include_hint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+        let rpc = Router::new().route(
+            "/",
+            post(
+                |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(request["method"], "getLatestBlockhash");
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": {
+                            "context": { "slot": 314 },
+                            "value": {
+                                "blockhash": "11111111111111111111111111111111",
+                                "lastValidBlockHeight": 400
+                            }
+                        }
+                    }))
+                },
+            ),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, rpc).await.unwrap() });
+        for disabled in [false, true] {
+            let pay = PayKit::new(PayKitConfig {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                network: "devnet".to_string(),
+                rpc_url: Some(rpc_url.clone()),
+                fee_payer_signer: Some(test_signer()),
+                tx_v1: TxV1Mode::Off,
+                disable_hint: disabled,
+                ..Default::default()
+            })
+            .unwrap();
+            let app: Router = Router::new()
+                .route("/u", paid_upto_get(report, "1.00", &pay))
+                .route("/b", paid_batch_get(report, "0.01", &pay))
+                .route("/health", get(|| async { "healthy" }));
+            for path in ["/u", "/b", "/health", "/missing"] {
+                let request_uri = format!("{path}?x=1&next=%2Fp%3Fa%3D1%26b%3D2&encoded=%2520");
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(&request_uri)
+                            .header(header::HOST, "example.test:8080")
+                            .header("x-forwarded-proto", "http")
+                            .header("sec-fetch-mode", "navigate")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if path == "/health" || path == "/missing" {
+                    assert_eq!(
+                        response.status(),
+                        if path == "/health" {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::NOT_FOUND
+                        }
+                    );
+                    assert!(!response.headers().contains_key(header::VARY));
+                    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                    assert_eq!(
+                        body.as_ref(),
+                        if path == "/health" {
+                            &b"healthy"[..]
+                        } else {
+                            &b""[..]
+                        }
+                    );
+                    continue;
+                }
+                assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+                assert!(response.headers().contains_key("payment-required"));
+                assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+                assert_eq!(response.headers().contains_key(header::VARY), !disabled);
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                if disabled {
+                    assert_eq!(body.as_ref(), b"Payment Required");
+                } else {
+                    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(json["hint"]["recommended"], "browser");
+                    assert_eq!(json["error"], "payment_required");
+                    assert!(json.get("onboarding").is_none());
+                    let browser =
+                        url::Url::parse(json["hint"]["browser"]["url"].as_str().unwrap()).unwrap();
+                    assert_eq!(
+                        browser.query_pairs().collect::<Vec<_>>(),
+                        vec![(
+                            "resource_uri".into(),
+                            format!("http://example.test:8080{request_uri}").into()
+                        )]
+                    );
+                }
+            }
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
 
     fn test_signer() -> Arc<dyn TransactionSigner> {
@@ -1411,6 +1805,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!resp.headers().contains_key(header::VARY));
+        assert_eq!(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"payment challenge temporarily unavailable"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1435,6 +1837,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!resp.headers().contains_key(header::VARY));
+        assert_eq!(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"payment challenge temporarily unavailable"
+        );
     }
 
     fn ctx<'a>(method: &'a Method, uri: &'a Uri, headers: &'a HeaderMap) -> PriceCtx<'a> {

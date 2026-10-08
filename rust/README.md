@@ -62,6 +62,12 @@ response, and hands control to your handler. Hit `/report` with
 [`pay curl`](#run-the-example) and the customer walks through Touch ID and a
 USDC payment.
 
+Unpaid requests include a [payment hint](docs/payment-hints.md) by default: CLI and
+agent clients get Pay installation and `pay setup` instructions; browser
+navigations get a link to `https://connect.pay.sh/mcp` carrying the endpoint URL
+in `resource_uri`. Set `PayKitConfig.disable_hint` to `true` to retain the previous plain-text
+402 body. Payment challenge headers are unchanged.
+
 ### 2. Multiple gates
 
 Each route names its own price. There is no catalogue type — `paid_get` /
