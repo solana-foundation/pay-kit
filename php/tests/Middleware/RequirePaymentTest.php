@@ -17,6 +17,7 @@ use PayKit\Price;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Signer;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
@@ -123,6 +124,28 @@ final class RequirePaymentTest extends TestCase
         $mw = new RequirePayment($this->client, 'reportGate');
         $this->expectException(\LogicException::class);
         $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
+    }
+
+    public function testFeeGateSkipsX402AndOffersOnlyMpp(): void
+    {
+        $x402Calls = 0;
+        $x402 = new X402Adapter($this->client->config, recentBlockhashProvider: function () use (&$x402Calls): ?string {
+            $x402Calls++;
+            return null;
+        });
+        $gate = new Gate(
+            amount: Price::usd('1.00'),
+            payTo: Signer::generate()->pubkey(),
+            feeWithin: [Signer::generate()->pubkey() => Price::usd('0.10')],
+        );
+        $mw = new RequirePayment($this->client, $gate, x402: $x402);
+        $request = $this->factory->createServerRequest('GET', '/paid')
+            ->withHeader('Payment-Signature', base64_encode('{"x402Version":2}'));
+        $response = $mw->process($request, $this->nextHandler());
+        $this->assertSame(402, $response->getStatusCode());
+        $this->assertSame(0, $x402Calls);
+        $body = json_decode((string) $response->getBody(), true);
+        $this->assertSame(['mpp'], array_column($body['accepts'], 'protocol'));
     }
 
     public function testMalformedAuthorizationFallsThroughTo402(): void
