@@ -117,6 +117,37 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("kotlin", "MPP_HARNESS_CLIENTS", false),
   },
   {
+    id: "python",
+    label: "Python pay_kit MPP charge client",
+    role: "client",
+    // Drives the pay_kit MPP charge client (parse the WWW-Authenticate
+    // challenge -> build a partially-signed v0 transfer -> Authorization ->
+    // retry). Inserts python/src on sys.path like the other python adapters.
+    // Shares the id `python` with the charge server adapter; the two never
+    // collide because clientImplementations and serverImplementations are
+    // filtered separately and `getNativeTarget`/`sourceTargets` are both
+    // role-keyed.
+    //
+    // Pull mode only: `build_credential_header` always emits a
+    // `type=transaction` payload, so the adapter refuses
+    // MPP_HARNESS_PAYMENT_MODE=push rather than silently downgrading to pull.
+    // `charge-push` therefore stays TypeScript-only.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-charge-client/main.py",
+    ],
+    // Defaults off to match go/swift/kotlin/ruby: the default matrix should not
+    // require a Python toolchain on every contributor's machine. Opt in via
+    // `MPP_HARNESS_CLIENTS=python` (the harness-python CI job sets this).
+    enabled: isEnabled("python", "MPP_HARNESS_CLIENTS", false),
+    intents: ["charge"],
+    reportsAs: "python",
+  },
+  {
     id: "ts-x402",
     label: "TypeScript x402 exact client",
     role: "client",
