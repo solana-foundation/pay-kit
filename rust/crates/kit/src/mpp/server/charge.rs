@@ -3385,8 +3385,8 @@ mod tests {
     use crate::mpp::server::confidential::{confirm_orphan_seen, orphan_seen_key};
     #[cfg(feature = "confidential")]
     use crate::mpp::server::confidential::{
-        verify_confidential_bundle_tx, MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT,
-        ZK_ELGAMAL_PROOF_PROGRAM,
+        verify_confidential_account_lifecycle, verify_confidential_bundle_tx,
+        MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT, ZK_ELGAMAL_PROOF_PROGRAM,
     };
 
     // ── check_network_blockhash ────────────────────────────────────────────
@@ -4095,6 +4095,113 @@ mod tests {
         assert!(verify(&heap).is_err());
     }
 
+    #[cfg(feature = "confidential")]
+    #[test]
+    fn confidential_bundle_requires_complete_funded_account_lifecycles() {
+        use solana_instruction::AccountMeta;
+
+        let gateway = Pubkey::new_unique();
+        let record = Pubkey::new_unique();
+        let record_program = spl_record::id();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let recipient_ata = Pubkey::new_unique();
+        let create_record = solana_system_interface::instruction::create_account(
+            &gateway,
+            &record,
+            1_000,
+            100,
+            &record_program,
+        );
+        let initialize_record = Instruction {
+            program_id: record_program,
+            accounts: vec![
+                AccountMeta::new(record, false),
+                AccountMeta::new_readonly(gateway, false),
+            ],
+            data: vec![0],
+        };
+        let close_record = Instruction {
+            program_id: record_program,
+            accounts: vec![
+                AccountMeta::new(record, false),
+                AccountMeta::new_readonly(gateway, true),
+                AccountMeta::new(gateway, false),
+            ],
+            data: vec![3],
+        };
+
+        let confidential_transfer = Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new(recipient_ata, false),
+            ],
+            data: vec![27, 7],
+        };
+
+        // This is the reported exploit shape: every instruction passes the
+        // old per-transaction allow-list, including a valid transfer, but the
+        // gateway-funded record is deliberately left uninitialized.
+        let orphan = dummy_tx(vec![create_record.clone(), confidential_transfer], &gateway);
+        assert_eq!(
+            verify_confidential_bundle_tx(
+                &orphan,
+                &gateway,
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V0],
+            )
+            .unwrap(),
+            1
+        );
+        let error = verify_confidential_account_lifecycle(&[orphan], &gateway).unwrap_err();
+        assert!(error.message.contains("initialized and closed"), "{error}");
+
+        let uninitialized_close = dummy_tx(vec![create_record, close_record.clone()], &gateway);
+        let error =
+            verify_confidential_account_lifecycle(&[uninitialized_close], &gateway).unwrap_err();
+        assert!(error.message.contains("uninitialized"), "{error}");
+
+        // Settlement broadcasts bundle transactions sequentially. Creation and
+        // initialization must therefore be atomic: otherwise creation can land
+        // before a later initialization fails, leaving attacker-closable rent.
+        let create_only = dummy_tx(
+            vec![solana_system_interface::instruction::create_account(
+                &gateway,
+                &record,
+                1_000,
+                100,
+                &record_program,
+            )],
+            &gateway,
+        );
+        let initialize_then_close = dummy_tx(
+            vec![initialize_record.clone(), close_record.clone()],
+            &gateway,
+        );
+        let error =
+            verify_confidential_account_lifecycle(&[create_only, initialize_then_close], &gateway)
+                .unwrap_err();
+        assert!(error.message.contains("same transaction"), "{error}");
+
+        let complete = dummy_tx(
+            vec![
+                solana_system_interface::instruction::create_account(
+                    &gateway,
+                    &record,
+                    1_000,
+                    100,
+                    &record_program,
+                ),
+                initialize_record,
+                close_record,
+            ],
+            &gateway,
+        );
+        verify_confidential_account_lifecycle(&[complete], &gateway).unwrap();
+    }
+
     // A Bundle credential must only settle a challenge that was issued in
     // confidential mode. Otherwise a facilitator-mode server (no amount
     // enforcement) would let a client claim any ordinary Token-2022 charge with
@@ -4134,6 +4241,40 @@ mod tests {
                 err.message
             );
         }
+    }
+
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn version_one_confidential_settlement_requires_one_transaction() {
+        let recipient = Pubkey::new_unique();
+        let mut mpp = Mpp::new(Config {
+            recipient: recipient.to_string(),
+            currency: "SOL".to_string(),
+            decimals: 6,
+            network: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some("x".repeat(32)),
+            realm: Some("test".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+        mpp.accepted_versions = vec![TxVersion::V1];
+        let request = charge_request(500_000, &Pubkey::new_unique().to_string(), &recipient);
+        let method_details = MethodDetails {
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            ..Default::default()
+        };
+
+        let err = mpp
+            .settle_confidential_bundle(
+                &["unused".to_string(), "unused".to_string()],
+                &request,
+                &method_details,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("exactly one transaction"));
     }
 
     fn charge_request(amount: u64, currency: &str, recipient: &Pubkey) -> ChargeRequest {
