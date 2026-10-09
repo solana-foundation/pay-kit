@@ -38,6 +38,10 @@ pub(crate) const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof111111111111111
 pub(crate) const MAX_CT_CREATE_ACCOUNT_SPACE: u64 = 4096;
 #[cfg(feature = "confidential")]
 pub(crate) const MAX_CT_CREATE_ACCOUNT_LAMPORTS: u64 = 50_000_000; // ~0.05 SOL
+/// A fee-bearing version-0 transfer creates five proof contexts and one record.
+/// Bound the aggregate exposure as well as each individual account.
+#[cfg(feature = "confidential")]
+pub(crate) const MAX_CT_BUNDLE_CREATE_LAMPORTS: u64 = MAX_CT_CREATE_ACCOUNT_LAMPORTS * 6;
 /// Max base64 length of a single bundle transaction, by the largest accepted
 /// version: 1232 wire bytes (~1644 base64 chars) for version 0, 4096 (5464)
 /// for version 1. Caps decode/deserialize allocation so a client can't force
@@ -128,6 +132,11 @@ impl Mpp {
         if transactions.is_empty() {
             return Err(VerificationError::invalid_payload(
                 "Confidential bundle contains no transactions",
+            ));
+        }
+        if self.accepted_versions == [crate::core::tx::TxVersion::V1] && transactions.len() != 1 {
+            return Err(VerificationError::invalid_payload(
+                "Version-1 confidential settlement requires exactly one transaction",
             ));
         }
 
@@ -277,6 +286,8 @@ impl Mpp {
                 "Confidential bundle must contain exactly one transfer (found {transfer_count})"
             )));
         }
+
+        verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
 
         // In amount-enforcing mode, snapshot the recipient's pending balance
         // BEFORE the bundle. A not-yet-existing account, or a freshly-configured
@@ -616,6 +627,205 @@ impl Mpp {
             "close tx {sig} not confirmed in time"
         )))
     }
+}
+
+#[cfg(feature = "confidential")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FundedAccountKind {
+    ProofContext,
+    Record,
+}
+
+#[cfg(feature = "confidential")]
+struct FundedAccount {
+    kind: FundedAccountKind,
+    initialized: bool,
+    closed: bool,
+}
+
+#[cfg(feature = "confidential")]
+pub(crate) fn verify_confidential_account_lifecycle(
+    transactions: &[VersionedTransaction],
+    gateway: &Pubkey,
+) -> Result<(), VerificationError> {
+    use std::collections::HashMap;
+
+    let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
+    let record_program = spl_record::id();
+    let system_program = solana_system_interface::program::ID;
+    let mut funded = HashMap::<Pubkey, FundedAccount>::new();
+    let mut total_lamports = 0u64;
+
+    for tx in transactions {
+        let keys = tx.message.static_account_keys();
+        for ix in tx.message.instructions() {
+            let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
+                VerificationError::invalid_payload("instruction references unknown program")
+            })?;
+
+            if *program == system_program {
+                let account = ix
+                    .accounts
+                    .get(1)
+                    .and_then(|index| keys.get(*index as usize))
+                    .copied()
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "create_account is missing its new account",
+                        )
+                    })?;
+                let owner = ix
+                    .data
+                    .get(20..52)
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    .map(Pubkey::from)
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "create_account has malformed owner data",
+                        )
+                    })?;
+                let kind = if owner == zk_program {
+                    FundedAccountKind::ProofContext
+                } else {
+                    FundedAccountKind::Record
+                };
+                let lamports = ix
+                    .data
+                    .get(4..12)
+                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                    .map(u64::from_le_bytes)
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "create_account has malformed lamport data",
+                        )
+                    })?;
+                total_lamports = total_lamports.checked_add(lamports).ok_or_else(|| {
+                    VerificationError::credential_mismatch(
+                        "confidential bundle account funding overflows",
+                    )
+                })?;
+                if total_lamports > MAX_CT_BUNDLE_CREATE_LAMPORTS {
+                    return Err(VerificationError::credential_mismatch(format!(
+                        "confidential bundle funds {total_lamports} lamports of temporary accounts (max {MAX_CT_BUNDLE_CREATE_LAMPORTS})"
+                    )));
+                }
+                if account == *gateway
+                    || funded
+                        .insert(
+                            account,
+                            FundedAccount {
+                                kind,
+                                initialized: false,
+                                closed: false,
+                            },
+                        )
+                        .is_some()
+                {
+                    return Err(VerificationError::credential_mismatch(
+                        "confidential bundle creates the same temporary account more than once",
+                    ));
+                }
+                continue;
+            }
+
+            let transition = |account: Pubkey,
+                              expected_kind: FundedAccountKind,
+                              close: bool,
+                              funded: &mut HashMap<Pubkey, FundedAccount>|
+             -> Result<(), VerificationError> {
+                let state = funded.get_mut(&account).ok_or_else(|| {
+                    VerificationError::credential_mismatch(
+                        "confidential bundle uses a temporary account it did not create",
+                    )
+                })?;
+                if state.kind != expected_kind || state.closed || (!close && state.initialized) {
+                    return Err(VerificationError::credential_mismatch(
+                        "confidential bundle has an invalid temporary-account lifecycle",
+                    ));
+                }
+                if close {
+                    if !state.initialized {
+                        return Err(VerificationError::credential_mismatch(
+                            "confidential bundle closes an uninitialized temporary account",
+                        ));
+                    }
+                    state.closed = true;
+                } else {
+                    state.initialized = true;
+                }
+                Ok(())
+            };
+
+            if *program == zk_program {
+                if ix.accounts.is_empty() {
+                    continue;
+                }
+                let (account_index, close) = if ix.data.first() == Some(&0) {
+                    (0, true)
+                } else if ix.data.len() == 5 {
+                    (1, false)
+                } else {
+                    (0, false)
+                };
+                let account = ix
+                    .accounts
+                    .get(account_index)
+                    .and_then(|index| keys.get(*index as usize))
+                    .copied()
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "ZK instruction is missing its context account",
+                        )
+                    })?;
+                transition(account, FundedAccountKind::ProofContext, close, &mut funded)?;
+            } else if *program == record_program {
+                let account = ix
+                    .accounts
+                    .first()
+                    .and_then(|index| keys.get(*index as usize))
+                    .copied()
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "spl-record instruction is missing its record account",
+                        )
+                    })?;
+                match ix.data.first().copied() {
+                    Some(0) => transition(account, FundedAccountKind::Record, false, &mut funded)?,
+                    Some(1) => {
+                        let state = funded.get(&account).ok_or_else(|| {
+                            VerificationError::credential_mismatch(
+                                "confidential bundle writes a record it did not create",
+                            )
+                        })?;
+                        if state.kind != FundedAccountKind::Record
+                            || !state.initialized
+                            || state.closed
+                        {
+                            return Err(VerificationError::credential_mismatch(
+                                "confidential bundle writes outside an initialized record lifecycle",
+                            ));
+                        }
+                    }
+                    Some(3) => transition(account, FundedAccountKind::Record, true, &mut funded)?,
+                    _ => {
+                        return Err(VerificationError::credential_mismatch(
+                            "unsupported spl-record instruction in confidential bundle",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    if funded
+        .values()
+        .any(|account| !account.initialized || !account.closed)
+    {
+        return Err(VerificationError::credential_mismatch(
+            "every gateway-funded temporary account must be initialized and closed back to the gateway",
+        ));
+    }
+    Ok(())
 }
 
 /// Store key marking that the orphan sweeper has seen `pubkey` in a prior pass.
