@@ -78,3 +78,22 @@ t.test('canonical JSON shortest round-trip needs 16 significant digits', functio
   local json = require('pay_kit.util.json')
   t.assert_equal(json.encode(333333333.33333329), '333333333.3333333')
 end)
+
+t.test('canonical JSON disambiguates empty object from empty array', function()
+  -- RFC 8785 sec 3.2.2 / I-JSON: `{}` and `[]` are distinct and must
+  -- round-trip with their original type. Lua tables cannot natively
+  -- distinguish a zero-length array from a zero-length object; the
+  -- parser tags empty objects with a marker metatable so the encoder
+  -- emits `{}` rather than `[]` for them. cyberphone/json-canonicalization
+  -- testdata/structures is the cross-SDK oracle for this property
+  -- (issue #110 / PR #302).
+  local json = require('pay_kit.util.json')
+  local empty_obj = json.parse('{}')
+  local empty_arr = json.parse('[]')
+  t.assert_equal(json.encode(empty_obj), '{}')
+  t.assert_equal(json.encode(empty_arr), '[]')
+  -- And a non-empty object must not be array-tagged, even when its keys
+  -- happen to be numeric strings — `is_array` keys on the metatable
+  -- marker, not on the count heuristic.
+  t.assert_equal(json.encode({ a = 1 }), '{"a":1}')
+end)

@@ -217,4 +217,30 @@ final class JsonCanonicalTest extends TestCase
         self::assertSame('100', Json::canonicalize(100.0));
         self::assertSame('1000', Json::canonicalize(1000.0));
     }
+
+    public function testDecodePreservingObjectTagsEmptyObjects(): void
+    {
+        // PHP's json_decode($x, true) collapses `{}` and `[]` into the
+        // same empty array, so the harness runner can't tell them apart
+        // when the canonical encoder needs to round-trip them as `{}` vs
+        // `[]`. decodePreservingObject walks the JSON text directly and
+        // tags empty objects with an internal sentinel; the encoder
+        // recognizes the tag and emits `{}`. (issue #110 / PR #302;
+        // cyberphone testdata/structures is the cross-SDK oracle.)
+        self::assertSame('{}', Json::canonicalize(Json::decodePreservingObject('{}')));
+        self::assertSame('[]', Json::canonicalize(Json::decodePreservingObject('[]')));
+        self::assertSame(
+            '{"a":1,"b":{}}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": {}}'))
+        );
+        self::assertSame(
+            '{"a":1,"b":[]}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": []}'))
+        );
+        // Empty object nested inside an array, the structures.json shape.
+        self::assertSame(
+            '{"a":1,"b":[{},1]}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": [{}, 1]}'))
+        );
+    }
 }
