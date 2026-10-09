@@ -648,7 +648,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
     transactions: &[VersionedTransaction],
     gateway: &Pubkey,
 ) -> Result<(), VerificationError> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
     let record_program = spl_record::id();
@@ -657,6 +657,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
     let mut total_lamports = 0u64;
 
     for tx in transactions {
+        let mut created_in_transaction = HashSet::new();
         let keys = tx.message.static_account_keys();
         for ix in tx.message.instructions() {
             let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
@@ -725,12 +726,14 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         "confidential bundle creates the same temporary account more than once",
                     ));
                 }
+                created_in_transaction.insert(account);
                 continue;
             }
 
             let transition = |account: Pubkey,
                               expected_kind: FundedAccountKind,
                               close: bool,
+                              created_in_transaction: &HashSet<Pubkey>,
                               funded: &mut HashMap<Pubkey, FundedAccount>|
              -> Result<(), VerificationError> {
                 let state = funded.get_mut(&account).ok_or_else(|| {
@@ -741,6 +744,11 @@ pub(crate) fn verify_confidential_account_lifecycle(
                 if state.kind != expected_kind || state.closed || (!close && state.initialized) {
                     return Err(VerificationError::credential_mismatch(
                         "confidential bundle has an invalid temporary-account lifecycle",
+                    ));
+                }
+                if !close && !created_in_transaction.contains(&account) {
+                    return Err(VerificationError::credential_mismatch(
+                        "gateway-funded temporary accounts must be created and initialized in the same transaction",
                     ));
                 }
                 if close {
@@ -777,7 +785,13 @@ pub(crate) fn verify_confidential_account_lifecycle(
                             "ZK instruction is missing its context account",
                         )
                     })?;
-                transition(account, FundedAccountKind::ProofContext, close, &mut funded)?;
+                transition(
+                    account,
+                    FundedAccountKind::ProofContext,
+                    close,
+                    &created_in_transaction,
+                    &mut funded,
+                )?;
             } else if *program == record_program {
                 let account = ix
                     .accounts
@@ -790,7 +804,13 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         )
                     })?;
                 match ix.data.first().copied() {
-                    Some(0) => transition(account, FundedAccountKind::Record, false, &mut funded)?,
+                    Some(0) => transition(
+                        account,
+                        FundedAccountKind::Record,
+                        false,
+                        &created_in_transaction,
+                        &mut funded,
+                    )?,
                     Some(1) => {
                         let state = funded.get(&account).ok_or_else(|| {
                             VerificationError::credential_mismatch(
@@ -806,7 +826,13 @@ pub(crate) fn verify_confidential_account_lifecycle(
                             ));
                         }
                     }
-                    Some(3) => transition(account, FundedAccountKind::Record, true, &mut funded)?,
+                    Some(3) => transition(
+                        account,
+                        FundedAccountKind::Record,
+                        true,
+                        &created_in_transaction,
+                        &mut funded,
+                    )?,
                     _ => {
                         return Err(VerificationError::credential_mismatch(
                             "unsupported spl-record instruction in confidential bundle",

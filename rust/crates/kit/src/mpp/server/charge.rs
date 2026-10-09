@@ -4163,6 +4163,28 @@ mod tests {
             verify_confidential_account_lifecycle(&[uninitialized_close], &gateway).unwrap_err();
         assert!(error.message.contains("uninitialized"), "{error}");
 
+        // Settlement broadcasts bundle transactions sequentially. Creation and
+        // initialization must therefore be atomic: otherwise creation can land
+        // before a later initialization fails, leaving attacker-closable rent.
+        let create_only = dummy_tx(
+            vec![solana_system_interface::instruction::create_account(
+                &gateway,
+                &record,
+                1_000,
+                100,
+                &record_program,
+            )],
+            &gateway,
+        );
+        let initialize_then_close = dummy_tx(
+            vec![initialize_record.clone(), close_record.clone()],
+            &gateway,
+        );
+        let error =
+            verify_confidential_account_lifecycle(&[create_only, initialize_then_close], &gateway)
+                .unwrap_err();
+        assert!(error.message.contains("same transaction"), "{error}");
+
         let complete = dummy_tx(
             vec![
                 solana_system_interface::instruction::create_account(
