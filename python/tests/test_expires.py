@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
 
 from solana_pay_kit.protocols.mpp.core.expires import days, hours, minutes, seconds, weeks
 
@@ -130,3 +134,89 @@ class TestStrictRFC3339:
         # Lexically valid RFC 3339 shape, but month 13 fails the calendar
         # check delegated to datetime.fromisoformat.
         assert self._make_challenge("2099-13-01T00:00:00Z").is_expired() is True
+
+
+# ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+
+_CORPUS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "harness"
+    / "vectors"
+    / "mpp-protocol"
+    / "expires.json"
+)
+
+
+def _load_vectors() -> list[tuple[str, str, bool, str]]:
+    """Return every scenario in the shared corpus.
+
+    Yields ``(name, input, expect_accept, description)``. Every scenario in the
+    file is an ``expires`` verdict; there is no slice to select and no scenario
+    to skip.
+
+    Verdict encoding, identical to the other vector files in the same
+    directory: ``"tests": {"parse": true}`` is ACCEPT, and
+    ``"tests": {"parse": {"success": false, ...}}`` is REJECT.
+    """
+    corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+    vectors: list[tuple[str, str, bool, str]] = []
+    for scenario in corpus["scenarios"]:
+        expectation = scenario["tests"]["parse"]
+        expect_accept = expectation is True
+        vectors.append(
+            (scenario["name"], scenario["input"], expect_accept, scenario["description"])
+        )
+    return vectors
+
+
+_VECTORS = _load_vectors()
+
+
+class TestRFC3339ConformanceCorpus:
+    """Every SDK asserts the same ACCEPT/REJECT verdict on the same vectors.
+
+    A divergence between two SDKs then shows up as a failing test in exactly
+    one of them rather than as silence.
+
+    This class covers ``_parse_rfc3339`` in
+    ``solana_pay_kit.protocols.mpp.core.types`` — the grammar
+    ``PaymentChallenge.is_expired`` delegates to, and therefore the one an
+    ``expires`` field is actually checked against. It raises ``ValueError`` on
+    a reject and returns a ``datetime`` on an accept, so the verdict is
+    unambiguous.
+
+    Note for reviewers: this SDK carries a *second* RFC 3339 grammar,
+    ``_ISO8601_RE`` in ``solana_pay_kit.protocols.mpp.core.headers``, which
+    gates receipt timestamps. It is a different regex and it is not covered
+    here. Wiring the same corpus to that surface is a separate change.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "value", "expect_accept", "description"),
+        _VECTORS,
+        ids=[vector[0] for vector in _VECTORS],
+    )
+    def test_vector(self, name: str, value: str, expect_accept: bool, description: str):
+        from solana_pay_kit.protocols.mpp.core.types import _parse_rfc3339
+
+        try:
+            _parse_rfc3339(value)
+            accepted = True
+        except ValueError:
+            accepted = False
+
+        assert accepted is expect_accept, (
+            f"{name} ({description}): input {value!r} — "
+            f"corpus expects {'ACCEPT' if expect_accept else 'REJECT'}, "
+            f"_parse_rfc3339 reports {'ACCEPT' if accepted else 'REJECT'}"
+        )
+
+    def test_every_corpus_scenario_is_exercised(self):
+        """Guard the loader: a regression in it must not go silent.
+
+        A truncated or empty read fails here rather than passing quietly with
+        nothing left to run.
+        """
+        corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+        assert len(_VECTORS) == len(corpus["scenarios"])
+        assert len(_VECTORS) > 0

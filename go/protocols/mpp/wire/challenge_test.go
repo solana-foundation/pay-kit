@@ -1,6 +1,8 @@
 package wire
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -160,4 +162,99 @@ func TestNewPaymentCredentialRejectsUnmarshalablePayload(t *testing.T) {
 	if _, err := NewPaymentCredential(challenge.ToEcho(), map[string]any{"bad": make(chan int)}); err == nil {
 		t.Fatal("expected marshal error")
 	}
+}
+
+// ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+//
+// Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+// `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+// against the same vectors, so a divergence between two SDKs shows up as a
+// failing test in exactly one of them rather than as silence.
+//
+// Every scenario in the file is run. There is no slice to select and no
+// scenario to skip.
+//
+// The verdict is read from `time.Parse` with `time.RFC3339`, the parser
+// `IsExpired` calls. It is not read from `IsExpired` itself, which treats an
+// empty `expires` as "no expiry" by design and so cannot report a parse
+// failure for "".
+
+const conformanceCorpusPath = "../../../../harness/vectors/mpp-protocol/expires.json"
+
+type rfc3339Scenario struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Input       string          `json:"input"`
+	Tests       json.RawMessage `json:"tests"`
+}
+
+type rfc3339Corpus struct {
+	Scenarios []rfc3339Scenario `json:"scenarios"`
+}
+
+// wantsAccept reports whether the scenario's `tests.parse` encodes ACCEPT.
+// `true` is ACCEPT; an object carrying `success: false` is REJECT. Mirrors the
+// encoding used by the other vector files in the same directory.
+func (s rfc3339Scenario) wantsAccept(t *testing.T) bool {
+	t.Helper()
+	var probe struct {
+		Parse json.RawMessage `json:"parse"`
+	}
+	if err := json.Unmarshal(s.Tests, &probe); err != nil {
+		t.Fatalf("%s: tests block did not decode: %v", s.Name, err)
+	}
+	var accepted bool
+	if err := json.Unmarshal(probe.Parse, &accepted); err == nil {
+		return accepted
+	}
+	var rejection struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(probe.Parse, &rejection); err != nil {
+		t.Fatalf("%s: tests.parse was neither a bool nor an object: %v", s.Name, err)
+	}
+	return rejection.Success
+}
+
+// loadRFC3339Vectors returns every scenario in the corpus. The zero-length
+// check guards the loader: a truncated or empty read fails here rather than
+// passing quietly with nothing left to run.
+func loadRFC3339Vectors(t *testing.T) []rfc3339Scenario {
+	t.Helper()
+	raw, err := os.ReadFile(conformanceCorpusPath)
+	if err != nil {
+		t.Fatalf("conformance corpus unreadable at %s: %v", conformanceCorpusPath, err)
+	}
+	var corpus rfc3339Corpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatalf("conformance corpus did not decode: %v", err)
+	}
+	if len(corpus.Scenarios) == 0 {
+		t.Fatal("conformance corpus carried zero scenarios")
+	}
+	return corpus.Scenarios
+}
+
+func TestRFC3339ConformanceCorpus(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range loadRFC3339Vectors(t) {
+		t.Run(scenario.Name, func(t *testing.T) {
+			t.Parallel()
+			_, err := time.Parse(time.RFC3339, scenario.Input)
+			accepted := err == nil
+			want := scenario.wantsAccept(t)
+			if accepted != want {
+				t.Fatalf("%s (%s): input %q — corpus expects %s, time.Parse reports %s",
+					scenario.Name, scenario.Description, scenario.Input,
+					conformanceVerdictName(want), conformanceVerdictName(accepted))
+			}
+		})
+	}
+}
+
+func conformanceVerdictName(accepted bool) string {
+	if accepted {
+		return "ACCEPT"
+	}
+	return "REJECT"
 }
