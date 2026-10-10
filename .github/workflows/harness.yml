@@ -391,6 +391,14 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: kotlin
         run: pnpm exec vitest run test/conformance.test.ts
+      - name: Build and test the Kotlin protocol runner
+        working-directory: harness/kotlin-protocol-runner
+        run: gradle installDist test --no-daemon
+      - name: Run Kotlin mpp-protocol conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: kotlin
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Run Kotlin client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
