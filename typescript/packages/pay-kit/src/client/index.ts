@@ -13,10 +13,11 @@
  * x402 `ClientSvmSigner` and the MPP client methods).
  */
 import type { KeyPairSigner } from '@solana/kit';
+import { mapSubscriptionPeriodToHours, subscription as subscriptionMethod } from '@solana/mpp';
 import {
     Challenge,
+    isSolanaChargeChallenge,
     resolveStablecoinMint,
-    selectSolanaChargeChallengeFromResponse,
     serializeSubscriptionAccessCredential,
     solana,
 } from '@solana/mpp/client';
@@ -131,9 +132,43 @@ export const PayKitClient = Object.freeze({
     builder: (): PayKitClientBuilder => new PayKitClientBuilder(),
 });
 
-/** Parse the `intent` from an MPP `www-authenticate` challenge value. */
-function mppIntent(header: string | null): string | undefined {
-    return header?.match(/intent="([^"]+)"/)?.[1];
+/** Separate authentication schemes without treating quoted commas as boundaries. */
+function paymentChallenges(header: string | null): ReturnType<typeof Challenge.deserialize>[] {
+    if (!header) return [];
+    const parts: string[] = [];
+    let quoted = false;
+    let escaped = false;
+    let start = 0;
+    for (let i = 0; i < header.length; i++) {
+        const char = header[i];
+        if (escaped) {
+            escaped = false;
+        } else if (quoted && char === '\\') {
+            escaped = true;
+        } else if (char === '"') {
+            quoted = !quoted;
+        } else if (!quoted && char === ',') {
+            parts.push(header.slice(start, i).trim());
+            start = i + 1;
+        }
+    }
+    parts.push(header.slice(start).trim());
+
+    const challenges: string[] = [];
+    let current: string | undefined;
+    for (const part of parts) {
+        // An auth-param may have whitespace before '='; it is not a scheme.
+        const scheme = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:[ \t]+(?![ \t]*=)|$)/.exec(part)?.[1];
+        if (scheme) {
+            if (current !== undefined) challenges.push(current);
+            current = scheme.toLowerCase() === 'payment' ? part : undefined;
+        } else if (current !== undefined) {
+            current += `, ${part}`;
+        }
+    }
+    if (current !== undefined) challenges.push(current);
+    // The codec remains strict for actual Payment challenges.
+    return challenges.map(challenge => Challenge.deserialize(challenge));
 }
 
 function withHeader(request: Request, name: string, value: string): Request {
@@ -217,77 +252,98 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         const useX402 = acceptsX402 && protocol !== 'mpp';
         const origin = new URL(probe.url || resource).origin;
         const rejections: PermissionRejection[] = [];
+        let hasSessionChallenge = false;
 
         if (useMpp && probe.headers.get('www-authenticate')) {
-            const intent = mppIntent(probe.headers.get('www-authenticate'));
-            if (intent === 'session') {
-                throw new ConfigurationError(
-                    'Session payments are streaming; use the dedicated session client (createSessionFetch), not client.fetch.',
-                );
+            const challenges = paymentChallenges(probe.headers.get('www-authenticate'));
+            hasSessionChallenge = challenges.some(
+                candidate => candidate.method === 'solana' && candidate.intent === 'session',
+            );
+            for (const challenge of challenges) {
+                if (challenge.method !== 'solana' || challenge.intent !== 'charge') continue;
+                if (!isSolanaChargeChallenge(challenge)) {
+                    rejections.push({
+                        code: 'invalid_challenge_terms',
+                        message: 'Invalid Solana charge challenge request',
+                    });
+                    continue;
+                }
+                let challengeNetwork: SolanaNetwork;
+                let authorization: ReturnType<ClientPermissions['authorize']>;
+                try {
+                    challengeNetwork = normalizeNetwork(challenge.request.methodDetails.network ?? 'mainnet', network);
+                    const mint = resolveStablecoinMint(challenge.request.currency, challengeNetwork);
+                    if (!mint) continue;
+                    authorization = permissions.authorize({
+                        amount: challengeAmount(challenge.request.amount),
+                        mint,
+                        network: challengeNetwork,
+                        origin,
+                    });
+                } catch (error) {
+                    if (!(error instanceof PermissionDeniedError)) throw error;
+                    rejections.push(...error.rejections);
+                    continue;
+                }
+                const method = solana.charge({
+                    expectedNetwork: challengeNetwork,
+                    maxAmount: authorization.maxAmountAtomic,
+                    onProgress: forward,
+                    rpcUrl: options.rpcUrl,
+                    signer: options.signer,
+                });
+                const authorizationHeader = await method.createCredential({ challenge });
+                return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
             }
-            const challenge = selectSolanaChargeChallengeFromResponse(probe);
-            if (challenge) {
-                const challengeNetwork = normalizeNetwork(
-                    challenge.request.methodDetails.network ?? 'mainnet',
-                    network,
-                );
-                const mint = resolveStablecoinMint(challenge.request.currency, challengeNetwork);
-                if (mint) {
-                    try {
-                        const authorization = permissions.authorize({
-                            amount: challengeAmount(challenge.request.amount),
-                            mint,
-                            network: challengeNetwork,
-                            origin,
-                        });
-                        const method = solana.charge({
-                            expectedNetwork: challengeNetwork,
-                            maxAmount: authorization.maxAmountAtomic,
-                            onProgress: forward,
-                            rpcUrl: options.rpcUrl,
-                            signer: options.signer,
-                        });
-                        const authorizationHeader = await method.createCredential({ challenge });
-                        return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
-                    } catch (error) {
-                        if (!(error instanceof PermissionDeniedError)) throw error;
-                        rejections.push(...error.rejections);
-                    }
-                }
-            } else if (intent === 'subscription') {
-                const subscriptionChallenge = Challenge.fromResponseList(probe).find(
-                    candidate => candidate.method === 'solana' && candidate.intent === 'subscription',
-                );
-                const subscriptionTerms = subscriptionRequest(subscriptionChallenge?.request);
-                if (subscriptionChallenge && subscriptionTerms) {
-                    try {
-                        const challengeNetwork = normalizeNetwork(
-                            subscriptionTerms.methodDetails.network ?? 'mainnet',
-                            network,
-                        );
-                        permissions.authorize({
-                            amount: challengeAmount(subscriptionTerms.amount),
-                            mint: subscriptionTerms.currency,
-                            network: challengeNetwork,
-                            origin,
-                        });
-                        const method = solana.subscription({
-                            onAuthentication: access => {
-                                subscriptionCredentials.set(resource, serializeSubscriptionAccessCredential(access));
+            for (const subscriptionChallenge of challenges) {
+                if (subscriptionChallenge.method !== 'solana' || subscriptionChallenge.intent !== 'subscription')
+                    continue;
+                try {
+                    const subscriptionTerms = subscriptionRequest(subscriptionChallenge.request);
+                    if (!subscriptionTerms) {
+                        throw new PermissionDeniedError([
+                            {
+                                code: 'invalid_challenge_terms',
+                                message: 'Invalid Solana subscription challenge request',
                             },
-                            onProgress: forward,
-                            rpcUrl: options.rpcUrl,
-                            signer: options.signer,
-                        });
-                        const authorizationHeader = await method.createCredential({
-                            challenge: subscriptionChallenge as never,
-                        });
-                        return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
-                    } catch (error) {
-                        if (!(error instanceof PermissionDeniedError)) throw error;
-                        rejections.push(...error.rejections);
+                        ]);
                     }
+                    const challengeNetwork = normalizeNetwork(
+                        subscriptionTerms.methodDetails.network ?? 'mainnet',
+                        network,
+                    );
+                    const mint = subscriptionTerms.methodDetails.mint;
+                    const advertisedMint =
+                        resolveStablecoinMint(subscriptionTerms.currency, challengeNetwork) ??
+                        subscriptionTerms.currency;
+                    if (advertisedMint !== mint) {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Subscription currency does not match mint' },
+                        ]);
+                    }
+                    permissions.authorize({
+                        amount: challengeAmount(subscriptionTerms.amount),
+                        mint,
+                        network: challengeNetwork,
+                        origin,
+                    });
+                } catch (error) {
+                    if (!(error instanceof PermissionDeniedError)) throw error;
+                    rejections.push(...error.rejections);
+                    continue;
                 }
+                const method = solana.subscription({
+                    onAuthentication: access => {
+                        subscriptionCredentials.set(resource, serializeSubscriptionAccessCredential(access));
+                    },
+                    onProgress: forward,
+                    rpcUrl: options.rpcUrl,
+                    signer: options.signer,
+                });
+                const authorizationHeader = await method.createCredential({
+                    challenge: subscriptionChallenge as never,
+                });
+                return await nativeFetch(withHeader(request, 'Authorization', authorizationHeader));
             }
         }
 
@@ -301,6 +357,16 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             const permitted: PaymentRequirements[] = [];
             for (const requirement of required.accepts ?? []) {
                 try {
+                    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Invalid x402 payment requirement' },
+                        ]);
+                    }
+                    if (typeof requirement.asset !== 'string') {
+                        throw new PermissionDeniedError([
+                            { code: 'invalid_challenge_terms', message: 'Invalid x402 asset' },
+                        ]);
+                    }
                     permissions.authorize({
                         amount: challengeAmount(requirement.amount),
                         mint: requirement.asset,
@@ -348,6 +414,11 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         }
 
         if (rejections.length > 0) throw new PermissionDeniedError(rejections);
+        if (hasSessionChallenge) {
+            throw new ConfigurationError(
+                'Session payments are streaming; use the dedicated session client (createSessionFetch), not client.fetch.',
+            );
+        }
 
         return probe;
     }
@@ -368,8 +439,8 @@ function normalizeNetwork(value: string, configured: SolanaNetwork): SolanaNetwo
     ]);
 }
 
-function challengeAmount(value: string): bigint {
-    if (!/^\d+$/.test(value)) {
+function challengeAmount(value: unknown): bigint {
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) {
         throw new PermissionDeniedError([
             { code: 'invalid_challenge_terms', message: `Invalid payment amount: ${JSON.stringify(value)}` },
         ]);
@@ -377,18 +448,13 @@ function challengeAmount(value: string): bigint {
     return BigInt(value);
 }
 
-function subscriptionRequest(
-    value: unknown,
-): { amount: string; currency: string; methodDetails: { network?: string } } | undefined {
-    if (!value || typeof value !== 'object') return undefined;
-    const request = value as Record<string, unknown>;
-    if (typeof request.amount !== 'string' || typeof request.currency !== 'string') return undefined;
-    if (!request.methodDetails || typeof request.methodDetails !== 'object') return undefined;
-    const methodDetails = request.methodDetails as Record<string, unknown>;
-    if (methodDetails.network !== undefined && typeof methodDetails.network !== 'string') return undefined;
-    return {
-        amount: request.amount,
-        currency: request.currency,
-        methodDetails: { network: methodDetails.network },
-    };
+function subscriptionRequest(value: unknown) {
+    const request = subscriptionMethod.schema.request.safeParse(value);
+    if (!request.success) return undefined;
+    try {
+        mapSubscriptionPeriodToHours(request.data.periodUnit, Number(request.data.periodCount));
+    } catch {
+        return undefined;
+    }
+    return request.data;
 }
