@@ -17,3 +17,4 @@ Expect a response as fast as possible in the advisory, typically within 72 hours
 We thank the researchers who have responsibly disclosed issues:
 
 - **Kian Kai Ang** ([kai-kka](https://github.com/kai-kka)), University of Sydney, for reporting the concurrent-signature replay (TOCTOU) in the TypeScript MPP charge push-mode verifier, with a working proof of concept.
+- **Snuff12** ([snuff12](https://github.com/snuff12)), for reporting a payment-credential replay issue in the TypeScript MPP charge flow that allowed multiple handler executions from a single payment.
