@@ -111,10 +111,13 @@ final class RequirePayment implements MiddlewareInterface
 
     private function pickAdapter(Gate $gate, ServerRequestInterface $request): ?object
     {
-        $accept = $gate->accept ?? $this->client->config->accept;
+        $config = $this->client->config;
         $auth = $request->getHeaderLine('Authorization');
         $sig  = $request->getHeaderLine('Payment-Signature');
-        foreach ($accept as $protocol) {
+        foreach ($gate->accept ?? $config->accept as $protocol) {
+            if (!$gate->accepts($protocol, $config)) {
+                continue;
+            }
             if ($protocol === Protocol::X402 && $sig !== '' && $this->x402 !== null) {
                 return $this->x402;
             }
@@ -129,13 +132,13 @@ final class RequirePayment implements MiddlewareInterface
     {
         $accepts = [];
         $headers = [];
-        $accept = $gate->accept ?? $this->client->config->accept;
+        $config = $this->client->config;
 
-        if ($this->x402 !== null && in_array(Protocol::X402, $accept, true) && !$gate->hasFees()) {
+        if ($this->x402 !== null && $gate->accepts(Protocol::X402, $config)) {
             $accepts[] = $this->x402->acceptsEntry($gate, $request);
             $headers   = array_merge($headers, $this->x402->challengeHeaders($gate, $request));
         }
-        if (in_array(Protocol::Mpp, $accept, true)) {
+        if ($gate->accepts(Protocol::Mpp, $config)) {
             $accepts[] = $this->mpp->acceptsEntry($gate, $request);
             $headers   = array_merge($headers, $this->mpp->challengeHeaders($gate, $request));
         }
