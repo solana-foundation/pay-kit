@@ -21,33 +21,43 @@ local function days_in_month(year, month)
   return 31
 end
 
+-- RFC 3339 sec 5.7: `:60` is inserted only at 23:59:60 UTC on a month's last day. Offset first, so the check reads the instant denoted.
+local function is_leap_second_instant(year, month, day, hour, min, offset_secs)
+  local tod = hour * 3600 + min * 60 + offset_secs
+  if tod < 0 then
+    day, tod = day - 1, tod + 86400
+  elseif tod >= 86400 then
+    day, tod = day + 1, tod - 86400
+  end
+  if day < 1 then
+    month = month - 1
+    if month < 1 then month, year = 12, year - 1 end
+    day = days_in_month(year, month)
+  elseif day > days_in_month(year, month) then
+    day = 1
+    month = month + 1
+    if month > 12 then month, year = 1, year + 1 end
+  end
+  return tod == 86340 and day == days_in_month(year, month)
+end
+
 -- Strict RFC 3339 date-time grammar (sec 5.6).
--- Accepts: T/t separator, Z/z or +/-HH:MM offset, optional 1..9 digit fractional seconds.
+-- Accepts: T/t separator, Z/z or +/-HH:MM offset, `time-secfrac = "." 1*DIGIT` of any length.
 -- Rejects: missing time-offset, lowercase compat from older parser only, calendar dates that do not exist, year > 9999.
 function M.parse_rfc3339(value)
   if type(value) ~= 'string' then
     return nil, 'invalid RFC3339 timestamp'
   end
-  -- RFC 3339 sec 5.6 grammar: optional `time-secfrac = "." 1*DIGIT`. The dot must be
-  -- accompanied by at least one digit. Match the fractional component as one optional
-  -- group so a bare dot (e.g. "2099-01-01T00:00:00.Z") fails parsing rather than being
-  -- silently accepted as zero fractional seconds (diverges from PHP/Ruby strict parsers).
+  -- `time-secfrac = "." 1*DIGIT` (sec 5.6): no digit cap, a bare dot is still not a fraction, and the digits truncate, never round.
   local year, month, day, hour, min, sec, rest = value:match(
     '^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt](%d%d):(%d%d):(%d%d)(.*)$'
   )
   if not year then
     return nil, 'invalid RFC3339 timestamp'
   end
-  local frac, offset = rest:match('^%.(%d+)([Zz%+%-][%d:]*)$')
-  if not frac then
-    frac = ''
-    offset = rest:match('^([Zz%+%-][%d:]*)$')
-    if not offset then
-      return nil, 'invalid RFC3339 timestamp'
-    end
-  end
-  if #frac > 9 then
-    return nil, 'fractional seconds exceed 9 digits'
+  local offset = rest:match('^%.%d+([Zz%+%-][%d:]*)$') or rest:match('^([Zz%+%-][%d:]*)$')
+  if not offset then
+    return nil, 'invalid RFC3339 timestamp'
   end
   year = tonumber(year)
   month = tonumber(month)
@@ -62,10 +72,6 @@ function M.parse_rfc3339(value)
   if month < 1 or month > 12 then
     return nil, 'invalid RFC3339 month'
   end
-  -- RFC 3339 §5.7 allows sec = 60 for positive leap seconds. The
-  -- broader RFC requires that a leap second be inserted only at
-  -- 23:59:60 UTC; we accept the value at the parser level and let
-  -- downstream consumers reject the rare time-of-day combinations.
   if hour > 23 or min > 59 or sec > 60 then
     return nil, 'invalid RFC3339 time-of-day'
   end
@@ -90,6 +96,10 @@ function M.parse_rfc3339(value)
     if sign == '+' then
       offset_secs = -offset_secs
     end
+  end
+
+  if sec == 60 and not is_leap_second_instant(year, month, day, hour, min, offset_secs) then
+    return nil, 'invalid RFC3339 leap second'
   end
 
   local days = days_from_civil(year, month, day)
