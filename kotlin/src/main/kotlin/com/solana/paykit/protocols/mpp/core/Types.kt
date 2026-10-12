@@ -3,14 +3,53 @@ package com.solana.paykit.protocols.mpp.core
 import com.solana.paykit.paycore.*
 
 import kotlinx.serialization.Serializable
+import java.time.DateTimeException
 import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.format.DateTimeParseException
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 // MppException lives in paycore (crypto primitives need it, and protocols need
 // crypto) and is brought into scope by the wildcard import above. No same-package
 // typealias here: aliasing a sealed class within its own consuming package
 // shadows the import and breaks resolution of its nested members.
+
+private val RFC3339_DATE_TIME = Regex(
+    """(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:[Zz]|([+-])(\d{2}):(\d{2}))""",
+)
+
+/** RFC 3339 §5.7: `:60` is a leap second only at 23:59:60 UTC on the last day of a month. */
+private const val LEAP_SECOND_UTC_SECOND_OF_DAY = 23 * 3600 + 59 * 60 + 59
+
+/**
+ * Parses [raw] against the RFC 3339 §5.6 `date-time` grammar, returning null if
+ * it does not match. A leap second is clamped to `23:59:59.999999999`, which is
+ * the closest instant `java.time` can represent.
+ */
+private fun parseRfc3339(raw: String): Instant? {
+    val g = RFC3339_DATE_TIME.matchEntire(raw)?.groupValues ?: return null
+    val second = g[6].toInt()
+    val offsetHour = g[9].ifEmpty { "0" }.toInt()
+    val offsetMinute = g[10].ifEmpty { "0" }.toInt()
+    if (second > 60 || offsetHour > 23 || offsetMinute > 59) return null
+    val local = try {
+        LocalDate.of(g[1].toInt(), g[2].toInt(), g[3].toInt())
+            .atTime(g[4].toInt(), g[5].toInt(), minOf(second, 59))
+    } catch (_: DateTimeException) {
+        return null
+    }
+    val offsetSeconds = (offsetHour * 3600 + offsetMinute * 60) * if (g[8] == "-") -1 else 1
+    val epochSecond = local.toEpochSecond(ZoneOffset.UTC) - offsetSeconds
+    if (second == 60) {
+        val utcDate = LocalDate.ofEpochDay(epochSecond.floorDiv(86_400L))
+        if (epochSecond.mod(86_400L) != LEAP_SECOND_UTC_SECOND_OF_DAY.toLong() ||
+            utcDate.dayOfMonth != utcDate.lengthOfMonth()
+        ) {
+            return null
+        }
+        return Instant.ofEpochSecond(epochSecond, 999_999_999L)
+    }
+    return Instant.ofEpochSecond(epochSecond, g[7].take(9).padEnd(9, '0').toLong())
+}
 
 /** Parsed MPP `WWW-Authenticate` challenge. */
 @Serializable
@@ -31,16 +70,12 @@ data class PaymentChallenge(
      * Returns true if this challenge has an `expires` timestamp that is at or
      * before [now] (audit #10). A challenge with no `expires` is never expired
      * (the spec allows omitting it). FAIL-CLOSED: an `expires` value that is
-     * present but does not parse as an RFC3339 / ISO-8601 offset timestamp is
-     * treated as expired, so a malformed timestamp cannot bypass the refusal.
+     * present but is not an RFC 3339 `date-time` is treated as expired, so a
+     * malformed timestamp cannot bypass the refusal.
      */
     fun isExpired(now: Instant = Instant.now()): Boolean {
         val raw = expires ?: return false
-        val expiresAt = try {
-            OffsetDateTime.parse(raw).toInstant()
-        } catch (_: DateTimeParseException) {
-            return true
-        }
+        val expiresAt = parseRfc3339(raw) ?: return true
         return !expiresAt.isAfter(now)
     }
 
