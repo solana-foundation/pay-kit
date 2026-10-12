@@ -768,6 +768,52 @@ async def test_transport_402_then_pay_then_200(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True], ids=["bytes", "async-generator"])
+@pytest.mark.parametrize("paid_status", [200, 402])
+async def test_x402_client_replays_post_body_once(streaming, paid_status):
+    body = b'{"query":"housing report"}'
+    challenge = _challenge_header(_offer())
+    received: list[bytes] = []
+    seen_headers: list[dict[str, str]] = []
+
+    async def chunks():
+        yield body[:8]
+        yield body[8:]
+
+    async def app(scope, receive, send):
+        # Consume through ASGI: MockTransport pre-reads the request and would
+        # hide reuse of an exhausted generator in the payment transport.
+        parts = []
+        while True:
+            message = await receive()
+            parts.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        received.append(b"".join(parts))
+        headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
+        seen_headers.append(headers)
+        status = paid_status if "payment-signature" in headers else 402
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"payment-required", challenge.encode())] if status == 402 else [],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async with X402Client(
+        Signer.generate(), None, network="devnet", base_transport=httpx.ASGITransport(app=app)
+    ) as client:
+        response = await client.post("https://server/protected", content=chunks() if streaming else body)
+
+    assert response.status_code == paid_status
+    assert received == [body, body]
+    assert "payment-signature" not in seen_headers[0]
+    assert seen_headers[1]["payment-signature"]
+
+
+@pytest.mark.asyncio
 async def test_transport_sends_payment_signature_header(monkeypatch):
     adapter, gate = _server_adapter_and_gate(monkeypatch)
     seen_headers: list[dict[str, str]] = []
