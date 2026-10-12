@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Self, cast
@@ -28,6 +29,7 @@ from solana_pay_kit.protocols.x402.client.exact.payment import (
 )
 from solana_pay_kit.protocols.x402.client.exact.transport import PAYMENT_SIGNATURE_HEADER
 from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
+from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
 from solana_pay_kit.signer import LocalSigner
 
@@ -71,13 +73,14 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
 
         if "mpp" in self._protocols:
             challenges = parse_www_authenticate_all(response.headers.get_list("www-authenticate"))
-            challenge = next(
-                (item for item in challenges if item.method == "solana" and item.intent == "charge"),
-                None,
-            )
-            if challenge is not None:
+            for challenge in challenges:
+                if challenge.method != "solana" or challenge.intent != "charge":
+                    continue
                 try:
-                    raw = challenge.decode_request()
+                    raw_value = cast("object", challenge.decode_request())
+                    if not isinstance(raw_value, dict):
+                        raise _invalid("invalid MPP charge terms")
+                    raw = cast("dict[str, object]", raw_value)
                     amount = _amount(raw.get("amount"))
                     currency: object = raw.get("currency")
                     details_value: object = raw.get("methodDetails")
@@ -98,24 +101,48 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                         max_amount_base_units=authorized.max_amount_atomic,
                         expected_network=challenge_network,
                     )
-                    return await self._retry(request, "authorization", header)
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
                 except Exception:  # noqa: BLE001 - an unusable MPP offer may fall back to x402
                     logger.warning("failed to build MPP payment credential", exc_info=True)
+                    break
+                else:
+                    return await self._retry(request, "authorization", header)
 
         if "x402" in self._protocols:
+            # The same offers may appear in both the header and response body.
+            decisions: dict[str, bool] = {}
+
+            def permitted(requirement: X402AcceptsEntry) -> bool:
+                # Parser-only resource metadata is not part of the wire offer.
+                wire_offer = {name: value for name, value in requirement.items() if name != "__pay_kit_resource_info__"}
+                key = json.dumps(wire_offer, sort_keys=True)
+                if key in decisions:
+                    return decisions[key]
+                try:
+                    network = _network(requirement.get("network"), self._network)
+                    amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
+                    asset = _x402_asset(requirement)
+                    self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
+                except PermissionDeniedError as exc:
+                    rejections.extend(exc.rejections)
+                    decisions[key] = False
+                    return False
+                decisions[key] = True
+                return True
+
             body = response.text if response.content else None
             requirement, version = parse_x402_challenge_with_version(
                 dict(response.headers),
                 body,
                 ChallengeSelection(network=self._network),
+                requirement_filter=permitted,
             )
             if requirement is not None:
                 try:
                     network = _network(requirement.get("network"), self._network)
                     amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
-                    asset = requirement.get("asset")
+                    asset = _x402_asset(requirement)
                     self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
                     legacy = version == X402_VERSION_V1
                     builder = build_payment_header_legacy if legacy else build_payment_header
@@ -267,17 +294,32 @@ class PayKitClientBuilder:
 
 
 def _amount(value: object) -> int:
-    if not isinstance(value, str) or not value.isdigit():
+    if not isinstance(value, str) or not value.isascii() or not value.isdigit():
         raise _invalid(f"invalid payment amount: {value!r}")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise _invalid(f"invalid payment amount: {value!r}") from exc
+
+
+def _x402_asset(requirement: X402AcceptsEntry) -> str:
+    """Authorize the same asset the exact credential builder will transfer."""
+    raw = cast("dict[str, object]", requirement)
+    asset = raw.get("asset")
+    if not isinstance(asset, str):
+        raise _invalid("invalid x402 asset")
+    currency = raw.get("currency")
+    return currency if isinstance(currency, str) and currency != "" else asset
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:
-    if value in {None, "mainnet", "mainnet-beta", SOLANA_MAINNET_CAIP2}:
+    if value is not None and not isinstance(value, str):
+        raise _invalid(f"invalid Solana network: {value!r}")
+    if value in {None, "mainnet", "mainnet-beta", "solana", SOLANA_MAINNET_CAIP2}:
         return "mainnet"
     if value == "localnet":
         return "localnet"
-    if value in {"devnet", SOLANA_DEVNET_CAIP2}:
+    if value in {"devnet", "solana-devnet", SOLANA_DEVNET_CAIP2}:
         return "localnet" if configured == "localnet" else "devnet"
     raise _invalid(f"unsupported Solana network: {value!r}")
 

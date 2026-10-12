@@ -163,16 +163,21 @@ def parse_x402_challenge_with_version(
     headers: Mapping[str, str],
     body: str | None,
     selection: ChallengeSelection,
+    *,
+    requirement_filter: Callable[[X402AcceptsEntry], bool] | None = None,
 ) -> tuple[X402AcceptsEntry | None, int]:
     """Like :func:`parse_x402_challenge`, but also surfaces the DECLARED wire
     version of the challenge the offer came from, so the transport can emit the
     matching producer (v1 ``X-PAYMENT`` vs v2 ``PAYMENT-SIGNATURE``). Mirrors the
     go ``ParseChallengeVersioned`` / swift ``parseX402ChallengeWithVersion``.
     Returns ``(None, X402_VERSION)`` when no supported offer matches.
+
+    ``requirement_filter`` excludes supported offers before applying network,
+    currency, and amount preferences. The default preserves existing selection.
     """
     header_value = _lookup_header(headers, "payment-required")
     if header_value:
-        offer, version = _select_from_header(header_value, selection)
+        offer, version = _select_from_header(header_value, selection, requirement_filter)
         if offer is not None:
             return offer, version
 
@@ -183,7 +188,7 @@ def parse_x402_challenge_with_version(
     # (rust/crates/x402/src/client/exact/payment.rs:246-253).
     legacy_header = _lookup_header(headers, X402_LEGACY_PAYMENT_REQUIRED_HEADER)
     if legacy_header:
-        offer, version = _select_from_body(legacy_header, selection)
+        offer, version = _select_from_body(legacy_header, selection, requirement_filter)
         if offer is not None:
             return offer, version
 
@@ -191,7 +196,7 @@ def parse_x402_challenge_with_version(
     # SVM network slugs and ``maxAmountRequired``. Mirrors rust ``parse_accepts_
     # body`` (payment.rs:255-259).
     if body is not None:
-        offer, version = _select_from_body(body, selection)
+        offer, version = _select_from_body(body, selection, requirement_filter)
         if offer is not None:
             return offer, version
 
@@ -206,24 +211,36 @@ def _lookup_header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
-def _select_from_header(header_value: str, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
+def _select_from_header(
+    header_value: str,
+    selection: ChallengeSelection,
+    requirement_filter: Callable[[X402AcceptsEntry], bool] | None = None,
+) -> tuple[X402AcceptsEntry | None, int]:
     try:
         decoded = base64.b64decode(header_value, validate=True)
         envelope = json.loads(decoded)
     except Exception:  # noqa: BLE001 - any decode failure means "no challenge here"
         return None, X402_VERSION
-    return _select_from_envelope(envelope, selection)
+    return _select_from_envelope(envelope, selection, requirement_filter)
 
 
-def _select_from_body(body: str, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
+def _select_from_body(
+    body: str,
+    selection: ChallengeSelection,
+    requirement_filter: Callable[[X402AcceptsEntry], bool] | None = None,
+) -> tuple[X402AcceptsEntry | None, int]:
     try:
         envelope = json.loads(body)
     except Exception:  # noqa: BLE001
         return None, X402_VERSION
-    return _select_from_envelope(envelope, selection)
+    return _select_from_envelope(envelope, selection, requirement_filter)
 
 
-def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
+def _select_from_envelope(
+    envelope: object,
+    selection: ChallengeSelection,
+    requirement_filter: Callable[[X402AcceptsEntry], bool] | None = None,
+) -> tuple[X402AcceptsEntry | None, int]:
     if not isinstance(envelope, dict):
         return None, X402_VERSION
     envelope_dict = cast("dict[str, object]", envelope)
@@ -235,7 +252,7 @@ def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> tu
     entries = cast("list[object]", accepts_raw)
     accepts = [cast("dict[str, object]", entry) for entry in entries if isinstance(entry, dict)]
     _attach_envelope_resource(envelope_dict, accepts)
-    return _select_requirement(accepts, selection), version
+    return _select_requirement(accepts, selection, requirement_filter), version
 
 
 #: Private (non-wire) key under which the envelope-level v2 ``resource`` info is
@@ -344,11 +361,14 @@ def _currencies_match(offered: str, accepted: str, label: str) -> bool:
 def _select_requirement(
     accepts: list[dict[str, object]],
     selection: ChallengeSelection,
+    requirement_filter: Callable[[X402AcceptsEntry], bool] | None = None,
 ) -> X402AcceptsEntry | None:
     preferred = _caip2_for_selection(selection.network)
     label = _mints_label_for_caip2(preferred)
 
     solana = [offer for offer in accepts if _is_solana_exact(offer)]
+    if requirement_filter is not None:
+        solana = [offer for offer in solana if requirement_filter(cast("X402AcceptsEntry", offer))]
     # Compare on the normalized CAIP-2 network so a legacy offer naming
     # ``solana``/``solana-devnet`` matches the preferred CAIP-2 selection.
     on_preferred = [offer for offer in solana if _offer_network_caip2(offer) == preferred]
