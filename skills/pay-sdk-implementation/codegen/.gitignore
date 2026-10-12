@@ -1,2 +1,3 @@
 node_modules
 .codama-py/
+.codama-renderers-ruby/
