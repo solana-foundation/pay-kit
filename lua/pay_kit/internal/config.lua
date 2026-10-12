@@ -26,7 +26,7 @@ Surface (issue #140):
     mpp = {
       realm                    = "MyApp",
       challenge_binding_secret = "...",
-      expires_in               = 300,
+      expires_in               = 120,
     },
   })
 
@@ -200,7 +200,7 @@ function M.configure(opts)
   local mpp = opts.mpp or {}
   local mpp_realm = mpp.realm or 'App'
   local mpp_secret = mpp.challenge_binding_secret
-  -- expires_in defaults to a short 300s TTL so issued challenges are not
+  -- expires_in defaults to a short 120s TTL so issued challenges are not
   -- valid indefinitely (parity with Python/Rust/Ruby short-TTL defaults
   -- and the PHP/Lua expiry-wiring fix). `expires_in = false` is the
   -- explicit development opt-out: challenges are then issued with no
@@ -208,7 +208,7 @@ function M.configure(opts)
   -- treated as "never expires".
   local mpp_expires_in = mpp.expires_in
   if mpp_expires_in == nil then
-    mpp_expires_in = 300
+    mpp_expires_in = 120
   end
   if mpp_secret ~= nil and type(mpp_secret) ~= 'string' then
     return nil, 'pay_kit: mpp.challenge_binding_secret must be a string or nil'

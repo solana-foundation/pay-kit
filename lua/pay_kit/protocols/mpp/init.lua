@@ -241,7 +241,7 @@ function Adapter:challenge_headers(gate, _req)
   if splits then options.splits = splits end
   -- Wire the configured challenge TTL into issuance so signed challenges
   -- are not valid indefinitely. `config.mpp.expires_in` is seconds-from-now
-  -- (default 300); `false` is the explicit development opt-out that leaves
+  -- (default 120); `false` is the explicit development opt-out that leaves
   -- the challenge without an expiry. Mirrors PHP/Ruby/Python which seed a
   -- short TTL at challenge construction rather than relying on every caller
   -- to pass one. `verify_credential_with_expected` enforces the expiry via
