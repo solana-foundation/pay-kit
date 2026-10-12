@@ -53,7 +53,7 @@ export const nativeTargets: readonly NativeTarget[] = [
 // Source-run commands are deliberate exceptions, never inferred from missing
 // native metadata.
 const sourceTargets: Record<AdapterRole, readonly string[]> = {
-  client: ["typescript", "ts-x402", "python-x402", "python-session", "python-x402-upto"],
+  client: ["typescript", "ts-x402", "python", "python-x402", "python-session", "python-x402-upto"],
   server: ["typescript", "ts-x402", "php", "ruby", "lua", "python", "ruby-x402-server", "python-x402-upto"],
   conformance: ["lua", "php", "python", "ruby", "typescript"],
 };

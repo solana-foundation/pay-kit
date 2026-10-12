@@ -157,7 +157,7 @@ What the harness exercises today:
 
 | Scheme | Structural interop | On-chain settlement |
 | --- | --- | --- |
-| MPP `charge` (+ split) | TS, Rust, Go, Python, PHP, Ruby, Lua (per matrix) | ✅ (charge) |
+| MPP `charge` (+ split) | clients TS, Rust, Go, Python; servers TS, Rust, Go, Python, PHP, Ruby, Lua (per matrix) | ✅ (charge) |
 | x402 `exact` | TS, Rust (+ adapters as they land) | ✅ |
 | x402 `upto` | — | ✅ (TS/pay-kit) |
 | MPP `session` | Python (limited) | — |
@@ -169,6 +169,16 @@ What the harness exercises today:
 - x402 `upto` / `batch-settlement` clients in Go and Python (Rust + TS only).
 - MPP `subscription` outside Rust (needs plan bootstrap).
 - MPP `session` servers outside Python/Rust.
+- MPP `charge` clients outside TS/Rust/Go. The Python client runs the eight
+  charge scenarios with no `clientIds` gate; `charge-push`,
+  `charge-network-mismatch`, `charge-cross-route-replay`,
+  `charge-compute-budget-over-cap`, `charge-splits-too-many`,
+  `charge-splits-sum-equals-amount`, and `charge-cross-server-portability`
+  stay pinned to `clientIds: ["typescript"]` in `src/intents/charge.ts` until
+  a client reproduces their exact accept/reject behaviour. Python also cannot
+  take `charge-push`: `build_credential_header` only emits a
+  `type=transaction` payload, so the adapter refuses push mode rather than
+  silently paying in pull mode.
 
 Per-language on-chain coverage lands by registering process adapters for these
 schemes against the same mainnet-fork bootstrap in `src/onchain/surfnet.ts`.

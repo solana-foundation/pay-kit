@@ -144,6 +144,27 @@ jobs:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
+      # MPP charge, client side: the Python solana_pay_kit charge adapter driving
+      # the rust and typescript charge servers. Until now python was only a
+      # *server* in the charge matrix, so no python-to-* charge leg existed at
+      # all (issue #57). Both directions matter: rust/typescript as the reference
+      # servers is what makes a python encoding bug a red test rather than a
+      # green one, and the adapter signs a real partially-signed v0 transfer, so
+      # these legs settle on the embedded surfnet.
+      #
+      # The adapter is pull-mode only and defaults off in implementations.ts, so
+      # the default matrix still needs no Python toolchain. Scenarios still
+      # pinned to `clientIds: ["typescript"]` in src/intents/charge.ts (push,
+      # network-mismatch, cross-route-replay, compute-budget-over-cap,
+      # splits-too-many, splits-sum-equals-amount, cross-server-portability)
+      # are skipped by the driver; the eight charge scenarios with no clientIds
+      # gate are what runs here.
+      - name: Focused Python charge client -> rust/typescript charge servers
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: python
+          MPP_HARNESS_SERVERS: rust,typescript
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
       # x402 exact: drive the Python solana_pay_kit x402 client (a real signed v0
       # VersionedTransaction) against the full-settling rust and python x402
       # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
