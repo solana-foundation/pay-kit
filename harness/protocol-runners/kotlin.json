@@ -1,0 +1,5 @@
+{
+  "language": "kotlin",
+  "command": ["sh", "-c", "exec build/install/mpp-kotlin-protocol-runner/bin/mpp-kotlin-protocol-runner"],
+  "cwd": "harness/kotlin-protocol-runner"
+}
