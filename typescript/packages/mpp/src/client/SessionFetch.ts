@@ -1,9 +1,7 @@
 import { getBase58Decoder } from '@solana/kit';
+import { Challenge } from 'mppx';
 
-import {
-    selectSolanaSessionChallengeFromResponse,
-    type SelectSolanaSessionChallengeOptions,
-} from './ChallengeSelection.js';
+import { selectSolanaSessionChallenge, type SelectSolanaSessionChallengeOptions } from './ChallengeSelection.js';
 import {
     ActiveSession,
     type AmountLike,
@@ -195,7 +193,8 @@ export class SessionFetchClient {
             return response;
         }
 
-        const challenge = selectSolanaSessionChallengeFromResponse(response, this.#selectChallengeOptions);
+        const challenges = paymentChallengeHeaders(response.headers).map(header => Challenge.deserialize(header));
+        const challenge = selectSolanaSessionChallenge(challenges, this.#selectChallengeOptions);
         if (!challenge) {
             return response;
         }
@@ -566,6 +565,46 @@ function withAuthorization(init: FetchInit, authorization: string): FetchInit {
     const headers = new Headers(init?.headers);
     headers.set('authorization', authorization);
     return { ...init, headers };
+}
+
+/** Extract Payment schemes without matching text inside quoted auth parameters. */
+function paymentChallengeHeaders(headers: Headers): string[] {
+    const header = headers.get('www-authenticate');
+    if (!header) return [];
+
+    const challenges: string[] = [];
+    let current: string | undefined;
+    let start = 0;
+    let quoted = false;
+    let escaped = false;
+
+    for (let index = 0; index <= header.length; index++) {
+        const character = header[index];
+        if (quoted && character !== undefined) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') quoted = false;
+            continue;
+        }
+        if (character === '"') {
+            quoted = true;
+            continue;
+        }
+        if (character !== ',' && index !== header.length) continue;
+
+        const part = header.slice(start, index).trim();
+        // A token followed by '=' is an auth parameter, not another scheme.
+        const scheme = /^([!#$%&'*+.^_`|~\w-]+)(?:[ \t]+(?![ \t]*=)|$)/.exec(part)?.[1];
+        if (scheme) {
+            if (current !== undefined) challenges.push(current);
+            current = scheme.toLowerCase() === 'payment' ? part : undefined;
+        } else if (current !== undefined) {
+            current += `, ${part}`;
+        }
+        start = index + 1;
+    }
+    if (current !== undefined) challenges.push(current);
+    return challenges;
 }
 
 function toError(value: unknown): Error {
