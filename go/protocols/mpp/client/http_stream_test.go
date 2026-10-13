@@ -3,10 +3,13 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
@@ -64,6 +67,79 @@ func TestSseDecoderHandlesSplitChunks(t *testing.T) {
 	}
 }
 
+func TestSseDecoderHandlesUTF8AtEveryChunkBoundary(t *testing.T) {
+	raw := []byte("event: message\r\nid: café\r\ndata: {\"delta\":\"é你\U0001F642\"}\r\n\r\n")
+	event, id := "message", "café"
+	want := []SseEvent{{Event: &event, ID: &id, Data: "{\"delta\":\"é你\U0001F642\"}"}}
+	for cut := 0; cut <= len(raw); cut++ {
+		t.Run(fmt.Sprintf("split_%d", cut), func(t *testing.T) {
+			decoder := SseDecoder{}
+			var events []SseEvent
+			for _, chunk := range [][]byte{raw[:cut], {}, raw[cut:]} {
+				decoded, err := decoder.PushChunk(chunk)
+				if err != nil {
+					t.Fatalf("PushChunk: %v", err)
+				}
+				events = append(events, decoded...)
+			}
+			decoded, err := decoder.Finish()
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			events = append(events, decoded...)
+			if !reflect.DeepEqual(events, want) {
+				t.Fatalf("events = %+v, want %+v", events, want)
+			}
+		})
+	}
+
+	t.Run("one_byte_chunks", func(t *testing.T) {
+		decoder := SseDecoder{}
+		var events []SseEvent
+		for index := range raw {
+			decoded, err := decoder.PushChunk(raw[index : index+1])
+			if err != nil {
+				t.Fatalf("PushChunk byte %d: %v", index, err)
+			}
+			events = append(events, decoded...)
+		}
+		if !reflect.DeepEqual(events, want) {
+			t.Fatalf("events = %+v, want %+v", events, want)
+		}
+	})
+}
+
+func TestSseDecoderRejectsTruncatedUTF8AtEOF(t *testing.T) {
+	for _, character := range []string{"é", "你", "\U0001F642"} {
+		encoded := []byte(character)
+		for cut := 1; cut < len(encoded); cut++ {
+			t.Run(fmt.Sprintf("%x_split_%d", encoded, cut), func(t *testing.T) {
+				decoder := SseDecoder{}
+				chunk := append([]byte("event: message\ndata: complete\ndata: tail"), encoded[:cut]...)
+				if events, err := decoder.PushChunk(chunk); err != nil || len(events) != 0 {
+					t.Fatalf("PushChunk = %+v (%v), want incomplete event", events, err)
+				}
+				for attempt := 0; attempt < 2; attempt++ {
+					events, err := decoder.Finish()
+					if err == nil || !strings.Contains(err.Error(), "valid UTF-8") || len(events) != 0 {
+						t.Fatalf("Finish = %+v (%v), want UTF-8 rejection without dispatch", events, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSseDecoderRejectsInvalidUTF8Continuation(t *testing.T) {
+	decoder := SseDecoder{}
+	if events, err := decoder.PushChunk([]byte("data: \xe4")); err != nil || len(events) != 0 {
+		t.Fatalf("PushChunk = %+v (%v), want incomplete event", events, err)
+	}
+	if _, err := decoder.PushChunk([]byte("x")); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v, want UTF-8 rejection", err)
+	}
+}
+
 func TestSseDecoderHandlesMetadataCRLFCommentsAndFinish(t *testing.T) {
 	decoder := SseDecoder{}
 	events, err := decoder.PushChunk(
@@ -113,10 +189,14 @@ func TestSseDecoderHandlesMetadataCRLFCommentsAndFinish(t *testing.T) {
 }
 
 func TestSseDecoderRejectsInvalidUTF8(t *testing.T) {
-	decoder := SseDecoder{}
-	_, err := decoder.PushChunk([]byte{0xff})
-	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
-		t.Fatalf("error = %v, want UTF-8 rejection", err)
+	for _, raw := range [][]byte{{0xff}, {0x80}, {0xc0, 0xaf}, {0xed, 0xa0, 0x80}, {0xf4, 0x90, 0x80, 0x80}} {
+		t.Run(fmt.Sprintf("%x", raw), func(t *testing.T) {
+			decoder := SseDecoder{}
+			_, err := decoder.PushChunk(raw)
+			if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+				t.Fatalf("error = %v, want UTF-8 rejection", err)
+			}
+		})
 	}
 }
 
@@ -405,6 +485,19 @@ func TestMeteredSseStreamReadsMessagesAndAckDrains(t *testing.T) {
 	}
 	if *commits != 1 {
 		t.Fatalf("commits = %d, want 1", *commits)
+	}
+}
+
+func TestMeteredSseStreamHandlesUTF8ByteReads(t *testing.T) {
+	body := "data: {\"delta\":\"é你\U0001F642\"}\n\n"
+	stream := NewMeteredSseStream(nil, iotest.OneByteReader(strings.NewReader(body)))
+	message, err := stream.Next()
+	if err != nil || string(message) != "{\"delta\":\"é你\U0001F642\"}" {
+		t.Fatalf("Next = %s (%v), want complete Unicode message", message, err)
+	}
+	message, err = stream.Next()
+	if err != nil || message != nil {
+		t.Fatalf("Next = %s (%v), want EOF", message, err)
 	}
 }
 
