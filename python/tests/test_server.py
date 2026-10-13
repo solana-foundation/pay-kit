@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
@@ -1187,7 +1188,7 @@ class TestCoSignSplitBounds:
     opaquely.
     """
 
-    def test_fee_payer_in_readonly_unsigned_block_is_rejected(self):
+    async def test_fee_payer_in_readonly_unsigned_block_is_rejected(self):
         from solders.hash import Hash
         from solders.instruction import AccountMeta, Instruction
         from solders.keypair import Keypair
@@ -1232,9 +1233,9 @@ class TestCoSignSplitBounds:
         # num_required_signatures (== 1 here). Splicing at that slot would
         # overwrite message bytes.
         with pytest.raises(PaymentError, match="outside the required-signers block"):
-            _co_sign_with_fee_payer(tx_b64, rogue_fee_payer)
+            await _co_sign_with_fee_payer(tx_b64, MemorySigner(rogue_fee_payer))
 
-    def test_fee_payer_at_required_slot_co_signs(self):
+    async def test_fee_payer_at_required_slot_co_signs(self):
         # Positive control: when the fee-payer pubkey IS the first
         # required signer, the splice succeeds. Verifies the new bounds
         # check did not regress the happy path.
@@ -1263,7 +1264,7 @@ class TestCoSignSplitBounds:
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
 
-        signed_b64 = _co_sign_with_fee_payer(tx_b64, fee_payer)
+        signed_b64 = await _co_sign_with_fee_payer(tx_b64, MemorySigner(fee_payer))
         # Splice succeeded if the result is decodable and the signature
         # slot is no longer all zeros.
         signed_bytes = base64.b64decode(signed_b64)
@@ -1271,7 +1272,7 @@ class TestCoSignSplitBounds:
         # fee-payer signature slot.
         assert signed_bytes[1:65] != b"\x00" * 64
 
-    def test_fee_payer_at_non_zero_signer_slot_is_rejected(self):
+    async def test_fee_payer_at_non_zero_signer_slot_is_rejected(self):
         """Greptile follow-up: the fee payer must occupy ``account_keys[0]``.
 
         A client that places the server's fee-payer pubkey at any other
@@ -1313,7 +1314,7 @@ class TestCoSignSplitBounds:
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
 
         with pytest.raises(PaymentError, match="must occupy account index 0"):
-            _co_sign_with_fee_payer(tx_b64, rogue_fee_payer)
+            await _co_sign_with_fee_payer(tx_b64, MemorySigner(rogue_fee_payer))
 
 
 class TestComputeBudgetGuard:
@@ -2472,7 +2473,7 @@ class TestAuditSplitIssuanceGuards:
 
     def test_rejects_primary_recipient_split_with_ata_creation_when_fee_sponsored(self):
         signer = Keypair()
-        mpp = self._mpp(fee_payer_signer=signer)
+        mpp = self._mpp(fee_payer_signer=MemorySigner(signer))
         with pytest.raises(PaymentError, match="primary recipient"):
             mpp.charge_with_options(
                 "1.00",
@@ -2481,7 +2482,7 @@ class TestAuditSplitIssuanceGuards:
 
     def test_allows_primary_recipient_split_without_ata_creation(self):
         signer = Keypair()
-        mpp = self._mpp(fee_payer_signer=signer)
+        mpp = self._mpp(fee_payer_signer=MemorySigner(signer))
         # Same recipient as primary, but no ataCreationRequired -> legitimate.
         challenge = mpp.charge_with_options(
             "1.00",

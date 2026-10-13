@@ -76,7 +76,7 @@ class SessionConsumer:
         self._validate_directive(envelope.metering)
         return MeteredDelivery(consumer=self, payload=envelope.payload, metering=envelope.metering)
 
-    def commit_directive(self, directive: MeteringDirective) -> CommitReceipt:
+    async def commit_directive(self, directive: MeteringDirective) -> CommitReceipt:
         """Sign a voucher for the directive amount, send it, and advance the
         local watermark only on success.
 
@@ -95,7 +95,7 @@ class SessionConsumer:
         if amount == 0:
             raise ValueError("metered delivery amount must be greater than zero")
 
-        voucher = self._session.prepare_increment(amount)
+        voucher = await self._session.prepare_increment(amount)
         payload = CommitPayload(delivery_id=directive.delivery_id, voucher=voucher)
 
         receipt = self._transport.commit(directive, payload)
@@ -140,13 +140,13 @@ class MeteredDelivery(Generic[P]):
         """The metering directive that accompanied the payload."""
         return self._metering
 
-    def ack(self) -> CommitReceipt:
+    async def ack(self) -> CommitReceipt:
         """Sign and commit a voucher for the directive amount."""
-        return self._consumer.commit_directive(self._metering)
+        return await self._consumer.commit_directive(self._metering)
 
-    def commit(self) -> CommitReceipt:
+    async def commit(self) -> CommitReceipt:
         """Alias for :meth:`ack`."""
-        return self.ack()
+        return await self.ack()
 
     def into_parts(self) -> tuple[P, MeteringDirective]:
         """Return the payload and metering directive without committing."""

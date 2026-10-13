@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from solana_keychain import MemorySigner, SolanaSigner, TransactionSigner
+
 from solana_pay_kit import errors, kms
 from solana_pay_kit._middleware import (
     PayCore,
@@ -58,7 +60,7 @@ from solana_pay_kit.payment import Payment
 from solana_pay_kit.price import Price
 from solana_pay_kit.pricing import Pricing
 from solana_pay_kit.protocols.mpp.core.expires import days, hours, minutes, seconds, weeks
-from solana_pay_kit.signer import LocalSigner, Signer
+from solana_pay_kit.signer import Signer
 
 __all__ = [
     # enums / paycore
@@ -78,7 +80,9 @@ __all__ = [
     "gbp",
     # signer
     "Signer",
-    "LocalSigner",
+    "MemorySigner",
+    "SolanaSigner",
+    "TransactionSigner",
     "InvalidKeyError",
     "kms",
     # config

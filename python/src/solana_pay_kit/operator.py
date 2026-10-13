@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pydantic
+from solana_keychain import TransactionSigner
 
 from solana_pay_kit.errors import ConfigurationError
-from solana_pay_kit.signer import LocalSigner, Signer
+from solana_pay_kit.signer import Signer
 
 __all__ = ["Operator"]
 
@@ -16,7 +17,7 @@ class Operator(pydantic.BaseModel):
     Mirrors the Ruby/PHP ``nil``-as-default-marker convention: a freshly
     constructed ``Operator()`` carries ``recipient=None`` / ``signer=None``,
     and :meth:`with_defaults` resolves those into the demo signer and the
-    signer's own pubkey. ``recipient`` then falls back to ``signer.pubkey()``
+    signer's own pubkey. ``recipient`` then falls back to ``str(signer.pubkey)``
     via :meth:`effective_recipient`, so a zero-config boot still has a
     settlement destination. ``Config`` layers the mainnet-refusal rule on top.
     """
@@ -24,7 +25,7 @@ class Operator(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     recipient: str | None = None
-    signer: LocalSigner | None = None
+    signer: TransactionSigner | None = None
     fee_payer: bool = True
 
     @pydantic.field_validator("recipient", mode="before")
@@ -52,7 +53,7 @@ class Operator(pydantic.BaseModel):
         the resolved signer's pubkey. Returns a new frozen instance.
         """
         signer = self.signer if self.signer is not None else Signer.demo()
-        recipient = self.recipient if self.recipient is not None else signer.pubkey()
+        recipient = self.recipient if self.recipient is not None else str(signer.pubkey)
         return Operator(recipient=recipient, signer=signer, fee_payer=self.fee_payer)
 
     def effective_recipient(self) -> str:
@@ -60,7 +61,7 @@ class Operator(pydantic.BaseModel):
         if self.recipient is not None:
             return self.recipient
         signer = self.signer if self.signer is not None else Signer.demo()
-        return signer.pubkey()
+        return str(signer.pubkey)
 
     def __eq__(self, other: object) -> bool:
         """Equal when resolved recipient, signer pubkey, and fee_payer all match."""
@@ -78,4 +79,4 @@ class Operator(pydantic.BaseModel):
 
     def _signer_pubkey(self) -> str:
         signer = self.signer if self.signer is not None else Signer.demo()
-        return signer.pubkey()
+        return str(signer.pubkey)

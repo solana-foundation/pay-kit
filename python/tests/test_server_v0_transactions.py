@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.message import MessageV0, to_bytes_versioned
@@ -81,7 +82,7 @@ def test_decode_v0_sol_transfer_is_surfaced():
 # ---------------------------------------------------------------------------
 
 
-def test_cosign_v0_unsigned_happy_path_fills_signature_slot():
+async def test_cosign_v0_unsigned_happy_path_fills_signature_slot():
     """V0 unsigned wire form (zeroed signature slots): cosign splices the
     fee-payer signature in and returns valid bytes that re-parse."""
     fee_payer = Keypair()
@@ -95,7 +96,7 @@ def test_cosign_v0_unsigned_happy_path_fills_signature_slot():
     )
     tx_b64 = _v0_tx_unsigned_b64(fee_payer, [ix])
 
-    signed_b64 = M._co_sign_with_fee_payer(tx_b64, fee_payer)
+    signed_b64 = await M._co_sign_with_fee_payer(tx_b64, MemorySigner(fee_payer))
     signed_bytes = base64.b64decode(signed_b64)
     # Skip the 1-byte num_sigs prefix; first 64 bytes are the fee-payer
     # signature slot, which must no longer be all zeros.
@@ -105,7 +106,33 @@ def test_cosign_v0_unsigned_happy_path_fills_signature_slot():
     assert reparsed.message.account_keys[0] == fee_payer.pubkey()
 
 
-def test_cosign_v0_fee_payer_at_non_zero_slot_rejected():
+async def test_cosign_uses_native_returned_transaction_and_preserves_payer_signature():
+    fee_payer = Keypair()
+    payer = Keypair()
+    recipient = Keypair()
+    ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1000))
+    unsigned = VersionedTransaction.from_bytes(base64.b64decode(_v0_tx_unsigned_b64(fee_payer, [ix])))
+    partially_signed = (await MemorySigner(payer).sign_transaction(unsigned)).transaction
+    payer_index = list(partially_signed.message.account_keys).index(payer.pubkey())
+    payer_signature = partially_signed.signatures[payer_index]
+
+    class RemoteTransactionSigner(MemorySigner):
+        async def sign_message(self, message: bytes):
+            raise AssertionError("transaction signing must not use the message-signing API")
+
+        async def sign_transaction(self, transaction: VersionedTransaction):
+            # Remote signers can return a new object rather than mutating input.
+            return await super().sign_transaction(VersionedTransaction.from_bytes(bytes(transaction)))
+
+    signed_b64 = await M._co_sign_with_fee_payer(
+        base64.b64encode(bytes(partially_signed)).decode(), RemoteTransactionSigner(fee_payer)
+    )
+    signed = VersionedTransaction.from_bytes(base64.b64decode(signed_b64))
+    assert signed.signatures[payer_index] == payer_signature
+    assert all(signed.verify_with_results())
+
+
+async def test_cosign_v0_fee_payer_at_non_zero_slot_rejected():
     """V0 with the rogue fee-payer pubkey at slot 1: rejected.
 
     Mirrors the legacy-tx test in test_server.py for the v0 path. The
@@ -126,10 +153,10 @@ def test_cosign_v0_fee_payer_at_non_zero_slot_rejected():
     tx_b64 = _v0_tx_b64(real_payer, [ix], signers=[real_payer, rogue_fee_payer])
 
     with pytest.raises(PaymentError, match="must occupy account index 0"):
-        M._co_sign_with_fee_payer(tx_b64, rogue_fee_payer)
+        await M._co_sign_with_fee_payer(tx_b64, MemorySigner(rogue_fee_payer))
 
 
-def test_cosign_v0_fee_payer_not_in_account_keys_rejected():
+async def test_cosign_v0_fee_payer_not_in_account_keys_rejected():
     """V0 with a fee-payer pubkey absent from the account keys: rejected."""
     payer = Keypair()
     recipient = Keypair()
@@ -138,14 +165,14 @@ def test_cosign_v0_fee_payer_not_in_account_keys_rejected():
     tx_b64 = _v0_tx_b64(payer, [ix], signers=[payer])
 
     with pytest.raises(PaymentError, match="not present in transaction accounts"):
-        M._co_sign_with_fee_payer(tx_b64, outsider)
+        await M._co_sign_with_fee_payer(tx_b64, MemorySigner(outsider))
 
 
-def test_cosign_invalid_bytes_rejected_with_invalid_payload_type():
+async def test_cosign_invalid_bytes_rejected_with_invalid_payload_type():
     """Random bytes that never reach a message byte: invalid-payload-type."""
     bogus = base64.b64encode(b"\x00\x01\x02\x03").decode()
     with pytest.raises(PaymentError) as exc:
-        M._co_sign_with_fee_payer(bogus, Keypair())
+        await M._co_sign_with_fee_payer(bogus, MemorySigner(Keypair()))
     assert exc.value.code == "invalid-payload-type"
 
 
@@ -296,13 +323,13 @@ def test_require_reported_version_mirrors_check_reported_version():
     assert perr.value.code == "invalid-payload"
 
 
-def test_cosign_accepts_legacy_transaction():
+async def test_cosign_accepts_legacy_transaction():
     from solders.transaction import Transaction
 
     fee_payer = Keypair()
     ix = transfer(TransferParams(from_pubkey=fee_payer.pubkey(), to_pubkey=Keypair().pubkey(), lamports=1))
     _, tx_b64 = _legacy_tx(fee_payer, [ix])
-    signed = Transaction.from_bytes(base64.b64decode(M._co_sign_with_fee_payer(tx_b64, fee_payer)))
+    signed = Transaction.from_bytes(base64.b64decode(await M._co_sign_with_fee_payer(tx_b64, MemorySigner(fee_payer))))
     signed.verify()
 
 

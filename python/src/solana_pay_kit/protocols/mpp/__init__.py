@@ -307,7 +307,7 @@ class MppAdapter:
         signer = self._config.operator.signer
         if self._config.operator.fee_payer and signer is not None:
             method_details["feePayer"] = True
-            method_details["feePayerKey"] = signer.pubkey()
+            method_details["feePayerKey"] = str(signer.pubkey)
         # Embed the server's recent blockhash when a provider is wired
         # (caveat #5). Injected via kwarg so unit tests stay offline; the
         # pull-mode MPP verifier ignores an unused blockhash on real nets.
@@ -359,7 +359,7 @@ class MppAdapter:
         if cached is not None:
             return cached
 
-        fee_payer_signer = self._fee_payer_keypair()
+        fee_payer_signer = self._fee_payer_signer()
         server_config = MppServerConfig(
             recipient=pay_to,
             currency=coin,
@@ -376,14 +376,12 @@ class MppAdapter:
         self._handler_cache[key] = mpp
         return mpp
 
-    def _fee_payer_keypair(self) -> Any:
-        """Materialize a solders Keypair fee payer when the operator sponsors."""
+    def _fee_payer_signer(self) -> Any:
+        """Return the native operator signer when it sponsors transaction fees."""
         signer = self._config.operator.signer
         if not self._config.operator.fee_payer or signer is None:
             return None
-        from solders.keypair import Keypair
-
-        return Keypair.from_bytes(signer.secret_key())
+        return signer
 
     def _settlement_coin(self, gate: Gate) -> str:
         """Pick the settlement coin: gate primary coin else config default."""

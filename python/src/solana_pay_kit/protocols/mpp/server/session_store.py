@@ -20,9 +20,10 @@ The module uses plain dataclasses with ``to_dict()``/``from_dict()``,
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from inspect import isawaitable
 from typing import Any
 
 __all__ = [
@@ -409,9 +410,10 @@ class ListChannelsFilter:
 # (None if no channel exists) and returns the next state, or raises, in which
 # case the stored state is left unchanged.
 #
-# Implementations MUST guarantee the mutator runs without interleaving with
-# other update_channel calls for the same channel id.
-ChannelMutator = Callable[["ChannelState | None"], "ChannelState"]
+# Implementations MUST await asynchronous mutators before persisting and guarantee
+# the entire mutation runs without interleaving with other update_channel calls
+# for the same channel id, including while a remote signer is being awaited.
+ChannelMutator = Callable[["ChannelState | None"], "ChannelState | Awaitable[ChannelState]"]
 
 
 class ChannelStore:
@@ -431,7 +433,8 @@ class ChannelStore:
 
     async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
         """Atomically read-modify-write a channel's state and return the stored
-        result."""
+        result. Await asynchronous mutators while retaining exclusive access to
+        the channel; a signing error or cancellation must leave state unchanged."""
         raise NotImplementedError
 
     async def delete_channel(self, channel_id: str) -> None:
@@ -490,6 +493,8 @@ class MemoryChannelStore(ChannelStore):
             # A mutator error leaves the stored state unchanged and does not
             # poison later updates: we only write back on success.
             next_state = mutator(current_snapshot)
+            if isawaitable(next_state):
+                next_state = await next_state
 
             async with self._mu:
                 self._data[channel_id] = next_state.clone()

@@ -14,6 +14,7 @@ import json
 import struct
 
 import pytest
+from solana_keychain import MemorySigner, SignedTransaction
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
@@ -24,7 +25,6 @@ from solders.transaction import VersionedTransaction
 import solana_pay_kit.protocols.x402 as xmod
 from solana_pay_kit import Gate as GateCls
 from solana_pay_kit import (
-    LocalSigner,
     MemoryStore,
     Operator,
     Price,
@@ -118,7 +118,7 @@ def _clean(monkeypatch):
 
 def _adapter(store=None, fail=False, confirm_error=None, monkeypatch=None, rpcs=None):
     op_kp = Keypair()
-    op = Operator(signer=LocalSigner.from_keypair(op_kp), recipient=str(Keypair().pubkey()))
+    op = Operator(signer=MemorySigner(op_kp), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_localnet",
         preflight=False,
@@ -179,9 +179,9 @@ def _build_envelope(adapter, gate, op_kp, *, amount_override=None, memo_override
     return base64.b64encode(json.dumps(envelope).encode()).decode()
 
 
-def _settlement_signature(header: str, op_kp: Keypair) -> str:
+async def _settlement_signature(header: str, op_kp: Keypair) -> str:
     envelope = json.loads(base64.b64decode(header))
-    wire = _co_sign(envelope["payload"]["transaction"], LocalSigner.from_keypair(op_kp))
+    wire = await _co_sign(envelope["payload"]["transaction"], MemorySigner(op_kp))
     return _transaction_signature(wire)
 
 
@@ -198,7 +198,7 @@ class _Req:
 async def test_verify_and_settle_happy_path(monkeypatch):
     adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch)
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.protocol is Protocol.X402
     assert payment.transaction == signature
@@ -225,7 +225,7 @@ async def test_replay_same_signature_with_different_transaction_rejected(monkeyp
     store = MemoryStore()
     adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     await store.put(
         f"x402-svm-exact:consumed:{signature}",
         {"binding": "different-wire", "leaseUntil": 0, "state": "confirmed"},
@@ -251,7 +251,7 @@ async def test_success_path_awaits_confirmation_before_returning(monkeypatch):
     rpcs: list = []
     adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch, rpcs=rpcs)
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == signature
     # The adapter must poll confirmation, then close the RPC after the poll.
@@ -272,7 +272,7 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
         monkeypatch=monkeypatch,
     )
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
     assert exc.value.code == "payment_invalid"
@@ -318,7 +318,7 @@ async def test_recovery_does_not_replace_concurrently_confirmed_state(monkeypatc
         monkeypatch=monkeypatch,
     )
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     with pytest.raises(InvalidProofError):
         await adapter.verify_and_settle(gate, _Req(header))
 
@@ -351,7 +351,7 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
         monkeypatch=monkeypatch,
     )
     header = _build_envelope(adapter, gate, op_kp)
-    signature = _settlement_signature(header, op_kp)
+    signature = await _settlement_signature(header, op_kp)
     with pytest.raises(InvalidProofError):
         await adapter.verify_and_settle(gate, _Req(header))
     record = await store.get(f"x402-svm-exact:consumed:{signature}")
@@ -363,7 +363,7 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
 
 
 def _x402_adapter_for_price(price):
-    op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
+    op = Operator(signer=MemorySigner(Keypair()), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_localnet",
         preflight=False,
@@ -551,9 +551,9 @@ def test_request_path_variants():
     assert _request_path(object()) == "/"
 
 
-def test_co_sign_fee_payer_not_present_rejected():
+async def test_co_sign_fee_payer_not_present_rejected():
     payer = Keypair()
-    outsider = LocalSigner.from_keypair(Keypair())
+    outsider = MemorySigner(Keypair())
     from solders.system_program import TransferParams, transfer
 
     ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=Keypair().pubkey(), lamports=1))
@@ -561,17 +561,17 @@ def test_co_sign_fee_payer_not_present_rejected():
     vtx = VersionedTransaction(msg, [payer])
     tx_b64 = base64.b64encode(bytes(vtx)).decode()
     with pytest.raises(InvalidProofError):
-        _co_sign(tx_b64, outsider)
+        await _co_sign(tx_b64, outsider)
 
 
-def test_co_sign_unparseable_bytes_rejected():
+async def test_co_sign_unparseable_bytes_rejected():
     bogus = base64.b64encode(b"\x00\x01\x02").decode()
     with pytest.raises(InvalidProofError) as exc:
-        _co_sign(bogus, LocalSigner.from_keypair(Keypair()))
+        await _co_sign(bogus, MemorySigner(Keypair()))
     assert exc.value.code == "invalid_exact_svm_payload_transaction_parse"
 
 
-def test_co_sign_accepts_legacy_transaction():
+async def test_co_sign_accepts_legacy_transaction():
     """A pre-cutover client's legacy (unprefixed) wire is co-signed over the
     bare message bytes, exactly as the runtime verifies it."""
     from solders.message import Message
@@ -582,8 +582,46 @@ def test_co_sign_accepts_legacy_transaction():
     ix = transfer(TransferParams(from_pubkey=op_kp.pubkey(), to_pubkey=Keypair().pubkey(), lamports=1))
     tx = Transaction.new_unsigned(Message.new_with_blockhash([ix], op_kp.pubkey(), Hash.from_string(BH)))
     tx_b64 = base64.b64encode(bytes(tx)).decode()
-    wire = _co_sign(tx_b64, LocalSigner.from_keypair(op_kp))
+    wire = await _co_sign(tx_b64, MemorySigner(op_kp))
     signed = Transaction.from_bytes(wire)
     assert signed.message == tx.message
     signed.verify()
     assert _transaction_signature(wire) == str(signed.signatures[0])
+
+
+@pytest.mark.parametrize("scheme", ["exact", "upto"])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_cosign_preserves_client_signature_and_uses_returned_transaction(scheme, legacy):
+    """A backend may return a signed copy rather than mutate the input."""
+    from solders.message import Message
+    from solders.signature import Signature
+    from solders.system_program import TransferParams, transfer
+
+    from solana_pay_kit.protocols.x402.upto import _cosign_fee_payer
+
+    class CopyingSigner(MemorySigner):
+        async def sign_transaction(self, transaction: VersionedTransaction) -> SignedTransaction:
+            copy = VersionedTransaction.from_bytes(bytes(transaction))
+            result = await super().sign_transaction(copy)
+            assert transaction.signatures[0] == Signature.default()
+            return result
+
+    operator = CopyingSigner(Keypair())
+    client = MemorySigner(Keypair())
+    instruction = transfer(TransferParams(from_pubkey=client.pubkey, to_pubkey=Keypair().pubkey(), lamports=1))
+    blockhash = Hash.from_string(BH)
+    message = (
+        Message.new_with_blockhash([instruction], operator.pubkey, blockhash)
+        if legacy
+        else MessageV0.try_compile(operator.pubkey, [instruction], [], blockhash)
+    )
+    unsigned = VersionedTransaction.populate(message, [Signature.default(), Signature.default()])
+    partial = (await client.sign_transaction(unsigned)).transaction
+    assert partial.signatures[0] == Signature.default()
+    client_signature = partial.signatures[1]
+    cosign = _co_sign if scheme == "exact" else _cosign_fee_payer
+    wire = await cosign(base64.b64encode(bytes(partial)).decode(), operator)
+    signed = VersionedTransaction.from_bytes(wire)
+    assert signed.message == partial.message
+    assert signed.signatures[1] == client_signature
+    assert signed.verify_with_results() == [True, True]

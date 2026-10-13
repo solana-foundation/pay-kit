@@ -12,6 +12,7 @@ prepared voucher (rust/TS parity), and a fresh delivery advances.
 from __future__ import annotations
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -64,8 +65,8 @@ class _RecordingTransport:
         )
 
 
-def _signer(seed: int = 7) -> Keypair:
-    return Keypair.from_seed(bytes([seed] * 32))
+def _signer(seed: int = 7) -> MemorySigner:
+    return MemorySigner(Keypair.from_seed(bytes([seed] * 32)))
 
 
 def _channel() -> Pubkey:
@@ -87,14 +88,14 @@ def _directive(session_id: str, amount: int, delivery_id: str = "d1") -> Meterin
     )
 
 
-def test_ack_sends_commit_and_advances_local_watermark() -> None:
+async def test_ack_sends_commit_and_advances_local_watermark() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     envelope = MeteredEnvelope(payload="work", metering=_directive(consumer.session.channel_id_string, 250))
 
     delivery = consumer.accept(envelope)
     assert delivery.payload == "work"
-    receipt = delivery.ack()
+    receipt = await delivery.ack()
 
     assert receipt.cumulative == "250"
     assert receipt.status == "committed"
@@ -102,7 +103,7 @@ def test_ack_sends_commit_and_advances_local_watermark() -> None:
     assert len(transport.commits) == 1
 
 
-def test_commit_alias_and_into_parts() -> None:
+async def test_commit_alias_and_into_parts() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     consumer.session.set_expires_at(1234)
@@ -110,7 +111,7 @@ def test_commit_alias_and_into_parts() -> None:
 
     delivery = consumer.accept(envelope)
     assert delivery.metering.amount == "50"
-    receipt = delivery.commit()
+    receipt = await delivery.commit()
     assert receipt.cumulative == "50"
     assert transport.commits[0].voucher.data.expires_at == 1234
 
@@ -124,12 +125,12 @@ def test_commit_alias_and_into_parts() -> None:
     assert metering.amount == "75"
 
 
-def test_commit_directive_directly() -> None:
+async def test_commit_directive_directly() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     directive = _directive(consumer.session.channel_id_string, 25)
 
-    receipt = consumer.commit_directive(directive)
+    receipt = await consumer.commit_directive(directive)
     assert receipt.cumulative == "25"
     assert len(transport.commits) == 1
     assert consumer.transport is transport
@@ -145,37 +146,37 @@ def test_wrong_session_rejected_before_commit() -> None:
     assert len(transport.commits) == 0
 
 
-def test_zero_amount_rejected_before_commit() -> None:
+async def test_zero_amount_rejected_before_commit() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     zero = _directive(consumer.session.channel_id_string, 0)
     with pytest.raises(ValueError, match="greater than zero"):
-        consumer.commit_directive(zero)
+        await consumer.commit_directive(zero)
     assert len(transport.commits) == 0
 
 
-def test_invalid_amount_rejected_before_commit() -> None:
+async def test_invalid_amount_rejected_before_commit() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     invalid = _directive(consumer.session.channel_id_string, 1)
     invalid.amount = "bad"
     with pytest.raises(ValueError, match="invalid metering amount"):
-        consumer.commit_directive(invalid)
+        await consumer.commit_directive(invalid)
     assert len(transport.commits) == 0
     assert consumer.session.cumulative == 0
 
 
-def test_failed_commit_does_not_advance_local_watermark() -> None:
+async def test_failed_commit_does_not_advance_local_watermark() -> None:
     transport = _RecordingTransport(fail=True)
     consumer = _consumer(transport)
     directive = _directive(consumer.session.channel_id_string, 250)
 
     with pytest.raises(ValueError, match="commit failed"):
-        consumer.commit_directive(directive)
+        await consumer.commit_directive(directive)
     assert consumer.session.cumulative == 0
     # Retry after the transport recovers reuses the same cumulative cleanly.
     transport.fail = False
-    receipt = consumer.commit_directive(directive)
+    receipt = await consumer.commit_directive(directive)
     assert receipt.cumulative == "250"
     assert consumer.session.cumulative == 250
 
@@ -198,7 +199,7 @@ class _ReplayTransport:
         )
 
 
-def test_duplicate_delivery_replay_does_not_double_count() -> None:
+async def test_duplicate_delivery_replay_does_not_double_count() -> None:
     # Re-committing the same deliveryId returns a replayed receipt pinned to the
     # originally settled cumulative (100). The consumer reconciles to that settled
     # value (clamped to the prepared voucher) instead of recording the freshly
@@ -208,51 +209,51 @@ def test_duplicate_delivery_replay_does_not_double_count() -> None:
     consumer = _consumer(transport)
     d = _directive(consumer.session.channel_id_string, 100, delivery_id="d1")
 
-    r1 = consumer.commit_directive(d)
+    r1 = await consumer.commit_directive(d)
     assert r1.status == "committed"
     assert consumer.session.cumulative == 100
 
-    r2 = consumer.commit_directive(d)
+    r2 = await consumer.commit_directive(d)
     assert r2.status == "replayed"
     assert r2.cumulative == "100"
     assert consumer.session.cumulative == 100  # no double-count
     assert len(transport.commits) == 1
 
 
-def test_replayed_receipt_reconciles_to_clamped_settled() -> None:
+async def test_replayed_receipt_reconciles_to_clamped_settled() -> None:
     # Lost-response case: the server reports the delivery already settled at 100.
     # The client reconciles its watermark to the settled value, clamped to the
     # voucher it just prepared (250) since the server is untrusted: min(100, 250)
     # = 100. Mirrors Go reconcile_settled (the #162 fix).
     consumer = _consumer(_ReplayTransport(settled="100"))
-    receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
+    receipt = await consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
     assert receipt.status == "replayed"
     assert consumer.session.cumulative == 100
 
 
-def test_replayed_receipt_never_regresses_watermark() -> None:
+async def test_replayed_receipt_never_regresses_watermark() -> None:
     # Client is already ahead at 300 (later deliveries settled). A stale replayed
     # receipt at 100 must not regress the watermark.
     consumer = _consumer(_ReplayTransport(settled="100"))
     consumer.session.reconcile_settled(300)
-    consumer.commit_directive(_directive(consumer.session.channel_id_string, 50))
+    await consumer.commit_directive(_directive(consumer.session.channel_id_string, 50))
     assert consumer.session.cumulative == 300
 
 
-def test_replayed_receipt_clamps_inflated_server_cumulative() -> None:
+async def test_replayed_receipt_clamps_inflated_server_cumulative() -> None:
     # A malicious/buggy server reports a replay settled far above the prepared
     # voucher; the watermark clamps to the prepared value (250), never the
     # inflated one, so the next voucher cannot over-authorize.
     consumer = _consumer(_ReplayTransport(settled="1000000"))
-    consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
+    await consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
     assert consumer.session.cumulative == 250
 
 
-def test_fresh_delivery_advances_after_prior() -> None:
+async def test_fresh_delivery_advances_after_prior() -> None:
     transport = _RecordingTransport()
     consumer = _consumer(transport)
 
-    consumer.commit_directive(_directive(consumer.session.channel_id_string, 100, delivery_id="a"))
-    consumer.commit_directive(_directive(consumer.session.channel_id_string, 30, delivery_id="b"))
+    await consumer.commit_directive(_directive(consumer.session.channel_id_string, 100, delivery_id="a"))
+    await consumer.commit_directive(_directive(consumer.session.channel_id_string, 30, delivery_id="b"))
     assert consumer.session.cumulative == 130
     assert [c.voucher.data.cumulative_amount for c in transport.commits] == ["100", "130"]

@@ -31,6 +31,9 @@ import json
 import sys
 from typing import Any
 
+from solana_keychain import MemorySigner
+from solders.keypair import Keypair
+
 from solana_pay_kit._paycore.solana import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
@@ -68,7 +71,6 @@ from solana_pay_kit.protocols.x402.exact.verify import (
     X402_VERSION_V1,
     X402_VERSION_V2,
 )
-from solana_pay_kit.signer import LocalSigner
 
 DEFAULT_NETWORK = "mainnet"
 DEFAULT_SPL_DECIMALS = 6
@@ -111,18 +113,11 @@ class OfflineRPC:
         return await self._refuse("getAccountInfo")
 
 
-def _local_signer(secret: list[int]) -> Any:
-    """Adapt a 64-byte ed25519 secret key to a solders Keypair.
-
-    The vectors carry the signer as the transfer authority / fee payer; the
-    Python client build path consumes ``signer.pubkey()`` and
-    ``tx.partial_sign([signer], ...)``, both satisfied by a solders Keypair.
-    """
-    from solders.keypair import Keypair  # type: ignore[import-untyped]
-
+def _local_signer(secret: list[int]) -> MemorySigner:
+    """Adapt a vector's 64-byte Ed25519 secret to the native async signer."""
     if len(secret) != 64:
         raise ValueError(f"signerSecretKey must be 64 bytes, got {len(secret)}")
-    return Keypair.from_bytes(bytes(secret))
+    return MemorySigner(Keypair.from_bytes(bytes(secret)))
 
 
 def _flatten_request(
@@ -524,7 +519,7 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
     advertised_extensions = inp.get("x402AdvertisedExtensions")
     payment_identifier_id = inp.get("x402PaymentIdentifierId")
 
-    signer = LocalSigner.generate()
+    signer = MemorySigner(Keypair())
     # The legacy v1 producer has no `extensions` concept, so it does not accept
     # the echo-and-append kwargs; only the v2 producer does.
     if inp.get("x402Version") == X402_VERSION_V1:

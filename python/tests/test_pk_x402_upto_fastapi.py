@@ -9,6 +9,7 @@ and that a non-usage route passes through the usage middleware untouched.
 from __future__ import annotations
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 pytest.importorskip("fastapi")
@@ -18,7 +19,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from solana_pay_kit import (  # noqa: E402
     Gate,
-    LocalSigner,
     Operator,
     Price,
     Protocol,
@@ -45,7 +45,7 @@ def _app() -> TestClient:
         rpc_url="http://127.0.0.1:1",
         preflight=False,
         accept=(Protocol.X402,),
-        operator=Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey())),
+        operator=Operator(signer=MemorySigner(Keypair()), recipient=str(Keypair().pubkey())),
     )
     app = FastAPI()
     install(app)
@@ -95,7 +95,7 @@ def test_requireusage_without_install_refuses_to_open() -> None:
         rpc_url="http://127.0.0.1:1",
         preflight=False,
         accept=(Protocol.X402,),
-        operator=Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey())),
+        operator=Operator(signer=MemorySigner(Keypair()), recipient=str(Keypair().pubkey())),
     )
     app = FastAPI()  # deliberately NOT install(app)
     gate = Gate.build(

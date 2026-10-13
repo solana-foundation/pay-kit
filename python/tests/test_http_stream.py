@@ -16,6 +16,7 @@ import json
 
 import httpx
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -56,7 +57,7 @@ class _RecordingTransport:
 
 def _consumer() -> SessionConsumer:
     channel = Pubkey.from_string("11111111111111111111111111111112")
-    session = ActiveSession(channel, Keypair.from_seed(bytes([9] * 32)))
+    session = ActiveSession(channel, MemorySigner(Keypair.from_seed(bytes([9] * 32))))
     return SessionConsumer(session, _RecordingTransport())
 
 
@@ -145,7 +146,7 @@ def test_parse_metered_sse_usage_done_other_and_errors() -> None:
 # -- MeteredSseSession -----------------------------------------------------------
 
 
-def test_metered_sse_ack_uses_final_usage_amount() -> None:
+async def test_metered_sse_ack_uses_final_usage_amount() -> None:
     consumer = _consumer()
     stream = MeteredSseSession(consumer)
     directive = _directive(consumer.session.channel_id_string)
@@ -155,13 +156,13 @@ def test_metered_sse_ack_uses_final_usage_amount() -> None:
     assert delta == {"delta": "hello"}
     stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"425"}'))
 
-    receipt = stream.ack()
+    receipt = await stream.ack()
     assert receipt.amount == "425"
     assert receipt.cumulative == "425"
     assert consumer.session.cumulative == 425
 
 
-def test_metered_sse_ack_uses_reserved_amount_without_usage_and_tracks_done() -> None:
+async def test_metered_sse_ack_uses_reserved_amount_without_usage_and_tracks_done() -> None:
     consumer = _consumer()
     stream = MeteredSseSession(consumer)
     directive = _directive(consumer.session.channel_id_string)
@@ -171,17 +172,17 @@ def test_metered_sse_ack_uses_reserved_amount_without_usage_and_tracks_done() ->
     stream.accept_event(_event("done", ""))
     assert stream.is_done
 
-    receipt = stream.ack()
+    receipt = await stream.ack()
     assert receipt.amount == "1000"
     assert receipt.cumulative == "1000"
     assert stream.consumer is consumer
 
 
-def test_metered_sse_reports_missing_metering_and_usage_mismatch() -> None:
+async def test_metered_sse_reports_missing_metering_and_usage_mismatch() -> None:
     consumer = _consumer()
     stream = MeteredSseSession(consumer)
     with pytest.raises(ValueError, match="mpp.metering"):
-        stream.ack()
+        await stream.ack()
 
     stream = MeteredSseSession(consumer)
     directive = _directive(consumer.session.channel_id_string)
@@ -190,20 +191,20 @@ def test_metered_sse_reports_missing_metering_and_usage_mismatch() -> None:
         stream.accept_event(_event("mpp.usage", '{"deliveryId":"other","amount":"1"}'))
 
 
-def test_metered_sse_usage_overrides_amount_never_delivery_id() -> None:
+async def test_metered_sse_usage_overrides_amount_never_delivery_id() -> None:
     consumer = _consumer()
     stream = MeteredSseSession(consumer)
     directive = _directive(consumer.session.channel_id_string)
     stream.accept_event(_event("mpp.metering", json.dumps(directive.to_dict())))
     stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"7"}'))
-    receipt = stream.ack()
+    receipt = await stream.ack()
     assert receipt.amount == "7"
     transport = consumer.transport
     assert isinstance(transport, _RecordingTransport)
     assert transport.commits[0].delivery_id == "stream-1"
 
 
-def test_metered_sse_accepts_usage_before_directive() -> None:
+async def test_metered_sse_accepts_usage_before_directive() -> None:
     # The usage event may arrive before the directive (rust state-machine
     # parity): it cannot be validated yet and still overrides the amount.
     consumer = _consumer()
@@ -211,7 +212,7 @@ def test_metered_sse_accepts_usage_before_directive() -> None:
     stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"33"}'))
     directive = _directive(consumer.session.channel_id_string)
     stream.accept_event(_event("mpp.metering", json.dumps(directive.to_dict())))
-    receipt = stream.ack()
+    receipt = await stream.ack()
     assert receipt.amount == "33"
 
 
@@ -222,14 +223,14 @@ def _http_transport(handler: httpx.MockTransport, **kwargs: str) -> HttpCommitTr
     return HttpCommitTransport(client=httpx.Client(transport=handler), **kwargs)
 
 
-def _commit_fixture() -> tuple[MeteringDirective, CommitPayload]:
+async def _commit_fixture() -> tuple[MeteringDirective, CommitPayload]:
     consumer = _consumer()
     directive = _directive(consumer.session.channel_id_string)
-    voucher = consumer.session.prepare_increment(88)
+    voucher = await consumer.session.prepare_increment(88)
     return directive, CommitPayload(delivery_id=directive.delivery_id, voucher=voucher)
 
 
-def test_http_commit_transport_success_and_errors() -> None:
+async def test_http_commit_transport_success_and_errors() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -252,7 +253,7 @@ def test_http_commit_transport_success_and_errors() -> None:
             return httpx.Response(500, text="commit failed")
         return httpx.Response(200, text="not json")
 
-    directive, payload = _commit_fixture()
+    directive, payload = await _commit_fixture()
     transport = _http_transport(
         httpx.MockTransport(handler),
         default_commit_url="http://test/commit",
@@ -276,7 +277,7 @@ def test_http_commit_transport_success_and_errors() -> None:
         )
 
 
-def test_http_commit_transport_prefers_directive_commit_url() -> None:
+async def test_http_commit_transport_prefers_directive_commit_url() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/directive-url"
         body = json.loads(request.content)
@@ -291,17 +292,17 @@ def test_http_commit_transport_prefers_directive_commit_url() -> None:
             },
         )
 
-    directive, payload = _commit_fixture()
+    directive, payload = await _commit_fixture()
     directive.commit_url = "http://test/directive-url"
     transport = _http_transport(httpx.MockTransport(handler), default_commit_url="http://test/default-url")
     assert transport.commit(directive, payload).cumulative == "88"
 
 
-def test_http_commit_transport_surfaces_transport_failures() -> None:
+async def test_http_commit_transport_surfaces_transport_failures() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom", request=request)
 
-    directive, payload = _commit_fixture()
+    directive, payload = await _commit_fixture()
     transport = _http_transport(httpx.MockTransport(handler), default_commit_url="http://test/commit")
     with pytest.raises(ValueError, match="commit request failed"):
         transport.commit(directive, payload)
@@ -310,7 +311,7 @@ def test_http_commit_transport_surfaces_transport_failures() -> None:
 # -- MeteredSseStream ------------------------------------------------------------
 
 
-def test_metered_sse_stream_reads_messages_and_ack_drains() -> None:
+async def test_metered_sse_stream_reads_messages_and_ack_drains() -> None:
     consumer = _consumer()
     directive = _directive(consumer.session.channel_id_string)
     body = (
@@ -324,7 +325,7 @@ def test_metered_sse_stream_reads_messages_and_ack_drains() -> None:
     stream = MeteredSseStream(consumer, chunks)
 
     assert stream.next() == {"delta": "first"}
-    receipt = stream.ack()
+    receipt = await stream.ack()
     assert receipt.amount == "275"
     assert receipt.cumulative == "275"
     assert consumer.session.cumulative == 275

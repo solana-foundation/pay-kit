@@ -293,7 +293,7 @@ class _Adapter:
         # Pubkey mode: the literal scenario mint pubkey is the MPP currency.
         self.mint = require_env("MPP_HARNESS_MINT")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
-        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
+        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
@@ -306,9 +306,7 @@ class _Adapter:
         fee_payer = None
         fee_payer_raw = os.environ.get("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
         if fee_payer_raw:
-            from solders.keypair import Keypair
-
-            fee_payer = Keypair.from_bytes(bytes(json.loads(fee_payer_raw)))
+            fee_payer = Signer.json(fee_payer_raw)
         self.fee_payer = fee_payer
 
         # Build the lower-level solana_pay_kit.protocols.mpp handler with the raw mint. The
@@ -361,7 +359,7 @@ class _Adapter:
         # and stamps challenge fields from one blocking getLatestBlockhash
         # call (the slot rides in its context).
         config = SessionConfig(
-            operator=str(signer.pubkey()),
+            operator=str(signer.pubkey),
             recipient=pay_to,
             amount=int(amount_units),
             currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),

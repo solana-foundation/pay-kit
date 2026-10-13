@@ -71,7 +71,7 @@ def charge_offers(gate: Gate, config: Config, *, currency: str = "USDC") -> list
     price = f"{gate.total().amount_string()} {currency}"
     network = config.network.caip2()
     pay_to = gate.pay_to
-    operator = config.operator.signer.pubkey()
+    operator = str(config.operator.signer.pubkey)
     offers: list[dict[str, Any]] = []
     if Protocol.X402 in accept:
         offers.append(
@@ -144,7 +144,7 @@ def upto_offer(gate: Gate, config: Config, *, currency: str = "USDC") -> dict[st
         amount=amount,
         currency=currency,
         description=f"up to {cap_human} {currency}",
-        feePayer=config.operator.signer.pubkey(),
+        feePayer=str(config.operator.signer.pubkey),
         intent="usage",
         method="x402",
         network=config.network.caip2(),

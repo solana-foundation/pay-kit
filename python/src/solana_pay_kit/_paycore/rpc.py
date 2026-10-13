@@ -155,7 +155,7 @@ class SolanaRpc:
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
         """Fetch an account's raw data bytes and owner (base58), or ``None`` when
         the account is missing. Used to read on-chain payment-channel state
-        during x402 ``upto`` verification; the generated ``Channel.decode`` then
+        during x402 ``upto`` verification; the generated ``Channel.deserialize`` then
         parses the returned bytes."""
         result = await self._call("getAccountInfo", [address, {"encoding": "base64", "commitment": commitment}])
         value = (result or {}).get("value") if isinstance(result, dict) else None

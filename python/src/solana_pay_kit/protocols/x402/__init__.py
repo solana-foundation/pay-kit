@@ -50,6 +50,8 @@ from solana_pay_kit.protocols.x402.exact.verify import (
 )
 
 if TYPE_CHECKING:
+    from solana_keychain import TransactionSigner
+
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import Gate
 
@@ -115,7 +117,7 @@ class X402Adapter:
             ) from exc
         signer = self._config.x402.effective_signer(self._config.operator)
         extra: X402Extra = {
-            "feePayer": signer.pubkey() if signer is not None else "",
+            "feePayer": str(signer.pubkey) if signer is not None else "",
             "decimals": 6,
             "tokenProgram": token_program,
             "memo": _request_path(request),
@@ -212,7 +214,7 @@ class X402Adapter:
             )
 
         # Structural shape (11 rules) against the server offer.
-        ExactVerifier.verify(tx_base64, cast("dict[str, Any]", offer), [signer.pubkey()])
+        ExactVerifier.verify(tx_base64, cast("dict[str, Any]", offer), [str(signer.pubkey)])
 
         # Reject up-front if the client signed against the wrong cluster.
         # Skip on a loopback RPC where a Surfpool blockhash is expected.
@@ -223,7 +225,7 @@ class X402Adapter:
                 check_network_blockhash(self._config.network.mints_label(), blockhash)
 
         # Cosign as the facilitator fee payer (slot-splice, version aware).
-        cosigned_wire = _co_sign(tx_base64, signer)
+        cosigned_wire = await _co_sign(tx_base64, signer)
         signature = _transaction_signature(cosigned_wire)
         replay_key = _REPLAY_PREFIX + signature
         binding = hashlib.sha256(cosigned_wire).hexdigest()
@@ -419,27 +421,24 @@ class X402Adapter:
         return self._config.network.caip2()
 
 
-def _co_sign(transaction_b64: str, signer: Any) -> bytes:
-    """Splice the facilitator signature into the fee-payer slot, return wire.
+async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
+    """Sign the facilitator slot while preserving existing client signatures.
 
     The signature covers ``to_bytes_versioned(msg)``: the 0x80 prefix plus
     the v0 body, or the bare legacy message. ``VersionedTransaction.from_bytes``
     dispatches on the prefix, so a pre-cutover client's legacy wire is
     co-signed like a v0 one. The fee payer must occupy a signature slot.
     """
-    from solders.message import to_bytes_versioned
-    from solders.pubkey import Pubkey
     from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    fee_payer_pubkey = Pubkey.from_string(signer.pubkey())
+    fee_payer_pubkey = signer.pubkey
 
     try:
         vtx = VersionedTransaction.from_bytes(raw)
     except Exception as exc:  # noqa: BLE001
         raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     account_keys = list(vtx.message.account_keys)
-    message_bytes = bytes(to_bytes_versioned(vtx.message))
     num_required = int(vtx.message.header.num_required_signatures)
 
     try:
@@ -452,11 +451,8 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     if idx >= num_required:
         raise InvalidProofError("solana_pay_kit: fee payer is not a required signer", code="payment_invalid")
 
-    sig_bytes = bytes(signer.sign(message_bytes))
-    serialized = bytearray(raw)
-    sig_start = 1 + idx * 64
-    serialized[sig_start : sig_start + 64] = sig_bytes
-    return bytes(serialized)
+    signed = await signer.sign_transaction(vtx)
+    return bytes(signed.transaction)
 
 
 def _transaction_parse_error(message: str) -> InvalidProofError:

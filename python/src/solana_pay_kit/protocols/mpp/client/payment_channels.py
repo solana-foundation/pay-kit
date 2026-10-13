@@ -17,12 +17,12 @@ from __future__ import annotations
 import base64
 import secrets
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import cast
 
+from solana_keychain import MemorySigner, TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
-from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.solana import default_token_program_for_currency
@@ -33,7 +33,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     build_open_instruction,
     find_channel_pda,
 )
-from solana_pay_kit.protocols.mpp.client.session import ActiveSession, VoucherSigner, _pubkey_str
+from solana_pay_kit.protocols.mpp.client.session import ActiveSession, VoucherSigner
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     OpenPayload,
@@ -75,7 +75,7 @@ def unique_salt() -> int:
     return int.from_bytes(secrets.token_bytes(8), "little")
 
 
-def generate_authorized_signer() -> Keypair:
+def generate_authorized_signer() -> MemorySigner:
     """Generate an ephemeral session signing key.
 
     The keypair's public key becomes the channel ``authorizedSigner``; pass the
@@ -83,7 +83,7 @@ def generate_authorized_signer() -> Keypair:
     session signer. Use this when the caller does not already hold a dedicated
     signer for the session and wants one minted on the spot.
     """
-    return Keypair()
+    return MemorySigner(Keypair())
 
 
 @dataclass
@@ -346,9 +346,9 @@ def _resolve_open_blockhash(override: Hash | str | None, request: SessionRequest
         raise ValueError(f"invalid challenged recentBlockhash: {exc}") from exc
 
 
-def build_open_payment_channel_transaction(
+async def build_open_payment_channel_transaction(
     request: SessionRequest,
-    signer: VoucherSigner | Any,
+    signer: TransactionSigner,
     authorized_signer: Pubkey,
     recent_blockhash: Hash | str | None = None,
     fee_payer: Pubkey | None = None,
@@ -382,13 +382,15 @@ def build_open_payment_channel_transaction(
         authorized_signer,
         options,
     )
-    return _build_open_payment_channel_tx(signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request))
+    return await _build_open_payment_channel_tx(
+        signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request)
+    )
 
 
-def create_payment_channel_session_opener(
+async def create_payment_channel_session_opener(
     request: SessionRequest,
-    payer_signer: VoucherSigner | Any,
-    session_signer: VoucherSigner | Any,
+    payer_signer: TransactionSigner,
+    session_signer: VoucherSigner,
     recent_blockhash: Hash | str | None = None,
     options: PaymentChannelSessionOpenOptions | None = None,
 ) -> PaymentChannelSessionOpen:
@@ -429,7 +431,7 @@ def create_payment_channel_session_opener(
         options.open,
     )
     blockhash = _resolve_open_blockhash(recent_blockhash, request)
-    tx = _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash)
+    tx = await _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash)
     session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
     action = SessionAction.open_action(
         open_.open_payload(
@@ -441,8 +443,8 @@ def create_payment_channel_session_opener(
     return PaymentChannelSessionOpen(open=open_, session=session, action=action)
 
 
-def _build_open_payment_channel_tx(
-    signer: VoucherSigner | Any,
+async def _build_open_payment_channel_tx(
+    signer: TransactionSigner,
     open_: PaymentChannelOpen,
     fee_payer: Pubkey,
     recent_blockhash: Hash | str,
@@ -459,12 +461,11 @@ def _build_open_payment_channel_tx(
     open_params.rent_payer = fee_payer
     ix = build_open_instruction(open_params)
     try:
-        wire = build_partially_signed_v0_transaction(
+        wire = await build_partially_signed_v0_transaction(
             [ix],
             fee_payer,
             blockhash,
-            _signer_pubkey(signer),
-            lambda message: bytes(_sign_message(signer, message)),
+            signer,
         )
     except ValueError as exc:
         raise ValueError("payment-channel open signing failed: payer is not a transaction signer") from exc
@@ -474,7 +475,7 @@ def _build_open_payment_channel_tx(
 
 def _configured_session(
     channel_id: Pubkey,
-    session_signer: VoucherSigner | Any,
+    session_signer: VoucherSigner,
     cumulative: int | None,
     expires_at: int | None,
 ) -> ActiveSession:
@@ -492,18 +493,9 @@ def _configured_session(
     )
 
 
-def _sign_message(signer: Any, message: bytes) -> Signature:
-    """Sign raw message bytes with a solana_pay_kit signer or a solders Keypair."""
-    sign = getattr(signer, "sign", None)
-    if callable(sign):
-        raw = cast("bytes", sign(message))
-        return Signature.from_bytes(bytes(raw))
-    return signer.sign_message(message)
-
-
-def _signer_pubkey(signer: Any) -> Pubkey:
+def _signer_pubkey(signer: VoucherSigner) -> Pubkey:
     """Return the signer's public key as a solders Pubkey."""
-    return Pubkey.from_string(_pubkey_str(signer))
+    return signer.pubkey
 
 
 def _parse_u64_string(value: str, label: str) -> int:

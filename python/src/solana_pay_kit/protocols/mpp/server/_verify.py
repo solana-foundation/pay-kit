@@ -14,6 +14,8 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+from solana_keychain import TransactionSigner
+
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
@@ -43,22 +45,19 @@ from solana_pay_kit.protocols.mpp.server._tx_decode import (
 )
 
 
-def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
-    """Co-sign a client transaction with the server's fee payer keypair.
+async def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: TransactionSigner) -> str:
+    """Co-sign a client transaction with the server's native fee-payer signer.
 
-    The fee payer occupies the first signer slot in Solana transactions. We
-    sign ``to_bytes_versioned(msg)`` (exactly what the wire carries: the
-    ``0x80`` version tag plus the v0 body, or the bare legacy message) with
-    the fee-payer private key and splice the resulting signature into the
-    signature array at the slot matching the fee-payer pubkey.
+    Require the canonical fee-payer slot before requesting a signature. Native
+    keychain signing preserves the other signatures for both v0 and legacy
+    messages; its returned transaction is authoritative.
 
     Mirrors the cosign step in rust/src/server/charge.rs verify_pull.
     """
-    from solders.message import to_bytes_versioned
     from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    fee_payer_pubkey = fee_payer.pubkey()
+    fee_payer_pubkey = fee_payer.pubkey
 
     try:
         vtx = VersionedTransaction.from_bytes(raw)
@@ -77,15 +76,8 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
         ) from exc
     num_required = int(vtx.message.header.num_required_signatures)
     _assert_signature_slot(idx, num_required)
-    message_bytes = bytes(to_bytes_versioned(vtx.message))
-    sig_bytes = bytes(fee_payer.sign_message(message_bytes))
-    # Manual splice in the on-wire bytes preserves the rest of the
-    # transaction exactly. Wire format: [num_sigs (compact-u16)] [sigs]
-    # [message...]. num_sigs < 128 so it is a 1-byte prefix.
-    serialized = bytearray(raw)
-    sig_start = 1 + idx * 64
-    serialized[sig_start : sig_start + 64] = sig_bytes
-    return base64.b64encode(bytes(serialized)).decode("ascii")
+    signed = await fee_payer.sign_transaction(vtx)
+    return base64.b64encode(bytes(signed.transaction)).decode("ascii")
 
 
 def _assert_signature_slot(idx: int, num_required: int) -> None:
@@ -323,7 +315,7 @@ def _validate_instruction_allowlist(
     fee_payer_account = account_keys[0]
     # SECURITY: when the charge advertises feePayer=true the protective
     # pubkey used for drain detection MUST come from the server-side
-    # signing context (``Mpp._fee_payer_signer.pubkey()``), NOT from
+    # signing context (``Mpp._fee_payer_signer.pubkey``), NOT from
     # client-echoed ``methodDetails.feePayerKey``. A malicious client can
     # tamper the echoed key to a pubkey it controls, pass the source-account
     # checks below (because they compare against the tampered value), and
@@ -570,7 +562,7 @@ def _verify_local_transaction_intent(
     """Verify locally-decodable payment intent before broadcasting.
 
     ``expected_fee_payer_pubkey`` is the AUTHORITATIVE server-side fee-payer
-    pubkey (``Mpp._fee_payer_signer.pubkey()``). It is threaded by
+    pubkey (``Mpp._fee_payer_signer.pubkey``). It is threaded by
     ``_verify_transaction`` so the no-leftovers allowlist can detect drain
     attempts against the real server key, not against a client-echoed
     ``methodDetails.feePayerKey`` value (which an attacker controls). When

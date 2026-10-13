@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -57,15 +58,15 @@ def _open() -> OpenPayload:
     )
 
 
-def _voucher() -> SignedVoucher:
-    signer = Keypair.from_seed(bytes([7] * 32))
+async def _voucher() -> SignedVoucher:
+    signer = MemorySigner(Keypair.from_seed(bytes([7] * 32)))
     data = VoucherData(
-        channel_id=str(signer.pubkey()),
+        channel_id=str(signer.pubkey),
         cumulative_amount="500",
         expires_at=DEFAULT_SESSION_EXPIRES_AT,
     )
     return SignedVoucher(
-        data=data, signer=str(signer.pubkey()), signature=str(signer.sign_message(data.message_bytes()))
+        data=data, signer=str(signer.pubkey), signature=str(await signer.sign_message(data.message_bytes()))
     )
 
 
@@ -177,9 +178,9 @@ def test_open_payload_rejects_non_string_wire_fields(field: str) -> None:
         OpenPayload.from_dict(wire)
 
 
-def test_action_union_contains_only_final_actions() -> None:
+async def test_action_union_contains_only_final_actions() -> None:
     authentication = SessionAuthentication("challenge", "payer", "signature")
-    voucher = _voucher()
+    voucher = await _voucher()
     actions = [
         SessionAction.open_action(_open()),
         SessionAction.voucher_action(VoucherPayload(voucher.data.channel_id, voucher)),
@@ -193,8 +194,8 @@ def test_action_union_contains_only_final_actions() -> None:
         SessionAction.from_dict({"action": "commit"})
 
 
-def test_voucher_wire_and_message_layout() -> None:
-    voucher = _voucher()
+async def test_voucher_wire_and_message_layout() -> None:
+    voucher = await _voucher()
     wire = voucher.to_dict()
     assert wire["signatureType"] == "ed25519"
     # Spec wire shape (mpp-specs e702dd8): the inner data field is named
@@ -225,9 +226,9 @@ def test_no_expiry_voucher_preimage_encodes_zero_verbatim() -> None:
     assert message == explicit_zero.message_bytes()
 
 
-def test_authentication_is_bound_to_opening_challenge_and_channel() -> None:
-    signer = Keypair.from_seed(bytes([3] * 32))
-    authentication = sign_session_authentication("opening-challenge", "channel", signer)
+async def test_authentication_is_bound_to_opening_challenge_and_channel() -> None:
+    signer = MemorySigner(Keypair.from_seed(bytes([3] * 32)))
+    authentication = await sign_session_authentication("opening-challenge", "channel", signer)
     assert authentication.to_dict()["type"] == "proof"
     assert verify_session_authentication(authentication, "channel")
     assert not verify_session_authentication(authentication, "different-channel")

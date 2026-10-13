@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
@@ -68,7 +69,7 @@ def _memo_texts(transaction_b64: str) -> list[str]:
 
 
 async def test_build_charge_transaction_includes_external_id_and_split_memos():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     split_recipient = str(Keypair().pubkey())
 
@@ -90,7 +91,7 @@ async def test_build_charge_transaction_includes_external_id_and_split_memos():
 
 
 async def test_build_charge_transaction_spl_token_transfers_checked_to_atas():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     split_recipient = str(Keypair().pubkey())
     mint = resolve("USDC", "mainnet")
@@ -126,7 +127,7 @@ async def test_build_charge_transaction_spl_token_transfers_checked_to_atas():
 
 
 async def test_build_charge_transaction_rejects_long_external_id_memo():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
 
     with pytest.raises(ValueError, match="memo cannot exceed 566 bytes"):
@@ -142,7 +143,7 @@ async def test_build_charge_transaction_rejects_long_external_id_memo():
 
 
 async def test_build_charge_transaction_rejects_splits_that_exhaust_total():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     split_recipient = str(Keypair().pubkey())
 
@@ -173,7 +174,7 @@ def _instructions(transaction_b64: str) -> tuple[VersionedTransaction, list]:
 async def test_build_charge_transaction_prepends_compute_budget_prelude():
     # Rust charge.rs:108-110 prepends SetComputeUnitPrice(1) (disc 3, u64 LE)
     # then SetComputeUnitLimit(200_000) (disc 2, u32 LE), both zero-account.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
         signer=signer,
@@ -201,7 +202,7 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
     # Rust charge.rs:96-104,162-163: when feePayer+feePayerKey are set, the
     # server fee payer is the message fee payer (account[0]) and the client
     # signs only its own slot, leaving the fee-payer slot for the server cosign.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     fee_payer = str(Keypair().pubkey())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
@@ -225,7 +226,7 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
     assert int(header.num_required_signatures) == 2
     sigs = list(tx.signatures)
     fee_payer_index = keys.index(fee_payer)
-    client_index = keys.index(str(signer.pubkey()))
+    client_index = keys.index(str(signer.pubkey))
     assert sigs[fee_payer_index] == sigs[fee_payer_index].default()
     assert sigs[client_index] != sigs[client_index].default()
 
@@ -233,7 +234,7 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
 async def test_build_charge_transaction_emits_v0_message():
     # Clients never build legacy messages: the wire must carry the v0 version
     # prefix (0x80) as the first message byte after the signatures.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     payload = await build_charge_transaction(
         signer=signer,
         rpc_client=None,
@@ -253,7 +254,7 @@ async def test_build_charge_transaction_emits_v0_message():
 
 async def test_build_charge_transaction_unsponsored_signs_signer_at_slot_zero():
     # No feePayer toggle: the client signer is the message fee payer (slot 0).
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
         signer=signer,
@@ -265,13 +266,13 @@ async def test_build_charge_transaction_unsponsored_signs_signer_at_slot_zero():
     )
     tx = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction))
     keys = [str(k) for k in tx.message.account_keys]
-    assert keys[0] == str(signer.pubkey())
+    assert keys[0] == str(signer.pubkey)
     assert int(tx.message.header.num_required_signatures) == 1
 
 
 async def test_build_charge_transaction_rejects_more_than_eight_splits():
     # Rust charge.rs:76-78 rejects > 8 splits with TooManySplits.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     splits = [Split(recipient=str(Keypair().pubkey()), amount="1") for _ in range(9)]
     with pytest.raises(ValueError, match="too many splits"):
@@ -288,7 +289,7 @@ async def test_build_charge_transaction_rejects_more_than_eight_splits():
 async def test_build_charge_transaction_rejects_unsupported_token_program():
     # Rust resolve_token_program (charge.rs:457-463) rejects any token program
     # outside the {TOKEN, TOKEN_2022} allowlist.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     mint = resolve("USDC", "mainnet")
     assert mint is not None
@@ -324,7 +325,7 @@ async def test_build_charge_transaction_resolves_token_program_via_rpc_owner():
         async def get_account(self, _pubkey):
             return _Resp()
 
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     unknown_mint = str(Keypair().pubkey())
     payload = await build_charge_transaction(
@@ -365,7 +366,7 @@ class _FakeRpcClient:
 
 
 async def test_build_charge_transaction_fetches_blockhash_when_unset():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     rpc = _FakeRpcClient()
     payload = await build_charge_transaction(
@@ -385,7 +386,7 @@ async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
     # currency given as a raw mint address (not a known symbol): resolve_mint
     # passes it through and the client builds an SPL TransferChecked to the
     # recipient ATA. Guards against regressing the SPL client path back to a stub.
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
         signer=signer,
@@ -406,7 +407,7 @@ async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
 
 
 async def test_build_charge_transaction_splits_consume_entire_amount_raises():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     split_recipient = str(Keypair().pubkey())
     with pytest.raises(ValueError):
@@ -424,7 +425,7 @@ async def test_build_charge_transaction_splits_consume_entire_amount_raises():
 
 
 async def test_build_charge_transaction_rejects_long_split_memo():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     split_recipient = str(Keypair().pubkey())
     long_memo = "x" * 600
@@ -443,7 +444,7 @@ async def test_build_charge_transaction_rejects_long_split_memo():
 
 
 async def test_build_credential_header_wraps_charge_transaction():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     request = encode_json(
         {
@@ -467,7 +468,7 @@ async def test_build_credential_header_wraps_charge_transaction():
 
 
 async def test_build_credential_header_without_method_details():
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     request = encode_json({"amount": "100", "currency": "sol", "recipient": recipient})
     challenge = PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request)
@@ -501,20 +502,22 @@ async def test_client_refuses_expired_challenge():
     # Audit #10: an expired challenge is NEVER signed, regardless of opt-ins.
     challenge = _sol_challenge(expires="2020-01-01T00:00:00Z")
     with pytest.raises(ValueError, match="expired"):
-        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge)
+        await build_credential_header(signer=MemorySigner(Keypair()), rpc_client=None, challenge=challenge)
 
 
 async def test_client_max_amount_guard():
     # Audit #10: opt-in max-amount cap.
     challenge = _sol_challenge(amount="1000")
     with pytest.raises(ValueError, match="exceeds max"):
-        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=999)
+        await build_credential_header(
+            signer=MemorySigner(Keypair()), rpc_client=None, challenge=challenge, max_amount_base_units=999
+        )
 
 
 async def test_client_max_amount_at_cap_allowed():
     challenge = _sol_challenge(amount="1000")
     header = await build_credential_header(
-        signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=1000
+        signer=MemorySigner(Keypair()), rpc_client=None, challenge=challenge, max_amount_base_units=1000
     )
     assert header.startswith("Payment ")
 
@@ -523,14 +526,16 @@ async def test_client_expected_network_guard():
     # Audit #10: opt-in network pin.
     challenge = _sol_challenge(network="mainnet")
     with pytest.raises(ValueError, match="does not match"):
-        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge, expected_network="devnet")
+        await build_credential_header(
+            signer=MemorySigner(Keypair()), rpc_client=None, challenge=challenge, expected_network="devnet"
+        )
 
 
 async def test_client_refuses_unknown_token_2022_without_opt_in():
     # Audit #26: unknown Token-2022 mint requires opt-in.
     from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM
 
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     unknown_mint = str(Keypair().pubkey())
     with pytest.raises(ValueError, match="unknown Token-2022 mint"):
         await build_charge_transaction(
@@ -552,7 +557,7 @@ async def test_client_allows_unknown_vanilla_token_mint():
     # Audit #26: vanilla Token program has no hooks -> first-class, no opt-in.
     from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     unknown_mint = str(Keypair().pubkey())
     payload = await build_charge_transaction(
         signer=signer,
@@ -574,7 +579,7 @@ async def test_client_requires_decimals_for_spl():
     # Audit #42: SPL charge must carry decimals (no silent default to 6).
     from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 
-    signer = Keypair()
+    signer = MemorySigner(Keypair())
     with pytest.raises(ValueError, match="decimals is required"):
         await build_charge_transaction(
             signer=signer,
@@ -597,7 +602,7 @@ async def test_client_blockhash_fetched_with_confirmed_commitment():
 
     rpc = _CommitmentRpc()
     await build_charge_transaction(
-        signer=Keypair(),
+        signer=MemorySigner(Keypair()),
         rpc_client=rpc,
         amount="100",
         currency="sol",

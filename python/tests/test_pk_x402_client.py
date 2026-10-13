@@ -15,11 +15,11 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
 from solana_pay_kit import (
-    LocalSigner,
     MemoryStore,
     Operator,
     Price,
@@ -511,7 +511,7 @@ async def test_build_payment_fee_payer_explicit_false_opts_out():
     env = await build_payment(signer, None, _entry(offer))
     tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
     keys = [str(k) for k in tx.message.account_keys]
-    assert keys[0] == str(signer.keypair.pubkey())
+    assert keys[0] == str(signer.pubkey)
     assert int(tx.message.header.num_required_signatures) == 1
 
 
@@ -702,7 +702,7 @@ class _FakeRpc:
 def _server_adapter_and_gate(monkeypatch):
     import solana_pay_kit.protocols.x402 as xmod
 
-    op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
+    op = Operator(signer=MemorySigner(Keypair()), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_localnet",
         preflight=False,

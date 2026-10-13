@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal, Self
 import pydantic
 import pydantic_settings
 from pydantic import Strict
+from solana_keychain import TransactionSigner
 
 from solana_pay_kit._paycore.network import Network
 from solana_pay_kit._paycore.protocol import Protocol
@@ -32,7 +33,7 @@ from solana_pay_kit._paycore.stablecoin import Stablecoin
 from solana_pay_kit.errors import ConfigurationError, DemoSignerOnMainnetError
 from solana_pay_kit.operator import Operator
 from solana_pay_kit.price import Price
-from solana_pay_kit.signer import LocalSigner, Signer
+from solana_pay_kit.signer import Signer, is_demo_signer
 
 __all__ = [
     "Config",
@@ -98,13 +99,13 @@ class X402Config(pydantic.BaseModel):
 
     facilitator_url: str | None = None
     scheme: Literal["exact"] = "exact"
-    signer: LocalSigner | None = None
+    signer: TransactionSigner | None = None
 
     def is_delegated(self) -> bool:
         """``True`` when a non-empty facilitator URL routes verify/settle off-host."""
         return self.facilitator_url is not None and self.facilitator_url != ""
 
-    def effective_signer(self, operator: Operator) -> LocalSigner | None:
+    def effective_signer(self, operator: Operator) -> TransactionSigner | None:
         """The x402 cosigner: the explicit override or the operator's signer."""
         return self.signer if self.signer is not None else operator.signer
 
@@ -278,9 +279,7 @@ def _apply_pay_config_env(
     preflight_raw = environ.get(f"{env_prefix}PREFLIGHT")
     no_preflight_raw = environ.get(f"{env_prefix}NO_PREFLIGHT")
     if preflight_raw is not None and no_preflight_raw is not None:
-        raise ConfigurationError(
-            f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT"
-        )
+        raise ConfigurationError(f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT")
 
     if preflight_raw is not None:
         values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight_raw)
@@ -370,7 +369,7 @@ class Config(pydantic.BaseModel):
         """The operator's settlement address, post default-resolution."""
         return self.operator.effective_recipient()
 
-    def effective_x402_signer(self) -> LocalSigner | None:
+    def effective_x402_signer(self) -> TransactionSigner | None:
         """The x402 cosigner: x402 override falling back to the operator signer."""
         return self.x402.effective_signer(self.operator)
 
@@ -417,18 +416,18 @@ def _enforce_demo_signer_on_mainnet(cfg: Config) -> None:
     if cfg.network is not Network.SOLANA_MAINNET:
         return
     signer = cfg.operator.signer
-    if signer is not None and signer.is_demo():
+    if signer is not None and is_demo_signer(signer):
         raise DemoSignerOnMainnetError(
             "solana_pay_kit: the package-shipped demo signer "
-            f"({signer.pubkey()}) refuses to start on solana_mainnet. "
+            f"({signer.pubkey}) refuses to start on solana_mainnet. "
             "Load a real keypair via Signer.file() or Signer.env()."
         )
     if Protocol.X402 in cfg.accept:
         x402_signer = cfg.effective_x402_signer()
-        if x402_signer is not None and x402_signer.is_demo():
+        if x402_signer is not None and is_demo_signer(x402_signer):
             raise DemoSignerOnMainnetError(
                 "solana_pay_kit: the package-shipped demo signer "
-                f"({x402_signer.pubkey()}) refuses to start as the x402 facilitator "
+                f"({x402_signer.pubkey}) refuses to start as the x402 facilitator "
                 "signer on solana_mainnet. Load a real keypair via "
                 "x402=X402Config(signer=Signer.file()/Signer.env()) or operator=Operator(signer=...)."
             )

@@ -164,6 +164,127 @@ Two safety rails fire at boot:
 
 ---
 
+## Sign with solana-keychain
+
+Pay Kit uses native [`solana-keychain`](https://pypi.org/project/solana-keychain/)
+signers. The `Signer` factory remains available: `Signer.file(...)`,
+`Signer.env(...)`, `Signer.demo()`, and the key-material factories return a
+`MemorySigner`. `Signer.env(...)` returns `None` when the variable is absent
+or blank. Demo keys are public; use them only in the sandbox.
+
+Import signer types and backends from `solana_keychain`, not Pay Kit.
+`SolanaSigner` supports message signing; `TransactionSigner` also supports
+signing transactions without rewriting or broadcasting them. Use a
+`TransactionSigner` for payment clients and operators that settle transactions.
+Backends that modify or broadcast transactions have separate capability classes
+and are not interchangeable with `TransactionSigner`.
+
+```python
+import asyncio
+
+from solana_keychain import MemorySigner, SolanaSigner
+from solana_pay_kit import Signer
+
+
+async def prove_identity(signer: SolanaSigner) -> None:
+    message = b"pay-kit signing example"
+    signature = await signer.sign_message(message)
+    assert signature.verify(signer.pubkey, message)
+    print(str(signer.pubkey))  # base58 address for JSON, headers, or config
+
+
+# Read an existing Solana CLI keypair file. Never commit this file.
+signer: MemorySigner = Signer.file("payer.json")
+asyncio.run(prove_identity(signer))
+```
+
+For an already-built `solders.transaction.VersionedTransaction`, await signing
+and continue with the returned transaction:
+
+```python
+from solana_keychain import TransactionSigner
+from solders.transaction import VersionedTransaction
+
+
+async def sign_payment(
+    signer: TransactionSigner, transaction: VersionedTransaction
+) -> VersionedTransaction:
+    signed = await signer.sign_transaction(transaction)
+    return signed.transaction
+```
+
+Signing does not broadcast. A multi-signer transaction can still need other
+signatures; check `signed.is_complete` before submitting it.
+
+### Migrate existing signers
+
+| Previous API | Native API |
+| --- | --- |
+| `LocalSigner` | `MemorySigner` from `solana_keychain` |
+| `signer.pubkey()` returning a string | `signer.pubkey` returning `solders.pubkey.Pubkey`; serialize with `str(...)` |
+| `signer.sign(message)` returning bytes | `await signer.sign_message(message)` returning `solders.signature.Signature`; use `bytes(...)` only at a byte-oriented boundary |
+| Extracting `signer.keypair` to sign a transaction | `await signer.sign_transaction(transaction)`, then use `.transaction` |
+
+`LocalSigner` and its `.keypair`, `.secret_key`, `.sign`, and `.is_demo`
+helpers are removed. Pass native signers directly; do not wrap them in a
+Pay Kit adapter or extract private keys. Existing solders keypairs can be
+wrapped with `MemorySigner(keypair)`. Message and transaction signing are async
+so remote backends can implement the same interface without exposing keys.
+
+The x402 `upto` client helpers `build_upto_payload(...)` and
+`build_upto_header(...)` also require `await`:
+
+```python
+from solana_keychain import TransactionSigner
+from solana_pay_kit.protocols.x402.client.upto import build_upto_header
+from solana_pay_kit.protocols.x402.upto.types import UptoRequirements
+
+
+async def payment_header(
+    signer: TransactionSigner, requirements: UptoRequirements, expires_at: int
+) -> str:
+    return await build_upto_header(signer, requirements, expires_at)
+```
+
+### Use a remote signing backend
+
+The `kms` convenience factories return native `TransactionSigner` backends.
+AWS and Vault construction is synchronous; GCP construction and all signing
+are async. Configure the public key that
+corresponds to your remote Ed25519 key, and keep credentials in your secret
+manager or environment:
+
+```python
+import os
+
+from solana_pay_kit import Operator, kms
+
+operator = Operator(
+    signer=kms.vault(
+        addr=os.environ["VAULT_ADDR"],       # HTTPS Vault base URL
+        path=os.environ["VAULT_KEY_NAME"],   # transit key name
+        pubkey=os.environ["OPERATOR_PUBKEY"],
+        token=os.environ["VAULT_TOKEN"],
+    )
+)
+```
+
+For AWS, install `solana-pay-kit[aws-kms]` and use
+`kms.aws(key_id=..., pubkey=..., region=...)` with an
+`ECC_NIST_EDWARDS25519` key. For GCP, install
+`solana-pay-kit[gcp-kms]` and use `await kms.gcp(key_name=..., pubkey=...)` with an
+`EC_SIGN_ED25519` key version. Both accept `client=` for a preconfigured
+provider client; Vault accepts `http_client=`. Other supported backends can
+be imported directly from `solana_keychain`; choose one implementing
+`TransactionSigner` for transaction settlement.
+
+Create the GCP signer on the event loop that will perform signing, for example
+in an ASGI application's lifespan handler. Its default gRPC client is bound to
+that loop: do not create it with a separate `asyncio.run(...)` at configuration
+time or share it through synchronous Flask/Django middleware that creates
+per-request event loops. Those integrations require a loop-neutral provider
+client or another signing backend.
+
 ## Run the example
 
 Three runnable examples ship with this package, one per framework. Each one
@@ -561,7 +682,7 @@ python/
 │   ├── _paycore/                             Currency / Network / Protocol / Stablecoin / Mints / Solana
 │   ├── _middleware.py                        host-neutral resolver + require_payment/is_paid/get_payment
 │   ├── fastapi.py, flask.py, django.py       framework shims
-│   ├── kms.py                                reserved remote-enclave signer namespace
+│   ├── kms.py                                native remote signer factories
 │   └── protocols/
 │       ├── x402/                             x402-exact adapter (__init__) + verifier/wire shapes (verify.py)
 │       └── mpp/                              MPP-charge adapter (__init__) over the consolidated wire layer
@@ -586,6 +707,29 @@ security-sensitive paths.
 
 The repo-level `pay-sdk-implementation` skill remains the protocol source of
 truth: Rust spec wire format first, Python idioms second.
+
+## Migrating MPP session signing to async
+
+Await session operations that sign vouchers or transactions:
+
+- `ActiveSession.prepare_voucher`, `prepare_increment`, `sign_voucher`,
+  `sign_increment`, `voucher_action`, and `close_action`.
+- `build_open_payment_channel_transaction`, `create_payment_channel_session_opener`,
+  and `sign_session_authentication`.
+- `SessionConsumer.commit_directive`, `MeteredDelivery.ack` / `commit`, and
+  `MeteredSseSession.ack` / `MeteredSseStream.ack`.
+
+`CommitTransport.commit` and `HttpCommitTransport.commit` remain synchronous.
+Serialize operations on each `ActiveSession` or `SessionConsumer`; they are not
+safe for concurrent use.
+
+Custom `ChannelStore.update_channel` implementations must accept synchronous
+and asynchronous mutators. If the mutator returns an awaitable, await it before
+persisting its result. Keep exclusive access to that channel throughout the
+await: operator voucher signing may call a remote signer, and another update
+must not reuse the same cumulative amount. Pass a detached state snapshot to
+the mutator and leave committed state unchanged if signing fails or is cancelled.
+`MemoryChannelStore` already follows this contract with a per-channel lock.
 
 ## License
 

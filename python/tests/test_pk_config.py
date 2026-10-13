@@ -304,7 +304,7 @@ def test_effective_recipient_from_operator():
 def test_effective_x402_signer_falls_back_to_operator_signer():
     cfg = configure()
     s = cfg.effective_x402_signer()
-    assert s is not None and s.is_demo()
+    assert s is not None and str(s.pubkey) == DEMO_PUBKEY
 
 
 def test_x402_config_override_signer_wins():
@@ -312,7 +312,7 @@ def test_x402_config_override_signer_wins():
     cfg = configure(x402=X402Config(signer=override))
     signer = cfg.effective_x402_signer()
     assert signer is not None
-    assert signer.pubkey() == override.pubkey()
+    assert signer.pubkey == override.pubkey
 
 
 def test_x402_is_delegated_flag():
@@ -370,14 +370,14 @@ def test_deprecated_facilitator_secret_key_routes_to_signer():
         warnings.simplefilter("ignore")
         cfg = configure(facilitator_secret_key=json.dumps(list(bytes(kp))))
     assert cfg.operator.signer is not None
-    assert cfg.operator.signer.pubkey() == str(kp.pubkey())
+    assert cfg.operator.signer.pubkey == kp.pubkey()
 
 
 def test_deprecated_facilitator_secret_key_empty_sentinel_is_noop():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cfg = configure(facilitator_secret_key="[]")  # legacy "boot without signer"
-    assert cfg.operator.signer is not None and cfg.operator.signer.is_demo()
+    assert cfg.operator.signer is not None and str(cfg.operator.signer.pubkey) == DEMO_PUBKEY
 
 
 def test_deprecated_secret_routes_to_mpp():

@@ -1,39 +1,42 @@
-"""Reserved namespace for remote enclave signers (GCP/AWS KMS, HashiCorp Vault).
+"""Thin factories for solana-keychain's managed-key backends.
 
-The shape is locked so consumers can build against ``solana_pay_kit.kms.gcp(...)`` today
-without renaming when the real implementations ship in a follow-up release. Every
-factory currently raises :class:`NotImplementedError`. Loud failure is on purpose:
-silent fallback to a local in-process signer would mask a production
-misconfiguration (a merchant intending to sign through a managed KMS service must
-not silently get a local signer instead).
-
-When implemented, KMS signers will satisfy the same duck-type contract as
-:class:`solana_pay_kit.signer.LocalSigner` (``pubkey()``, ``sign(message)``,
-``is_fee_payer()``) with explicit ``pubkey=`` configuration so boot does not probe
-the enclave. Mirrors Ruby ``PayKit::Kms`` and the PHP reserved ``Kms`` namespace.
+Install ``solana-pay-kit[aws-kms]`` or ``solana-pay-kit[gcp-kms]`` for cloud
+providers. Credentials and signing are handled entirely by solana-keychain.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
+import httpx
+from solana_keychain import TransactionSigner, VaultSigner, VaultSignerConfig
+
 __all__ = ["aws", "gcp", "vault"]
 
-_FOLLOW_UP = (
-    "is reserved for a follow-up release; use solana_pay_kit.Signer.file or solana_pay_kit.Signer.env in the meantime"
-)
+
+async def gcp(*, key_name: str, pubkey: str, client: Any = None) -> TransactionSigner:
+    """Construct GCP's loop-bound client on the serving event loop.
+
+    Create and use this signer on the same loop, such as an ASGI lifespan.
+    The default gRPC client cannot be shared by synchronous middleware that
+    creates a new event loop for each request.
+    """
+    from solana_keychain.gcp_kms import GcpKmsSignerConfig, create_gcp_kms_signer
+
+    return await create_gcp_kms_signer(GcpKmsSignerConfig(key_name=key_name, public_key=pubkey, client=client))
 
 
-def gcp(*, key_name: str, pubkey: str) -> object:
-    """Reserved: a Google Cloud KMS signer. Raises until the backend ships."""
-    raise NotImplementedError(f"solana_pay_kit.kms.gcp(key_name={key_name!r}, pubkey={pubkey!r}) {_FOLLOW_UP}")
+def aws(*, key_id: str, pubkey: str, region: str | None = None, client: Any = None) -> TransactionSigner:
+    """Construct a native AWS signer using the SDK credential chain by default."""
+    from solana_keychain.aws_kms import AwsKmsSigner, AwsKmsSignerConfig
+
+    return AwsKmsSigner(AwsKmsSignerConfig(key_id=key_id, public_key=pubkey, region=region, client=client))
 
 
-def aws(*, key_id: str, region: str, pubkey: str) -> object:
-    """Reserved: an AWS KMS signer. Raises until the backend ships."""
-    raise NotImplementedError(
-        f"solana_pay_kit.kms.aws(key_id={key_id!r}, region={region!r}, pubkey={pubkey!r}) {_FOLLOW_UP}"
+def vault(
+    *, addr: str, path: str, pubkey: str, token: str, http_client: httpx.AsyncClient | None = None
+) -> TransactionSigner:
+    """Construct a native Vault signer; ``path`` is the transit key name."""
+    return VaultSigner(
+        VaultSignerConfig(api_base_url=addr, key_name=path, public_key=pubkey, token=token, http_client=http_client)
     )
-
-
-def vault(*, addr: str, path: str, pubkey: str) -> object:
-    """Reserved: a HashiCorp Vault transit signer. Raises until the backend ships."""
-    raise NotImplementedError(f"solana_pay_kit.kms.vault(addr={addr!r}, path={path!r}, pubkey={pubkey!r}) {_FOLLOW_UP}")

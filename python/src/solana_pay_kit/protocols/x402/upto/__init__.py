@@ -47,6 +47,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     Distribution,
     build_distribute_instruction,
     build_settle_and_seal_instructions,
+    decode_channel_account,
     treasury_owner,
     voucher_message_bytes,
 )
@@ -70,9 +71,10 @@ from solana_pay_kit.protocols.x402.upto.verify import (
 )
 
 if TYPE_CHECKING:
+    from solana_keychain import SolanaSigner, TransactionSigner
+
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import Gate
-    from solana_pay_kit.signer import LocalSigner
 
 __all__ = ["X402Upto", "VerifiedUptoOpen"]
 
@@ -169,7 +171,7 @@ class X402Upto:
 
     def accepts_entry(self, gate: Gate, request: Any) -> UptoRequirements:
         """Build the route-pinned ``upto`` requirement (the server's offer)."""
-        fee_payer = self._signer().pubkey()
+        fee_payer = str(self._signer().pubkey)
         receiver_authorizer = fee_payer
         coin = gate.amount.primary_coin()
         coin_value = coin.value if coin is not None else self._config.stablecoins[0].value
@@ -239,7 +241,7 @@ class X402Upto:
         import time
 
         signer = self._signer()
-        fee_payer = signer.pubkey()
+        fee_payer = str(signer.pubkey)
         receiver_authorizer = fee_payer
 
         header = _payment_signature_header(request)
@@ -329,7 +331,7 @@ class X402Upto:
                     "open transaction fee payer must be the advertised fee payer", code="payment_invalid"
                 )
 
-            cosigned = _cosign_fee_payer(open_tx, signer)
+            cosigned = await _cosign_fee_payer(open_tx, signer)
             sent = await rpc.send_raw_transaction(cosigned)
             await rpc.await_confirmation(str(sent.value))
 
@@ -350,7 +352,7 @@ class X402Upto:
                 channel_id=channel_id,
                 payer=payer,
                 payee=payee,
-                rent_payer=Pubkey.from_string(str(channel.rentPayer)),
+                rent_payer=Pubkey.from_string(str(channel.rent_payer)),
                 mint=mint,
                 token_program=token_program,
                 program_id=program_id,
@@ -378,7 +380,7 @@ class X402Upto:
         hence the no-voucher path.
         """
         signer = self._signer()
-        fee_payer = Pubkey.from_string(signer.pubkey())
+        fee_payer = signer.pubkey
         receiver_authorizer = fee_payer
         try:
             assert_settlement_within_ceiling(actual, verified.max_amount)
@@ -396,8 +398,9 @@ class X402Upto:
                     program_id=verified.program_id,
                 )
             else:
+                message_signer: SolanaSigner = signer
                 message = voucher_message_bytes(verified.channel_id, actual, verified.expires_at)
-                sig_bytes = signer.sign(message)
+                sig_bytes = bytes(await message_signer.sign_message(message))
                 if len(sig_bytes) != 64:
                     raise InvalidProofError(
                         f"voucher signature length {len(sig_bytes)}, want 64", code="payment_invalid"
@@ -447,7 +450,7 @@ class X402Upto:
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
                 blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-                wire = build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, fee_payer, signer.sign)
+                wire = await build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, signer)
                 sent = await rpc.send_raw_transaction(wire)
                 signature = str(sent.value)
                 await rpc.await_confirmation(signature)
@@ -466,7 +469,7 @@ class X402Upto:
 
     # -- internals ----------------------------------------------------------
 
-    def _signer(self) -> LocalSigner:
+    def _signer(self) -> TransactionSigner:
         signer = self._config.effective_x402_signer()
         if signer is None:
             raise InvalidProofError("solana_pay_kit: x402 upto requires a fee payer signer", code="payment_invalid")
@@ -518,7 +521,7 @@ class X402Upto:
         beneficiary = Pubkey.from_string(requirements["payTo"])
         return [Distribution(recipient=beneficiary, bps=10_000)]
 
-    async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Any:
+    async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Channel:
         account = await rpc.get_account_info(str(channel_id))
         if account is None:
             raise InvalidProofError("channel account fetch failed: missing account data", code="payment_invalid")
@@ -527,16 +530,14 @@ class X402Upto:
             raise InvalidProofError(
                 "channel account is not owned by the payment-channels program", code="payment_invalid"
             )
-        # The on-chain account carries a 1-byte account discriminator ahead of
-        # the struct (Go's `Channel.Discriminator uint8`); the generated
-        # `Channel.decode` strips that leading byte before parsing the layout.
-        if len(data) < 1:
-            raise InvalidProofError("channel account fetch failed: empty account data", code="payment_invalid")
-        return Channel.decode(data)
+        try:
+            return decode_channel_account(data)
+        except ValueError as exc:
+            raise InvalidProofError("invalid channel account data", code="payment_invalid") from exc
 
     def _validate_channel_state(
         self,
-        channel: Any,
+        channel: Channel,
         fee_payer: Pubkey,
         receiver_authorizer: Pubkey,
         payer: Pubkey,
@@ -556,17 +557,17 @@ class X402Upto:
                 code="payment_invalid",
             )
         expected_hash = list(_distribution_hash(distribution))
-        if list(channel.distributionHash) != expected_hash:
+        if list(channel.distribution_hash) != expected_hash:
             raise InvalidProofError(
                 "channel distribution does not match the expected recipient split", code="payment_invalid"
             )
-        if str(channel.authorizedSigner) != str(receiver_authorizer):
+        if str(channel.authorized_signer) != str(receiver_authorizer):
             raise InvalidProofError("channel authorized_signer is not the receiver authorizer", code="payment_invalid")
-        if str(channel.rentPayer) != str(fee_payer):
+        if str(channel.rent_payer) != str(fee_payer):
             raise InvalidProofError("channel rent_payer is not the fee payer", code="payment_invalid")
-        if int(channel.gracePeriod) != withdraw_delay:
+        if int(channel.grace_period) != withdraw_delay:
             raise InvalidProofError(
-                f"channel withdraw delay {channel.gracePeriod} does not match advertised {withdraw_delay}",
+                f"channel withdraw delay {channel.grace_period} does not match advertised {withdraw_delay}",
                 code="payment_invalid",
             )
         if int(channel.deposit) != max_amount:
@@ -632,21 +633,19 @@ def _decode_transaction(transaction_b64: str) -> tuple[list[str], list[Any]]:
     return account_keys, list(message.instructions)
 
 
-def _cosign_fee_payer(transaction_b64: str, signer: LocalSigner) -> bytes:
-    """Splice the fee-payer signature into the client-built open tx.
+async def _cosign_fee_payer(transaction_b64: str, signer: TransactionSigner) -> bytes:
+    """Sign the fee-payer slot while preserving the client-built open tx.
 
     The client built the open with the advertised fee payer (slot 0) and signed
     only its own (payer) slot; the server completes the fee-payer signature and
     the result is broadcastable. Mirrors the exact-scheme cosign.
     """
-    from solders.message import to_bytes_versioned
     from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    fee_payer = Pubkey.from_string(signer.pubkey())
+    fee_payer = signer.pubkey
     vtx = VersionedTransaction.from_bytes(raw)
     account_keys = list(vtx.message.account_keys)
-    message_bytes = bytes(to_bytes_versioned(vtx.message))
     num_required = int(vtx.message.header.num_required_signatures)
     try:
         idx = account_keys.index(fee_payer)
@@ -654,11 +653,8 @@ def _cosign_fee_payer(transaction_b64: str, signer: LocalSigner) -> bytes:
         raise InvalidProofError("fee payer pubkey not present in transaction accounts", code="payment_invalid") from exc
     if idx >= num_required:
         raise InvalidProofError("fee payer is not a required signer", code="payment_invalid")
-    sig = bytes(signer.sign(message_bytes))
-    serialized = bytearray(raw)
-    start = 1 + idx * 64
-    serialized[start : start + 64] = sig
-    return bytes(serialized)
+    signed = await signer.sign_transaction(vtx)
+    return bytes(signed.transaction)
 
 
 def _request_path(request: Any) -> str:

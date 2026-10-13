@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
@@ -28,7 +29,6 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     new_session,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
-from solana_pay_kit.signer import LocalSigner
 
 SECRET = "session-method-secret"
 RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
@@ -213,13 +213,13 @@ async def test_operator_use_survives_challenge_expiry_and_is_idempotent() -> Non
         channel_program=str(PROGRAM_ID),
         grace_period_seconds=900,
         voucher_signer="operator",
-        operator_signer=operator,
+        operator_signer=MemorySigner(operator),
     )
     store = MemoryChannelStore()
     core = _core(config, store)
     session = _session(core)
     challenge = await _challenge(core, "2020-01-01T00:00:00Z")
-    authentication = sign_session_authentication(challenge.id, RECIPIENT, payer)
+    authentication = await sign_session_authentication(challenge.id, RECIPIENT, MemorySigner(payer))
     await store.update_channel(
         RECIPIENT,
         lambda _: ChannelState(
@@ -251,7 +251,7 @@ async def test_operator_close_requires_bound_authentication() -> None:
     payer = Keypair.from_seed(bytes([8] * 32))
     operator = Keypair.from_seed(bytes([9] * 32))
     challenge_id = "opening"
-    authentication = sign_session_authentication(challenge_id, RECIPIENT, payer)
+    authentication = await sign_session_authentication(challenge_id, RECIPIENT, MemorySigner(payer))
     store = MemoryChannelStore()
     core = SessionServer(
         SessionConfig(
@@ -262,7 +262,7 @@ async def test_operator_close_requires_bound_authentication() -> None:
             network="localnet",
             channel_program=str(PROGRAM_ID),
             voucher_signer="operator",
-            operator_signer=operator,
+            operator_signer=MemorySigner(operator),
         ),
         store,
     )
@@ -286,9 +286,9 @@ async def test_operator_close_requires_bound_authentication() -> None:
 
 
 def test_operator_new_session_uses_signer_identity() -> None:
-    signer = LocalSigner.from_keypair(Keypair.from_seed(bytes([11] * 32)))
+    signer = MemorySigner(Keypair.from_seed(bytes([11] * 32)))
     session = new_session(_options(voucher_signer="operator", signer=signer))
-    assert session.core().config.operator == str(signer.pubkey())
+    assert session.core().config.operator == str(signer.pubkey)
     session.shutdown()
 
 
@@ -428,13 +428,13 @@ async def test_handle_accepts_valid_operator_use_header() -> None:
         network="localnet",
         channel_program=str(PROGRAM_ID),
         voucher_signer="operator",
-        operator_signer=operator,
+        operator_signer=MemorySigner(operator),
     )
     store = MemoryChannelStore()
     core = _core(config, store)
     session = _session(core)
     challenge = await _challenge(core, "2000-01-01T00:00:00Z")
-    authentication = sign_session_authentication(challenge.id, RECIPIENT, payer)
+    authentication = await sign_session_authentication(challenge.id, RECIPIENT, MemorySigner(payer))
     await store.update_channel(
         RECIPIENT,
         lambda _: ChannelState(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from solana_keychain import TransactionSigner
+
 from solana_pay_kit._paycore.mints import derive_ata
 from solana_pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
@@ -27,7 +29,7 @@ from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 
 
 async def build_credential_header(
-    signer: Any,
+    signer: TransactionSigner,
     rpc_client: Any,
     challenge: PaymentChallenge,
     *,
@@ -38,7 +40,7 @@ async def build_credential_header(
     """Create an Authorization header value from a challenge.
 
     Args:
-        signer: A Solana keypair (solders.Keypair) for signing transactions.
+        signer: A native solana-keychain transaction signer.
         rpc_client: A solana.rpc.async_api.AsyncClient for RPC calls.
         challenge: The payment challenge to satisfy.
         max_amount_base_units: Audit #10 opt-in guard. When set, refuse to sign
@@ -107,7 +109,7 @@ async def build_credential_header(
 
 
 async def build_charge_transaction(
-    signer: Any,
+    signer: TransactionSigner,
     rpc_client: Any,
     amount: str,
     currency: str,
@@ -124,7 +126,7 @@ async def build_charge_transaction(
     signs the transaction, and returns a credential payload.
 
     Args:
-        signer: A Solana keypair for signing.
+        signer: A native solana-keychain transaction signer.
         rpc_client: An async Solana RPC client.
         amount: Amount in base units.
         currency: Currency symbol or mint address.
@@ -206,7 +208,7 @@ async def build_charge_transaction(
         # SOL transfer
         ix = transfer(
             TransferParams(
-                from_pubkey=signer.pubkey(),
+                from_pubkey=signer.pubkey,
                 to_pubkey=recipient_key,
                 lamports=primary_amount,
             )
@@ -220,7 +222,7 @@ async def build_charge_transaction(
             split_amount = int(split.amount)
             split_ix = transfer(
                 TransferParams(
-                    from_pubkey=signer.pubkey(),
+                    from_pubkey=signer.pubkey,
                     to_pubkey=split_key,
                     lamports=split_amount,
                 )
@@ -247,11 +249,11 @@ async def build_charge_transaction(
         mint_key = Pubkey.from_string(mint)
         system_program_key = Pubkey.from_string(SYSTEM_PROGRAM)
         ata_program_key = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
-        source_ata = Pubkey.from_string(derive_ata(str(signer.pubkey()), mint, token_program))
+        source_ata = Pubkey.from_string(derive_ata(str(signer.pubkey), mint, token_program))
         # The create-ATA payer is the fee payer when sponsored, else the signer,
         # matching rust ``let payer = fee_payer.copied().unwrap_or(*signer)``
         # (charge.rs:368).
-        ata_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey()
+        ata_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey
 
         def append_transfer_checked(owner: Any, transfer_amount: int, create_ata: bool, memo: str) -> None:
             dest_ata = Pubkey.from_string(derive_ata(str(owner), mint, token_program))
@@ -282,7 +284,7 @@ async def build_charge_transaction(
                         AccountMeta(source_ata, False, True),
                         AccountMeta(mint_key, False, False),
                         AccountMeta(dest_ata, False, True),
-                        AccountMeta(signer.pubkey(), True, False),
+                        AccountMeta(signer.pubkey, True, False),
                     ],
                 )
             )
@@ -313,13 +315,12 @@ async def build_charge_transaction(
     # ``actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey)``
     # (charge.rs:162-163). The client signs ONLY its own slot; when sponsored
     # the server cosigns the fee-payer slot at account[0].
-    actual_fee_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey()
-    tx_bytes = build_partially_signed_v0_transaction(
+    actual_fee_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey
+    tx_bytes = await build_partially_signed_v0_transaction(
         instructions,
         actual_fee_payer,
         blockhash,
-        signer.pubkey(),
-        lambda message: bytes(signer.sign_message(message)),
+        signer,
     )
 
     # Encode transaction

@@ -58,7 +58,7 @@ from solana_pay_kit.protocols.x402.exact.verify import (
 )
 
 if TYPE_CHECKING:
-    from solana_pay_kit.signer import LocalSigner
+    from solana_keychain import TransactionSigner
 
 __all__ = [
     "ChallengeSelection",
@@ -416,7 +416,7 @@ def _bool_field(mapping: Mapping[str, object], key: str) -> bool | None:
 
 
 async def build_payment(
-    signer: LocalSigner,
+    signer: TransactionSigner,
     rpc: Any,
     requirement: X402AcceptsEntry,
     *,
@@ -497,14 +497,14 @@ async def build_payment(
     use_fee_payer = (fee_payer_bool if fee_payer_bool is not None else fee_payer is not None) and (
         fee_payer is not None
     )
-    fee_payer_key = Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.keypair.pubkey()
+    fee_payer_key = Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.pubkey
 
     instructions: list[Any] = [
         _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
         _compute_unit_price_ix(Instruction, Pubkey, _COMPUTE_UNIT_PRICE),
     ]
 
-    signer_pubkey = signer.keypair.pubkey()
+    signer_pubkey = signer.pubkey
     recipient_key = Pubkey.from_string(pay_to)
 
     if is_native_sol(asset):
@@ -564,7 +564,7 @@ async def build_payment(
         blockhash_str = await _resolve_blockhash(rpc, recent_blockhash_provider)
     blockhash = Hash.from_string(blockhash_str)
 
-    tx_bytes = build_partially_signed_v0_transaction(instructions, fee_payer_key, blockhash, signer_pubkey, signer.sign)
+    tx_bytes = await build_partially_signed_v0_transaction(instructions, fee_payer_key, blockhash, signer)
 
     # Derive the envelope-level resource BEFORE building the echoed ``accepted``
     # body, then strip the private resource-info key so the echo carries only
@@ -641,7 +641,7 @@ async def _resolve_blockhash(
 
 
 async def build_payment_header(
-    signer: LocalSigner,
+    signer: TransactionSigner,
     rpc: Any,
     requirement: X402AcceptsEntry,
     *,
@@ -671,7 +671,7 @@ async def build_payment_header(
 
 
 async def build_payment_header_legacy(
-    signer: LocalSigner,
+    signer: TransactionSigner,
     rpc: Any,
     requirement: X402AcceptsEntry,
     *,

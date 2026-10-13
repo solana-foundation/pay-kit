@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
@@ -99,9 +100,9 @@ def test_derive_open_slot_defaults_to_challenged_recent_slot() -> None:
         )
 
 
-def test_build_open_transaction_is_payer_signed() -> None:
-    payer = _kp(3)
-    built = build_open_payment_channel_transaction(
+async def test_build_open_transaction_is_payer_signed() -> None:
+    payer = MemorySigner(_kp(3))
+    built = await build_open_payment_channel_transaction(
         _request(),
         payer,
         _kp(4).pubkey(),
@@ -113,14 +114,14 @@ def test_build_open_transaction_is_payer_signed() -> None:
     assert is_v0_wire_bytes(raw)
     assert raw[1 + 64 * raw[0]] == 0x80
     transaction = VersionedTransaction.from_bytes(raw)
-    assert transaction.message.account_keys[0] == payer.pubkey()
+    assert transaction.message.account_keys[0] == payer.pubkey
     assert transaction.signatures[0] != Signature.default()
 
 
-def test_sponsored_open_leaves_only_fee_payer_signature_empty() -> None:
-    payer = _kp(3)
+async def test_sponsored_open_leaves_only_fee_payer_signature_empty() -> None:
+    payer = MemorySigner(_kp(3))
     sponsor = _kp(5)
-    transaction = build_open_payment_channel_transaction(
+    transaction = await build_open_payment_channel_transaction(
         _request(fee_payer=sponsor),
         payer,
         _kp(4).pubkey(),
@@ -133,15 +134,15 @@ def test_sponsored_open_leaves_only_fee_payer_signature_empty() -> None:
     assert decoded.signatures[1] != Signature.default()
 
 
-def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
+async def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
     # No explicit blockhash: the challenged recentBlockhash is used, and the
     # derived openSlot defaults to the challenged recentSlot.
     challenged = Hash.new_unique()
     request = _request()
     request.method_details.recent_blockhash = str(challenged)
     request.method_details.recent_slot = 42
-    payer = _kp(3)
-    built = build_open_payment_channel_transaction(
+    payer = MemorySigner(_kp(3))
+    built = await build_open_payment_channel_transaction(
         request,
         payer,
         _kp(4).pubkey(),
@@ -152,7 +153,7 @@ def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
 
     # An explicit override still wins.
     override = Hash.new_unique()
-    overridden = build_open_payment_channel_transaction(
+    overridden = await build_open_payment_channel_transaction(
         request,
         payer,
         _kp(4).pubkey(),
@@ -163,37 +164,37 @@ def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
     assert decoded.message.recent_blockhash == override
 
 
-def test_build_open_transaction_requires_challenged_blockhash() -> None:
+async def test_build_open_transaction_requires_challenged_blockhash() -> None:
     # A new-channel challenge without recentBlockhash cannot build the open
     # transaction when no explicit override is given.
     request = _request()
     request.method_details.recent_slot = 42
     with pytest.raises(ValueError, match="missing recentBlockhash"):
-        build_open_payment_channel_transaction(
+        await build_open_payment_channel_transaction(
             request,
-            _kp(3),
+            MemorySigner(_kp(3)),
             _kp(4).pubkey(),
             options=PaymentChannelOpenOptions(salt=7),
         )
     request.method_details.recent_blockhash = "not-a-blockhash"
     with pytest.raises(ValueError, match="invalid challenged recentBlockhash"):
-        build_open_payment_channel_transaction(
+        await build_open_payment_channel_transaction(
             request,
-            _kp(3),
+            MemorySigner(_kp(3)),
             _kp(4).pubkey(),
             options=PaymentChannelOpenOptions(salt=7),
         )
 
 
-def test_session_opener_defaults_to_challenged_context() -> None:
+async def test_session_opener_defaults_to_challenged_context() -> None:
     challenged = Hash.new_unique()
     request = _request()
     request.method_details.recent_blockhash = str(challenged)
     request.method_details.recent_slot = 42
-    opened = create_payment_channel_session_opener(
+    opened = await create_payment_channel_session_opener(
         request,
-        _kp(3),
-        _kp(4),
+        MemorySigner(_kp(3)),
+        MemorySigner(_kp(4)),
         options=PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7)),
     )
     assert opened.open.open_slot == 42
@@ -204,18 +205,18 @@ def test_session_opener_defaults_to_challenged_context() -> None:
 
     request.method_details.recent_blockhash = None
     with pytest.raises(ValueError, match="missing recentBlockhash"):
-        create_payment_channel_session_opener(
+        await create_payment_channel_session_opener(
             request,
-            _kp(3),
-            _kp(4),
+            MemorySigner(_kp(3)),
+            MemorySigner(_kp(4)),
             options=PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7)),
         )
 
 
-def test_session_opener_emits_exact_open_action() -> None:
-    payer = _kp(3)
-    session_signer = _kp(4)
-    opened = create_payment_channel_session_opener(
+async def test_session_opener_emits_exact_open_action() -> None:
+    payer = MemorySigner(_kp(3))
+    session_signer = MemorySigner(_kp(4))
+    opened = await create_payment_channel_session_opener(
         _request(),
         payer,
         session_signer,
@@ -235,14 +236,14 @@ def test_session_opener_emits_exact_open_action() -> None:
     assert opened.session.channel_id == opened.open.channel_id
 
 
-def test_operator_opener_requires_and_uses_operator_authority() -> None:
-    payer = _kp(3)
+async def test_operator_opener_requires_and_uses_operator_authority() -> None:
+    payer = MemorySigner(_kp(3))
     operator = _kp(6)
     with pytest.raises(ValueError, match="authentication"):
-        create_payment_channel_session_opener(
+        await create_payment_channel_session_opener(
             _request(operator=operator),
             payer,
-            _kp(4),
+            MemorySigner(_kp(4)),
             Hash.default(),
             PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7, open_slot=42)),
         )
@@ -251,4 +252,4 @@ def test_operator_opener_requires_and_uses_operator_authority() -> None:
 def test_unique_salt_and_generated_signer() -> None:
     assert 0 <= unique_salt() <= 2**64 - 1
     signer = generate_authorized_signer()
-    assert len(bytes(signer.pubkey())) == 32
+    assert len(bytes(signer.pubkey)) == 32

@@ -20,6 +20,7 @@ import json
 import struct
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
@@ -29,7 +30,6 @@ from solders.pubkey import Pubkey
 import solana_pay_kit.protocols.x402 as xmod
 from solana_pay_kit import Gate as GateCls
 from solana_pay_kit import (
-    LocalSigner,
     MemoryStore,
     Operator,
     Price,
@@ -123,7 +123,7 @@ def _devnet_offer(amount: str = "1000") -> dict:
 
 @pytest.mark.asyncio
 async def test_legacy_producer_emits_top_level_scheme_and_plain_network():
-    signer = LocalSigner.generate()
+    signer = MemorySigner(Keypair())
     offer = _devnet_offer()
     header = await build_payment_header_legacy(
         signer,
@@ -143,7 +143,7 @@ async def test_legacy_producer_emits_top_level_scheme_and_plain_network():
 
 @pytest.mark.asyncio
 async def test_legacy_producer_maps_mainnet_to_plain_solana():
-    signer = LocalSigner.generate()
+    signer = MemorySigner(Keypair())
     mint_mainnet = resolve("USDC", "mainnet")
     offer = {
         "protocol": "x402",
@@ -251,7 +251,7 @@ def _clean(monkeypatch):
 
 def _devnet_adapter(monkeypatch, signature="SIG-legacy"):
     op_kp = Keypair()
-    op = Operator(signer=LocalSigner.from_keypair(op_kp), recipient=str(Keypair().pubkey()))
+    op = Operator(signer=MemorySigner(op_kp), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_devnet",
         preflight=False,

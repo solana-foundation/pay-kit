@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -76,7 +77,7 @@ def _config(*, operator: bool = False) -> SessionConfig:
         minimum_deposit=100,
         grace_period_seconds=900,
         voucher_signer="operator" if operator else "client",
-        operator_signer=OPERATOR if operator else None,
+        operator_signer=MemorySigner(OPERATOR) if operator else None,
         idle_timeout_options_seconds=[30, 300],
         idle_timeout_seconds=300,
         current_slot_provider=lambda: CHALLENGED_SLOT,
@@ -84,7 +85,8 @@ def _config(*, operator: bool = False) -> SessionConfig:
 
 
 def _authentication(challenge_id: str) -> SessionAuthentication:
-    return sign_session_authentication(challenge_id, CHANNEL, PAYER)
+    proof = SessionAuthentication(challenge_id, str(PAYER.pubkey()), "")
+    return SessionAuthentication(challenge_id, proof.payer, str(PAYER.sign_message(proof.message_bytes(CHANNEL))))
 
 
 def _open(config: SessionConfig, challenge: PaymentChallenge) -> OpenPayload:
@@ -320,7 +322,7 @@ async def test_open_binds_challenge_payer_and_policy() -> None:
     assert state.idle_timeout_seconds == 30
 
     wrong = _open(config, challenge)
-    wrong.authentication = sign_session_authentication("different", CHANNEL, PAYER)
+    wrong.authentication = await sign_session_authentication("different", CHANNEL, MemorySigner(PAYER))
     with pytest.raises(ValueError, match="opening challenge"):
         await server.process_open(wrong, challenge)
 
@@ -394,6 +396,70 @@ async def test_operator_use_requires_idempotency_and_charges_once() -> None:
     assert first == replay
     state = await server.store().get_channel(CHANNEL)
     assert state is not None and state.cumulative == 25 and len(state.processed_uses) == 1
+
+
+async def test_operator_use_serializes_remote_signing_and_deduplicates_retries() -> None:
+    server, config, challenge = await _server(operator=True)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    class RemoteSigner(MemorySigner):
+        async def sign_message(self, message: bytes):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return await super().sign_message(message)
+
+    config.operator_signer = RemoteSigner(OPERATOR)
+    payload = UsePayload(CHANNEL, _authentication(challenge.id))
+    first = asyncio.create_task(server.process_use(payload, challenge.id, "one"))
+    await started.wait()
+    replay = asyncio.create_task(server.process_use(payload, challenge.id, "one"))
+    second = asyncio.create_task(server.process_use(payload, challenge.id, "two"))
+    await asyncio.sleep(0)
+    assert calls == 1
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.cumulative == 0
+    release.set()
+    first_voucher, replay_voucher, second_voucher = await asyncio.gather(first, replay, second)
+    assert first_voucher == replay_voucher
+    assert first_voucher.data.cumulative_amount == "25"
+    assert second_voucher.data.cumulative_amount == "50"
+    assert calls == 2
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.cumulative == 50 and len(state.processed_uses) == 2
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_operator_signing_failure_or_cancellation_leaves_state_unchanged(cancel: bool) -> None:
+    server, config, challenge = await _server(operator=True)
+    before = await server.store().get_channel(CHANNEL)
+    started = asyncio.Event()
+
+    class FailingSigner(MemorySigner):
+        async def sign_message(self, message: bytes):
+            started.set()
+            if cancel:
+                await asyncio.Event().wait()
+            raise RuntimeError("remote signing failed")
+
+    config.operator_signer = FailingSigner(OPERATOR)
+    payload = UsePayload(CHANNEL, _authentication(challenge.id))
+    task = asyncio.create_task(server.process_use(payload, challenge.id, "one"))
+    await started.wait()
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(RuntimeError, match="remote signing failed"):
+            await task
+    assert await server.store().get_channel(CHANNEL) == before
+    config.operator_signer = MemorySigner(OPERATOR)
+    voucher = await server.process_use(payload, challenge.id, "one")
+    assert voucher.data.cumulative_amount == "25"
 
 
 async def test_top_up_fails_closed_and_applies_exact_additional_amount() -> None:

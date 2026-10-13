@@ -262,10 +262,10 @@ class MeteredSseSession:
         """True once a ``done`` event or ``[DONE]`` sentinel arrived."""
         return self._state.done
 
-    def ack(self) -> CommitReceipt:
+    async def ack(self) -> CommitReceipt:
         """Sign and commit a voucher for the streamed delivery."""
         directive = self._state.directive_for_commit()
-        return self._consumer.commit_directive(directive)
+        return await self._consumer.commit_directive(directive)
 
 
 class MeteredSseStream:
@@ -313,13 +313,13 @@ class MeteredSseStream:
                 return
             yield message
 
-    def ack(self) -> CommitReceipt:
+    async def ack(self) -> CommitReceipt:
         """Drain the stream if needed, then sign and commit the delivery."""
         if not self._state.done:
             while self.next() is not None:
                 pass
         directive = self._state.directive_for_commit()
-        return self._consumer.commit_directive(directive)
+        return await self._consumer.commit_directive(directive)
 
     def into_consumer(self) -> SessionConsumer:
         """Return the wrapped consumer for reuse on the next request."""

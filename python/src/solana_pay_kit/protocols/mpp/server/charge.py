@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from solana_keychain import TransactionSigner
+
 from solana_pay_kit._paycore.errors import (
     ChallengeExpiredError,
     ChallengeMismatchError,
@@ -141,7 +143,7 @@ class Config:
     # (``type="transaction"``) path is unaffected. Spec §13.5 permits push as a
     # shape-matching mode, but it is off by default to match the Rust posture.
     accept_push_mode: bool = False
-    fee_payer_signer: Any = None
+    fee_payer_signer: TransactionSigner | None = None
     store: Store | None = None
     # The RPC client MUST expose at least the methods on
     # :class:`solana_pay_kit._paycore.rpc.SolanaRpc`: ``send_raw_transaction``,
@@ -329,7 +331,7 @@ class Mpp:
         if is_fee_sponsored:
             details["feePayer"] = True
             if self._fee_payer_signer is not None:
-                details["feePayerKey"] = str(self._fee_payer_signer.pubkey())
+                details["feePayerKey"] = str(self._fee_payer_signer.pubkey)
         if options.splits:
             details["splits"] = options.splits
 
@@ -541,7 +543,7 @@ class Mpp:
         # ``_verify_local_transaction_intent``.
         server_fee_payer_pubkey: str | None = None
         if self._fee_payer_signer is not None:
-            server_fee_payer_pubkey = str(self._fee_payer_signer.pubkey())
+            server_fee_payer_pubkey = str(self._fee_payer_signer.pubkey)
         _verify_local_transaction_intent(
             payload.transaction,
             request,
@@ -556,7 +558,8 @@ class Mpp:
         # account in the wire transaction.
         signed_b64 = payload.transaction
         if details.fee_payer:
-            signed_b64 = _co_sign_with_fee_payer(payload.transaction, self._fee_payer_signer)
+            assert self._fee_payer_signer is not None  # validated before transaction inspection
+            signed_b64 = await _co_sign_with_fee_payer(payload.transaction, self._fee_payer_signer)
 
         # L8 lock: broadcast first, then consume_signature, then await
         # confirmation. The previous order (consume → broadcast → await,

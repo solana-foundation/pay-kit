@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
@@ -24,7 +25,6 @@ from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
 from solana_pay_kit.protocols.mpp.client.payment_channels import create_payment_channel_session_opener
 from solana_pay_kit.protocols.mpp.intents.session import ClosePayload, SessionRequest, VoucherPayload
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
-from solana_pay_kit.signer import LocalSigner
 
 _RPC_URL = os.environ.get("MPP_HARNESS_RPC_URL", "https://402.surfnet.dev:8899")
 _USDC = resolve_mint("USDC", "localnet")
@@ -89,7 +89,7 @@ async def test_session_lifecycle_settles_on_chain() -> None:
                 secret_key="session-e2e-secret-key-32-bytes-min!!",
                 suggested_deposit=1_000_000,
                 fee_payer=True,
-                signer=LocalSigner.from_keypair(operator),
+                signer=MemorySigner(operator),
                 rpc=rpc,
             )
         )
@@ -103,10 +103,10 @@ async def test_session_lifecycle_settles_on_chain() -> None:
         assert request.method_details.recent_slot is not None
         # The client builds the open and partial-signs as the payer; the server
         # completes the operator fee-payer signature and broadcasts.
-        opener = create_payment_channel_session_opener(
+        opener = await create_payment_channel_session_opener(
             request,
-            payer,
-            Keypair(),
+            MemorySigner(payer),
+            MemorySigner(Keypair()),
         )
         payload = opener.action.open
         assert payload is not None
@@ -119,7 +119,7 @@ async def test_session_lifecycle_settles_on_chain() -> None:
         assert state is not None
 
         # 2. In-band voucher advances the watermark.
-        voucher = opener.session.prepare_increment(250)
+        voucher = await opener.session.prepare_increment(250)
         opener.session.record_voucher(voucher)
         await session._handle_voucher(VoucherPayload(voucher.data.channel_id, voucher))
 
