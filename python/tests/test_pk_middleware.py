@@ -398,8 +398,13 @@ def test_require_payment_raises_when_unpaid():
 # -- native kms factories ---------------------------------------------------
 
 
+# solana_keychain's cloud modules raise a plain ImportError (not
+# ModuleNotFoundError) when their extra is missing, and pytest>=9 only skips on
+# ModuleNotFoundError by default, so each importorskip names ImportError.
+
+
 async def test_kms_gcp_returns_native_signer():
-    pytest.importorskip("solana_keychain.gcp_kms")
+    pytest.importorskip("solana_keychain.gcp_kms", exc_type=ImportError)
     client = MagicMock()
     signer = await kms.gcp(key_name="k", pubkey=FEE_A, client=client)
     assert isinstance(signer, TransactionSigner)
@@ -413,7 +418,7 @@ async def test_kms_gcp_constructs_client_on_signing_loop(monkeypatch):
 
     from solders.keypair import Keypair
 
-    pytest.importorskip("solana_keychain.gcp_kms")
+    pytest.importorskip("solana_keychain.gcp_kms", exc_type=ImportError)
     kms_v1 = pytest.importorskip("google.cloud.kms_v1")
 
     keypair = Keypair()
@@ -438,7 +443,7 @@ async def test_kms_gcp_constructs_client_on_signing_loop(monkeypatch):
 
 
 def test_kms_aws_returns_native_signer():
-    pytest.importorskip("solana_keychain.aws_kms")
+    pytest.importorskip("solana_keychain.aws_kms", exc_type=ImportError)
     client = MagicMock()
     signer = kms.aws(key_id="k", region="us-east-1", pubkey=FEE_A, client=client)
     assert isinstance(signer, TransactionSigner)

@@ -29,7 +29,8 @@ django = ["django>=4.2"]
 # yahoo-finance2); lookups degrade gracefully so the example runs offline.
 playground = ["fastapi>=0.110", "uvicorn>=0.30", "yfinance>=0.2.40"]
 dev = [
-    "pytest>=8",
+    # >=8.2 for importorskip(exc_type=...), used by the kms extra tests.
+    "pytest>=8.2",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
     "ruff>=0.8",
