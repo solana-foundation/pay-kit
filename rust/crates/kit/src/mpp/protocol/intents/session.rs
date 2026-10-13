@@ -177,6 +177,12 @@ pub struct SessionRequest {
 pub struct SessionMethodDetails {
     pub network: String,
     pub channel_program: String,
+    /// Channel account/instruction ABI. Absent means V1, not auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_version: Option<u8>,
+    /// Immutable lifecycle callbacks approved when opening a V2 channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
     /// Base58 blockhash the client MUST use as the open transaction's recent

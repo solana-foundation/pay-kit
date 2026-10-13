@@ -1,3 +1,4 @@
+pub mod channel_deployment;
 pub mod subscriptions;
 
 /// Payment-channels helpers live in `solana-pay-core` so they can be shared with

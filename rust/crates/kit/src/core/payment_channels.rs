@@ -695,6 +695,7 @@ pub fn build_distribute_instruction(
         .mint(to_address(mint))
         .token_program(to_address(token_program))
         .event_authority(to_address(&find_event_authority_pda(program_id).0))
+        .self_program(to_address(program_id))
         .add_remaining_accounts(&recipient_token_accounts)
         .distribute_args(DistributeArgs { recipients })
         .instruction();

@@ -189,6 +189,12 @@ pub struct SessionConfig {
     /// Payment-channel program ID. `None` defaults to the canonical program.
     pub channel_program: Option<Pubkey>,
 
+    /// Channel ABI version. `None` retains the V1 deployment.
+    pub channel_version: Option<u8>,
+
+    /// Immutable V2 lifecycle callbacks; never submitted as top-level instructions.
+    pub channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
+
     /// SPL token program override.
     pub token_program: Option<Pubkey>,
 
@@ -259,6 +265,19 @@ impl std::fmt::Debug for SessionConfig {
     }
 }
 
+impl SessionConfig {
+    /// Validate the advertised program and ABI together before serving or recovering.
+    pub fn channel_deployment(&self) -> Result<crate::core::payment_channels_v2::Deployment> {
+        crate::mpp::program::channel_deployment::resolve_for_network(
+            self.channel_program
+                .unwrap_or_else(payment_channels::default_program_id),
+            self.channel_version,
+            self.channel_hooks.as_ref(),
+            &self.network,
+        )
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -272,6 +291,8 @@ impl Default for SessionConfig {
             decimals: 6,
             network: "mainnet".to_string(),
             channel_program: None,
+            channel_version: None,
+            channel_hooks: None,
             token_program: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
@@ -305,6 +326,10 @@ pub struct SealParams {
     /// Payment-channels program ID.
     pub program_id: Pubkey,
 
+    /// Persisted ABI selection and immutable callback configuration.
+    pub channel_version: Option<u8>,
+    pub channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
+
     /// The settled watermark to commit on-chain.
     pub settled: u64,
 
@@ -333,6 +358,11 @@ impl SealParams {
         &self,
         operator: &Pubkey,
     ) -> Result<Vec<solana_instruction::Instruction>> {
+        crate::mpp::program::channel_deployment::resolve(
+            self.program_id,
+            self.channel_version,
+            self.channel_hooks.as_ref(),
+        )?;
         let authorized_signer = self
             .authorized_signer
             .ok_or_else(|| Error::Other("seal missing authorized_signer".to_string()))?;
@@ -366,6 +396,63 @@ impl SealParams {
             &self.program_id,
         )
         .map_err(|e| Error::Other(format!("settle instructions: {e}")))
+    }
+
+    /// Build distribution with the original mandatory callbacks, including
+    /// terminal distributions whose actual payer refund is zero.
+    pub fn distribute_instruction(
+        &self,
+        rent_payer: &Pubkey,
+        treasury: &Pubkey,
+        token_program: &Pubkey,
+    ) -> Result<solana_instruction::Instruction> {
+        let deployment = crate::mpp::program::channel_deployment::resolve(
+            self.program_id,
+            self.channel_version,
+            self.channel_hooks.as_ref(),
+        )?;
+        let payer = self
+            .payer
+            .ok_or_else(|| Error::Other("distribution missing payer".into()))?;
+        let mint = self
+            .mint
+            .ok_or_else(|| Error::Other("distribution missing mint".into()))?;
+        let recipients = self
+            .splits
+            .iter()
+            .map(|split| payment_channels::Distribution {
+                recipient: split.recipient,
+                bps: split.bps,
+            })
+            .collect::<Vec<_>>();
+        if deployment.version == 2 {
+            Ok(
+                crate::core::payment_channels_v2::build_distribute_instruction(
+                    &self.channel_id,
+                    &payer,
+                    rent_payer,
+                    &self.recipient,
+                    treasury,
+                    &mint,
+                    &recipients,
+                    token_program,
+                    &self.program_id,
+                    &self.channel_hooks.clone().unwrap_or_default(),
+                )?,
+            )
+        } else {
+            Ok(payment_channels::build_distribute_instruction(
+                &self.channel_id,
+                &payer,
+                rent_payer,
+                &self.recipient,
+                treasury,
+                &mint,
+                &recipients,
+                token_program,
+                &self.program_id,
+            ))
+        }
     }
 }
 
@@ -426,11 +513,15 @@ impl<S: ChannelStore> SessionServer<S> {
     pub fn new(config: SessionConfig, store: S) -> Self {
         // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
         let accepted_versions = vec![TxVersion::V0];
+        // V2 recovery must never reconstruct deployment policy from a new
+        // process's defaults. Reuse the existing immutable policy snapshot.
+        let deployment_binding = (config.channel_version.unwrap_or(1) != 1)
+            .then(|| binding::Binding::new(serde_json::Value::Null, &config));
         Self {
             config,
             store: binding::BoundStore {
                 inner: store,
-                binding: None,
+                binding: deployment_binding,
             },
             accepted_versions,
             blockhash_cache: None,
@@ -522,6 +613,7 @@ impl<S: ChannelStore> SessionServer<S> {
     /// MUST use the challenged blockhash — so a silent omission would surface
     /// as a non-retryable payment failure at open time.
     pub fn build_challenge_request(&self) -> Result<SessionRequest> {
+        self.config.channel_deployment()?;
         if self.config.decimals > 9 {
             return Err(Error::InvalidConfig(
                 "session token decimals must be between 0 and 9".to_string(),
@@ -550,6 +642,8 @@ impl<S: ChannelStore> SessionServer<S> {
             method_details: SessionMethodDetails {
                 network: self.config.network.clone(),
                 channel_program: payment_channels::pubkey_string(&channel_program),
+                channel_version: self.config.channel_version,
+                channel_hooks: self.config.channel_hooks.clone(),
                 channel_id: None,
                 recent_blockhash: Some(hint.blockhash),
                 recent_slot: Some(hint.slot),
@@ -622,6 +716,7 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &OpenPayload,
     ) -> Result<payment_channels::OpenChannelParams> {
+        self.config.channel_deployment()?;
         let payer = parse_pubkey_field(&payload.payer, "payer")?;
         let payee = parse_pubkey_field(&payload.payee, "payee")?;
         let mint = parse_pubkey_field(&payload.mint, "mint")?;
@@ -752,7 +847,14 @@ impl<S: ChannelStore> SessionServer<S> {
         // The transaction verifier binds every open-instruction account to
         // these payload and challenge values before the channel is persisted.
         let params = self.payment_channel_open_params(payload)?;
-        Ok(payment_channels::build_open_instruction(&params))
+        if self.config.channel_deployment()?.version == 2 {
+            Ok(crate::core::payment_channels_v2::build_open_instruction(
+                &params,
+                &self.config.channel_hooks.clone().unwrap_or_default(),
+            )?)
+        } else {
+            Ok(payment_channels::build_open_instruction(&params))
+        }
     }
 
     /// Process an `open` action: persist the channel state.
@@ -838,6 +940,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         &intent.recent_blockhash,
                         self.config.fee_payer_signer.as_deref(),
                         &self.accepted_versions,
+                        &self.config,
                     )
                     .await?;
                     let signature = prepared
@@ -1012,6 +1115,7 @@ impl<S: ChannelStore> SessionServer<S> {
             context.recent_blockhash,
             self.config.fee_payer_signer.as_deref(),
             &self.accepted_versions,
+            &self.config,
         )
         .await?;
         #[cfg(feature = "server")]
@@ -1183,7 +1287,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .map_err(store_err)?;
 
         let transaction_signature =
-            submit_and_fetch_open(prepared.0, &params, &pipeline, fresh_open).await?;
+            submit_and_fetch_open(prepared.0, &params, &pipeline, fresh_open, &self.config).await?;
         let expected_binding = self.store.binding.clone();
         let state = self
             .store
@@ -2170,6 +2274,8 @@ impl<S: ChannelStore> SessionServer<S> {
             payer,
             mint,
             program_id,
+            channel_version: self.config.channel_version,
+            channel_hooks: self.config.channel_hooks.clone(),
             settled: state.cumulative,
             voucher_signature: state.highest_voucher_signature,
             voucher_expires_at: state.highest_voucher_expires_at,
@@ -2213,6 +2319,7 @@ async fn prepare_open_transaction(
     challenged_blockhash: &str,
     fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
     accepted_versions: &[TxVersion],
+    config: &SessionConfig,
 ) -> Result<(solana_transaction::versioned::VersionedTransaction, String)> {
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     // Envelope: accepted version, no address lookup tables, size within the
@@ -2242,7 +2349,14 @@ async fn prepare_open_transaction(
             "open transaction fee payer does not match the challenge policy".to_string(),
         ));
     }
-    let expected = payment_channels::build_open_instruction(params);
+    let expected = if config.channel_deployment()?.version == 2 {
+        crate::core::payment_channels_v2::build_open_instruction(
+            params,
+            &config.channel_hooks.clone().unwrap_or_default(),
+        )?
+    } else {
+        payment_channels::build_open_instruction(params)
+    };
     let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
     let mut found_open = false;
     for ix in tx.message.instructions() {
@@ -2281,6 +2395,9 @@ async fn prepare_open_transaction(
                 "open transaction accounts do not match the declared channel".to_string(),
             ));
         }
+        if config.channel_deployment()?.version == 2 {
+            verify_channel_privileges(&tx, &expected, params.rent_payer)?;
+        }
         found_open = true;
     }
     if !found_open {
@@ -2313,6 +2430,7 @@ async fn submit_and_fetch_open(
     params: &payment_channels::OpenChannelParams,
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     fresh_open: bool,
+    config: &SessionConfig,
 ) -> Result<String> {
     let transaction_signature = tx
         .signatures
@@ -2321,7 +2439,7 @@ async fn submit_and_fetch_open(
         .to_string();
 
     if !fresh_open
-        && fetch_and_match_open_channel(pipeline, params, None)
+        && fetch_and_match_open_channel(pipeline, params, None, config)
             .await
             .is_ok()
     {
@@ -2341,7 +2459,7 @@ async fn submit_and_fetch_open(
     // what the broadcast said.
     let submission = pipeline.submit_verified(&tx).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
-    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot).await;
+    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot, config).await;
     match (submission, confirmed) {
         (Ok(_), confirmed) => confirmed,
         (Err(_), Ok(())) => Ok(()),
@@ -2378,16 +2496,21 @@ async fn fetch_and_match_open_channel(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     params: &payment_channels::OpenChannelParams,
     min_context_slot: Option<u64>,
+    config: &SessionConfig,
 ) -> Result<()> {
     let channel_address = payment_channels::derive_channel_addresses(params).channel;
     let account_data = pipeline
-        .read_account_data(channel_address, min_context_slot)
+        .read_owned_account_data(channel_address, min_context_slot, params.program_id)
         .await
         .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?
         .ok_or_else(|| Error::Rpc("confirmed channel account not found".to_string()))?;
-    let channel =
-        payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
-            .map_err(|error| Error::Other(format!("decode confirmed channel: {error}")))?;
+    let decoded = config.channel_deployment()?.decode_channel(&account_data)?;
+    if decoded.guard != 0 || decoded.hooks != config.channel_hooks.clone().unwrap_or_default() {
+        return Err(Error::Other(
+            "confirmed channel hooks do not match challenge".into(),
+        ));
+    }
+    let channel = decoded.channel;
     if channel.status != 0
         || channel.deposit != params.deposit
         || channel.salt != params.salt
@@ -2432,14 +2555,27 @@ async fn verify_submit_and_fetch_topup(
     let program_id = config
         .channel_program
         .unwrap_or_else(payment_channels::default_program_id);
-    let expected = payment_channels::build_top_up_instruction(
-        &payer,
-        &channel,
-        &mint,
-        amount,
-        &token_program,
-        &program_id,
-    );
+    let deployment = config.channel_deployment()?;
+    let expected = if deployment.version == 2 {
+        crate::core::payment_channels_v2::build_top_up_instruction(
+            &payer,
+            &channel,
+            &mint,
+            amount,
+            &token_program,
+            &program_id,
+            &config.channel_hooks.clone().unwrap_or_default(),
+        )?
+    } else {
+        payment_channels::build_top_up_instruction(
+            &payer,
+            &channel,
+            &mint,
+            amount,
+            &token_program,
+            &program_id,
+        )
+    };
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     // Envelope: accepted version, no address lookup tables, size within the
     // version's limit; then the version-1 header config against the same caps
@@ -2516,6 +2652,9 @@ async fn verify_submit_and_fetch_topup(
                 "top-up transaction does not match channel and additionalAmount".to_string(),
             ));
         }
+        if deployment.version == 2 {
+            verify_channel_privileges(&tx, &expected, expected_fee_payer)?;
+        }
         found = true;
     }
     if !found {
@@ -2552,13 +2691,17 @@ async fn verify_submit_and_fetch_topup(
         .await
         .map_err(|error| Error::Rpc(format!("top-up submission failed: {error}")))?;
     let account_data = pipeline
-        .read_account_data(channel, Some(confirmed.slot))
+        .read_owned_account_data(channel, Some(confirmed.slot), program_id)
         .await
         .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
         .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()))?;
-    let channel_state =
-        payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
-            .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
+    let decoded = deployment.decode_channel(&account_data)?;
+    if decoded.guard != 0 || decoded.hooks != config.channel_hooks.clone().unwrap_or_default() {
+        return Err(Error::Other(
+            "topped-up channel hooks do not match stored policy".into(),
+        ));
+    }
+    let channel_state = decoded.channel;
     let minimum = state
         .deposit
         .checked_add(amount)
@@ -2591,6 +2734,7 @@ async fn prepare_open_transaction(
     _challenged_blockhash: &str,
     _fee_payer_signer: Option<&dyn solana_keychain::TransactionSigner>,
     _accepted_versions: &[TxVersion],
+    _config: &SessionConfig,
 ) -> Result<(solana_transaction::versioned::VersionedTransaction, String)> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
@@ -2603,10 +2747,52 @@ async fn submit_and_fetch_open(
     _params: &payment_channels::OpenChannelParams,
     _pipeline: &(),
     _fresh_open: bool,
+    _config: &SessionConfig,
 ) -> Result<String> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
     ))
+}
+
+/// Compare transaction-wide privileges to the union of the committed account
+/// metas. Duplicate account keys legitimately merge privileges in Solana.
+#[cfg(feature = "server")]
+fn verify_channel_privileges(
+    tx: &solana_transaction::versioned::VersionedTransaction,
+    expected: &solana_instruction::Instruction,
+    fee_payer: Pubkey,
+) -> Result<()> {
+    let header = tx.message.header();
+    let keys = tx.message.static_account_keys();
+    let required = usize::from(header.num_required_signatures);
+    let writable_signed = required.saturating_sub(usize::from(header.num_readonly_signed_accounts));
+    let writable_unsigned_end = keys
+        .len()
+        .saturating_sub(usize::from(header.num_readonly_unsigned_accounts));
+    for (index, key) in keys.iter().enumerate() {
+        let signer = index < required;
+        let writable = if signer {
+            index < writable_signed
+        } else {
+            index < writable_unsigned_end
+        };
+        let expected_signer = *key == fee_payer
+            || expected
+                .accounts
+                .iter()
+                .any(|meta| meta.pubkey == *key && meta.is_signer);
+        let expected_writable = *key == fee_payer
+            || expected
+                .accounts
+                .iter()
+                .any(|meta| meta.pubkey == *key && meta.is_writable);
+        if signer != expected_signer || writable != expected_writable {
+            return Err(Error::Other(
+                "channel transaction account privileges do not match committed policy".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_client_transaction_signatures(
@@ -2797,6 +2983,27 @@ mod tests {
             idle_timeout_options_seconds: Some(vec![60, 300]),
             idle_timeout_seconds: 300,
             ..SessionConfig::default()
+        }
+    }
+
+    #[test]
+    fn v2_network_is_checked_for_raw_config_and_challenges_before_rpc() {
+        let mut config = config(VoucherSigner::Client);
+        config.channel_program =
+            Some(Pubkey::from_str("CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ").unwrap());
+        config.channel_version = Some(2);
+        for network in ["mainnet", "", "testnet", "mainnet-beta"] {
+            config.network = network.into();
+            let expected = config.channel_deployment().unwrap_err().to_string();
+            let server = SessionServer::new(config.clone(), MemoryChannelStore::new());
+            assert_eq!(
+                server.build_challenge_request().unwrap_err().to_string(),
+                expected
+            );
+        }
+        for network in ["devnet", "localnet"] {
+            config.network = network.into();
+            assert_eq!(config.channel_deployment().unwrap().version, 2);
         }
     }
 
@@ -3267,6 +3474,62 @@ mod tests {
 
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_rejects_explicit_budgets_above_policy() {
+        use crate::core::tx::{ComputeBudget, TxVersion};
+        use crate::mpp::client::session::{
+            build_open_payment_channel_transaction, BuildOpenPaymentChannelTransactionParams,
+            PaymentChannelOpenOptions,
+        };
+
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(shared_signer(8));
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set(test_blockhash().to_string(), 314, CHALLENGED_SLOT);
+        let server = SessionServer::new(cfg, MemoryChannelStore::new()).with_blockhash_cache(cache);
+        let payer = signer(6);
+        for version in [TxVersion::V0, TxVersion::V1] {
+            for budget in [
+                ComputeBudget::new(600_000, 0),
+                ComputeBudget::new(200_000, 10_001),
+            ] {
+                let mut request = server.build_challenge_request().unwrap();
+                request.method_details.transaction_versions = Some(vec![version]);
+                let (mut open, params) = signed_open(&server, 6).await;
+                open.transaction = build_open_payment_channel_transaction(
+                    BuildOpenPaymentChannelTransactionParams {
+                        request: &request,
+                        signer: payer.as_ref(),
+                        authorized_signer: params.authorized_signer,
+                        fee_payer: None,
+                        recent_blockhash: None,
+                        options: PaymentChannelOpenOptions {
+                            compute_budget: Some(budget),
+                            salt: Some(params.salt),
+                            ..Default::default()
+                        },
+                    },
+                )
+                .await
+                .unwrap()
+                .transaction;
+                let error = prepare_open_transaction(
+                    &open,
+                    &params,
+                    &test_blockhash().to_string(),
+                    server.config.fee_payer_signer.as_deref(),
+                    &[version],
+                    &server.config,
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+                assert!(error.contains("exceeds maximum"), "{error}");
+            }
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
     async fn sponsored_open_advertises_cosigns_and_persists_rent_payer() {
         use payment_channels::generated::generated::types::SettlementWatermarks;
 
@@ -3648,6 +3911,7 @@ mod tests {
             &blockhash,
             server.config.fee_payer_signer.as_deref(),
             &server.accepted_versions,
+            &server.config,
         )
         .await
         .unwrap();
@@ -5397,6 +5661,8 @@ mod tests {
             payer: None,
             mint: None,
             program_id: payment_channels::default_program_id(),
+            channel_version: None,
+            channel_hooks: None,
             settled: 1,
             voucher_signature: None,
             voucher_expires_at: None,
