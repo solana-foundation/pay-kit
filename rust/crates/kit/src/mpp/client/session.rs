@@ -764,7 +764,7 @@ mod tests {
     use solana_keychain::MemorySigner;
 
     #[test]
-    fn deployment_identity_is_explicit_and_legacy_wire_is_unchanged() {
+    fn deployment_identity_is_explicit_and_v1_wire_is_unchanged() {
         let mut request = request(Pubkey::new_unique());
         let json = serde_json::to_value(&request).unwrap();
         assert!(json["methodDetails"].get("channelVersion").is_none());

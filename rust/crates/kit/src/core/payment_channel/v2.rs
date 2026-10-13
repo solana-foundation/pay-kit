@@ -779,10 +779,10 @@ mod tests {
             .decode_account(&deployment.program_id, &data)
             .is_ok());
         assert!(Deployment::default().decode_channel(&data).is_err());
-        let mut legacy = vec![0; 256];
-        legacy[0] = 1;
-        legacy[1] = 1;
-        assert!(Deployment::default().decode_channel(&legacy).is_ok());
-        assert!(deployment.decode_channel(&legacy).is_err());
+        let mut v1_data = vec![0; 256];
+        v1_data[0] = 1;
+        v1_data[1] = 1;
+        assert!(Deployment::default().decode_channel(&v1_data).is_ok());
+        assert!(deployment.decode_channel(&v1_data).is_err());
     }
 }

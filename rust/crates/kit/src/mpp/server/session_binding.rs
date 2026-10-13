@@ -17,14 +17,14 @@ mod deployment_tests {
     use std::str::FromStr;
 
     #[test]
-    fn snapshot_roundtrip_preserves_v2_and_legacy_defaults() {
-        let legacy = SessionConfigSnapshot::capture(&SessionConfig::default());
-        let json = serde_json::to_value(&legacy).unwrap();
+    fn snapshot_roundtrip_preserves_v2_and_v1_defaults() {
+        let v1 = SessionConfigSnapshot::capture(&SessionConfig::default());
+        let json = serde_json::to_value(&v1).unwrap();
         assert!(json.get("channel_version").is_none());
         assert!(json.get("channel_hooks").is_none());
-        let legacy: SessionConfigSnapshot = serde_json::from_value(json).unwrap();
+        let v1: SessionConfigSnapshot = serde_json::from_value(json).unwrap();
         let mut restored = SessionConfig::default();
-        legacy.apply_to(&mut restored).unwrap();
+        v1.apply_to(&mut restored).unwrap();
         assert_eq!(restored.channel_deployment().unwrap().version, 1);
 
         restored.channel_program = Some(
@@ -134,7 +134,7 @@ impl SessionConfigSnapshot {
         }
     }
 
-    /// Read the versioned snapshot. Legacy, unscoped channels return `None`.
+    /// Read the versioned snapshot. Unscoped channels return `None`.
     pub fn from_channel(state: &ChannelState) -> Result<Option<Self>> {
         Ok(read_binding(state)?.map(|binding| binding.snapshot))
     }

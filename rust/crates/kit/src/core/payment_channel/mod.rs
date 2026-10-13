@@ -8,7 +8,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_module_paths_remain_compatible() {
+    fn original_module_paths_remain_compatible() {
         assert_eq!(
             crate::core::payment_channels::default_program_id(),
             v1::default_program_id()

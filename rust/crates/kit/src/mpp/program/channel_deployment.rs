@@ -7,7 +7,7 @@ use solana_pubkey::Pubkey;
 /// Validate MPP deployment identity before approval, signing, or advertisement.
 ///
 /// The integrated V2 deployment is supported only on devnet and localnet.
-/// Legacy V1 network handling is unchanged.
+/// V1 network handling is unchanged.
 pub fn resolve_for_network(
     program: Pubkey,
     version: Option<u8>,
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_default_and_explicit_v1_are_equivalent() {
+    fn default_and_explicit_v1_are_equivalent() {
         let program = crate::core::payment_channels::default_program_id();
         assert_eq!(resolve(program, None, None).unwrap().version, 1);
         assert_eq!(resolve(program, Some(1), None).unwrap().version, 1);
