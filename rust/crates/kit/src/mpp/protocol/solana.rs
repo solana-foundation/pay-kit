@@ -427,6 +427,7 @@ mod tests {
             auditor_elgamal_pubkey: None,
             recipient_elgamal_pubkey: None,
             transaction_versions: None,
+            channel_charge: None,
         };
         let json = serde_json::to_string(&md).unwrap();
         let deserialized: MethodDetails = serde_json::from_str(&json).unwrap();
@@ -960,6 +961,10 @@ mod tests {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MethodDetails {
+    /// Explicit decoded-transaction profile; never a direct-transfer extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_charge: Option<super::channel_charge::ChannelChargeProfile>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 

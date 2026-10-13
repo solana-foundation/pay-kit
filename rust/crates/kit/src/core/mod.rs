@@ -19,6 +19,7 @@
 pub(crate) mod base58;
 pub mod batch_verify;
 pub mod blockhash;
+pub mod credit_provider;
 pub mod mints;
 #[cfg(feature = "otel")]
 pub mod otel;

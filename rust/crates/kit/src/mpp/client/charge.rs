@@ -29,6 +29,11 @@ pub async fn build_charge_transaction(
     recipient: &str,
     method_details: &MethodDetails,
 ) -> Result<CredentialPayload, Error> {
+    if method_details.channel_charge.is_some() {
+        return Err(Error::InvalidConfig(
+            "channelCharge requires the explicit build_channel_charge_credential API".into(),
+        ));
+    }
     build_charge_transaction_with_options(
         signer,
         rpc,
@@ -280,6 +285,11 @@ pub async fn build_prepared_charge(
     method_details: &MethodDetails,
     options: &BuildChargeTransactionOptions,
 ) -> Result<PreparedCharge, Error> {
+    if method_details.channel_charge.is_some() {
+        return Err(Error::InvalidConfig(
+            "channelCharge requires the explicit build_channel_charge_credential API".into(),
+        ));
+    }
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
         return Err(Error::TooManySplits);
@@ -395,6 +405,11 @@ pub async fn build_charge_transaction_with_options(
     method_details: &MethodDetails,
     options: BuildChargeTransactionOptions,
 ) -> Result<CredentialPayload, Error> {
+    if method_details.channel_charge.is_some() {
+        return Err(Error::InvalidConfig(
+            "channelCharge requires the explicit build_channel_charge_credential API".into(),
+        ));
+    }
     let total_amount: u64 = amount
         .parse()
         .map_err(|_| Error::Other(format!("Invalid amount: {amount}")))?;

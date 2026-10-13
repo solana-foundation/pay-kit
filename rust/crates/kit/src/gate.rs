@@ -36,6 +36,9 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, MethodRouter};
 
+use crate::core::credit_provider::{
+    validate_credit_providers, CreditProvider, CreditProviderError,
+};
 use crate::core::tx::TxV1Mode;
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::TransactionSigner;
@@ -57,6 +60,8 @@ const MAX_CACHED_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// Error returned when a [`PayKit`] can't be built from its config.
 #[derive(Debug)]
 pub enum PayKitError {
+    /// A selected credit provider is unavailable.
+    CreditProvider(CreditProviderError),
     /// The MPP charge handler rejected the config.
     Mpp(String),
     /// The x402 handler rejected the config.
@@ -66,6 +71,7 @@ pub enum PayKitError {
 impl std::fmt::Display for PayKitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CreditProvider(e) => write!(f, "{e}"),
             Self::Mpp(e) => write!(f, "MPP config error: {e}"),
             Self::X402(e) => write!(f, "x402 config error: {e}"),
         }
@@ -85,6 +91,10 @@ pub struct PayKitConfig {
     pub recipient: String,
     /// Currency symbol or mint address (default `"USDC"`).
     pub currency: String,
+    /// Named credit providers accepted alongside currency (default empty).
+    /// Coinflow is recognized but unavailable; selecting it fails construction.
+    /// This policy is separate from advanced payment-channel hook configuration.
+    pub credit_providers: Vec<CreditProvider>,
     /// Token decimals for `currency` (default `6`).
     pub decimals: u8,
     /// Network: `"mainnet"`, `"devnet"`, or `"localnet"` (default `"mainnet"`).
@@ -111,6 +121,7 @@ impl Default for PayKitConfig {
         Self {
             recipient: String::new(),
             currency: "USDC".to_string(),
+            credit_providers: Vec::new(),
             decimals: 6,
             network: "mainnet".to_string(),
             rpc_url: None,
@@ -148,6 +159,8 @@ const UPTO_MAX_TIMEOUT_SECONDS: u64 = 300;
 impl PayKit {
     /// Build both protocol handlers from one config.
     pub fn new(config: PayKitConfig) -> Result<Self, PayKitError> {
+        validate_credit_providers(&config.credit_providers).map_err(PayKitError::CreditProvider)?;
+
         // x402's fee payer is an address; derive it from the shared signer so a
         // single config configures fee sponsorship for both protocols.
         let fee_payer_key = config
@@ -1349,6 +1362,40 @@ mod tests {
 
     const TEST_RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const TEST_SECRET: &str = "paykit-gate-test-secret-key-with-32b-padding";
+
+    #[test]
+    fn credit_provider_default_preserves_currency_defaults() {
+        let config = PayKitConfig::default();
+        assert!(config.credit_providers.is_empty());
+        assert_eq!(config.currency, "USDC");
+        assert_eq!(config.decimals, 6);
+        assert_eq!(config.network, "mainnet");
+    }
+
+    #[test]
+    fn credit_provider_selection_fails_before_handler_construction() {
+        for network in ["mainnet", "devnet", "localnet"] {
+            for currency in ["USDC", "USDT", "custom-mint"] {
+                // Deliberately omit recipient/secret: provider policy is checked
+                // before protocol configuration, environment access or RPC.
+                let result = PayKit::new(PayKitConfig {
+                    currency: currency.to_string(),
+                    network: network.to_string(),
+                    credit_providers: vec![CreditProvider::Coinflow],
+                    accepted_currencies: Some(vec!["USDC".to_string(), "USDT".to_string()]),
+                    ..Default::default()
+                });
+                assert!(matches!(
+                    result,
+                    Err(PayKitError::CreditProvider(
+                        CreditProviderError::Unavailable {
+                            provider: CreditProvider::Coinflow,
+                        }
+                    ))
+                ));
+            }
+        }
+    }
 
     fn test_paykit() -> PayKit {
         PayKit::new(PayKitConfig {

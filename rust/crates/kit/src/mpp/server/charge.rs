@@ -185,6 +185,15 @@ fn resolve_server_token_program(
 
 // ── Configuration ──
 
+/// Explicit channel-charge signing and callback policy. The payee is the fee
+/// sponsor when sponsored, otherwise the economic recipient. This is independent
+/// of the message-only confidential `recipient_signer`.
+#[derive(Clone)]
+pub struct ChannelChargeConfig {
+    pub payee_signer: Arc<dyn solana_keychain::TransactionSigner>,
+    pub hooks: crate::core::payment_channel::v2::ChannelHooks,
+}
+
 /// Server configuration.
 #[derive(Clone)]
 pub struct Config {
@@ -213,6 +222,8 @@ pub struct Config {
     pub fee_payer: bool,
     /// Fee payer signer (if fee_payer is true).
     pub fee_payer_signer: Option<Arc<dyn solana_keychain::TransactionSigner>>,
+    /// Opt-in only; direct-transfer challenges remain the default.
+    pub channel_charge: Option<ChannelChargeConfig>,
     /// Payee (recipient) wallet signer, used to derive the recipient ElGamal
     /// key for confidential-transfer settlement. Two settlement modes:
     ///   * `Some` (recipient-key verification): the gateway controls the payee,
@@ -258,6 +269,7 @@ impl Default for Config {
             realm: None,
             fee_payer: false,
             fee_payer_signer: None,
+            channel_charge: None,
             recipient_signer: None,
             store: None,
             html: false,
@@ -304,6 +316,7 @@ pub struct Mpp {
     pub(crate) network: String,
     pub(crate) fee_payer: bool,
     pub(crate) fee_payer_signer: Option<Arc<dyn solana_keychain::TransactionSigner>>,
+    pub(crate) channel_charge: Option<ChannelChargeConfig>,
     /// Payee wallet signer for confidential-transfer recipient-key
     /// verification (derives the recipient ElGamal key). `Some` ⇒ enforce the
     /// exact amount via the recipient's pending-balance delta; `None` ⇒
@@ -382,6 +395,7 @@ impl Mpp {
             network: config.network,
             fee_payer: config.fee_payer,
             fee_payer_signer: config.fee_payer_signer,
+            channel_charge: config.channel_charge,
             recipient_signer: config.recipient_signer,
             store,
             html: config.html,
@@ -489,6 +503,15 @@ impl Mpp {
         amount: &str,
         options: ChargeOptions<'_>,
     ) -> Result<PaymentChallenge, Error> {
+        self.charge_with_context(amount, options, None)
+    }
+
+    fn charge_with_context(
+        &self,
+        amount: &str,
+        options: ChargeOptions<'_>,
+        context: Option<crate::core::blockhash::CachedBlockhash>,
+    ) -> Result<PaymentChallenge, Error> {
         self.validate_charge_options(&options)?;
         let base_units = crate::mpp::protocol::intents::parse_units(amount, self.decimals as u8)?;
 
@@ -541,10 +564,11 @@ impl Mpp {
         // and emitting it only on a cache hit would make the field flicker in
         // and out of the challenge depending on cache warmth. The x402 paths,
         // which already commit to the field, forward it; MPP does not.
-        let blockhash = match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
-            Some(cached) => Some(cached.blockhash),
-            None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),
-        };
+        let blockhash =
+            match context.or_else(|| self.blockhash_cache.as_ref().and_then(|c| c.get())) {
+                Some(cached) => Some(cached.blockhash),
+                None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),
+            };
         if let Some(blockhash) = blockhash {
             details.insert("recentBlockhash".into(), serde_json::json!(blockhash));
         }
@@ -653,6 +677,105 @@ impl Mpp {
         self.charge_challenge_with_options(request, None, None)
     }
 
+    /// Whether an explicit channel-charge signing policy is configured.
+    pub fn channel_charge_enabled(&self) -> bool {
+        self.channel_charge.is_some()
+    }
+
+    /// Issue a first-response channel charge without knowing the payer identity.
+    /// Reuses ordinary pricing/sponsor fields; adds only V2 policy and recent slot.
+    pub fn charge_channel_with_options(
+        &self,
+        amount: &str,
+        options: ChargeOptions<'_>,
+    ) -> Result<PaymentChallenge, Error> {
+        let config = self
+            .channel_charge
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig("channel charges are disabled".into()))?;
+        let context = self
+            .blockhash_cache
+            .as_ref()
+            .and_then(|cache| cache.get())
+            .map(Ok)
+            .unwrap_or_else(|| {
+                crate::core::blockhash::fetch_blockhash_with_slot(
+                    &self.rpc,
+                    solana_commitment_config::CommitmentConfig::confirmed(),
+                )
+            })
+            .map_err(Error::Rpc)?;
+        let base = self.charge_with_context(amount, options, Some(context.clone()))?;
+        let mut request: ChargeRequest = base.request.decode()?;
+        let mut details: MethodDetails =
+            serde_json::from_value(request.method_details.take().unwrap_or_default())
+                .map_err(|e| Error::InvalidConfig(e.to_string()))?;
+        details.recent_blockhash = Some(context.blockhash);
+        details.transaction_versions = Some(self.accepted_versions.clone());
+        details.channel_charge = Some(crate::mpp::protocol::channel_charge::ChannelChargeProfile {
+            channel_program: crate::core::payment_channel::v2::PAYMENT_CHANNELS_PROGRAM_ID.into(),
+            channel_version: 2,
+            channel_hooks: config.hooks.clone(),
+            recent_slot: context.slot,
+        });
+        request.method_details =
+            Some(serde_json::to_value(details).map_err(|e| Error::InvalidConfig(e.to_string()))?);
+        self.charge_challenge_with_options(&request, base.expires.as_deref(), None)
+    }
+
+    fn validate_channel_policy(
+        &self,
+        request: &ChargeRequest,
+        md: &MethodDetails,
+    ) -> Result<(), Error> {
+        let Some(profile) = &md.channel_charge else {
+            return Ok(());
+        };
+        let config = self
+            .channel_charge
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig("channel charges are disabled".into()))?;
+        if profile.channel_hooks != config.hooks {
+            return Err(Error::InvalidConfig(
+                "channel charge hook policy mismatch".into(),
+            ));
+        }
+        let payee = if md.fee_payer == Some(true) {
+            let signer = self
+                .fee_payer_signer
+                .as_ref()
+                .ok_or_else(|| Error::InvalidConfig("channel charge sponsor missing".into()))?;
+            if md.fee_payer_key.as_deref() != Some(signer.pubkey().to_string().as_str()) {
+                return Err(Error::InvalidConfig(
+                    "channel charge sponsor mismatch".into(),
+                ));
+            }
+            signer.pubkey().to_string()
+        } else {
+            self.recipient.clone()
+        };
+        if config.payee_signer.pubkey().to_string() != payee
+            || request.recipient.as_deref() != Some(self.recipient.as_str())
+            || md.network.as_deref() != Some(self.network.as_str())
+            || md.token_program.as_deref() != self.token_program
+        {
+            return Err(Error::InvalidConfig(
+                "channel charge server policy mismatch".into(),
+            ));
+        }
+        // Validate economics/deployment without consuming a client identity.
+        // The actual client-owned identities are authenticated at settlement.
+        crate::mpp::protocol::channel_charge::terms(
+            request,
+            md,
+            "2099-01-01T00:00:00Z",
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0,
+        )?;
+        Ok(())
+    }
+
     /// Generate a charge challenge from a full request with options.
     ///
     /// The override-point on the high-level `charge_with_options` path:
@@ -713,6 +836,7 @@ impl Mpp {
         if let Some(md_value) = &request.method_details {
             let md: MethodDetails = serde_json::from_value(md_value.clone())
                 .map_err(|e| Error::InvalidConfig(format!("Invalid methodDetails: {e}")))?;
+            self.validate_channel_policy(request, &md)?;
 
             if let Some(network) = md.network.as_deref() {
                 if network != self.network {
@@ -864,15 +988,29 @@ impl Mpp {
             ));
         }
 
-        // Check expiry.
+        // A channel submission can reconcile an already-landed transaction
+        // after HTTP expiry, but cannot authorize another execution.
+        let mut expired_channel_challenge = false;
         if let Some(ref expires) = credential.challenge.expires {
             if let Ok(expires_at) =
                 time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
             {
                 if expires_at <= time::OffsetDateTime::now_utc() {
-                    return Err(VerificationError::expired(format!(
-                        "Challenge expired at {expires}"
-                    )));
+                    let issued: ChargeRequest = credential
+                        .challenge
+                        .request
+                        .decode()
+                        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+                    expired_channel_challenge = issued
+                        .method_details
+                        .as_ref()
+                        .and_then(|md| md.get("channelCharge"))
+                        .is_some_and(|profile| !profile.is_null());
+                    if !expired_channel_challenge {
+                        return Err(VerificationError::expired(format!(
+                            "Challenge expired at {expires}"
+                        )));
+                    }
                 }
             } else {
                 return Err(VerificationError::new(
@@ -949,6 +1087,33 @@ impl Mpp {
         let digest =
             normalized_request_digest(&challenge_id, credential.challenge.request.raw(), &payload)?;
         let charge_store = self.charge_replay_store();
+        if method_details.channel_charge.is_some() {
+            self.validate_channel_policy(request, &method_details)
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            if let CredentialPayload::Transaction { transaction } = &payload {
+                if let Some(signature) = self
+                    .reconcile_channel_submission(&credential.challenge, transaction)
+                    .await?
+                {
+                    if let Err(error) = charge_store.mark_confirmed(&challenge_id, &signature).await
+                    {
+                        // The immutable receipt claim already consumed this
+                        // payment; secondary bookkeeping must not lose its receipt.
+                        tracing::warn!(
+                            %error,
+                            %challenge_id,
+                            "failed to persist reconciled charge record"
+                        );
+                    }
+                    return Ok(Receipt::success(METHOD_NAME, &signature, challenge_id));
+                }
+            }
+        }
+        if expired_channel_challenge {
+            return Err(VerificationError::expired(
+                "Expired channel challenge has no submitted payment to reconcile",
+            ));
+        }
         match charge_store
             .reserve(&challenge_id, &digest, CHARGE_RESERVATION_LEASE)
             .await
@@ -989,10 +1154,14 @@ impl Mpp {
         // cannot trigger a second broadcast. See PR #85 Greptile P1 and
         // audit gap G05.
         match self
-            .settle_payload(&payload, request, &method_details)
+            .settle_payload(&payload, request, &method_details, &credential.challenge)
             .await
         {
             Ok(signature_str) => {
+                if method_details.channel_charge.is_some() {
+                    self.claim_channel_receipt(&challenge_id, &signature_str)
+                        .await?;
+                }
                 if let Err(e) = charge_store
                     .mark_confirmed(&challenge_id, &signature_str)
                     .await
@@ -1006,12 +1175,14 @@ impl Mpp {
                 Ok(Receipt::success(METHOD_NAME, &signature_str, challenge_id))
             }
             Err(err) => {
-                if let Err(e) = charge_store.mark_failed(&challenge_id, &err.message).await {
-                    tracing::warn!(
-                        error = %e,
-                        challenge_id = %challenge_id,
-                        "failed to persist failed charge record"
-                    );
+                if method_details.channel_charge.is_none() {
+                    if let Err(e) = charge_store.mark_failed(&challenge_id, &err.message).await {
+                        tracing::warn!(
+                            error = %e,
+                            challenge_id = %challenge_id,
+                            "failed to persist failed charge record"
+                        );
+                    }
                 }
                 Err(err)
             }
@@ -1029,14 +1200,32 @@ impl Mpp {
         payload: &CredentialPayload,
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        challenge: &crate::mpp::protocol::core::ChallengeEcho,
     ) -> Result<String, VerificationError> {
+        if method_details.channel_charge.is_some() {
+            self.validate_channel_policy(request, method_details)
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            if !matches!(payload, CredentialPayload::Transaction { .. }) {
+                return Err(VerificationError::invalid_payload(
+                    "channel charges require a decoded transaction credential",
+                ));
+            }
+        }
         match payload {
             CredentialPayload::Transaction { transaction } => {
                 let signature = self
-                    .broadcast_pull(transaction, request, method_details)
+                    .broadcast_pull(transaction, request, method_details, challenge)
                     .await?;
                 self.consume_signature(&signature).await?;
-                self.await_pull_confirmation(&signature)?;
+                if method_details.channel_charge.is_some() {
+                    self.await_pull_confirmation(&signature)
+                        .and_then(|()| self.verify_confirmed_channel_charge(&signature, transaction, challenge))
+                        .map_err(|error| VerificationError::settlement_in_progress(format!(
+                            "Channel transaction {signature} requires outcome reconciliation; do not pay again: {error}",
+                        )))?;
+                } else {
+                    self.await_pull_confirmation(&signature)?;
+                }
                 Ok(signature)
             }
             CredentialPayload::Signature { signature } => {
@@ -1168,6 +1357,7 @@ impl Mpp {
         transaction_b64: &str,
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        challenge: &crate::mpp::protocol::core::ChallengeEcho,
     ) -> Result<String, VerificationError> {
         let tx_bytes =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction_b64)
@@ -1194,17 +1384,53 @@ impl Mpp {
         check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
-        verify_versioned_transaction_pre_broadcast(
-            &tx,
-            request,
-            method_details,
-            &self.accepted_versions,
-        )?;
+        if method_details.channel_charge.is_some() {
+            let config = self.channel_charge.as_ref().ok_or_else(|| {
+                VerificationError::invalid_payload("channel charges are disabled")
+            })?;
+            crate::mpp::protocol::channel_charge::verify_transaction(&tx, challenge, &config.hooks)
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            let version = crate::core::tx::TxVersion::of(&tx.message)
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            if !self.accepted_versions.contains(&version) {
+                return Err(VerificationError::invalid_payload(
+                    "channel transaction version disabled",
+                ));
+            }
+            self.simulate_channel_charge(&tx, challenge)?;
+            crate::core::signing::sign_versioned_transaction_slot(
+                config.payee_signer.as_ref(),
+                &mut tx,
+            )
+            .await
+            .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+        } else {
+            verify_versioned_transaction_pre_broadcast(
+                &tx,
+                request,
+                method_details,
+                &self.accepted_versions,
+            )?;
+        }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
 
-        // Co-sign if server is fee payer (only after verification passes).
-        if method_details.fee_payer.unwrap_or(false) {
+        // Channel payee is the configured sponsor in sponsored mode and its
+        // slot was already signed above. Do not prompt that wallet twice.
+        if method_details.fee_payer.unwrap_or(false) && method_details.channel_charge.is_none() {
             self.cosign_fee_payer_slot(&mut tx).await?;
+        }
+        if method_details.channel_charge.is_some() {
+            let config = self.channel_charge.as_ref().ok_or_else(|| {
+                VerificationError::invalid_payload("channel charges are disabled")
+            })?;
+            // A signing backend must not change the approved message or leave
+            // required signatures missing. Recheck before recording/submission.
+            crate::mpp::protocol::channel_charge::verify_transaction(&tx, challenge, &config.hooks)
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            tx.verify_and_hash_message()
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+            self.record_channel_submission(challenge, transaction_b64, &tx)
+                .await?;
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
 
@@ -1222,6 +1448,9 @@ impl Mpp {
         // acceptance and confirmation polling.
         let mut broadcast_signature: Option<Signature> = None;
         for attempt in 1..=SIMULATION_MAX_ATTEMPTS {
+            if method_details.channel_charge.is_some() {
+                super::channel_charge::ensure_send_allowed(challenge, &tx)?;
+            }
             let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
             match crate::core::rpc::send_transaction(
                 &self.rpc,
@@ -1259,6 +1488,7 @@ impl Mpp {
                             .map(|e| e.to_string())
                             .unwrap_or_else(|| "unknown error".to_string());
                         if !retrying
+                            && method_details.channel_charge.is_none()
                             && uses_challenge_blockhash
                             && is_blockhash_not_found_simulation(sim)
                         {
@@ -1355,7 +1585,10 @@ impl Mpp {
     /// Poll for `Confirmed` commitment on a signature that broadcast_pull
     /// already accepted. Surfpool typically confirms within a single tick;
     /// a real RPC may need up to ~32 slots (~12 seconds).
-    fn await_pull_confirmation(&self, signature_str: &str) -> Result<(), VerificationError> {
+    pub(crate) fn await_pull_confirmation(
+        &self,
+        signature_str: &str,
+    ) -> Result<(), VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use std::str::FromStr;
         let signature = Signature::from_str(signature_str).map_err(|e| {
@@ -1962,6 +2195,23 @@ fn compare_expected_to_request(
     let request_md = parse_method_details_for_compare(&request.method_details, "credential")?;
     let expected_md = parse_method_details_for_compare(&expected.method_details, "expected")?;
 
+    // A freshly rebuilt route expectation has a different slot/hash. Authenticate
+    // the original challenge first, compare only immutable policy here, and use
+    // that original challenge's slot/hash for exact transaction reconstruction.
+    let same_channel_policy = match (&request_md.channel_charge, &expected_md.channel_charge) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.channel_program == b.channel_program
+                && a.channel_version == b.channel_version
+                && a.channel_hooks == b.channel_hooks
+        }
+        _ => false,
+    };
+    if !same_channel_policy {
+        return Err(VerificationError::credential_mismatch(
+            "channel charge profile mismatch",
+        ));
+    }
     if request_md.network != expected_md.network {
         return Err(VerificationError::credential_mismatch(
             "methodDetails.network mismatch",
