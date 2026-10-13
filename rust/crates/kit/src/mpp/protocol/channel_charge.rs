@@ -65,11 +65,19 @@ pub(crate) fn terms(
         .as_ref()
         .ok_or_else(|| invalid("missing profile"))?;
     let program_id = key(&profile.channel_program)?;
-    v2::Deployment::resolve(program_id, Some(profile.channel_version)).map_err(core_error)?;
     if profile.channel_version != 2 {
         return Err(invalid("requires V2"));
     }
-    profile.channel_hooks.validate().map_err(core_error)?;
+    let network = details
+        .network
+        .as_deref()
+        .ok_or_else(|| invalid("missing network"))?;
+    crate::mpp::program::channel_deployment::resolve_for_network(
+        program_id,
+        Some(profile.channel_version),
+        Some(&profile.channel_hooks),
+        network,
+    )?;
     if details.confidential.unwrap_or(false) {
         return Err(invalid("confidential channel charges are unsupported"));
     }
@@ -160,13 +168,6 @@ pub(crate) fn terms(
         time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid("invalid challenge expiry"))?
             .unix_timestamp();
-    let network = details
-        .network
-        .as_deref()
-        .ok_or_else(|| invalid("missing network"))?;
-    if !["mainnet", "devnet", "localnet"].contains(&network) {
-        return Err(invalid("invalid network"));
-    }
     Ok(Terms {
         params: v1::OpenChannelParams {
             payer,

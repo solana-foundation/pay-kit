@@ -3,14 +3,13 @@ use crate::mpp::{
     client::build_channel_charge_credential,
     protocol::{
         core::{Base64UrlJson, PaymentChallenge},
-        solana::{CredentialPayload, Split},
+        solana::{mints::USDC_DEVNET as MINT, CredentialPayload, Split},
     },
     server::{ChannelChargeConfig, Config, Mpp},
 };
 use solana_keychain::{MemorySigner, SolanaSigner};
 use std::sync::Arc;
 
-const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SECRET: &str = "channel-charge-test-secret-32-bytes-minimum";
 
 fn signer(seed: u8) -> Arc<MemorySigner> {
@@ -29,7 +28,7 @@ fn request(hooks: v2::ChannelHooks, sponsored: bool) -> ChargeRequest {
         external_id: Some("resource:unique-request".into()),
         method_details: Some(
             serde_json::to_value(MethodDetails {
-                network: Some("mainnet".into()),
+                network: Some("devnet".into()),
                 decimals: Some(6),
                 token_program: Some(super::super::solana::programs::TOKEN_PROGRAM.into()),
                 transaction_versions: Some(vec![tx::TxVersion::V0]),
@@ -327,6 +326,7 @@ fn channel_charge_server_opt_in_and_direct_transfer_wire() {
     let config = || Config {
         recipient: signer(3).pubkey().to_string(),
         currency: MINT.into(),
+        network: "devnet".into(),
         challenge_binding_secret: Some(SECRET.into()),
         realm: Some("channel-test".into()),
         fee_payer: true,
@@ -359,6 +359,84 @@ fn channel_charge_server_opt_in_and_direct_transfer_wire() {
     .unwrap();
     malformed["unknown"] = serde_json::json!(true);
     assert!(serde_json::from_value::<ChannelChargeProfile>(malformed).is_err());
+}
+
+#[tokio::test]
+async fn channel_charge_network_is_checked_during_issuance_signing_and_verification() {
+    let hooks = v2::ChannelHooks::default();
+    let server = workflow_server(Arc::new(std::sync::Mutex::new(WorkflowState::default())));
+    let valid_request = request(hooks.clone(), true);
+    let valid_transaction = transaction(&challenge(&valid_request), &hooks).await;
+
+    for network in ["mainnet", "testnet", "unknown"] {
+        let expected_error = if network == "mainnet" {
+            "only devnet and localnet"
+        } else {
+            "network"
+        };
+        let mut unsupported = valid_request.clone();
+        unsupported.method_details.as_mut().unwrap()["network"] = network.into();
+        let unsupported_challenge = challenge(&unsupported);
+        let issuance_error = server.charge_challenge(&unsupported).unwrap_err();
+        assert!(
+            issuance_error
+                .to_string()
+                .contains("channel charge server policy mismatch"),
+            "{network}: {issuance_error}"
+        );
+        let signing_error = build_channel_charge_credential(
+            signer(1).as_ref(),
+            signer(2).as_ref(),
+            &unsupported_challenge,
+            &hooks,
+            99,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            signing_error.to_string().contains(expected_error),
+            "{network}: {signing_error}"
+        );
+        let verification_error =
+            verify_transaction(&valid_transaction, &unsupported_challenge.to_echo(), &hooks)
+                .unwrap_err();
+        assert!(
+            verification_error.to_string().contains(expected_error),
+            "{network}: {verification_error}"
+        );
+    }
+
+    for network in ["devnet", "localnet"] {
+        let mut supported = valid_request.clone();
+        supported.method_details.as_mut().unwrap()["network"] = network.into();
+        let supported_challenge = challenge(&supported);
+        let transaction = transaction(&supported_challenge, &hooks).await;
+        verify_transaction(&transaction, &supported_challenge.to_echo(), &hooks).unwrap();
+    }
+}
+
+#[test]
+fn channel_charge_mainnet_configuration_fails_without_changing_direct_charge() {
+    let config = || Config {
+        recipient: signer(3).pubkey().to_string(),
+        currency: "USDC".into(),
+        network: "mainnet".into(),
+        challenge_binding_secret: Some(SECRET.into()),
+        rpc_url: Some("http://127.0.0.1:1".into()),
+        ..Default::default()
+    };
+    assert!(Mpp::new(config()).is_ok());
+    let error = match Mpp::new(Config {
+        channel_charge: Some(ChannelChargeConfig {
+            payee_signer: signer(3),
+            hooks: v2::ChannelHooks::default(),
+        }),
+        ..config()
+    }) {
+        Err(error) => error,
+        Ok(_) => panic!("unsupported deployment must fail before handler construction"),
+    };
+    assert!(error.to_string().contains("only devnet and localnet"));
 }
 
 struct WorkflowRpc {
@@ -535,6 +613,7 @@ fn workflow_server(state: Arc<std::sync::Mutex<WorkflowState>>) -> Mpp {
     let mut server = Mpp::new(Config {
         recipient: signer(3).pubkey().to_string(),
         currency: MINT.into(),
+        network: "devnet".into(),
         challenge_binding_secret: Some(SECRET.into()),
         realm: Some("channel-test".into()),
         fee_payer: true,

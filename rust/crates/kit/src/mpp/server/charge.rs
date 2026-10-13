@@ -358,6 +358,17 @@ impl Mpp {
         // format canonical and stops the silent "everything unknown
         // defaults to mainnet" behaviour that used to live in default_rpc_url.
         crate::mpp::protocol::solana::validate_network(&config.network)?;
+        if let Some(channel) = &config.channel_charge {
+            let program =
+                Pubkey::from_str(crate::core::payment_channel::v2::PAYMENT_CHANNELS_PROGRAM_ID)
+                    .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+            crate::mpp::program::channel_deployment::resolve_for_network(
+                program,
+                Some(2),
+                Some(&channel.hooks),
+                &config.network,
+            )?;
+        }
 
         let rpc_url = config
             .rpc_url
