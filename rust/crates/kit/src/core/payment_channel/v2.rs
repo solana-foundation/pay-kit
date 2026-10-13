@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
-use super::{payment_channels as v1, Error, Result};
+use super::v1;
+use crate::core::{Error, Result};
 use crate::generated::payment_channels::generated::accounts::Channel;
 
 pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ";
@@ -475,19 +476,19 @@ pub async fn build_open_payment_channel_tx_with_options(
             data: memo.as_bytes().to_vec(),
         });
     }
-    let mut tx = super::tx::build_unsigned(
+    let mut tx = crate::core::tx::build_unsigned(
         options.version,
         fee_payer,
         &instructions,
         recent_blockhash,
         options.compute_budget.as_ref(),
     )?;
-    super::signing::sign_versioned_transaction_slot(signer, &mut tx)
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|error| Error::Other(format!("payment-channel open signing failed: {error}")))?;
     Ok(v1::PaymentChannelOpenTransaction {
         channel_id,
-        transaction: super::tx::encode(&tx)?,
+        transaction: crate::core::tx::encode(&tx)?,
     })
 }
 
