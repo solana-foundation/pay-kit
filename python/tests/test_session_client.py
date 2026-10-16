@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -23,7 +24,9 @@ from solana_pay_kit.protocols.mpp.intents.session import (
 
 
 def _session() -> ActiveSession:
-    return ActiveSession(Pubkey.from_string("11111111111111111111111111111112"), Keypair.from_seed(bytes([4] * 32)))
+    return ActiveSession(
+        Pubkey.from_string("11111111111111111111111111111112"), MemorySigner(Keypair.from_seed(bytes([4] * 32)))
+    )
 
 
 def _challenge(intent: str = "session") -> PaymentChallenge:
@@ -43,9 +46,9 @@ def _challenge(intent: str = "session") -> PaymentChallenge:
     )
 
 
-def test_voucher_signing_is_cumulative_and_has_exact_wire_fields() -> None:
+async def test_voucher_signing_is_cumulative_and_has_exact_wire_fields() -> None:
     session = _session()
-    voucher = session.sign_increment(100)
+    voucher = await session.sign_increment(100)
     assert session.cumulative == 100
     assert voucher.data.cumulative_amount == "100"
     assert voucher.signer == session.authorized_signer
@@ -54,9 +57,9 @@ def test_voucher_signing_is_cumulative_and_has_exact_wire_fields() -> None:
     assert voucher.data.message_bytes()
 
 
-def test_prepare_and_record_are_separate_retry_safe_steps() -> None:
+async def test_prepare_and_record_are_separate_retry_safe_steps() -> None:
     session = _session()
-    voucher = session.prepare_increment(75)
+    voucher = await session.prepare_increment(75)
     assert session.cumulative == 0
     session.record_voucher(voucher)
     assert session.cumulative == 75
@@ -64,14 +67,14 @@ def test_prepare_and_record_are_separate_retry_safe_steps() -> None:
         session.record_voucher(voucher)
 
 
-def test_voucher_rejects_non_increasing_and_overflow() -> None:
+async def test_voucher_rejects_non_increasing_and_overflow() -> None:
     session = _session()
-    session.sign_voucher(100)
+    await session.sign_voucher(100)
     with pytest.raises(ValueError, match="must exceed"):
-        session.sign_voucher(100)
-    session = ActiveSession(session.channel_id, Keypair(), cumulative=(1 << 64) - 1)
+        await session.sign_voucher(100)
+    session = ActiveSession(session.channel_id, MemorySigner(Keypair()), cumulative=(1 << 64) - 1)
     with pytest.raises(ValueError, match="overflows"):
-        session.sign_increment(1)
+        await session.sign_increment(1)
 
 
 def test_open_action_matches_final_schema() -> None:
@@ -104,7 +107,7 @@ def test_open_action_matches_final_schema() -> None:
     }
 
 
-def test_use_and_operator_close_attach_reusable_authentication() -> None:
+async def test_use_and_operator_close_attach_reusable_authentication() -> None:
     session = _session()
     authentication = SessionAuthentication("opening-challenge", "payer", "signature")
     assert session.use_action(authentication).to_dict() == {
@@ -112,14 +115,14 @@ def test_use_and_operator_close_attach_reusable_authentication() -> None:
         "channelId": session.channel_id_string,
         "authentication": authentication.to_dict(),
     }
-    assert session.close_action(authentication=authentication).to_dict() == {
+    assert (await session.close_action(authentication=authentication)).to_dict() == {
         "action": "close",
         "channelId": session.channel_id_string,
         "authentication": authentication.to_dict(),
     }
 
 
-def test_top_up_and_client_close_actions() -> None:
+async def test_top_up_and_client_close_actions() -> None:
     session = _session()
     assert session.top_up_action(250, "transaction").to_dict() == {
         "action": "topUp",
@@ -127,14 +130,14 @@ def test_top_up_and_client_close_actions() -> None:
         "additionalAmount": "250",
         "transaction": "transaction",
     }
-    close = session.close_action(final_increment=10).to_dict()
+    close = (await session.close_action(final_increment=10)).to_dict()
     assert close["action"] == "close"
     assert close["voucher"]["voucher"]["cumulativeAmount"] == "10"
 
 
-def test_credential_serialization_roundtrips() -> None:
+async def test_credential_serialization_roundtrips() -> None:
     challenge = _challenge()
-    action = _session().close_action()
+    action = await _session().close_action()
     header = serialize_session_credential(challenge, action)
     credential = parse_authorization(header)
     assert credential.challenge.id == challenge.id

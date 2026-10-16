@@ -173,7 +173,7 @@ async def summarize(request: Request, charge: Charge = require_summarize) -> dic
 async def health_info() -> dict[str, object]:
     """Free liveness probe + operator/recipient/network info (no balance RPC)."""
     return {
-        "feePayer": _cfg.operator.signer.pubkey(),
+        "feePayer": str(_cfg.operator.signer.pubkey),
         "network": _cfg.network.value,
         "ok": True,
         "recipient": _RECIPIENT,
@@ -187,7 +187,7 @@ if _cfg.network.value == "solana_localnet":
     # Optional zero-config funding for a live localnet run. Off by default so the
     # smoke test (which boots the app) never touches the network.
     if os.getenv("PAY_KIT_PLAYGROUND_FUND") == "1":
-        fund_sandbox(_cfg.effective_rpc_url(), _cfg.operator.signer.pubkey(), _RECIPIENT)
+        fund_sandbox(_cfg.effective_rpc_url(), str(_cfg.operator.signer.pubkey), _RECIPIENT)
         # The split recipient only needs a USDC account to receive its cut (no SOL).
         fund_usdc(_cfg.effective_rpc_url(), PLATFORM)
 

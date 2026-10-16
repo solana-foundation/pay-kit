@@ -20,9 +20,11 @@ jobs:
         working-directory: python
         # Framework extras bring fastapi/flask/django so the solana_pay_kit shim tests
         # import and pyright can resolve them; dev brings ruff, pyright, pytest.
+        # The kms extras bring solana-keychain's AWS/GCP backends so the native
+        # kms factory tests run here instead of skipping.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,fastapi,flask,django]"
+          pip install -e ".[dev,fastapi,flask,django,aws-kms,gcp-kms]"
       - name: Lint with ruff
         working-directory: python
         run: ruff check src tests

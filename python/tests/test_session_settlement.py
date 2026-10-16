@@ -6,12 +6,12 @@ import asyncio
 from typing import Any
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
-from solana_pay_kit.signer import LocalSigner
 
 BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 SETTLEMENT_SIGNATURE = str(Keypair.from_seed(bytes([99] * 32)).sign_message(b"settle"))
@@ -60,7 +60,7 @@ def _session(rpc: _Rpc, merchant: Keypair):
             decimals=6,
             network="localnet",
             secret_key="a" * 64,
-            signer=LocalSigner.from_keypair(merchant),
+            signer=MemorySigner(merchant),
             rpc=rpc,  # type: ignore[arg-type]
         )
     )
@@ -142,7 +142,7 @@ async def test_settlement_distribute_uses_the_recorded_rent_payer() -> None:
     neither the operator nor the payer. The distribute instruction must
     reference the recorded ``rent_payer`` — the on-chain check pins to it, so
     building with any other account makes the settle bundle revert forever."""
-    from solders.transaction import Transaction
+    from solders.transaction import VersionedTransaction
 
     merchant = Keypair.from_seed(bytes([8] * 32))
     rent_payer = Keypair.from_seed(bytes([9] * 32))
@@ -154,7 +154,9 @@ async def test_settlement_distribute_uses_the_recorded_rent_payer() -> None:
 
     assert await session._settle_channel(state.channel_id) == SETTLEMENT_SIGNATURE
     assert len(rpc.sent) == 1
-    keys = [str(key) for key in Transaction.from_bytes(rpc.sent[0]).message.account_keys]
+    transaction = VersionedTransaction.from_bytes(rpc.sent[0])
+    assert transaction.verify_with_results() == [True]
+    keys = [str(key) for key in transaction.message.account_keys]
     assert str(rent_payer.pubkey()) in keys
     session.shutdown()
 

@@ -39,6 +39,7 @@ import httpx
 
 from solana_pay_kit._paycore import mints
 from solana_pay_kit.errors import ConfigurationError
+from solana_pay_kit.signer import is_demo_signer
 
 if TYPE_CHECKING:
     from solana_pay_kit.config import Config
@@ -116,7 +117,7 @@ def _autofix_enabled(config: Config) -> bool:  # pragma: no cover - exercised li
     if network != "solana_localnet":
         return False
     signer = config.operator.signer
-    return signer is not None and signer.is_demo()
+    return signer is not None and is_demo_signer(signer)
 
 
 def _check_fee_payer_sol(config: Config, autofix: bool) -> None:  # pragma: no cover - live RPC
@@ -127,7 +128,7 @@ def _check_fee_payer_sol(config: Config, autofix: bool) -> None:  # pragma: no c
     if signer is None:
         return
 
-    pubkey = signer.pubkey()
+    pubkey = str(signer.pubkey)
     result = _rpc_call(config, "getBalance", [pubkey, {"commitment": "confirmed"}])
     lamports = int(cast("dict[str, Any]", result)["value"]) if isinstance(result, dict) and "value" in result else 0
     if lamports >= MIN_FEE_PAYER_LAMPORTS:

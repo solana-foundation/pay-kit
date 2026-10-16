@@ -18,6 +18,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from solana_keychain import SolanaSigner
+
 from solana_pay_kit.protocols.mpp.intents.charge import parse_units
 
 __all__ = [
@@ -131,14 +133,16 @@ class SessionAuthentication:
         )
 
 
-def sign_session_authentication(challenge_id: str, channel_id: str, signer: Any) -> SessionAuthentication:
-    """Create a reusable proof with a solders-compatible Ed25519 keypair."""
-    payer = str(signer.pubkey())
+async def sign_session_authentication(
+    challenge_id: str, channel_id: str, signer: SolanaSigner
+) -> SessionAuthentication:
+    """Create a reusable proof with a native async message signer."""
+    payer = str(signer.pubkey)
     unsigned = SessionAuthentication(challenge_id, payer, "")
     return SessionAuthentication(
         challenge_id,
         payer,
-        str(signer.sign_message(unsigned.message_bytes(channel_id))),
+        str(await signer.sign_message(unsigned.message_bytes(channel_id))),
     )
 
 

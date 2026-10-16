@@ -26,7 +26,7 @@ from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADE
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
 
 if TYPE_CHECKING:
-    from solana_pay_kit.signer import LocalSigner
+    from solana_keychain import TransactionSigner
 
 logger = logging.getLogger("solana_pay_kit")
 
@@ -46,7 +46,7 @@ class PaymentTransport(httpx.AsyncBaseTransport):
 
     def __init__(
         self,
-        signer: LocalSigner,
+        signer: TransactionSigner,
         rpc: Any,
         *,
         network: str | None = None,
@@ -111,7 +111,7 @@ class PaymentTransport(httpx.AsyncBaseTransport):
 
 
 def X402Client(  # noqa: N802 - factory named for the type it returns
-    signer: LocalSigner,
+    signer: TransactionSigner,
     rpc: Any,
     *,
     network: str | None = None,

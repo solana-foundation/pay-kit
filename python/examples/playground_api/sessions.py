@@ -42,7 +42,7 @@ router = APIRouter()
 _cfg = solana_pay_kit.config()
 session = new_session(
     SessionOptions(
-        operator=_cfg.operator.signer.pubkey(),
+        operator=str(_cfg.operator.signer.pubkey),
         recipient=_cfg.effective_recipient(),
         amount=100,
         currency=resolve_mint("USDC", "mainnet"),

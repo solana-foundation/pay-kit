@@ -20,14 +20,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from solana_keychain import TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
-from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
-from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
@@ -436,7 +436,7 @@ def new_open_tx_verifier(
     config: OpenVerifierConfig,
     rpc_client: RpcClient | None,
     *,
-    fee_payer_signer: Any | None = None,
+    fee_payer_signer: TransactionSigner | None = None,
 ) -> OpenTxVerifier:
     """Return the on-chain open verifier to install on the session config.
 
@@ -627,7 +627,7 @@ async def _verify_channel_account(
     expected: dict[str, Any],
 ) -> None:
     """Fetch and compare the authoritative channel account after confirmation."""
-    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+    from solana_pay_kit._paycore.paymentchannels import decode_channel_account
 
     response = await rpc_client.get_account_info(Pubkey.from_string(channel_id), commitment="confirmed")
     info = getattr(response, "value", None)
@@ -635,16 +635,19 @@ async def _verify_channel_account(
         raise PaymentError("confirmed channel account was not found", code="transaction-not-found")
     if str(info.owner) != str(program_id):
         raise PaymentError("channel account is owned by the wrong program", code="invalid-payload")
-    channel = Channel.decode(bytes(info.data))
+    try:
+        channel = decode_channel_account(bytes(info.data))
+    except ValueError as exc:
+        raise PaymentError("invalid channel account data", code="invalid-payload") from exc
     actual = {
-        "authorized_signer": str(channel.authorizedSigner),
+        "authorized_signer": str(channel.authorized_signer),
         "deposit": channel.deposit,
-        "grace_period": channel.gracePeriod,
+        "grace_period": channel.grace_period,
         "mint": str(channel.mint),
-        "open_slot": channel.openSlot,
+        "open_slot": channel.open_slot,
         "payee": str(channel.payee),
         "payer": str(channel.payer),
-        "rent_payer": str(channel.rentPayer),
+        "rent_payer": str(channel.rent_payer),
         "salt": channel.salt,
     }
     if channel.status != 0:
@@ -726,7 +729,7 @@ async def confirm_transaction_signature(
 async def settle_and_seal_channel(
     state: ChannelState,
     *,
-    merchant: Keypair,
+    merchant: TransactionSigner,
     rpc: RpcClient,
     config: SessionConfig,
 ) -> str:
@@ -740,7 +743,7 @@ async def settle_and_seal_channel(
     """
     channel = Pubkey.from_string(state.channel_id)
     program_id = Pubkey.from_string(config.channel_program)
-    merchant_pubkey = merchant.pubkey()
+    merchant_pubkey = merchant.pubkey
 
     voucher_signature: bytes | None = None
     authorized_signer = merchant_pubkey
@@ -799,8 +802,8 @@ async def settle_and_seal_channel(
     )
 
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-    tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
-    sent = await rpc.send_raw_transaction(bytes(tx))
+    wire = await build_partially_signed_v0_transaction([*settle, distribute], merchant_pubkey, blockhash, merchant)
+    sent = await rpc.send_raw_transaction(wire)
     signature = str(sent.value)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
     # settle tx (blockhash expiry, congestion, duplicate-settle race) must raise
@@ -810,7 +813,7 @@ async def settle_and_seal_channel(
     return signature
 
 
-async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc: RpcClient) -> str:
+async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: TransactionSigner, rpc: RpcClient) -> str:
     """Complete the fee-payer signature on a client-built open transaction and
     broadcast it.
 
@@ -826,7 +829,7 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc
             "server-funded open requires the client-built transaction in the payload",
             code="invalid-payload",
         )
-    cosigned = _co_sign_with_fee_payer(payload.transaction, fee_payer)
+    cosigned = await _co_sign_with_fee_payer(payload.transaction, fee_payer)
     sent = await rpc.send_raw_transaction(base64.b64decode(cosigned))
     signature = str(sent.value)
     await confirm_transaction_signature(rpc, signature, "open")

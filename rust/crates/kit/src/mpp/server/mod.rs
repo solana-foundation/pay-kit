@@ -6,6 +6,7 @@
 //! - [`html`] renders browser payment-link responses.
 
 pub mod authenticate;
+mod channel_charge;
 pub mod charge;
 pub mod html;
 pub mod session;
@@ -23,7 +24,10 @@ pub mod confidential_worker;
 pub use authenticate::{
     AuthenticateConfig, AuthenticateServer, VerifyError as AuthenticateVerifyError,
 };
-pub use charge::{check_network_blockhash, ChargeOptions, Config, Mpp, VerificationError};
+pub use channel_charge::ChannelChargeSettlement;
+pub use charge::{
+    check_network_blockhash, ChannelChargeConfig, ChargeOptions, Config, Mpp, VerificationError,
+};
 pub use subscription::{SubscriptionConfig, SubscriptionServer};
 
 #[cfg(feature = "worker")]
@@ -31,5 +35,7 @@ pub use confidential::ConfidentialSweepReport;
 
 #[cfg(feature = "worker")]
 pub use confidential_worker::{
-    spawn as spawn_confidential_worker, ConfidentialHandle, ConfidentialWorkerConfig,
+    spawn as spawn_confidential_worker,
+    spawn_with_tx_version as spawn_confidential_worker_with_tx_version, ConfidentialHandle,
+    ConfidentialWorkerConfig,
 };

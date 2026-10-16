@@ -5,7 +5,7 @@
 //! same on-chain plumbing without depending on each other.
 //!
 //! Exposes:
-//! - [`payment_channels`]: PDA derivation, voucher bytes, distribution hashing,
+//! - [`payment_channel`]: versioned PDA derivation, voucher bytes, distribution hashing,
 //!   and instruction/transaction builders for the on-chain payment-channels
 //!   program (`solana-mpp` re-exports it at `mpp::program::payment_channels`;
 //!   `solana-x402` uses it for the `upto` and `batch-settlement` schemes).
@@ -19,10 +19,13 @@
 pub(crate) mod base58;
 pub mod batch_verify;
 pub mod blockhash;
+pub mod credit_provider;
 pub mod mints;
 #[cfg(feature = "otel")]
 pub mod otel;
-pub mod payment_channels;
+pub mod payment_channel;
+// Preserve the original public paths for existing SDK consumers.
+pub use payment_channel::{v1 as payment_channels, v2 as payment_channels_v2};
 pub mod rpc;
 pub mod session;
 pub mod settlement;

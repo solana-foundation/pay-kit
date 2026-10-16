@@ -28,6 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from solana_keychain import TransactionSigner
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import (
@@ -65,7 +66,6 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     settle_and_seal_channel,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, ChannelStore, MemoryChannelStore
-from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class SessionOptions:
     # Signer is the operator/merchant local signer that funds and signs the
     # on-chain settle-at-close (and the server-broadcast open) transactions.
     # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
-    signer: LocalSigner | None = None
+    signer: TransactionSigner | None = None
 
 
 @dataclass
@@ -230,7 +230,7 @@ class Session:
         network: str,
         rpc: RpcClient | None,
         lifecycle: SessionLifecycle | None,
-        signer: LocalSigner | None = None,
+        signer: TransactionSigner | None = None,
     ) -> None:
         # core is the lower-level SessionServer dispatching open / voucher /
         # commit / topUp / close against the channel store.
@@ -559,7 +559,7 @@ class Session:
 
         try:
             signature = await settle_and_seal_channel(
-                state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
+                state, merchant=self._signer, rpc=self._rpc, config=self._core.config
             )
         except Exception:
             # Broadcast/confirm failed: release the settle-in-progress guard
@@ -711,7 +711,7 @@ def new_session(options: SessionOptions) -> Session:
     channel_program = options.channel_program or PROGRAM_ID
     operator = options.operator
     if not operator and options.signer is not None:
-        operator = str(options.signer.pubkey())
+        operator = str(options.signer.pubkey)
     config = SessionConfig(
         operator=operator,
         recipient=options.recipient,
@@ -726,10 +726,10 @@ def new_session(options: SessionOptions) -> Session:
         minimum_deposit=options.minimum_deposit,
         grace_period_seconds=options.grace_period_seconds,
         fee_payer=options.fee_payer,
-        fee_payer_key=(str(options.signer.pubkey()) if options.fee_payer and options.signer is not None else None),
+        fee_payer_key=(str(options.signer.pubkey) if options.fee_payer and options.signer is not None else None),
         min_voucher_delta=options.min_voucher_delta,
         voucher_signer=options.voucher_signer,  # type: ignore[arg-type]
-        operator_signer=(options.signer.keypair if options.voucher_signer == "operator" and options.signer else None),
+        operator_signer=(options.signer if options.voucher_signer == "operator" and options.signer else None),
         idle_timeout_options_seconds=options.idle_timeout_options_seconds,
         idle_timeout_seconds=options.idle_timeout_seconds,
         current_slot_provider=lambda: rpc.get_slot(),
@@ -737,7 +737,7 @@ def new_session(options: SessionOptions) -> Session:
     config.verify_open_tx = new_open_tx_verifier(
         config,
         rpc,
-        fee_payer_signer=(options.signer.keypair if options.fee_payer and options.signer else None),
+        fee_payer_signer=(options.signer if options.fee_payer and options.signer else None),
     )
     config.verify_top_up_tx = new_top_up_tx_verifier(config, store, rpc)
     # The RPC doubles as the fallback source of the challenge's

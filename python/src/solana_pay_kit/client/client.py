@@ -8,6 +8,7 @@ from typing import Any, Literal, Self, cast
 from urllib.parse import urlsplit
 
 import httpx
+from solana_keychain import TransactionSigner
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
@@ -29,7 +30,6 @@ from solana_pay_kit.protocols.x402.client.exact.payment import (
 from solana_pay_kit.protocols.x402.client.exact.transport import PAYMENT_SIGNATURE_HEADER
 from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
-from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger("solana_pay_kit")
 
@@ -39,7 +39,7 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
 
     def __init__(
         self,
-        signer: LocalSigner,
+        signer: TransactionSigner,
         rpc: Any,
         *,
         network: SolanaNetwork,
@@ -92,7 +92,7 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     mint = resolve_stablecoin_mint(currency, network) or currency
                     authorized = self._permissions.authorize(PaymentCandidate(amount, mint, network, origin))
                     header = await build_credential_header(
-                        signer=self._signer.keypair,
+                        signer=self._signer,
                         rpc_client=self._rpc,
                         challenge=challenge,
                         max_amount_base_units=authorized.max_amount_atomic,
@@ -191,7 +191,7 @@ class PayKitClientBuilder:
     """Fluent builder for :class:`PayKitClient`."""
 
     def __init__(self) -> None:
-        self._signer: LocalSigner | None = None
+        self._signer: TransactionSigner | None = None
         self._rpc: Any = None
         self._network: SolanaNetwork = "mainnet"
         self._permissions: ClientPermissions | Literal[False] | None = None
@@ -200,7 +200,7 @@ class PayKitClientBuilder:
         self._client_kwargs: dict[str, Any] = {}
         self._recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None
 
-    def signer(self, signer: LocalSigner) -> Self:
+    def signer(self, signer: TransactionSigner) -> Self:
         """Set the payer signer."""
         self._signer = signer
         return self

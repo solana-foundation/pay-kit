@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+from solana_keychain import SolanaSigner
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
@@ -193,7 +194,7 @@ class SessionConfig:
     voucher_signer: SessionVoucherSigner = "client"
 
     # Signing key used to issue cumulative vouchers for operator-mode use.
-    operator_signer: Any | None = None
+    operator_signer: SolanaSigner | None = None
 
     # Inactivity thresholds offered for a new channel.
     idle_timeout_options_seconds: list[int] | None = None
@@ -653,7 +654,7 @@ class SessionServer:
 
         result: list[SignedVoucher] = []
 
-        def mutator(current: ChannelState | None) -> ChannelState:
+        async def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {payload.channel_id} not found")
             if current.sealed or current.close_requested_at is not None:
@@ -697,7 +698,7 @@ class SessionServer:
             )
             signer = self._config.operator_signer
             assert signer is not None
-            signature = str(signer.sign_message(data.message_bytes()))
+            signature = str(await signer.sign_message(data.message_bytes()))
             voucher = SignedVoucher(
                 data=data,
                 signer=current.authorized_signer,

@@ -67,6 +67,40 @@ whatever `main` happens to be the day someone runs the recipe.
 re-rendering, so a removed instruction in the upstream IDL disappears
 on the next run.
 
+## Python payment-channel client
+
+`just payment-channels-generate-py` renders `idl/payment-channels.json` with
+[`lgalabru/codama-renderers-python`](https://github.com/lgalabru/codama-renderers-python).
+The generator pins the renderer's Git commit, builds it in the ignored
+`.codama-renderers-python/` cache, and stages the result before replacing
+`python/src/solana_pay_kit/protocols/programs/paymentchannels/`.
+
+For local renderer development, explicitly select its checkout:
+
+```sh
+CODAMA_PYTHON_RENDERER_DIR=/path/to/codama-renderers-python just payment-channels-generate-py
+```
+
+This builds that checkout without resetting its edits. Before landing generated
+output from a local fix, publish the renderer revision and update the default
+pin so a clean checkout reproduces the same bytes.
+
+Every staged Python module must parse and import with site packages disabled.
+The output includes its own standard-library-only codecs and value types;
+AnchorPy and Borsh-Construct are not runtime dependencies. Generated source
+is not patched, including account discriminators.
+
+Pay Kit's handwritten `_paycore/paymentchannels.py` converts generated
+public keys and instructions at the solders boundary, preserves custom program
+IDs, validates integer inputs, and rejects non-channel account discriminators.
+Keep that policy out of the generated directory.
+
+When updating the renderer pin, regenerate and run the Python checks plus
+`tests/test_paymentchannels_parity.py`. Those tests independently pack wire
+bytes and check every account meta for the payment instructions; a generated
+encoder/decoder round-trip alone is not sufficient evidence of compatibility.
+Run generation twice and compare the output to check reproducibility.
+
 ## Adding a second language (template)
 
 1. Add the renderer to `codegen/package.json`:

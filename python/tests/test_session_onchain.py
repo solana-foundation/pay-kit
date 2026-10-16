@@ -402,29 +402,20 @@ def _channel_account(fixture: _Fixture) -> object:
     """The confirmed on-chain channel account the fixture's open creates."""
     from types import SimpleNamespace
 
-    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+    from ._channel_fixture import channel_account_bytes
 
-    body = Channel.layout.build(
-        {
-            "version": 1,
-            "bump": 255,
-            "status": 0,
-            "salt": fixture.payload.salt,
-            "deposit": int(fixture.payload.deposit_amount),
-            "settlement": {"settled": 0, "payoutWatermark": 0},
-            "closureStartedAt": 0,
-            "payerWithdrawnAt": 0,
-            "gracePeriod": fixture.payload.grace_period_seconds,
-            "distributionHash": [0] * 32,
-            "payer": Pubkey.from_string(fixture.payload.payer),
-            "payee": Pubkey.from_string(fixture.payload.payee),
-            "authorizedSigner": Pubkey.from_string(fixture.payload.authorized_signer),
-            "mint": Pubkey.from_string(fixture.payload.mint),
-            "rentPayer": Pubkey.from_string(fixture.payload.payer),
-            "openSlot": fixture.payload.open_slot,
-        }
+    wire = channel_account_bytes(
+        salt=fixture.payload.salt,
+        deposit=int(fixture.payload.deposit_amount),
+        grace_period=fixture.payload.grace_period_seconds,
+        payer=Pubkey.from_string(fixture.payload.payer),
+        payee=Pubkey.from_string(fixture.payload.payee),
+        authorized_signer=Pubkey.from_string(fixture.payload.authorized_signer),
+        mint=Pubkey.from_string(fixture.payload.mint),
+        rent_payer=Pubkey.from_string(fixture.payload.payer),
+        open_slot=fixture.payload.open_slot,
     )
-    return SimpleNamespace(owner=PROGRAM_ID, data=bytes([7]) + bytes(body))
+    return SimpleNamespace(owner=PROGRAM_ID, data=wire)
 
 
 async def test_open_verifier_rescues_landed_open_on_duplicate_preflight_rejection() -> None:
@@ -466,7 +457,8 @@ def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState,
 
     from solana_pay_kit._paycore.solana import resolve_mint
     from solana_pay_kit.protocols.mpp._paymentchannels import TopUpParams, build_top_up_instruction
-    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    from ._channel_fixture import channel_account_bytes
 
     payer = Keypair.from_seed(bytes([11] * 32))
     channel = Keypair.from_seed(bytes([12] * 32)).pubkey()
@@ -492,27 +484,15 @@ def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState,
         MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default()), [payer]
     )
     payload = TopUpPayload(str(channel), "250", base64.b64encode(bytes(transaction)).decode())
-    body = Channel.layout.build(
-        {
-            "version": 1,
-            "bump": 255,
-            "status": 0,
-            "salt": 0,
-            "deposit": deposit_after,
-            "settlement": {"settled": 0, "payoutWatermark": 0},
-            "closureStartedAt": 0,
-            "payerWithdrawnAt": 0,
-            "gracePeriod": 900,
-            "distributionHash": [0] * 32,
-            "payer": payer.pubkey(),
-            "payee": Keypair.from_seed(bytes([14] * 32)).pubkey(),
-            "authorizedSigner": Pubkey.from_string(state.authorized_signer),
-            "mint": mint,
-            "rentPayer": payer.pubkey(),
-            "openSlot": 0,
-        }
+    wire = channel_account_bytes(
+        deposit=deposit_after,
+        payer=payer.pubkey(),
+        payee=Keypair.from_seed(bytes([14] * 32)).pubkey(),
+        authorized_signer=Pubkey.from_string(state.authorized_signer),
+        mint=mint,
+        rent_payer=payer.pubkey(),
     )
-    account = SimpleNamespace(owner=PROGRAM_ID, data=bytes([7]) + bytes(body))
+    account = SimpleNamespace(owner=PROGRAM_ID, data=wire)
     return payload, state, account
 
 

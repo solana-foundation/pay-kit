@@ -11,6 +11,52 @@ use std::{future::Future, pin::Pin};
 
 const BINDING_KEY: &str = "mppSessionBinding";
 
+#[cfg(test)]
+mod deployment_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn snapshot_roundtrip_preserves_v2_and_v1_defaults() {
+        let v1 = SessionConfigSnapshot::capture(&SessionConfig::default());
+        let json = serde_json::to_value(&v1).unwrap();
+        assert!(json.get("channel_version").is_none());
+        assert!(json.get("channel_hooks").is_none());
+        let v1: SessionConfigSnapshot = serde_json::from_value(json).unwrap();
+        let mut restored = SessionConfig::default();
+        v1.apply_to(&mut restored).unwrap();
+        assert_eq!(restored.channel_deployment().unwrap().version, 1);
+
+        restored.channel_program = Some(
+            solana_pubkey::Pubkey::from_str("CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ")
+                .unwrap(),
+        );
+        restored.channel_version = Some(2);
+        restored.channel_hooks = Some(Default::default());
+        restored.network = "devnet".into();
+        let snapshot = SessionConfigSnapshot::capture(&restored);
+        let snapshot: SessionConfigSnapshot =
+            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap();
+        let mut recovered = SessionConfig::default();
+        snapshot.apply_to(&mut recovered).unwrap();
+        assert_eq!(recovered.channel_program, restored.channel_program);
+        assert_eq!(recovered.channel_version, Some(2));
+        assert_eq!(recovered.channel_hooks, restored.channel_hooks);
+
+        for network in ["mainnet", "", "testnet", "mainnet-beta"] {
+            let mut unsupported = snapshot.clone();
+            unsupported.network = network.into();
+            assert!(unsupported.apply_to(&mut recovered).is_err());
+            assert_eq!(recovered.network, "devnet");
+        }
+
+        let mut unknown = serde_json::to_value(snapshot).unwrap();
+        unknown["channel_version"] = serde_json::json!(99);
+        let unknown: SessionConfigSnapshot = serde_json::from_value(unknown).unwrap();
+        assert!(unknown.apply_to(&mut recovered).is_err());
+    }
+}
+
 /// Public configuration captured when a scoped channel is opened.
 ///
 /// Signing keys and RPC connections are runtime capabilities, never persisted.
@@ -28,6 +74,10 @@ pub struct SessionConfigSnapshot {
     decimals: u8,
     network: String,
     channel_program: Option<solana_pubkey::Pubkey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
     token_program: Option<solana_pubkey::Pubkey>,
     min_voucher_delta: u64,
     voucher_signer: VoucherSigner,
@@ -60,6 +110,8 @@ impl SessionConfigSnapshot {
                     .channel_program
                     .unwrap_or_else(crate::mpp::program::payment_channels::default_program_id),
             ),
+            channel_version: config.channel_version.filter(|version| *version != 1),
+            channel_hooks: config.channel_hooks.clone(),
             token_program: config.token_program.or_else(|| {
                 super::parse_pubkey_field(
                     crate::mpp::protocol::solana::default_token_program_for_currency(
@@ -82,7 +134,7 @@ impl SessionConfigSnapshot {
         }
     }
 
-    /// Read the versioned snapshot. Legacy, unscoped channels return `None`.
+    /// Read the versioned snapshot. Unscoped channels return `None`.
     pub fn from_channel(state: &ChannelState) -> Result<Option<Self>> {
         Ok(read_binding(state)?.map(|binding| binding.snapshot))
     }
@@ -95,6 +147,13 @@ impl SessionConfigSnapshot {
     /// Restore public policy while retaining the host's RPC and signing keys.
     /// The host must supply the original operator/sponsor signing capability.
     pub fn apply_to(&self, config: &mut SessionConfig) -> Result<()> {
+        crate::mpp::program::channel_deployment::resolve_for_network(
+            self.channel_program
+                .unwrap_or_else(crate::core::payment_channels::default_program_id),
+            self.channel_version,
+            self.channel_hooks.as_ref(),
+            &self.network,
+        )?;
         if self.fee_payer
             != config
                 .fee_payer_signer
@@ -115,6 +174,8 @@ impl SessionConfigSnapshot {
         config.decimals = self.decimals;
         config.network = self.network.clone();
         config.channel_program = self.channel_program;
+        config.channel_version = self.channel_version;
+        config.channel_hooks = self.channel_hooks.clone();
         config.token_program = self.token_program;
         config.min_voucher_delta = self.min_voucher_delta;
         config.voucher_signer = self.voucher_signer;

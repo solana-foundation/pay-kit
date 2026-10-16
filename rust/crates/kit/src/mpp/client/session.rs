@@ -260,9 +260,45 @@ pub struct PaymentChannelOpen {
     pub recipients: Vec<Distribution>,
     pub token_program: Pubkey,
     pub program_id: Pubkey,
+    /// Deployment identity retained alongside the derived channel address.
+    pub channel_version: Option<u8>,
+    pub channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
 }
 
 impl PaymentChannelOpen {
+    /// Build a top-up using the same deployment and mandatory funding callbacks
+    /// approved at opening. Callback CPIs remain inside the channel instruction.
+    pub fn top_up_instruction(
+        &self,
+        additional_amount: u64,
+    ) -> Result<solana_instruction::Instruction> {
+        let deployment = crate::mpp::program::channel_deployment::resolve(
+            self.program_id,
+            self.channel_version,
+            self.channel_hooks.as_ref(),
+        )?;
+        if deployment.version == 2 {
+            Ok(crate::core::payment_channels_v2::build_top_up_instruction(
+                &self.payer,
+                &self.channel_id,
+                &self.mint,
+                additional_amount,
+                &self.token_program,
+                &self.program_id,
+                &self.channel_hooks.clone().unwrap_or_default(),
+            )?)
+        } else {
+            Ok(crate::core::payment_channels::build_top_up_instruction(
+                &self.payer,
+                &self.channel_id,
+                &self.mint,
+                additional_amount,
+                &self.token_program,
+                &self.program_id,
+            ))
+        }
+    }
+
     /// Derive this open's channel PDA.
     ///
     /// `rentPayer` is intentionally absent: it is not a channel-PDA seed (see
@@ -324,6 +360,10 @@ pub struct PaymentChannelOpenOptions {
     /// the challenge accepts. The Ledger Solana app signs version 0 but not
     /// yet version 1. `None` takes the highest version the challenge accepts.
     pub max_tx_version: Option<crate::core::tx::TxVersion>,
+    /// ComputeBudget instructions on version 0, or header config on version 1.
+    /// `None` preserves the core transaction builder's defaults. Explicit
+    /// budgets remain subject to the server's fee-sponsorship policy.
+    pub compute_budget: Option<crate::core::tx::ComputeBudget>,
     pub deposit: Option<u64>,
     pub grace_period: Option<u32>,
     /// Override for the channel's open slot (the program's `openSlot`).
@@ -399,10 +439,22 @@ pub fn derive_payment_channel_open(
         .grace_period
         .or(details.grace_period_seconds)
         .ok_or_else(|| Error::Other("session challenge missing gracePeriodSeconds".to_string()))?;
-    let program_id = match params.options.program_id {
-        Some(program_id) => program_id,
-        None => parse_pubkey(&details.channel_program, "channelProgram")?,
-    };
+    let program_id = parse_pubkey(&details.channel_program, "channelProgram")?;
+    crate::mpp::program::channel_deployment::resolve_for_network(
+        program_id,
+        details.channel_version,
+        details.channel_hooks.as_ref(),
+        &details.network,
+    )?;
+    if params
+        .options
+        .program_id
+        .is_some_and(|override_id| override_id != program_id)
+    {
+        return Err(Error::Other(
+            "program override does not match channelProgram".into(),
+        ));
+    }
     let token_program = match params.options.token_program {
         Some(token_program) => token_program,
         None => match details.token_program.as_deref() {
@@ -467,6 +519,8 @@ pub fn derive_payment_channel_open(
         recipients: open_params.recipients,
         token_program: open_params.token_program,
         program_id: open_params.program_id,
+        channel_version: details.channel_version,
+        channel_hooks: details.channel_hooks.clone(),
     })
 }
 
@@ -509,7 +563,18 @@ pub async fn build_open_payment_channel_transaction(
     params: BuildOpenPaymentChannelTransactionParams<'_>,
 ) -> Result<PaymentChannelOpenTransaction> {
     let payer = params.signer.pubkey();
-    let max_tx_version = params.options.max_tx_version;
+    let tx_options = OpenTxOptions {
+        version: crate::core::tx::negotiate(
+            params
+                .request
+                .method_details
+                .transaction_versions
+                .as_deref(),
+            params.options.max_tx_version,
+        )?,
+        compute_budget: params.options.compute_budget,
+        ..Default::default()
+    };
     let advertised_fee_payer = if params.request.method_details.fee_payer == Some(true) {
         Some(parse_pubkey(
             params
@@ -541,6 +606,34 @@ pub async fn build_open_payment_channel_transaction(
         options: params.options,
     })?;
 
+    if params.request.method_details.channel_version == Some(2) {
+        return Ok(
+            crate::core::payment_channels_v2::build_open_payment_channel_tx_with_options(
+                params.signer,
+                &open.payee,
+                &open.mint,
+                &open.authorized_signer,
+                open.salt,
+                open.open_slot,
+                open.deposit,
+                open.grace_period,
+                open.recipients.clone(),
+                &open.token_program,
+                &open.program_id,
+                &fee_payer,
+                recent_blockhash,
+                &tx_options,
+                &params
+                    .request
+                    .method_details
+                    .channel_hooks
+                    .clone()
+                    .unwrap_or_default(),
+            )
+            .await?,
+        );
+    }
+
     build_open_payment_channel_tx_with_options(
         params.signer,
         &open.payee,
@@ -555,17 +648,7 @@ pub async fn build_open_payment_channel_transaction(
         &open.program_id,
         &fee_payer,
         recent_blockhash,
-        &OpenTxOptions {
-            version: crate::core::tx::negotiate(
-                params
-                    .request
-                    .method_details
-                    .transaction_versions
-                    .as_deref(),
-                max_tx_version,
-            )?,
-            ..Default::default()
-        },
+        &tx_options,
     )
     .await
     .map_err(Into::into)
@@ -608,28 +691,18 @@ pub async fn create_payment_channel_session_opener(
         authorized_signer,
         options: options.open.clone(),
     })?;
-    let tx = build_open_payment_channel_tx_with_options(
-        payer_signer,
-        &open.payee,
-        &open.mint,
-        &open.authorized_signer,
-        open.salt,
-        open.open_slot,
-        open.deposit,
-        open.grace_period,
-        open.recipients.clone(),
-        &open.token_program,
-        &open.program_id,
-        &fee_payer,
-        recent_blockhash,
-        &OpenTxOptions {
-            version: crate::core::tx::negotiate(
-                request.method_details.transaction_versions.as_deref(),
-                options.open.max_tx_version,
-            )?,
-            ..Default::default()
-        },
-    )
+    // Carry the already chosen salt into the shared builder; deriving twice
+    // with a random salt would sign a different channel incarnation.
+    let mut build_options = options.open.clone();
+    build_options.salt = Some(open.salt);
+    let tx = build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+        request,
+        signer: payer_signer,
+        authorized_signer,
+        fee_payer: Some(fee_payer),
+        recent_blockhash: Some(recent_blockhash),
+        options: build_options,
+    })
     .await?;
     let mut session = ActiveSession::new(open.channel_id, session_signer);
     configure_session(&mut session, options.cumulative, options.expires_at);
@@ -690,6 +763,49 @@ mod tests {
     use crate::mpp::protocol::solana::{mints, programs};
     use solana_keychain::MemorySigner;
 
+    #[test]
+    fn deployment_identity_is_explicit_and_v1_wire_is_unchanged() {
+        let mut request = request(Pubkey::new_unique());
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json["methodDetails"].get("channelVersion").is_none());
+        assert!(json["methodDetails"].get("channelHooks").is_none());
+        let derive = |request: &SessionRequest, override_program| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request,
+                payer: Pubkey::new_unique(),
+                authorized_signer: Pubkey::new_unique(),
+                options: PaymentChannelOpenOptions {
+                    program_id: override_program,
+                    ..Default::default()
+                },
+            })
+        };
+        assert!(derive(&request, None).is_ok());
+        assert!(derive(&request, Some(Pubkey::new_unique())).is_err());
+        request.method_details.channel_version = Some(99);
+        assert!(derive(&request, None).is_err());
+        request.method_details.channel_program =
+            "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ".into();
+        request.method_details.channel_version = None;
+        assert!(derive(&request, None).is_err());
+        request.method_details.channel_version = Some(2);
+        for network in ["mainnet", "", "testnet", "mainnet-beta"] {
+            request.method_details.network = network.into();
+            assert!(derive(&request, None).is_err());
+        }
+        for network in ["devnet", "localnet"] {
+            request.method_details.network = network.into();
+            assert!(derive(&request, None).is_ok());
+        }
+        request.method_details.network = "devnet".into();
+        let open = derive(&request, None).unwrap();
+        assert_eq!(open.channel_version, Some(2));
+        assert_eq!(
+            open.program_id.to_string(),
+            request.method_details.channel_program
+        );
+    }
+
     fn signer(seed: u8) -> Box<dyn TransactionSigner> {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut bytes = [0_u8; 64];
@@ -716,6 +832,8 @@ mod tests {
             method_details: SessionMethodDetails {
                 network: "mainnet".into(),
                 channel_program: PAYMENT_CHANNELS_PROGRAM_ID.to_string(),
+                channel_version: None,
+                channel_hooks: None,
                 channel_id: None,
                 recent_blockhash: Some(test_blockhash().to_string()),
                 recent_slot: Some(42),
@@ -904,6 +1022,81 @@ mod tests {
             }
         })
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn open_compute_budget_supports_both_channel_and_message_versions() {
+        use crate::core::tx::{ComputeBudget, TxVersion};
+        use solana_message::VersionedMessage;
+
+        let payer = signer(2);
+        for channel_version in [1, 2] {
+            for version in [TxVersion::V0, TxVersion::V1] {
+                for budget in [None, Some(ComputeBudget::new(600_000, 1_000))] {
+                    let mut req = request(Pubkey::new_unique());
+                    req.method_details.transaction_versions = Some(vec![version]);
+                    if channel_version == 2 {
+                        req.method_details.network = "devnet".into();
+                        req.method_details.channel_version = Some(2);
+                        req.method_details.channel_program =
+                            "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ".into();
+                    }
+                    let tx = build_open_payment_channel_transaction(
+                        BuildOpenPaymentChannelTransactionParams {
+                            request: &req,
+                            signer: payer.as_ref(),
+                            authorized_signer: payer.pubkey(),
+                            fee_payer: None,
+                            recent_blockhash: None,
+                            options: PaymentChannelOpenOptions {
+                                compute_budget: budget,
+                                ..Default::default()
+                            },
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let decoded = crate::core::tx::decode(&tx.transaction).unwrap();
+                    match decoded.message {
+                        VersionedMessage::V0(message) => {
+                            assert_eq!(
+                                message.instructions.len(),
+                                if budget.is_some() { 3 } else { 1 }
+                            );
+                            if let Some(budget) = budget {
+                                for (compiled, expected) in
+                                    message.instructions.iter().zip(budget.instructions())
+                                {
+                                    assert_eq!(compiled.data, expected.data);
+                                    assert_eq!(
+                                        message.account_keys[compiled.program_id_index as usize],
+                                        expected.program_id
+                                    );
+                                }
+                            }
+                        }
+                        VersionedMessage::V1(message) => {
+                            assert_eq!(message.instructions.len(), 1);
+                            let expected =
+                                budget.unwrap_or_else(|| ComputeBudget::runtime_default(1));
+                            assert_eq!(
+                                message.config.compute_unit_limit,
+                                Some(expected.unit_limit)
+                            );
+                            assert_eq!(
+                                message.config.priority_fee,
+                                Some(expected.priority_fee_lamports())
+                            );
+                            assert_eq!(
+                                message.config.loaded_accounts_data_size_limit,
+                                Some(expected.loaded_accounts_data_size_limit)
+                            );
+                        }
+                        _ => panic!("unexpected message version"),
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

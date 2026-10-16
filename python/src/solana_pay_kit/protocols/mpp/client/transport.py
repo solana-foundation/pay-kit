@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 import httpx
+from solana_keychain import TransactionSigner
 
 from solana_pay_kit.protocols.mpp.client.charge import build_credential_header
 from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate_all
@@ -33,7 +34,7 @@ class PaymentTransport(httpx.AsyncBaseTransport):
 
     def __init__(
         self,
-        signer: Any,
+        signer: TransactionSigner,
         rpc_client: Any,
         base_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:

@@ -207,7 +207,8 @@ thiserror = "2"
 # litesvm 0.16 shares the kit's solana-address pins, so it can be a plain
 # dev-dependency; it executes version-1 transactions and the ZK ElGamal Proof
 # program, which the `litesvm-tests` confidential tests rely on.
-litesvm = "0.16"
+litesvm = { version = "0.16", features = ["precompiles"] }
+solana-account = "4"
 tokio = { version = "1", features = ["full"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server"] }
 axum = "0.8"

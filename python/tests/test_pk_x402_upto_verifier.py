@@ -12,10 +12,10 @@ import base64
 import time
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-from solana_pay_kit import LocalSigner
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.client.upto import (
@@ -43,9 +43,9 @@ MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC mainnet
 MAX = 100000
 
 
-def _operator() -> tuple[LocalSigner, str]:
-    signer = LocalSigner.from_keypair(Keypair())
-    return signer, signer.pubkey()
+def _operator() -> tuple[MemorySigner, str]:
+    signer = MemorySigner(Keypair())
+    return signer, str(signer.pubkey)
 
 
 def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequirements:
@@ -207,24 +207,24 @@ def test_parse_upto_challenge_none_when_absent() -> None:
     assert parse_upto_challenge({}, "{}") is None
 
 
-def test_build_payload_requires_blockhash() -> None:
+async def test_build_payload_requires_blockhash() -> None:
     _, op = _operator()
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(op, str(Keypair().pubkey()))
     del req["extra"]["recentBlockhash"]
     with pytest.raises(ValueError, match="recentBlockhash"):
-        build_upto_payload(client, req, int(time.time()) + 300)
+        await build_upto_payload(client, req, int(time.time()) + 300)
 
 
-def test_client_open_tx_passes_engine_validator() -> None:
+async def test_client_open_tx_passes_engine_validator() -> None:
     """The open transaction the client builds must satisfy the engine's
     14-account open-instruction validator with the matching expected pubkeys -
     proving the client and server agree on the wire."""
     _, op = _operator()
     payee = str(Keypair().pubkey())
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(op, payee)
-    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
 
     open_tx = payload.get("openTransaction", "")
     # The open transaction is a v0 message: 0x80 version prefix after the signatures.
@@ -242,7 +242,7 @@ def test_client_open_tx_passes_engine_validator() -> None:
         program_id=_default_program(),
         fee_payer=Pubkey.from_string(op),
         receiver_authorizer=Pubkey.from_string(op),
-        payer=Pubkey.from_string(client.pubkey()),
+        payer=client.pubkey,
         payee=Pubkey.from_string(op),
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
@@ -263,19 +263,19 @@ def test_client_open_tx_passes_engine_validator() -> None:
     assert "profile" not in decoded["payload"]
     assert decoded["payload"]["deposit"] == str(MAX)
     # build_upto_header is the one-shot equivalent of build + encode.
-    assert build_upto_header(client, req, int(time.time()) + 300, nonce="n")
+    assert await build_upto_header(client, req, int(time.time()) + 300, nonce="n")
 
 
-def test_client_open_tx_payee_is_fee_payer() -> None:
+async def test_client_open_tx_payee_is_fee_payer() -> None:
     """With distinct feePayer/receiverAuthorizer keys, the client puts the fee
     payer in the payee seat (slot 2 + PDA seed) and keeps the receiver
     authorizer as the authorized signer only (slot 4 + voucher)."""
     _, fee_payer = _operator()
     _, authorizer = _operator()
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(fee_payer, str(Keypair().pubkey()))
     req["extra"]["receiverAuthorizer"] = authorizer
-    payload = build_upto_payload(client, req, int(time.time()) + 300)
+    payload = await build_upto_payload(client, req, int(time.time()) + 300)
     assert payload["authorizedSigner"] == authorizer
     account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
     assert account_keys[0] == fee_payer
@@ -285,7 +285,7 @@ def test_client_open_tx_payee_is_fee_payer() -> None:
         program_id=_default_program(),
         fee_payer=Pubkey.from_string(fee_payer),
         receiver_authorizer=Pubkey.from_string(authorizer),
-        payer=Pubkey.from_string(client.pubkey()),
+        payer=client.pubkey,
         payee=Pubkey.from_string(fee_payer),  # the zero-share payee seat
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
@@ -304,7 +304,7 @@ def test_client_open_tx_payee_is_fee_payer() -> None:
             program_id=_default_program(),
             fee_payer=Pubkey.from_string(fee_payer),
             receiver_authorizer=Pubkey.from_string(authorizer),
-            payer=Pubkey.from_string(client.pubkey()),
+            payer=client.pubkey,
             payee=Pubkey.from_string(authorizer),  # the old payee assignment
             mint=Pubkey.from_string(MINT),
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
@@ -317,12 +317,12 @@ def test_client_open_tx_payee_is_fee_payer() -> None:
         )
 
 
-def test_client_open_tx_validator_rejects_wrong_payee() -> None:
+async def test_client_open_tx_validator_rejects_wrong_payee() -> None:
     _, op = _operator()
     payee = str(Keypair().pubkey())
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(op, payee)
-    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
     account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
     with pytest.raises(InvalidProofError, match="payee mismatch"):
         validate_upto_open_instruction(
@@ -331,7 +331,7 @@ def test_client_open_tx_validator_rejects_wrong_payee() -> None:
             program_id=_default_program(),
             fee_payer=Pubkey.from_string(op),
             receiver_authorizer=Pubkey.from_string(op),
-            payer=Pubkey.from_string(client.pubkey()),
+            payer=client.pubkey,
             payee=Pubkey.from_string(str(Keypair().pubkey())),  # wrong payee
             mint=Pubkey.from_string(MINT),
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
@@ -344,16 +344,16 @@ def test_client_open_tx_validator_rejects_wrong_payee() -> None:
         )
 
 
-def test_client_open_tx_validator_binds_open_args() -> None:
+async def test_client_open_tx_validator_binds_open_args() -> None:
     """The validator decodes openArgs and enforces the slot-addressed channel
     invariant: a wrong deposit, a channel that is not the PDA derived from the
     args' salt/openSlot, an openSlot ahead of the challenged recentSlot, and a
     stale openSlot outside the freshness window all reject."""
     _, op = _operator()
     payee = str(Keypair().pubkey())
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(op, payee)
-    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
     account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
 
     def check(**overrides):
@@ -361,7 +361,7 @@ def test_client_open_tx_validator_binds_open_args() -> None:
             "program_id": _default_program(),
             "fee_payer": Pubkey.from_string(op),
             "receiver_authorizer": Pubkey.from_string(op),
-            "payer": Pubkey.from_string(client.pubkey()),
+            "payer": client.pubkey,
             "payee": Pubkey.from_string(op),
             "mint": Pubkey.from_string(MINT),
             "token_program": Pubkey.from_string(TOKEN_PROGRAM),
@@ -471,7 +471,7 @@ def test_open_tx_layout_accepts_compute_budget_and_memo_wrapping() -> None:
 
     _, op = _operator()
     operator = Pubkey.from_string(op)
-    payer = Pubkey.from_string(LocalSigner.from_keypair(Keypair()).pubkey())
+    payer = MemorySigner(Keypair()).pubkey
     mint = Pubkey.from_string(MINT)
     token_program = Pubkey.from_string(TOKEN_PROGRAM)
     program_id = _default_program()
@@ -562,17 +562,17 @@ def test_open_tx_layout_accepts_compute_budget_and_memo_wrapping() -> None:
         check([], [memo_naming_operator])
 
 
-def test_client_emits_the_declared_memo_after_open() -> None:
+async def test_client_emits_the_declared_memo_after_open() -> None:
     """A seller that declares extra.memo requires exactly one matching Memo
     after open, so the client emits it; without the declaration the transaction
     stays a bare open."""
     from solana_pay_kit._paycore.solana import MEMO_PROGRAM
 
     _, op = _operator()
-    client = LocalSigner.from_keypair(Keypair())
+    client = MemorySigner(Keypair())
     req = _requirements(op, str(Keypair().pubkey()))
     req["extra"]["memo"] = "order-4711"
-    payload = build_upto_payload(client, req, int(time.time()) + 300)
+    payload = await build_upto_payload(client, req, int(time.time()) + 300)
     account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
     assert len(instructions) == 2
     memo_ix = instructions[1]
@@ -585,7 +585,7 @@ def test_client_emits_the_declared_memo_after_open() -> None:
         program_id=_default_program(),
         fee_payer=Pubkey.from_string(op),
         receiver_authorizer=Pubkey.from_string(op),
-        payer=Pubkey.from_string(client.pubkey()),
+        payer=client.pubkey,
         payee=Pubkey.from_string(op),
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
@@ -600,10 +600,10 @@ def test_client_emits_the_declared_memo_after_open() -> None:
     # An over-long memo is rejected at build time rather than by the facilitator.
     req["extra"]["memo"] = "x" * 257
     with pytest.raises(ValueError, match="memo"):
-        build_upto_payload(client, req, int(time.time()) + 300)
+        await build_upto_payload(client, req, int(time.time()) + 300)
 
 
-def test_upto_server_accepts_legacy_open_transaction() -> None:
+async def test_upto_server_accepts_legacy_open_transaction() -> None:
     """A pre-cutover client's legacy (unversioned) open transaction decodes
     and is co-signed at both server decode boundaries, like a v0 one."""
     from solders.hash import Hash  # type: ignore[import-untyped]
@@ -619,6 +619,6 @@ def test_upto_server_accepts_legacy_open_transaction() -> None:
     account_keys, instructions = _decode_transaction(tx_b64)
     assert account_keys[0] == op
     assert len(instructions) == 1
-    signed = Transaction.from_bytes(_cosign_fee_payer(tx_b64, operator))
+    signed = Transaction.from_bytes(await _cosign_fee_payer(tx_b64, operator))
     assert signed.message == tx.message
     signed.verify()

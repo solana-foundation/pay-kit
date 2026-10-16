@@ -107,6 +107,8 @@ pub enum TxPipelineError {
     BlockhashReadFailed,
     #[error("RPC returned malformed account data for {address}")]
     AccountDecodeFailed { address: Pubkey },
+    #[error("account {address} is not owned by the expected program")]
+    AccountOwnerMismatch { address: Pubkey },
     #[error("transaction pipeline stopped unexpectedly")]
     Stopped,
 }
@@ -144,6 +146,7 @@ struct PendingConfirmation {
 struct AccountReadRequest {
     address: Pubkey,
     min_context_slot: Option<u64>,
+    expected_owner: Option<Pubkey>,
     response: oneshot::Sender<PipelineResult<Option<Vec<u8>>>>,
 }
 
@@ -339,12 +342,38 @@ impl TxPipeline {
         address: Pubkey,
         min_context_slot: Option<u64>,
     ) -> PipelineResult<Option<Vec<u8>>> {
+        self.queue_account_read(address, min_context_slot, None)
+            .await
+    }
+
+    /// Read program state only when the account belongs to the expected program.
+    ///
+    /// Ownership is checked on the same RPC observation as the returned data;
+    /// a missing account still returns `None`. Reads share the normal batching
+    /// and minimum-context-slot policy.
+    pub async fn read_owned_account_data(
+        &self,
+        address: Pubkey,
+        min_context_slot: Option<u64>,
+        expected_owner: Pubkey,
+    ) -> PipelineResult<Option<Vec<u8>>> {
+        self.queue_account_read(address, min_context_slot, Some(expected_owner))
+            .await
+    }
+
+    async fn queue_account_read(
+        &self,
+        address: Pubkey,
+        min_context_slot: Option<u64>,
+        expected_owner: Option<Pubkey>,
+    ) -> PipelineResult<Option<Vec<u8>>> {
         let (response_tx, response_rx) = oneshot::channel();
         self.inner
             .account_reads
             .send(AccountReadRequest {
                 address,
                 min_context_slot,
+                expected_owner,
                 response: response_tx,
             })
             .map_err(|_| TxPipelineError::Stopped)?;
@@ -648,9 +677,18 @@ async fn run_account_reader(
                     let value = match account {
                         Some(account) => account
                             .to_account()
-                            .map(|account| account.data)
                             .ok_or(TxPipelineError::AccountDecodeFailed {
                                 address: request.address,
+                            })
+                            .and_then(|account| {
+                                if request.expected_owner.is_some_and(|owner| {
+                                    owner.to_bytes() != account.owner.to_bytes()
+                                }) {
+                                    return Err(TxPipelineError::AccountOwnerMismatch {
+                                        address: request.address,
+                                    });
+                                }
+                                Ok(account.data)
                             })
                             .map(Some),
                         None => Ok(None),
@@ -1075,6 +1113,61 @@ mod tests {
         assert!(batches.iter().all(|(size, _)| *size <= ACCOUNT_BATCH_LIMIT));
         assert_eq!(batches.len(), 2);
         assert!(batches.iter().all(|(_, min_slot)| min_slot.is_some()));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn owned_account_reads_check_each_callers_owner_in_the_same_batch() {
+        let address = Pubkey::new_unique();
+        let missing = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<Value>| async move {
+                assert_eq!(request["method"], "getMultipleAccounts");
+                assert_eq!(request["params"][1]["minContextSlot"], 77);
+                let values = request["params"][0]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|key| {
+                        if key.as_str() == Some(missing.to_string().as_str()) {
+                            return Value::Null;
+                        }
+                        json!({
+                            "data": ["AQID", "base64"],
+                            "executable": false,
+                            "lamports": 1,
+                            "owner": owner.to_string(),
+                            "rentEpoch": 0,
+                            "space": 3
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {"context": {"slot": 77}, "value": values}
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pipeline = TxPipeline::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            test_config(),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (valid, invalid, absent) = tokio::join!(
+            pipeline.read_owned_account_data(address, Some(77), owner),
+            pipeline.read_owned_account_data(address, Some(77), Pubkey::new_unique()),
+            pipeline.read_owned_account_data(missing, Some(77), owner),
+        );
+        assert_eq!(valid.unwrap(), Some(vec![1, 2, 3]));
+        assert!(matches!(
+            invalid,
+            Err(TxPipelineError::AccountOwnerMismatch { address: actual }) if actual == address
+        ));
+        assert_eq!(absent.unwrap(), None);
         server.abort();
     }
 

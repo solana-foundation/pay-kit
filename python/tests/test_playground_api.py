@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from examples.playground_api import sessions
 from examples.playground_api.app import app
+from solana_pay_kit import config
 
 
 @pytest.fixture
@@ -25,6 +26,9 @@ def test_health_is_free(client: TestClient) -> None:
     resp = client.get("/api/v1/health")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+    signer = config().operator.signer
+    assert signer is not None
+    assert resp.json()["feePayer"] == str(signer.pubkey)
 
 
 def test_discovery_advertises_offers(client: TestClient) -> None:
@@ -36,6 +40,10 @@ def test_discovery_advertises_offers(client: TestClient) -> None:
     offers = fortune["x-payment-info"]["offers"]
     # The dual-protocol charge gate offers both rails; the split gate is MPP-only.
     assert {offer["method"] for offer in offers} == {"x402", "mpp"}
+    x402_offer = next(offer for offer in offers if offer["method"] == "x402")
+    signer = config().operator.signer
+    assert signer is not None
+    assert x402_offer["feePayer"] == str(signer.pubkey)
     joke_offers = doc["paths"]["/api/v1/joke"]["get"]["x-payment-info"]["offers"]
     assert {offer["method"] for offer in joke_offers} == {"mpp"}
     # The x402 upto usage gate is advertised so the playground UI renders it.

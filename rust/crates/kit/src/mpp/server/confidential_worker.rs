@@ -21,6 +21,7 @@ use solana_keychain::{SolanaSigner, TransactionSigner};
 use tokio::sync::{mpsc, oneshot};
 
 use super::charge::{Config as MppConfig, Mpp, VerificationError};
+use crate::core::tx::TxVersion;
 use crate::mpp::store::{MemoryStore, Store};
 use crate::mpp::{ChargeRequest, PaymentCredential, Receipt};
 
@@ -47,6 +48,13 @@ pub struct ConfidentialWorkerConfig {
     /// facilitator/trust-proofs mode (no amount enforcement — only valid when
     /// the gateway is not the payee, e.g. relaying to an arbitrary recipient).
     pub recipient_signer: Option<Arc<dyn SolanaSigner>>,
+}
+
+struct ConfidentialWorkerRuntime {
+    config: ConfidentialWorkerConfig,
+    signer: Arc<dyn TransactionSigner>,
+    store: Arc<dyn Store>,
+    tx_version: TxVersion,
 }
 
 /// Messages the worker accepts. Boxed payloads keep the enum small.
@@ -98,18 +106,36 @@ pub fn spawn(
     cfg: ConfidentialWorkerConfig,
     signer: Arc<dyn TransactionSigner>,
 ) -> ConfidentialHandle {
+    spawn_with_tx_version(cfg, signer, TxVersion::V0)
+}
+
+/// Spawn a confidential worker that accepts exactly one transaction version.
+/// This lets deployments retire the multi-transaction version-0 flow without
+/// changing the compatibility default of [`spawn`].
+pub fn spawn_with_tx_version(
+    cfg: ConfidentialWorkerConfig,
+    signer: Arc<dyn TransactionSigner>,
+    tx_version: TxVersion,
+) -> ConfidentialHandle {
     let (tx, mut rx) = mpsc::channel::<ConfidentialMsg>(CHANNEL_CAPACITY);
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
     tokio::spawn(async move {
+        let runtime = ConfidentialWorkerRuntime {
+            config: cfg,
+            signer,
+            store,
+            tx_version,
+        };
         // Build the long-lived sweep Mpp once (shares the store with settlement).
         let sweep_mpp = build_mpp(
-            &cfg,
-            cfg.fee_payer_pubkey.clone(),
-            cfg.sweep_currency.clone(),
-            cfg.sweep_decimals,
-            signer.clone(),
-            store.clone(),
+            &runtime.config,
+            runtime.config.fee_payer_pubkey.clone(),
+            runtime.config.sweep_currency.clone(),
+            runtime.config.sweep_decimals,
+            runtime.signer.clone(),
+            runtime.store.clone(),
+            runtime.tx_version,
         );
         if sweep_mpp.is_none() {
             tracing::warn!("confidential worker: sweep Mpp unavailable; orphan sweep disabled");
@@ -130,7 +156,7 @@ pub fn spawn(
                             reply,
                         } => {
                             let result = settle(
-                                &cfg, &signer, &store, &credential, &charge_request, &currency, decimals,
+                                &runtime, &credential, &charge_request, &currency, decimals,
                             )
                             .await;
                             let _ = reply.send(result);
@@ -162,9 +188,7 @@ pub fn spawn(
 /// Settle one confidential bundle: build a per-charge `Mpp` (sharing the worker's
 /// store + signer) and verify the credential through it.
 async fn settle(
-    cfg: &ConfidentialWorkerConfig,
-    signer: &Arc<dyn TransactionSigner>,
-    store: &Arc<dyn Store>,
+    runtime: &ConfidentialWorkerRuntime,
     credential: &PaymentCredential,
     charge_request: &ChargeRequest,
     currency: &str,
@@ -175,14 +199,15 @@ async fn settle(
     let recipient = charge_request
         .recipient
         .clone()
-        .unwrap_or_else(|| cfg.fee_payer_pubkey.clone());
+        .unwrap_or_else(|| runtime.config.fee_payer_pubkey.clone());
     let mpp = build_mpp(
-        cfg,
+        &runtime.config,
         recipient,
         currency.to_string(),
         decimals,
-        signer.clone(),
-        store.clone(),
+        runtime.signer.clone(),
+        runtime.store.clone(),
+        runtime.tx_version,
     )
     .ok_or_else(|| VerificationError::new("failed to build settlement Mpp"))?;
 
@@ -196,8 +221,9 @@ fn build_mpp(
     decimals: u8,
     signer: Arc<dyn TransactionSigner>,
     store: Arc<dyn Store>,
+    tx_version: TxVersion,
 ) -> Option<Mpp> {
-    Mpp::new(MppConfig {
+    let mut mpp = Mpp::new(MppConfig {
         recipient,
         currency,
         decimals,
@@ -213,5 +239,7 @@ fn build_mpp(
         html: false,
         ..Default::default()
     })
-    .ok()
+    .ok()?;
+    mpp.accepted_versions = vec![tx_version];
+    Some(mpp)
 }

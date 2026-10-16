@@ -14,6 +14,7 @@ import json
 import time
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -21,7 +22,6 @@ import solana_pay_kit.protocols.x402.upto as upto_mod
 from solana_pay_kit import (
     Config,
     Gate,
-    LocalSigner,
     Operator,
     Price,
     Protocol,
@@ -32,10 +32,11 @@ from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import Distribution
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
-from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
 from solana_pay_kit.protocols.x402.upto import VerifiedUptoOpen, X402Upto
 from solana_pay_kit.protocols.x402.upto.types import UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT, UptoRequirements
+
+from ._channel_fixture import channel_account_bytes
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 RECENT_SLOT = 4242
@@ -84,7 +85,7 @@ class _FakeRpc:
 
 
 def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] | None]]:
-    op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
+    op = Operator(signer=MemorySigner(Keypair()), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_localnet",
         preflight=False,
@@ -110,7 +111,7 @@ def _gate(cfg) -> Gate:
 def _op_pubkey(cfg: Config) -> str:
     signer = cfg.effective_x402_signer()
     assert signer is not None
-    return signer.pubkey()
+    return str(signer.pubkey)
 
 
 def _expected_distribution_hash(pay_to: str, operator: str) -> list[int]:
@@ -140,35 +141,26 @@ def _fake_channel(
     distribution_hash: list[int] | None = None,
 ) -> tuple[bytes, str]:
     """Build a Borsh-encoded channel account (1-byte discriminator + struct)."""
-    body = Channel.layout.build(
-        {
-            "version": 1,
-            "bump": 255,
-            "status": status,
-            "salt": 0,
-            "deposit": deposit,
-            "settlement": {"settled": 0, "payoutWatermark": 0},
-            "closureStartedAt": 0,
-            "payerWithdrawnAt": 0,
-            "gracePeriod": 900,
-            "distributionHash": distribution_hash if distribution_hash is not None else [0] * 32,
-            "payer": Pubkey.from_string(payer),
-            "payee": Pubkey.from_string(payee),
-            "authorizedSigner": Pubkey.from_string(operator),
-            "mint": Pubkey.from_string(mint),
-            "rentPayer": Pubkey.from_string(operator),
-            "openSlot": RECENT_SLOT,
-        }
+    wire = channel_account_bytes(
+        payer=Pubkey.from_string(payer),
+        payee=Pubkey.from_string(payee),
+        authorized_signer=Pubkey.from_string(operator),
+        mint=Pubkey.from_string(mint),
+        rent_payer=Pubkey.from_string(operator),
+        deposit=deposit,
+        status=status,
+        distribution_hash=bytes(distribution_hash) if distribution_hash is not None else bytes(32),
+        open_slot=RECENT_SLOT,
     )
-    return bytes([7]) + bytes(body), upto_mod.PAYMENT_CHANNELS_PROGRAM_ID
+    return wire, upto_mod.PAYMENT_CHANNELS_PROGRAM_ID
 
 
-def _client_header(eng: X402Upto, cfg: Config) -> tuple[str, str, UptoRequirements]:
+async def _client_header(eng: X402Upto, cfg: Config) -> tuple[str, str, UptoRequirements]:
     """Build a client PAYMENT-SIGNATURE for the gate; return (header, client_pk, requirements)."""
     req = eng.accepts_entry(_gate(cfg), {"path": "/usage"})
-    client = LocalSigner.from_keypair(Keypair())
-    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
-    return encode_upto_header(req, payload), client.pubkey(), req
+    client = MemorySigner(Keypair())
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    return encode_upto_header(req, payload), str(client.pubkey), req
 
 
 # -- offline accessors ------------------------------------------------------
@@ -210,7 +202,7 @@ def test_settlement_headers(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_happy(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -241,12 +233,12 @@ async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
     )
     req = eng.accepts_entry(gate, {"path": "/usage"})
     assert req["payTo"] == custom_payee and custom_payee != cfg.effective_recipient()
-    client = LocalSigner.from_keypair(Keypair())
-    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    client = MemorySigner(Keypair())
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
     header = encode_upto_header(req, payload)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
-        payer=client.pubkey(),
+        payer=str(client.pubkey),
         payee=operator,
         mint=req["asset"],
         operator=operator,
@@ -265,9 +257,7 @@ def test_distribution_always_explicit_single_split(monkeypatch) -> None:
     the payee seat with a zero implicit remainder."""
     eng, cfg, _ = _engine(monkeypatch)
     operator = _op_pubkey(cfg)
-    gate = Gate.build(
-        name="usage", amount=Price.usd("0.10", Stablecoin.USDC), pay_to=operator, accept=(Protocol.X402,)
-    )
+    gate = Gate.build(name="usage", amount=Price.usd("0.10", Stablecoin.USDC), pay_to=operator, accept=(Protocol.X402,))
     req = eng.accepts_entry(gate, {"path": "/usage"})
     assert req["payTo"] == operator == req["extra"]["receiverAuthorizer"]
     distribution = eng._distribution(req)  # noqa: SLF001
@@ -277,7 +267,7 @@ def test_distribution_always_explicit_single_split(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_rejects_deposit_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -294,7 +284,7 @@ async def test_verify_open_rejects_deposit_mismatch(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_rejects_distribution_hash_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -404,7 +394,7 @@ def _remux(header: str, mutate) -> str:
 @pytest.mark.asyncio
 async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
-    header, _pk, _req = _client_header(eng, cfg)
+    header, _pk, _req = await _client_header(eng, cfg)
     # x402 v2 carries scheme inside `accepted` (the chosen PaymentRequirements).
     bad = _remux(header, lambda e: e["accepted"].update(scheme="exact"))
     with pytest.raises(InvalidProofError, match="invalid payload type"):
@@ -414,7 +404,7 @@ async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_rejects_network_mismatch(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
-    header, _pk, _req = _client_header(eng, cfg)
+    header, _pk, _req = await _client_header(eng, cfg)
     # x402 v2 carries network inside `accepted` (the chosen PaymentRequirements).
     bad = _remux(header, lambda e: e["accepted"].update(network="solana:wrongwrongwrongwrongwrongwrong"))
     with pytest.raises(InvalidProofError, match="network mismatch"):
@@ -424,7 +414,7 @@ async def test_verify_open_rejects_network_mismatch(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_requires_open_transaction(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
-    header, _pk, _req = _client_header(eng, cfg)
+    header, _pk, _req = await _client_header(eng, cfg)
 
     def _drop(e: dict) -> None:
         e["payload"].pop("openTransaction", None)
@@ -437,7 +427,7 @@ async def test_verify_open_requires_open_transaction(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_channel_not_open(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -455,7 +445,7 @@ async def test_verify_open_channel_not_open(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_mint_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, _req = _client_header(eng, cfg)
+    header, client_pk, _req = await _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -472,7 +462,7 @@ async def test_verify_open_mint_mismatch(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_payer_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, _client_pk, req = _client_header(eng, cfg)
+    header, _client_pk, req = await _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=str(Keypair().pubkey()),  # not the credential payer
@@ -489,7 +479,7 @@ async def test_verify_open_payer_mismatch(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_authorized_signer_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
@@ -506,7 +496,7 @@ async def test_verify_open_authorized_signer_mismatch(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_channel_missing(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, _pk, _req = _client_header(eng, cfg)
+    header, _pk, _req = await _client_header(eng, cfg)
     holder["account"] = None
     with pytest.raises(InvalidProofError, match="missing account data"):
         await eng.verify_open(_gate(cfg), _Req(header))
@@ -515,7 +505,7 @@ async def test_verify_open_channel_missing(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_owner_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
-    header, client_pk, req = _client_header(eng, cfg)
+    header, client_pk, req = await _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     data, _owner = _fake_channel(
         payer=client_pk,

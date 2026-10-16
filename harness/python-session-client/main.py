@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -20,7 +21,7 @@ _python_src = _repo_root / "python" / "src"
 if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
 
-from solders.keypair import Keypair  # type: ignore[import-untyped]  # noqa: E402
+from solana_pay_kit.signer import Signer  # noqa: E402
 
 from solana_pay_kit.protocols.mpp.client.payment_channels import (  # noqa: E402
     create_payment_channel_session_opener,
@@ -77,7 +78,7 @@ def _result(status: int, headers: dict[str, str], body, settlement: str = "") ->
     )
 
 
-def main() -> None:
+async def main() -> None:
     target = os.environ["MPP_HARNESS_TARGET_URL"]
     reserve_url = target.rsplit("/", 1)[0] + "/__402/session/deliveries"
     commit_url = target.rsplit("/", 1)[0] + "/__402/session/commit"
@@ -96,9 +97,9 @@ def main() -> None:
     # own open transaction against the challenged recentBlockhash/recentSlot
     # and sends the wire in the open action (the harness server verifies the
     # wire shape only; nothing is broadcast on-chain in this scenario).
-    payer_signer = Keypair()
-    session_signer = Keypair()
-    opener = create_payment_channel_session_opener(request, payer_signer, session_signer)
+    payer_signer = Signer.generate()
+    session_signer = Signer.generate()
+    opener = await create_payment_channel_session_opener(request, payer_signer, session_signer)
     open_auth = serialize_session_credential(challenge, opener.action)
     status, headers, raw = _request("GET", target, auth=open_auth)
     if status != 200:
@@ -116,7 +117,7 @@ def main() -> None:
         _result(status, reserve_headers, reserve_body)
         return
 
-    voucher = opener.session.prepare_increment(int(amount))
+    voucher = await opener.session.prepare_increment(int(amount))
     status, commit_headers, commit_raw = _request(
         "POST",
         commit_url,
@@ -141,4 +142,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

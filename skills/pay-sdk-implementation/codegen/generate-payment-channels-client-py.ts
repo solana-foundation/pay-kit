@@ -1,116 +1,97 @@
 /**
- * Generate the pay-kit Python payment-channels client from the upstream
- * `Moonsong-Labs/solana-payment-channels` Codama IDL.
- *
- * Mirrors generate-payment-channels-client.ts (Rust) - both scripts read the
- * vendored IDL at `<repo-root>/idl/payment-channels.json`. This one renders a
- * Python client into `python/src/solana_pay_kit/protocols/programs/paymentchannels/`
- * using the community `codama-py` renderer (Solana-ZH/codama-py).
- *
- * codama-py cannot be consumed as an npm/git dependency yet: its package.json
- * ships only `dist` (not committed, and its build is currently broken
- * upstream), so a git install packs an empty module. Until a fixed release
- * exists this script instead clones the repo at a pinned commit - the merge
- * of Solana-ZH/codama-py#10, which fixed PDA seed rendering - and drives its
- * own `genpy` CLI, exactly as the upstream README documents.
- *
- * Output:
- *   python/src/solana_pay_kit/protocols/programs/paymentchannels/   (rendered by codama-py)
+ * Render the vendored payment-channels Codama IDL with the pinned Python renderer.
+ * Validate a staged, stdlib-only package before replacing the checked-in client.
+ * Generated source is never patched.
  */
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createFromJson } from "codama";
 
-const CODAMA_PY_REPO = 'https://github.com/Solana-ZH/codama-py.git';
-// Merge commit of Solana-ZH/codama-py#10 (PDA seed rendering fixes).
-const CODAMA_PY_COMMIT = 'fcc75fc8abdf18cf4e0b3e4ae9338ddb60deb2e1';
+const RENDERER_REPO = "https://github.com/lgalabru/codama-renderers-python.git";
+const RENDERER_COMMIT = "dbdcdb8e333be8bd656b172b97aa6e7700f4bd51";
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const cacheDir = path.join(repoRoot, ".codama-renderers-python");
+// Explicit development override for testing fixes before publishing a new pin.
+const localRenderer = process.env.CODAMA_PYTHON_RENDERER_DIR;
+const rendererDir = localRenderer ? path.resolve(localRenderer) : cacheDir;
+const idlPath = path.join(repoRoot, "idl/payment-channels.json");
+const clientDir = path.join(repoRoot, "python/src/solana_pay_kit/protocols/programs/paymentchannels");
+const run = (command: string, args: string[], cwd = repoRoot) =>
+  execFileSync(command, args, { cwd, stdio: "inherit" });
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Script lives at skills/pay-sdk-implementation/codegen/ - climb three
-// levels to land at the repository root.
-const repoRoot = path.resolve(__dirname, '..', '..', '..');
-
-const idlPath = path.join(repoRoot, 'idl', 'payment-channels.json');
-const pyClientDir = path.join(
-    repoRoot,
-    'python',
-    'src',
-    'solana_pay_kit',
-    'protocols',
-    'programs',
-    'paymentchannels',
-);
-const cacheDir = path.join(__dirname, '.codama-py');
-
-if (!fs.existsSync(idlPath)) {
-    console.error(`[codegen] IDL not found at ${idlPath}`);
-    console.error(`[codegen] Run \`just payment-channels-pull-idl\` first to fetch it from upstream.`);
-    process.exit(1);
+// A missing or invalid IDL must not disturb an existing client.
+const codama = createFromJson(fs.readFileSync(idlPath, "utf8"));
+if (!localRenderer) {
+  if (!fs.existsSync(cacheDir)) {
+    run("git", ["clone", "--quiet", RENDERER_REPO, cacheDir]);
+  }
+  const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+    cwd: cacheDir, encoding: "utf8",
+  });
+  if (dirty.trim()) throw new Error(`Renderer cache has tracked changes: ${cacheDir}`);
+  // Fetch the exact pin so an existing cache also works after a renderer upgrade.
+  run("git", ["fetch", "--quiet", "origin", RENDERER_COMMIT], cacheDir);
+  run("git", ["checkout", "--quiet", "--detach", RENDERER_COMMIT], cacheDir);
 }
+run("pnpm", ["install", "--frozen-lockfile", "--ignore-scripts"], rendererDir);
+run("pnpm", ["build"], rendererDir);
 
-const run = (cmd: string, args: string[], cwd: string) =>
-    execFileSync(cmd, args, { cwd, stdio: 'inherit' });
+// The unpublished package is loaded from its locally built entry point.
+type Renderer = {
+  renderVisitor: (
+    output: string,
+    options: { formatCode: boolean },
+  ) => Parameters<typeof codama.accept>[0];
+};
+const { renderVisitor } = (await import(
+  pathToFileURL(path.join(rendererDir, "dist/index.node.mjs")).href
+)) as Renderer;
+// Stage on the destination filesystem even when the renderer lives elsewhere.
+const stageParent = path.join(repoRoot, ".build");
+fs.mkdirSync(stageParent, { recursive: true });
+const stageRoot = fs.mkdtempSync(path.join(stageParent, "python-codegen-"));
+const staged = path.join(stageRoot, "paymentchannels");
+const backup = path.join(stageRoot, "previous");
+let preserveBackup = false;
+try {
+  // Formatter availability/version must not change checked-in generated bytes.
+  await codama.accept(renderVisitor(staged, { formatCode: false }));
+  run("python3", ["-I", "-S", "-B", "-c", `
+import ast
+import importlib
+import pathlib
+import pkgutil
+import sys
+root = pathlib.Path(sys.argv[1])
+files = list(root.rglob("*.py"))
+assert files and (root / "__init__.py").is_file(), "Renderer produced no package"
+for file in files:
+    ast.parse(file.read_text(), filename=str(file))
+sys.path.insert(0, str(root.parent))
+package = importlib.import_module(root.name)
+for module in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+    importlib.import_module(module.name)
+`, staged]);
 
-if (!fs.existsSync(path.join(cacheDir, 'package.json'))) {
-    console.log(`[codegen] Cloning codama-py @ ${CODAMA_PY_COMMIT.slice(0, 8)}`);
-    fs.rmSync(cacheDir, { force: true, recursive: true });
-    run('git', ['clone', '--quiet', CODAMA_PY_REPO, cacheDir], __dirname);
-}
-run('git', ['checkout', '--quiet', CODAMA_PY_COMMIT], cacheDir);
-run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--silent'], cacheDir);
-
-console.log(`[codegen] Rendering Python client from ${path.relative(repoRoot, idlPath)}`);
-console.log(`[codegen]   → ${path.relative(repoRoot, pyClientDir)}/`);
-
-fs.rmSync(pyClientDir, { force: true, recursive: true });
-run('pnpm', ['run', 'genpy', '-i', idlPath, '-d', pyClientDir], cacheDir);
-
-// genpy swallows render errors (logs and exits 0), so verify the output.
-const sentinel = path.join(pyClientDir, 'program_id.py');
-if (!fs.existsSync(sentinel)) {
-    console.error(`[codegen] Render produced no output at ${path.relative(repoRoot, pyClientDir)}`);
-    process.exit(1);
-}
-
-// Post-generation patch: restore the account discriminator skip in `decode`.
-//
-// For ACCOUNT types the codama IDL keeps a leading 1-byte account
-// discriminator as field 0 (a numberTypeNode/u8), and the official Go and
-// Rust renderers decode it first. codama-py, however, DROPS that field from
-// the generated Borsh layout and reads `<Cls>.layout.parse(data)` from offset
-// 0, so every subsequent field is misaligned by one byte against real
-// on-chain account data. We patch each generated account decoder to parse
-// from offset 1 (`<Cls>.layout.parse(data[1:])`), skipping the discriminator
-// byte the layout omits. This keeps the change deterministic and idempotent,
-// and faithful to the IDL the Go/Rust clients honour.
-const accountsDir = path.join(pyClientDir, 'accounts');
-if (fs.existsSync(accountsDir)) {
-    const accountFiles = fs
-        .readdirSync(accountsDir)
-        .filter((name) => name.endsWith('.py') && name !== '__init__.py');
-    for (const name of accountFiles) {
-        const filePath = path.join(accountsDir, name);
-        const original = fs.readFileSync(filePath, 'utf8');
-        // Match the generated decode body: `dec = <Cls>.layout.parse(data)`.
-        const pattern = /(\bdec\s*=\s*\w+\.layout\.parse\()data(\))/;
-        const alreadyPatched = /\bdec\s*=\s*\w+\.layout\.parse\(data\[1:\]\)/.test(original);
-        if (alreadyPatched) {
-            continue; // idempotent: re-running codegen must not double-patch.
-        }
-        if (!pattern.test(original)) {
-            console.error(
-                `[codegen] Expected '<Cls>.layout.parse(data)' in ${path.relative(repoRoot, filePath)} but did not find it.`,
-            );
-            console.error(
-                `[codegen] codama-py may have changed its account decoder; the discriminator-skip patch cannot be applied safely.`,
-            );
-            process.exit(1);
-        }
-        const patched = original.replace(pattern, '$1data[1:]$2');
-        fs.writeFileSync(filePath, patched);
-        console.log(`[codegen]   patched discriminator skip in accounts/${name}`);
+  // Same-checkout renames avoid partially copied output; keep a rollback copy.
+  const hadClient = fs.existsSync(clientDir);
+  if (hadClient) fs.renameSync(clientDir, backup);
+  try {
+    fs.renameSync(staged, clientDir);
+  } catch (error) {
+    if (hadClient) {
+      try {
+        fs.renameSync(backup, clientDir);
+      } catch (rollbackError) {
+        preserveBackup = true;
+        throw new AggregateError([error, rollbackError], `Unable to restore client; backup retained at ${backup}`);
+      }
     }
+    throw error;
+  }
+  console.log(`[codegen] Generated ${path.relative(repoRoot, clientDir)} from ${localRenderer ? rendererDir : RENDERER_COMMIT}`);
+} finally {
+  if (!preserveBackup) fs.rmSync(stageRoot, { recursive: true, force: true });
 }
-
-console.log(`[codegen] Done.`);

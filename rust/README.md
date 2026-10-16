@@ -16,6 +16,9 @@ Python, Ruby, PHP, Lua, Kotlin, and Swift SDKs and speaks the same wire format.
 You do not need to know anything about Solana to use this library: pick a
 currency, give it your wallet address, and gate a route.
 
+For explicitly configured V2 channel callbacks on one-time MPP payments, see
+[Atomic V2 channel charges](docs/channel-charge.md).
+
 [![Rust](https://img.shields.io/badge/rust-2021-orange)]()
 [![axum](https://img.shields.io/badge/axum-0.8-blue)]()
 

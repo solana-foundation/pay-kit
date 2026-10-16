@@ -15,16 +15,14 @@ Voucher signatures and credentials are byte-deterministic: the signed preimage
 and the JCS-canonicalized credential are fully specified by the MPP session
 intent, so a given session state always produces the same bytes on the wire.
 
-The signer is duck-typed against the solana_pay_kit signer contract shared with the
-charge client: ``pubkey() -> str`` (base58 public key) and
-``sign(message: bytes) -> bytes`` (64-byte Ed25519 signature). A solders
-``Keypair`` is also accepted because it exposes ``pubkey()`` and
-``sign_message()``; both shapes are handled by :func:`_sign_base58`.
+Signing uses the native solana-keychain asynchronous message-signer interface.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any
+
+from solana_keychain import SolanaSigner as VoucherSigner
 
 from solana_pay_kit.protocols.mpp._paymentchannels import voucher_message_bytes
 from solana_pay_kit.protocols.mpp.core.base64url import decode_json
@@ -67,47 +65,9 @@ _SESSION_INTENT = "session"
 _U64_MAX = (1 << 64) - 1
 
 
-@runtime_checkable
-class VoucherSigner(Protocol):
-    """Minimal Ed25519 message-signing surface for voucher signing.
-
-    Satisfied by the solana_pay_kit :class:`solana_pay_kit.signer.LocalSigner` duck type shared
-    with the charge client. A solders ``Keypair`` also satisfies this shape via
-    ``pubkey()`` plus ``sign_message()``; :func:`_sign_base58` bridges the two
-    method names.
-    """
-
-    def pubkey(self) -> Any:
-        """Return the signer's public key (base58 ``str`` or solders ``Pubkey``)."""
-        ...
-
-    def sign(self, message: bytes) -> bytes:
-        """Return the 64-byte Ed25519 signature over ``message``."""
-        ...
-
-
-def _sign_base58(signer: Any, message: bytes) -> str:
-    """Sign ``message`` and return the signature as base58.
-
-    Accepts both the solana_pay_kit signer (``sign(bytes) -> bytes``) and a solders
-    ``Keypair`` (``sign_message(bytes) -> Signature``). The 64-byte signature is
-    normalized to its base58 string form via the solders ``Signature`` type,
-    which is the encoding the credential carries on the wire.
-    """
-    from solders.signature import Signature  # type: ignore[import-untyped]
-
-    sign = getattr(signer, "sign", None)
-    if callable(sign):
-        raw = cast("bytes", sign(message))
-        return str(Signature.from_bytes(bytes(raw)))
-    # solders Keypair fallback: sign_message returns a Signature directly.
-    return str(signer.sign_message(message))
-
-
-def _pubkey_str(signer: Any) -> str:
-    """Return the signer's public key as base58, accepting str or solders Pubkey."""
-    pub = signer.pubkey()
-    return pub if isinstance(pub, str) else str(pub)
+def _pubkey_str(signer: VoucherSigner) -> str:
+    """Return the native signer's public key as base58."""
+    return str(signer.pubkey)
 
 
 class ActiveSession:
@@ -124,7 +84,7 @@ class ActiveSession:
     def __init__(
         self,
         channel_id: Any,
-        signer: VoucherSigner | Any,
+        signer: VoucherSigner,
         expires_at: int = DEFAULT_VOUCHER_EXPIRES_AT,
         *,
         cumulative: int = 0,
@@ -133,8 +93,7 @@ class ActiveSession:
 
         ``channel_id`` is a solders ``Pubkey`` (the on-chain channel address
         obtained after opening); ``signer`` satisfies the :class:`VoucherSigner`
-        contract (or is a solders ``Keypair``, accepted via its ``sign_message``
-        method); ``expires_at`` is the Unix timestamp applied to newly signed
+        contract; ``expires_at`` is the Unix timestamp applied to newly signed
         vouchers, defaulting to :data:`DEFAULT_VOUCHER_EXPIRES_AT`;
         ``cumulative`` seeds the watermark when resuming a known channel
         position (the payment-channel openers use it to write the starting
@@ -146,7 +105,7 @@ class ActiveSession:
         self._cumulative = cumulative
 
     @classmethod
-    def at_expiry(cls, channel_id: Any, signer: VoucherSigner | Any, expires_at: int) -> ActiveSession:
+    def at_expiry(cls, channel_id: Any, signer: VoucherSigner, expires_at: int) -> ActiveSession:
         """Create a session tracker with an explicit voucher expiry."""
         return cls(channel_id, signer, expires_at)
 
@@ -181,7 +140,7 @@ class ActiveSession:
 
     # -- voucher signing ----------------------------------------------------
 
-    def prepare_voucher(self, cumulative: int) -> SignedVoucher:
+    async def prepare_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher without advancing the local watermark.
 
         This keeps ack/commit transports safe to retry: a failed commit can be
@@ -199,18 +158,18 @@ class ActiveSession:
         )
 
         preimage = voucher_message_bytes(self._channel_id, cumulative, self._expires_at)
-        signature = _sign_base58(self._signer, preimage)
+        signature = str(await self._signer.sign_message(preimage))
         return SignedVoucher(
             data=data,
             signer=self.authorized_signer,
             signature=signature,
         )
 
-    def prepare_increment(self, amount: int) -> SignedVoucher:
+    async def prepare_increment(self, amount: int) -> SignedVoucher:
         """Sign a voucher adding ``amount`` to the current cumulative without
         advancing the watermark.
         """
-        return self.prepare_voucher(self._add_cumulative(amount))
+        return await self.prepare_voucher(self._add_cumulative(amount))
 
     def record_voucher(self, voucher: SignedVoucher) -> None:
         """Advance the local watermark to a prepared voucher the server accepted.
@@ -241,28 +200,28 @@ class ActiveSession:
         if settled > self._cumulative:
             self._cumulative = settled
 
-    def sign_voucher(self, cumulative: int) -> SignedVoucher:
+    async def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the
         local watermark.
 
         ``cumulative`` MUST strictly exceed the current watermark.
         """
-        voucher = self.prepare_voucher(cumulative)
+        voucher = await self.prepare_voucher(cumulative)
         self.record_voucher(voucher)
         return voucher
 
-    def sign_increment(self, amount: int) -> SignedVoucher:
+    async def sign_increment(self, amount: int) -> SignedVoucher:
         """Sign a voucher adding ``amount`` to the current cumulative."""
-        return self.sign_voucher(self._add_cumulative(amount))
+        return await self.sign_voucher(self._add_cumulative(amount))
 
     # -- action builders ----------------------------------------------------
 
-    def voucher_action(self, amount: int) -> SessionAction:
+    async def voucher_action(self, amount: int) -> SessionAction:
         """Sign a fresh increment and wrap it as a voucher action."""
-        voucher = self.sign_increment(amount)
+        voucher = await self.sign_increment(amount)
         return SessionAction.voucher_action(VoucherPayload(channel_id=voucher.data.channel_id, voucher=voucher))
 
-    def close_action(
+    async def close_action(
         self,
         final_increment: int = 0,
         *,
@@ -279,7 +238,7 @@ class ActiveSession:
             authentication=authentication,
         )
         if final_increment > 0:
-            payload.voucher = self.sign_increment(final_increment)
+            payload.voucher = await self.sign_increment(final_increment)
         return SessionAction.close_action(payload)
 
     def open_payment_channel_action(

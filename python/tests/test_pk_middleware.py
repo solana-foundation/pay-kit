@@ -9,7 +9,11 @@ attribute / mapping / ``.state`` request shapes.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
+from solana_keychain import TransactionSigner
+from solders.pubkey import Pubkey
 
 from solana_pay_kit import (
     Gate,
@@ -391,22 +395,66 @@ def test_require_payment_raises_when_unpaid():
         require_payment(_Req())
 
 
-# -- kms reserved namespace --------------------------------------------------
+# -- native kms factories ---------------------------------------------------
 
 
-def test_kms_gcp_not_implemented():
-    with pytest.raises(NotImplementedError, match="follow-up"):
-        kms.gcp(key_name="k", pubkey="p")
+# solana_keychain's cloud modules raise a plain ImportError (not
+# ModuleNotFoundError) when their extra is missing, and pytest>=9 only skips on
+# ModuleNotFoundError by default, so each importorskip names ImportError.
 
 
-def test_kms_aws_not_implemented():
-    with pytest.raises(NotImplementedError, match="follow-up"):
-        kms.aws(key_id="k", region="us", pubkey="p")
+async def test_kms_gcp_returns_native_signer():
+    pytest.importorskip("solana_keychain.gcp_kms", exc_type=ImportError)
+    client = MagicMock()
+    signer = await kms.gcp(key_name="k", pubkey=FEE_A, client=client)
+    assert isinstance(signer, TransactionSigner)
+    assert signer.pubkey == Pubkey.from_string(FEE_A)
+    assert client.mock_calls == []
 
 
-def test_kms_vault_not_implemented():
-    with pytest.raises(NotImplementedError, match="follow-up"):
-        kms.vault(addr="a", path="p", pubkey="k")
+async def test_kms_gcp_constructs_client_on_signing_loop(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from solders.keypair import Keypair
+
+    pytest.importorskip("solana_keychain.gcp_kms", exc_type=ImportError)
+    kms_v1 = pytest.importorskip("google.cloud.kms_v1")
+
+    keypair = Keypair()
+    constructed = []
+
+    class LoopBoundClient:
+        def __init__(self):
+            self.loop = asyncio.get_running_loop()
+            constructed.append(self)
+
+        async def asymmetric_sign(self, *, request):
+            assert asyncio.get_running_loop() is self.loop
+            return SimpleNamespace(signature=bytes(keypair.sign_message(request["data"])))
+
+    monkeypatch.setattr(kms_v1, "KeyManagementServiceAsyncClient", LoopBoundClient)
+    pending = kms.gcp(key_name="k", pubkey=str(keypair.pubkey()))
+    assert constructed == []
+    signer = await pending
+    signature = await signer.sign_message(b"loop-bound signing")
+    assert signature.verify(keypair.pubkey(), b"loop-bound signing")
+    assert len(constructed) == 1
+
+
+def test_kms_aws_returns_native_signer():
+    pytest.importorskip("solana_keychain.aws_kms", exc_type=ImportError)
+    client = MagicMock()
+    signer = kms.aws(key_id="k", region="us-east-1", pubkey=FEE_A, client=client)
+    assert isinstance(signer, TransactionSigner)
+    assert signer.pubkey == Pubkey.from_string(FEE_A)
+    assert client.mock_calls == []
+
+
+def test_kms_vault_returns_native_signer():
+    signer = kms.vault(addr="https://vault.example", path="operator", pubkey=FEE_A, token="test-token")
+    assert isinstance(signer, TransactionSigner)
+    assert signer.pubkey == Pubkey.from_string(FEE_A)
 
 
 # -- errors ------------------------------------------------------------------

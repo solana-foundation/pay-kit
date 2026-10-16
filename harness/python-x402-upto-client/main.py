@@ -92,7 +92,7 @@ async def _run() -> None:
             return
 
         expires_at = int(time.time()) + int(requirement.get("maxTimeoutSeconds", 300))
-        payment_header = build_upto_header(signer, requirement, expires_at)
+        payment_header = await build_upto_header(signer, requirement, expires_at)
 
         paid = await http.get(target_url, headers={PAYMENT_SIGNATURE_HEADER: payment_header})
 

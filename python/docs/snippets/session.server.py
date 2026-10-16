@@ -23,7 +23,7 @@ cfg = solana_pay_kit.config()
 # server offers; on-chain settle-at-close needs the operator signer + RPC.
 session = new_session(
     SessionOptions(
-        operator=cfg.operator.signer.pubkey(),
+        operator=str(cfg.operator.signer.pubkey),
         recipient=cfg.effective_recipient(),
         cap=1_000_000,  # 1.00 USDC ceiling
         currency=resolve_mint("USDC", "mainnet"),

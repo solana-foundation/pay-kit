@@ -32,6 +32,9 @@ pub mod generated;
 #[cfg(any(feature = "mpp", feature = "x402"))]
 pub mod core;
 
+#[cfg(any(feature = "mpp", feature = "x402"))]
+pub use core::credit_provider::{validate_credit_providers, CreditProvider, CreditProviderError};
+
 /// Machine Payments Protocol (Solana `charge`/`session`/`subscription`).
 #[cfg(feature = "mpp")]
 pub mod mpp;

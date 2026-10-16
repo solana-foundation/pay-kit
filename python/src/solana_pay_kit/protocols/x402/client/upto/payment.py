@@ -37,7 +37,7 @@ from solana_pay_kit.protocols.x402.upto.types import (
 )
 
 if TYPE_CHECKING:
-    from solana_pay_kit.signer import LocalSigner
+    from solana_keychain import TransactionSigner
 
 __all__ = [
     "parse_upto_challenge",
@@ -107,8 +107,8 @@ def parse_upto_challenge(headers: Mapping[str, str], body: str | None = None) ->
     return None
 
 
-def build_upto_payload(
-    signer: LocalSigner,
+async def build_upto_payload(
+    signer: TransactionSigner,
     requirements: UptoRequirements,
     expires_at: int,
     nonce: str | None = None,
@@ -152,7 +152,7 @@ def build_upto_payload(
     # a channel PDA seed and an openArgs field, so the requirement must carry it.
     open_slot = _parse_recent_slot(extra.get("recentSlot"))
 
-    payer = Pubkey.from_string(signer.pubkey())
+    payer = signer.pubkey
     salt = secrets.randbits(64)
     channel, _ = find_channel_pda(payer, fee_payer, mint, receiver_authorizer, salt, open_slot, program_id)
     open_ix = build_open_instruction(
@@ -181,11 +181,11 @@ def build_upto_payload(
         if len(memo_data) > _OPEN_MAX_MEMO_BYTES:
             raise ValueError(f"x402 client: extra.memo exceeds {_OPEN_MAX_MEMO_BYTES} bytes")
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo_data, []))
-    open_tx = _build_payer_signed_open(instructions, fee_payer, payer, blockhash, signer)
+    open_tx = await _build_payer_signed_open(instructions, fee_payer, blockhash, signer)
 
     valid_after = int(extra.get("validAfter", 0))
     payload: UptoPayload = {
-        "from": signer.pubkey(),
+        "from": str(signer.pubkey),
         "maxAmount": str(max_amount),
         "expiresAt": expires_at,
         "validAfter": valid_after,
@@ -210,25 +210,24 @@ def encode_upto_header(requirements: UptoRequirements, payload: UptoPayload) -> 
     return base64.b64encode(raw).decode("ascii")
 
 
-def build_upto_header(
-    signer: LocalSigner,
+async def build_upto_header(
+    signer: TransactionSigner,
     requirements: UptoRequirements,
     expires_at: int,
     nonce: str | None = None,
 ) -> str:
     """Build the full ``PAYMENT-SIGNATURE`` header value for an ``upto`` retry."""
-    payload = build_upto_payload(signer, requirements, expires_at, nonce)
+    payload = await build_upto_payload(signer, requirements, expires_at, nonce)
     return encode_upto_header(requirements, payload)
 
 
-def _build_payer_signed_open(
+async def _build_payer_signed_open(
     instructions: list[Any],
     fee_payer: Pubkey,
-    payer: Pubkey,
     blockhash: Hash,
-    signer: LocalSigner,
+    signer: TransactionSigner,
 ) -> str:
     """Assemble the v0 open transaction with the advertised fee payer, signed
     only in the client's (payer) slot. Returns base64 wire."""
-    wire = build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, payer, signer.sign)
+    wire = await build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, signer)
     return base64.b64encode(wire).decode("ascii")
