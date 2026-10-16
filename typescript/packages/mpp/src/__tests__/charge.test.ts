@@ -1774,6 +1774,14 @@ function mockServerBroadcastFetch(txResult: unknown, rpcMethods?: string[]) {
         }
 
         if (method === 'sendTransaction') {
+            // The broadcaster must aim preflight at the same bank the challenge
+            // blockhash was minted from. Without this the RPC preflights against
+            // the finalized bank and rejects a confirmed-only blockhash with
+            // "Blockhash not found" for the ~12s until it finalizes.
+            expect(body.params[1]).toMatchObject({
+                preflightCommitment: 'confirmed',
+                skipPreflight: false,
+            });
             return rpcSuccess(SIGNATURE);
         }
 
