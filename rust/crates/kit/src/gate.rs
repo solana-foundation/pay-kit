@@ -1018,8 +1018,14 @@ fn batch_challenge_response<'a>(
 /// authorizes is bound to the channel and the price, never to this string.
 /// The browser hint also echoes this untrusted context. Proxies must sanitize
 /// `Host` and `x-forwarded-proto` if deployment-canonical URLs are required.
+///
+/// `Router::nest` strips the mount prefix from `req.uri()`, so prefer the
+/// pre-nesting URI axum records in [`OriginalUri`](axum::extract::OriginalUri).
 fn resource_url(req: &Request) -> Option<String> {
-    let uri = req.uri();
+    let uri = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map_or(req.uri(), |original| &original.0);
     if uri.authority().is_some() {
         return Some(uri.to_string());
     }
@@ -1685,6 +1691,35 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hint_resource_url_keeps_nested_route_prefix() {
+        let pay = test_paykit();
+        let app: Router = Router::new().nest(
+            "/api",
+            Router::new().route("/report", paid_get(report, "0.10", &pay)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/report?x=1")
+                    .header(header::HOST, "example.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let browser = url::Url::parse(json["hint"]["browser"]["url"].as_str().unwrap()).unwrap();
+        let resource: Vec<_> = browser
+            .query_pairs()
+            .filter(|(k, _)| k == "resource_uri")
+            .map(|(_, v)| v.into_owned())
+            .collect();
+        assert_eq!(resource, ["https://example.test/api/report?x=1"]);
     }
 
     fn test_paykit() -> PayKit {
