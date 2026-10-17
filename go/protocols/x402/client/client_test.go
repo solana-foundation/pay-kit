@@ -12,7 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"errors"
+
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
@@ -518,6 +521,122 @@ func TestBuildTransactionNonceSourceError(t *testing.T) {
 		t.Fatal("expected error when nonce source fails")
 	}
 	if !strings.Contains(err.Error(), "generate memo nonce") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// stubRPC answers GetAccountInfoWithOpts with a mint account whose decimals
+// byte sits at offset 44 of the base SPL Mint layout.
+type stubRPC struct {
+	decimals uint8
+	fail     bool
+}
+
+func (s *stubRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	if s.fail {
+		return nil, errors.New("rpc down")
+	}
+	raw := make([]byte, 82)
+	raw[44] = s.decimals
+	return &rpc.GetAccountInfoResult{Value: &rpc.Account{
+		Data: rpc.DataBytesOrJSONFromBytes(raw),
+	}}, nil
+}
+
+func (s *stubRPC) GetLatestBlockhash(context.Context, rpc.CommitmentType) (*rpc.GetLatestBlockhashResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubRPC) GetSignatureStatuses(context.Context, bool, ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubRPC) GetTransaction(context.Context, solana.Signature, *rpc.GetTransactionOpts) (*rpc.GetTransactionResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubRPC) SendTransactionWithOpts(context.Context, *solana.Transaction, rpc.TransactionOpts) (solana.Signature, error) {
+	return solana.Signature{}, errors.New("not implemented")
+}
+
+func (s *stubRPC) SimulateTransactionWithOpts(context.Context, *solana.Transaction, *rpc.SimulateTransactionOpts) (*rpc.SimulateTransactionResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestBuildSPLTransferFetchesDecimalsFromMintWhenAbsent(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	// Wrapped SOL carries nine decimals. A spec-compliant offer omitting
+	// decimals must fetch the authoritative value from the mint rather than
+	// rejecting or defaulting blindly to six.
+	entry := &x402.AcceptsEntry{
+		Protocol: "x402",
+		Scheme:   "exact",
+		Network:  mainnetCAIP2,
+		Asset:    "So11111111111111111111111111111111111111112",
+		Amount:   "1",
+		PayTo:    recipient.String(),
+	}
+
+	rpcClient := &stubRPC{decimals: 9}
+	ix, err := buildSPLTransfer(context.Background(), rpcClient, signer, recipient, 1, entry)
+	if err != nil {
+		t.Fatalf("expected decimals fallback to succeed: %v", err)
+	}
+	data, err := ix.Data()
+	if err != nil {
+		t.Fatalf("instruction data: %v", err)
+	}
+	if len(data) < 10 {
+		t.Fatalf("transferChecked data too short: %d", len(data))
+	}
+	// transferChecked layout: 1-byte discriminator + 8-byte amount + 1-byte decimals.
+	if got := data[9]; got != 9 {
+		t.Fatalf("expected fetched decimals byte 9, got %d", got)
+	}
+}
+
+func TestBuildSPLTransferRejectsOutOfRangeDecimalsHint(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	for _, bad := range []int{-1, 256, 999} {
+		entry := &x402.AcceptsEntry{
+			Protocol: "x402",
+			Scheme:   "exact",
+			Network:  mainnetCAIP2,
+			Asset:    "So11111111111111111111111111111111111111112",
+			Amount:   "1",
+			PayTo:    recipient.String(),
+		}
+		entry.Extra.Decimals, entry.Extra.DecimalsSet = bad, true
+		// The stub would answer 9; a malformed hint must be rejected before
+		// any fetch, never truncated into a u8.
+		if _, err := buildSPLTransfer(context.Background(), &stubRPC{decimals: 9}, signer, recipient, 1, entry); err == nil {
+			t.Fatalf("decimals %d: expected rejection, got nil error", bad)
+		} else if !strings.Contains(err.Error(), "extra.decimals must be between 0 and 255") {
+			t.Fatalf("decimals %d: unexpected error: %v", bad, err)
+		}
+	}
+}
+
+func TestBuildSPLTransferErrorsWhenMintFetchFailsAndNoDecimals(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	entry := &x402.AcceptsEntry{
+		Protocol: "x402",
+		Scheme:   "exact",
+		Network:  mainnetCAIP2,
+		Asset:    "So11111111111111111111111111111111111111112",
+		Amount:   "1",
+		PayTo:    recipient.String(),
+	}
+
+	rpcClient := &stubRPC{fail: true}
+	_, err := buildSPLTransfer(context.Background(), rpcClient, signer, recipient, 1, entry)
+	if err == nil {
+		t.Fatal("expected fetch failure to surface an error")
+	}
+	if !strings.Contains(err.Error(), "fetching mint") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

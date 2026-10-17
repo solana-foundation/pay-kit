@@ -22,6 +22,7 @@ internal class X402Interceptor(
     private val signer: SolanaSigner,
     private val rpcBlockhashProvider: () -> ByteArray,
     private val selection: ChallengeSelection,
+    private val mintDecimalsProvider: ((String) -> UByte)? = null,
 ) : PaymentInterceptor() {
 
     override fun buildCredential(response: Response, bodyText: String): PaymentCredentialHeader? {
@@ -33,7 +34,10 @@ internal class X402Interceptor(
         }
         val requirement = parseX402Challenge(headers, bodyText, selection)
             ?: return null
-        val paymentHeader = buildPaymentHeader(signer, requirement, rpcBlockhashProvider)
+        val paymentHeader = buildPaymentHeader(
+            signer, requirement, rpcBlockhashProvider,
+            mintDecimalsProvider = mintDecimalsProvider,
+        )
         return PaymentCredentialHeader(
             headerName = PAYMENT_SIGNATURE_HEADER,
             headerValue = paymentHeader,

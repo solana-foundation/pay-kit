@@ -62,6 +62,7 @@ pub async fn build_payment(
 
     if let Some(mint_str) = mint {
         build_spl_instructions(
+            rpc,
             &mut instructions,
             &signer_pubkey,
             &recipient,
@@ -428,6 +429,7 @@ fn build_sol_instructions(
 }
 
 fn build_spl_instructions(
+    rpc: &RpcClient,
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
     recipient: &Pubkey,
@@ -444,7 +446,16 @@ fn build_spl_instructions(
             )
         }))
         .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?;
-    let decimals = requirements.decimals.unwrap_or(6);
+    // A spec-compliant x402 offer may legally omit extra.decimals; when absent,
+    // read the authoritative value from the on-chain mint instead of rejecting.
+    // A present hint is used as-is (the parser already range-checked it);
+    // on-chain transferChecked still verifies the byte against the mint, so a
+    // lying hint remains fail-closed. Defaulting blindly to six would silently
+    // sign a wrong decimals byte for any non-6-decimal mint.
+    let decimals = match requirements.decimals {
+        Some(decimals) => decimals,
+        None => resolve_mint_decimals(rpc, &mint)?,
+    };
 
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
     let dest_ata = get_associated_token_address(recipient, &mint, &token_program);
@@ -460,6 +471,31 @@ fn build_spl_instructions(
     ));
 
     Ok(())
+}
+
+/// Byte offset of `decimals` in the base SPL Mint layout (4-byte COption tag +
+/// 32-byte authority + 8-byte supply precede it); Token-2022 keeps that prefix,
+/// so the offset holds for both token programs.
+const MINT_DECIMALS_OFFSET: usize = 44;
+const MINT_DECIMALS_MIN_LEN: usize = MINT_DECIMALS_OFFSET + 1;
+
+/// Reads the authoritative decimals of an SPL mint over RPC.
+fn resolve_mint_decimals(rpc: &RpcClient, mint: &Pubkey) -> Result<u8, Error> {
+    let account = rpc.get_account(mint).map_err(|e| {
+        Error::Rpc(format!(
+            "extra.decimals is absent and fetching mint {mint} failed: {e}"
+        ))
+    })?;
+    mint_decimals_from_account_data(&account.data, &mint.to_string())
+}
+
+fn mint_decimals_from_account_data(data: &[u8], mint: &str) -> Result<u8, Error> {
+    if data.len() < MINT_DECIMALS_MIN_LEN {
+        return Err(Error::Other(format!(
+            "mint {mint} data too short to contain decimals"
+        )));
+    }
+    Ok(data[MINT_DECIMALS_OFFSET])
 }
 
 /// Derive the Associated Token Account address (PDA).
@@ -1243,6 +1279,19 @@ mod tests {
     }
 
     #[test]
+    fn mint_decimals_reads_byte_44() {
+        let mut data = vec![0u8; 82];
+        data[MINT_DECIMALS_OFFSET] = 9;
+        assert_eq!(mint_decimals_from_account_data(&data, "mint").unwrap(), 9);
+    }
+
+    #[test]
+    fn mint_decimals_rejects_short_data() {
+        let err = mint_decimals_from_account_data(&vec![0u8; 44], "mint").unwrap_err();
+        assert!(err.to_string().contains("too short"), "{err}");
+    }
+
+    #[test]
     fn private_helpers_build_expected_instructions() {
         let payer = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
@@ -1270,7 +1319,9 @@ mod tests {
 
         let mut instructions = Vec::new();
         let requirements = test_requirements("USDC");
+        let rpc = RpcClient::new("http://localhost:8899".to_string());
         build_spl_instructions(
+            &rpc,
             &mut instructions,
             &signer,
             &recipient,

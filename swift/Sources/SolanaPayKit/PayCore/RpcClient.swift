@@ -64,6 +64,31 @@ public struct RpcClient: Sendable {
         return owner
     }
 
+    /// Reads the authoritative decimals of an SPL mint over RPC.
+    ///
+    /// Byte 44 of the base SPL Mint layout holds decimals (4-byte COption tag
+    /// + 32-byte authority + 8-byte supply precede it); token-2022 keeps that
+    /// prefix, so the offset holds for both token programs.
+    public func getMintDecimals(pubkeyBase58: String) async throws -> UInt8 {
+        let result = try await rpcCall(
+            method: "getAccountInfo",
+            params: [pubkeyBase58, ["encoding": "base64"]]
+        )
+        guard
+            let outer = result as? [String: Any],
+            let value = outer["value"] as? [String: Any],
+            let dataArr = value["data"] as? [Any],
+            let b64 = dataArr.first as? String,
+            let raw = Data(base64Encoded: b64)
+        else {
+            throw PayKitError.rpcFailure("getAccountInfo returned malformed body for \(pubkeyBase58)")
+        }
+        guard raw.count >= 45 else {
+            throw PayKitError.rpcFailure("mint \(pubkeyBase58) data too short to contain decimals")
+        }
+        return raw[raw.startIndex + 44]
+    }
+
     /// Submits a base64-encoded signed transaction. Returns the base58
     /// signature the RPC echoes back.
     public func sendTransaction(_ base64SignedTx: String, skipPreflight: Bool = false) async throws -> String {
