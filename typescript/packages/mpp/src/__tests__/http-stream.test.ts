@@ -75,6 +75,44 @@ describe('SseDecoder', () => {
     });
 });
 
+describe('SseDecoder CRLF split across chunks', () => {
+    test('CRLF split across two pushChunk calls produces correct events', () => {
+        const decoder = new SseDecoder();
+
+        expect(decoder.pushChunk('data: {"a":1}\r')).toEqual([]);
+        expect(decoder.pushChunk('\ndata: {"b":2}\r\n\r\n')).toEqual([
+            { data: '{"a":1}\n{"b":2}' },
+        ]);
+    });
+
+    test('byte-by-byte delivery of a CRLF-terminated payload', () => {
+        const decoder = new SseDecoder();
+        const payload = 'data: hello\r\n\r\n';
+
+        const collected: ReturnType<SseDecoder['pushChunk']> = [];
+        for (const ch of payload) {
+            collected.push(...decoder.pushChunk(ch));
+        }
+
+        expect(collected).toEqual([{ data: 'hello' }]);
+    });
+
+    test('solo \\r (not part of \\r\\n) is normalized as a line ending within a single chunk', () => {
+        const decoder = new SseDecoder();
+
+        expect(decoder.pushChunk('data: a\rdata: b\n\n')).toEqual([{ data: 'a\nb' }]);
+    });
+
+    test('trailing \\r is normalized when finish() flushes the remaining buffer', () => {
+        const decoder = new SseDecoder();
+
+        decoder.pushChunk('data: hello\r');
+        const events = decoder.finish();
+
+        expect(events).toEqual([{ data: 'hello' }]);
+    });
+});
+
 describe('parseMeteredSseEvent', () => {
     test('parses metering, usage, receipt, done, and messages', () => {
         const directive = {

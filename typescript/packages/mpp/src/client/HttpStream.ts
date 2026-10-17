@@ -44,13 +44,13 @@ export class SseDecoder {
         const events = this.drainCompleteEvents();
         if (this.#buffer.trim() === '') return events;
 
-        const trailing = parseSseEventBlock(this.#buffer);
+        const trailing = parseSseEventBlock(this.#buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
         this.#buffer = '';
         return trailing ? [...events, trailing] : events;
     }
 
     private drainCompleteEvents(): SseEvent[] {
-        this.#buffer = this.#buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        this.#buffer = this.#buffer.replace(/\r\n/g, '\n').replace(/\r(?!$)/g, '\n');
 
         const events: SseEvent[] = [];
         let boundary = this.#buffer.indexOf('\n\n');
