@@ -73,6 +73,37 @@ describe('SseDecoder', () => {
         expect(parseSseEventBlock('data')).toEqual({ data: '' });
         expect(parseSseEventBlock(':only-comment')).toBeNull();
     });
+
+    test.each(['\n', '\r\n', '\r'])('preserves events at every byte boundary with %j line endings', ending => {
+        const bytes = new TextEncoder().encode(
+            ['event: message', 'data: 你好', 'data: world', '', 'data: second', '', ''].join(ending),
+        );
+        const expected = [{ data: '你好\nworld', event: 'message' }, { data: 'second' }];
+        for (let split = 0; split <= bytes.length; split++) {
+            const decoder = new SseDecoder();
+            expect([
+                ...decoder.pushChunk(bytes.slice(0, split)),
+                ...decoder.pushChunk(new Uint8Array()),
+                ...decoder.pushChunk(bytes.slice(split)),
+                ...decoder.finish(),
+            ]).toEqual(expected);
+        }
+
+        const decoder = new SseDecoder();
+        const events = [];
+        for (const byte of bytes) events.push(...decoder.pushChunk(Uint8Array.of(byte)));
+        expect([...events, ...decoder.finish()]).toEqual(expected);
+    });
+
+    test('dispatches standalone CR immediately and ignores only one following LF', () => {
+        const decoder = new SseDecoder();
+        expect(decoder.pushChunk('data: first\r\r')).toEqual([{ data: 'first' }]);
+        expect(decoder.pushChunk('')).toEqual([]);
+        expect(decoder.pushChunk('\ndata: second\r')).toEqual([]);
+        expect(decoder.pushChunk('\n\n')).toEqual([{ data: 'second' }]);
+        expect(decoder.pushChunk('data: third\r')).toEqual([]);
+        expect(decoder.finish()).toEqual([{ data: 'third' }]);
+    });
 });
 
 describe('parseMeteredSseEvent', () => {
@@ -167,6 +198,20 @@ describe('MeteredSseSession', () => {
 });
 
 describe('decodeMeteredSseStream', () => {
+    test('decodes a usage event when CRLF is split across chunks', async () => {
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                for (const chunk of ['event: mpp.usage\r', '\ndata: {"amount":"3","deliveryId":"d"}\r\n\r\n']) {
+                    controller.enqueue(new TextEncoder().encode(chunk));
+                }
+                controller.close();
+            },
+        });
+        const events = [];
+        for await (const event of decodeMeteredSseStream(stream)) events.push(event);
+        expect(events).toEqual([{ type: 'usage', usage: { amount: '3', deliveryId: 'd' } }]);
+    });
+
     test('decodes a ReadableStream into metered events', async () => {
         const stream = new ReadableStream<Uint8Array>({
             start(controller) {
