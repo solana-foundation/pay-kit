@@ -298,6 +298,12 @@ pub struct ChargeOptions<'a> {
     pub fee_payer: bool,
     /// Resolved payment splits to embed in `methodDetails.splits`.
     pub splits: Vec<crate::mpp::protocol::solana::Split>,
+    /// Server-side identity of the protected route (e.g. method, host, and
+    /// path). Bound into the challenge's HMAC-covered `opaque` and never put
+    /// on chain; verify with [`Mpp::verify_credential_for_route`] so a
+    /// credential issued for one route cannot be spent on another with equal
+    /// payment terms.
+    pub route: Option<&'a str>,
 }
 
 // ── Mpp handler ──
@@ -625,6 +631,7 @@ impl Mpp {
         let encoded = Base64UrlJson::from_typed(&request)?;
         let default_expires = crate::mpp::expires::minutes(5);
         let expires = options.expires.unwrap_or(&default_expires);
+        let opaque = options.route.map(route_opaque).transpose()?;
 
         Ok(PaymentChallenge::with_challenge_binding_secret_full(
             &self.challenge_binding_secret,
@@ -635,7 +642,7 @@ impl Mpp {
             Some(expires),
             None,
             options.description,
-            None,
+            opaque,
         ))
     }
 
@@ -761,7 +768,18 @@ impl Mpp {
         });
         request.method_details =
             Some(serde_json::to_value(details).map_err(|e| Error::InvalidConfig(e.to_string()))?);
-        self.charge_challenge_with_options(&request, base.expires.as_deref(), None)
+        self.validate_charge_request(&request)?;
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
+            &self.realm,
+            METHOD_NAME,
+            "charge",
+            Base64UrlJson::from_typed(&request)?,
+            base.expires.as_deref(),
+            None,
+            None,
+            base.opaque,
+        ))
     }
 
     fn validate_channel_policy(
@@ -946,6 +964,18 @@ impl Mpp {
         self.verify(credential, expected).await
     }
 
+    /// [`verify_credential_with_expected`](Self::verify_credential_with_expected)
+    /// for a challenge issued with [`ChargeOptions::route`]: the credential's
+    /// authenticated route must equal `route`.
+    pub async fn verify_credential_for_route(
+        &self,
+        credential: &PaymentCredential,
+        expected: &ChargeRequest,
+        route: &str,
+    ) -> Result<Receipt, VerificationError> {
+        self.verify_bound(credential, expected, Some(route)).await
+    }
+
     /// Tier-2 pinned-field check.
     ///
     /// After Tier 1 (HMAC) confirms the echoed challenge was issued by this
@@ -999,11 +1029,22 @@ impl Mpp {
         Ok(())
     }
 
-    /// Verify a charge credential with an explicit request.
+    /// Verify a charge credential with an explicit request. Route-bound
+    /// credentials are rejected; use
+    /// [`verify_credential_for_route`](Self::verify_credential_for_route).
     pub async fn verify(
         &self,
         credential: &PaymentCredential,
         request: &ChargeRequest,
+    ) -> Result<Receipt, VerificationError> {
+        self.verify_bound(credential, request, None).await
+    }
+
+    async fn verify_bound(
+        &self,
+        credential: &PaymentCredential,
+        request: &ChargeRequest,
+        route: Option<&str>,
     ) -> Result<Receipt, VerificationError> {
         // Tier 1: Verify HMAC.
         let expected_id = compute_challenge_id(
@@ -1026,6 +1067,12 @@ impl Mpp {
         ) {
             return Err(VerificationError::credential_mismatch(
                 "Challenge ID mismatch — not issued by this server",
+            ));
+        }
+        // `opaque` is HMAC-covered, so the route it names is authentic.
+        if challenge_route(&credential.challenge).as_deref() != route {
+            return Err(VerificationError::credential_mismatch(
+                "Credential was issued for a different route",
             ));
         }
 
@@ -2510,6 +2557,23 @@ fn splits_eq(a: Option<&[Split]>, b: Option<&[Split]>) -> bool {
             && x.label == y.label
             && x.memo == y.memo
     })
+}
+
+/// Challenge `opaque` carrying a server-side route binding.
+fn route_opaque(route: &str) -> Result<Base64UrlJson, Error> {
+    Base64UrlJson::from_value(&serde_json::json!({ "route": route }))
+}
+
+/// The route an authenticated challenge was issued for, if any.
+fn challenge_route(challenge: &crate::mpp::protocol::core::ChallengeEcho) -> Option<String> {
+    challenge
+        .opaque
+        .as_ref()?
+        .decode_value()
+        .ok()?
+        .get("route")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Why settlement produced no receipt.
@@ -8136,6 +8200,104 @@ mod tests {
         );
         let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
         assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Failed);
+    }
+
+    // ── Route binding ──
+
+    fn offline_sol_mpp() -> Mpp {
+        Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn route_credential(mpp: &Mpp, route: Option<&str>) -> (PaymentCredential, ChargeRequest) {
+        let challenge = mpp
+            .charge_with_options(
+                "0.000001",
+                ChargeOptions {
+                    route,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let expected: ChargeRequest = challenge.request.decode().unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        );
+        (credential, expected)
+    }
+
+    // Two routes with identical payment terms on one backend: a credential
+    // issued for route A must not run route B's handler.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn route_bound_credential_only_verifies_on_its_route() {
+        let mpp = offline_sol_mpp();
+        let (credential, expected) = route_credential(&mpp, Some("GET api.example/a"));
+        for (route, rejected) in [
+            (Some("GET api.example/b"), true),
+            (Some("POST api.example/a"), true),
+            (Some("GET api.example/a/"), true),
+            (None, true),
+            (Some("GET api.example/a"), false),
+        ] {
+            let err = match route {
+                Some(route) => mpp
+                    .verify_credential_for_route(&credential, &expected, route)
+                    .await
+                    .unwrap_err(),
+                None => mpp
+                    .verify_credential_with_expected(&credential, &expected)
+                    .await
+                    .unwrap_err(),
+            };
+            assert_eq!(
+                err.message.contains("different route"),
+                rejected,
+                "route={route:?}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unbound_credential_is_rejected_by_a_route_bound_verifier() {
+        let mpp = offline_sol_mpp();
+        let (credential, expected) = route_credential(&mpp, None);
+        let err = mpp
+            .verify_credential_for_route(&credential, &expected, "GET api.example/a")
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("different route"), "{}", err.message);
+        let err = mpp
+            .verify_credential_with_expected(&credential, &expected)
+            .await
+            .unwrap_err();
+        assert!(!err.message.contains("different route"), "{}", err.message);
+    }
+
+    // The route lives in the HMAC-covered opaque: rewriting it fails auth.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tampered_route_binding_fails_authentication() {
+        let mpp = offline_sol_mpp();
+        let (mut credential, expected) = route_credential(&mpp, Some("GET api.example/a"));
+        credential.challenge.opaque = Some(route_opaque("GET api.example/b").unwrap());
+        let err = mpp
+            .verify_credential_for_route(&credential, &expected, "GET api.example/b")
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("Challenge ID mismatch"),
+            "{}",
+            err.message
+        );
     }
 
     // ── Replay protection tests ──
