@@ -229,14 +229,23 @@ pub struct Config {
     ///   * `Some` (recipient-key verification): the gateway controls the payee,
     ///     so it derives the recipient key and ENFORCES the exact amount by
     ///     decrypting the transfer's recipient ciphertext (NOT auditor).
-    ///   * `None` (facilitator trust-proofs): the gateway settles to an
-    ///     arbitrary recipient it cannot decrypt, so confidential bundles are
-    ///     ACCEPTED without amount enforcement — it only verifies the transfer
-    ///     targets the recipient and lands (the on-chain ZK program guarantees
-    ///     the proofs), and the recipient reconciles the amount out of band.
+    ///   * `None` (facilitator): the gateway settles to an arbitrary recipient
+    ///     it cannot decrypt. The amount is then enforced with
+    ///     `confidential_auditor` when set; otherwise bundles are rejected
+    ///     unless `accept_unverified_confidential_amount` opts in.
     ///
     /// Not used for non-confidential flows.
     pub recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    /// The mint's auditor ElGamal keypair (64 bytes, `pubkey || secret`, as
+    /// `solana-zk-keygen` writes it). Lets a facilitator (no
+    /// `recipient_signer`) enforce the exact amount by decrypting the
+    /// transfer's auditor ciphertext.
+    pub confidential_auditor: Option<[u8; 64]>,
+    /// Accept confidential bundles whose amount this server cannot decrypt
+    /// (no `recipient_signer`, no `confidential_auditor`). Receipts then attest
+    /// only that a transfer to the recipient landed, not its amount; the
+    /// recipient must reconcile out of band. Off by default.
+    pub accept_unverified_confidential_amount: bool,
     /// Replay protection store (defaults to in-memory).
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
@@ -271,6 +280,8 @@ impl Default for Config {
             fee_payer_signer: None,
             channel_charge: None,
             recipient_signer: None,
+            confidential_auditor: None,
+            accept_unverified_confidential_amount: false,
             store: None,
             html: false,
             accept_push_mode: false,
@@ -320,11 +331,16 @@ pub struct Mpp {
     /// Payee wallet signer for confidential-transfer recipient-key
     /// verification (derives the recipient ElGamal key). `Some` ⇒ enforce the
     /// exact amount via the transfer's recipient ciphertext; `None` ⇒
-    /// facilitator trust-proofs mode, where bundles are accepted WITHOUT amount
-    /// enforcement (the recipient reconciles out of band). See [`Config`].
+    /// facilitator mode (auditor-key enforcement or explicit opt-in). See
+    /// [`Config`].
     // Only read by the confidential bundle-settlement path.
     #[cfg_attr(not(feature = "confidential"), allow(dead_code))]
     pub(crate) recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    #[cfg(feature = "confidential")]
+    pub(crate) confidential_auditor:
+        Option<Arc<solana_zk_sdk::encryption::elgamal::ElGamalKeypair>>,
+    #[cfg_attr(not(feature = "confidential"), allow(dead_code))]
+    pub(crate) accept_unverified_confidential_amount: bool,
     pub(crate) store: Arc<dyn Store>,
     pub(crate) html: bool,
     /// Audit #5: opt-in for push-mode credentials.
@@ -387,6 +403,17 @@ impl Mpp {
             None => derive_default_realm(&config.recipient),
         };
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
+        #[cfg(feature = "confidential")]
+        let confidential_auditor = config
+            .confidential_auditor
+            .map(|bytes| {
+                solana_zk_sdk::encryption::elgamal::ElGamalKeypair::try_from(bytes.as_slice())
+                    .map(Arc::new)
+                    .map_err(|e| {
+                        Error::InvalidConfig(format!("Invalid confidential_auditor keypair: {e}"))
+                    })
+            })
+            .transpose()?;
 
         let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
         let token_program =
@@ -408,6 +435,9 @@ impl Mpp {
             fee_payer_signer: config.fee_payer_signer,
             channel_charge: config.channel_charge,
             recipient_signer: config.recipient_signer,
+            #[cfg(feature = "confidential")]
+            confidential_auditor,
+            accept_unverified_confidential_amount: config.accept_unverified_confidential_amount,
             store,
             html: config.html,
             accept_push_mode: config.accept_push_mode,

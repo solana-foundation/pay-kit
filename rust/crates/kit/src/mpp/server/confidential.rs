@@ -157,15 +157,22 @@ impl Mpp {
         })?;
         let gateway_pubkey = fee_payer_signer.pubkey();
 
-        // Two settlement modes:
-        //   * recipient_signer SET (the gateway controls the payee) ⇒ derive the
-        //     recipient ElGamal key and ENFORCE the exact amount by decrypting
+        // Amount enforcement, before the gateway signs or pays for anything:
+        //   * recipient_signer SET (the gateway controls the payee) ⇒ decrypt
         //     the transfer's recipient ciphertext.
-        //   * recipient_signer ABSENT (facilitator settling to an arbitrary
-        //     recipient) ⇒ trust-proofs: the gateway cannot decrypt the amount,
-        //     so it only verifies the transfer targets the recipient and that
-        //     the bundle lands (the on-chain ZK program guarantees the proofs
-        //     are valid); the recipient reconciles the amount out of band.
+        //   * confidential_auditor SET (facilitator for an arbitrary recipient
+        //     on a mint whose auditor key it holds) ⇒ decrypt the auditor one.
+        //   * neither ⇒ the amount is unverifiable; reject unless explicitly
+        //     opted in (the recipient then reconciles out of band).
+        if self.recipient_signer.is_none()
+            && self.confidential_auditor.is_none()
+            && !self.accept_unverified_confidential_amount
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Cannot verify the confidential transfer amount: configure recipient_signer or \
+                 confidential_auditor (or explicitly accept_unverified_confidential_amount)",
+            ));
+        }
         let recipient_keys = match self.recipient_signer.as_ref() {
             Some(signer) => Some(
                 crate::mpp::protocol::confidential::derive_confidential_keys(
@@ -257,20 +264,19 @@ impl Mpp {
 
         verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
 
-        // In amount-enforcing mode, recover the amount from the validity proof
-        // the transfer itself consumes — before the gateway signs or pays for
-        // anything. An account-wide balance delta cannot attribute a credit to
+        // Recover the amount from the validity proof the transfer itself
+        // consumes. An account-wide balance delta cannot attribute a credit to
         // this transfer (fees, concurrent settlements, external deposits).
-        if let Some(keys) = &recipient_keys {
+        let amount_key = match (&recipient_keys, &self.confidential_auditor) {
+            (Some(keys), _) => Some((&keys.elgamal, AmountHandle::Destination)),
+            (None, Some(auditor)) => Some((auditor.as_ref(), AmountHandle::Auditor)),
+            (None, None) => None,
+        };
+        if let Some((key, handle)) = amount_key {
             let expected: u64 = request.amount.parse().map_err(|_| {
                 VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
             })?;
-            let recovered = recover_bundle_transfer_amount(
-                &decoded,
-                &token_program,
-                &keys.elgamal,
-                AmountHandle::Destination,
-            )?;
+            let recovered = recover_bundle_transfer_amount(&decoded, &token_program, key, handle)?;
             if recovered != expected {
                 return Err(VerificationError::invalid_amount(format!(
                     "Confidential amount mismatch: recovered {recovered}, expected {expected}"
@@ -1085,6 +1091,8 @@ pub(crate) fn verify_confidential_bundle_tx(
 pub(crate) enum AmountHandle {
     /// The recipient's handle (the validity proof's second pubkey).
     Destination,
+    /// The mint auditor's handle (the validity proof's third pubkey).
+    Auditor,
 }
 
 /// Token-2022 confidential `Transfer` / `TransferWithFee` instruction data:
@@ -1234,6 +1242,7 @@ pub(crate) fn recover_bundle_transfer_amount(
 
     let (pubkey, slot) = match handle {
         AmountHandle::Destination => (&context.second_pubkey, 1),
+        AmountHandle::Auditor => (&context.third_pubkey, 2),
     };
     if pubkey.0 != <[u8; 32]>::from(key.pubkey()) {
         return Err(VerificationError::credential_mismatch(
@@ -1379,6 +1388,16 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn recipient_key_server() -> RecipientKeyServer {
+        confidential_server(true, None, false).await
+    }
+
+    /// `recipient_key` selects recipient-key mode; otherwise the server is a
+    /// facilitator, optionally holding the mint's auditor key.
+    pub(crate) async fn confidential_server(
+        recipient_key: bool,
+        auditor: Option<Arc<ElGamalKeypair>>,
+        accept_unverified: bool,
+    ) -> RecipientKeyServer {
         use solana_keychain::SolanaSigner;
         let gateway_signer = signer(11);
         let recipient_signer = signer(12);
@@ -1401,7 +1420,10 @@ pub(crate) mod tests {
             realm: Some("test".to_string()),
             fee_payer: true,
             fee_payer_signer: Some(gateway_signer),
-            recipient_signer: Some(recipient_signer),
+            recipient_signer: recipient_key
+                .then_some(recipient_signer as Arc<dyn solana_keychain::SolanaSigner>),
+            confidential_auditor: auditor.map(|keypair| <[u8; 64]>::from(keypair.as_ref())),
+            accept_unverified_confidential_amount: accept_unverified,
             ..Default::default()
         })
         .unwrap();
@@ -1668,5 +1690,110 @@ pub(crate) mod tests {
             "{}",
             err.message
         );
+    }
+
+    async fn settle_error(
+        server: &RecipientKeyServer,
+        tx: VersionedTransaction,
+        amount: u64,
+    ) -> String {
+        server
+            .mpp
+            .settle_confidential_bundle(
+                &encode_bundle(&[tx]),
+                &request(amount, &server.mint, server.mpp.recipient()),
+                &server.method_details,
+            )
+            .await
+            .unwrap_err()
+            .message
+    }
+
+    // A facilitator that can decrypt nothing must not co-sign, pay for, and
+    // receipt a transfer whose amount it cannot check.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn facilitator_without_an_amount_key_rejects_bundles() {
+        let server = confidential_server(false, None, false).await;
+        let tx = inline_transfer_tx(
+            &server.gateway,
+            &server.mint,
+            &server.recipient_ata,
+            ElGamalKeypair::new_rand().pubkey(),
+            None,
+            1_000_000,
+            None,
+        );
+        let message = settle_error(&server, tx, 1_000_000).await;
+        assert!(message.contains("Cannot verify"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn facilitator_with_auditor_key_enforces_the_amount() {
+        let auditor = Arc::new(ElGamalKeypair::new_rand());
+        let server = confidential_server(false, Some(auditor.clone()), false).await;
+        let recipient = ElGamalKeypair::new_rand();
+        let transfer = |amount| {
+            inline_transfer_tx(
+                &server.gateway,
+                &server.mint,
+                &server.recipient_ata,
+                recipient.pubkey(),
+                Some(auditor.pubkey()),
+                amount,
+                None,
+            )
+        };
+        let message = settle_error(&server, transfer(499_999), 1_000_000).await;
+        assert!(
+            message.contains("recovered 499999, expected 1000000"),
+            "{message}"
+        );
+        let message = settle_error(&server, transfer(1_000_001), 1_000_000).await;
+        assert!(message.contains("amount mismatch"), "{message}");
+        let message = settle_error(&server, transfer(1_000_000), 1_000_000).await;
+        assert!(message.contains("Simulation RPC error"), "{message}");
+
+        // A transfer without this auditor's handle cannot be verified.
+        let tx = inline_transfer_tx(
+            &server.gateway,
+            &server.mint,
+            &server.recipient_ata,
+            recipient.pubkey(),
+            None,
+            1_000_000,
+            None,
+        );
+        let message = settle_error(&server, tx, 1_000_000).await;
+        assert!(message.contains("not encrypted"), "{message}");
+    }
+
+    #[test]
+    fn malformed_auditor_keypair_is_rejected_at_boot() {
+        let result = Mpp::new(super::super::charge::Config {
+            recipient: Pubkey::new_unique().to_string(),
+            currency: "SOL".to_string(),
+            network: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some("x".repeat(32)),
+            confidential_auditor: Some([0xff; 64]),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unverified_amount_requires_an_explicit_opt_in() {
+        let server = confidential_server(false, None, true).await;
+        let tx = inline_transfer_tx(
+            &server.gateway,
+            &server.mint,
+            &server.recipient_ata,
+            ElGamalKeypair::new_rand().pubkey(),
+            None,
+            1,
+            None,
+        );
+        let message = settle_error(&server, tx, 1_000_000).await;
+        assert!(message.contains("Simulation RPC error"), "{message}");
     }
 }

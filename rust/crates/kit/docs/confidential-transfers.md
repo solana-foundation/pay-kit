@@ -468,12 +468,12 @@ for. So there are two modes, selected by whether the server is configured with a
 flowchart TD
     Start["settle_confidential_bundle"] --> Q{recipient_signer<br/>configured?}
     Q -->|Yes: gateway controls the payee| RK["RECIPIENT-KEY MODE"]
-    Q -->|No: facilitator for an arbitrary payee| FP["FACILITATOR TRUST-PROOFS MODE"]
+    Q -->|No: facilitator for an arbitrary payee| FP["FACILITATOR MODE<br/>(auditor key, else reject unless opted in)"]
 
     RK --> RK1["derive recipient ElGamal key from payee wallet"]
     RK1 --> RK2["decrypt the transfer's validity-proof<br/>recipient handle, require == charged amount"]
     RK2 --> Sub["submit bundle txs in order, confirm each"]
-    FP --> FP2["trust on-chain proofs;<br/>recipient reconciles out of band"]
+    FP --> FP2["auditor handle == charged amount,<br/>or explicit unverified opt-in"]
     FP2 --> Sub
     Sub --> Done["Receipt::success"]
 ```
@@ -488,21 +488,17 @@ credits cannot be attributed to it. On fee-bearing mints the checked amount is
 the gross amount the payer authorized (the recipient is credited amount − fee),
 matching cleartext `transferChecked` semantics.
 
-**Facilitator trust-proofs mode** (`recipient_signer` is `None`): the gateway is
-settling on behalf of some *other* recipient and therefore cannot decrypt that
-recipient's amount. It does the most it can:
+**Facilitator mode** (`recipient_signer` is `None`): the gateway is settling on
+behalf of some *other* recipient and cannot decrypt that recipient's handle.
 
-- it submits the bundle and confirms every tx lands;
-- it runs the **structural check** that the final transfer instruction's
-  destination (the 3rd account of the Token-2022 transfer ix) is the expected
-  recipient ATA, so the bundle can't silently pay someone else;
-- it relies on the on-chain ZK program having verified the proofs (which
-  guarantee the transfer is *valid* and the amounts on the three handles match);
-- and the recipient reconciles the exact amount **out of band** with its own
-  key.
-
-In *both* modes the gateway never sees the auditor key — the auditor is the mint
-issuer.
+- With `confidential_auditor` set to the mint's auditor ElGamal keypair, it
+  decrypts the auditor handle of the same validity proof and enforces the exact
+  amount, as in recipient-key mode.
+- Otherwise the amount is unverifiable and bundles are **rejected** before the
+  gateway signs anything, unless the operator explicitly sets
+  `accept_unverified_confidential_amount`. In that trust-proofs mode the gateway
+  only checks that the transfer targets the recipient ATA and lands; the receipt
+  does not attest the amount and the recipient must reconcile it out of band.
 
 ### 4.5 Safety details in settlement worth knowing
 

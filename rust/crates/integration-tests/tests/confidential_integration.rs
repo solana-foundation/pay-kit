@@ -460,6 +460,8 @@ async fn confidential_charge_via_worker() {
             // Gateway is the recipient here ⇒ recipient-key amount enforcement.
             // Recipient is a message-only role, so upcast the gateway signer.
             recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
+            auditor: None,
+            accept_unverified_amount: false,
         },
         s.gateway_signer.clone(),
     );

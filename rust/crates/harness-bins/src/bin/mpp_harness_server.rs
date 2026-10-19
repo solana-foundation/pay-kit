@@ -167,6 +167,8 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             // bundle settlement (which needs the recipient ElGamal key) is not
             // exercised here, so leave it unset.
             recipient_signer: None,
+            confidential_auditor: None,
+            accept_unverified_confidential_amount: false,
             store: None,
             html: false,
             // Interop tests exercise push mode end-to-end; the gate is

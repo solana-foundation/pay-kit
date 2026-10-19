@@ -45,9 +45,15 @@ pub struct ConfidentialWorkerConfig {
     /// Payee wallet signer, when the gateway controls the recipient. `Some`
     /// enables recipient-key settlement (the worker decrypts the transfer's
     /// recipient ciphertext and enforces the exact amount); `None` is
-    /// facilitator/trust-proofs mode (no amount enforcement — only valid when
-    /// the gateway is not the payee, e.g. relaying to an arbitrary recipient).
+    /// facilitator mode (relaying to an arbitrary recipient).
     pub recipient_signer: Option<Arc<dyn SolanaSigner>>,
+    /// Mint auditor ElGamal keypair bytes: enforces the exact amount in
+    /// facilitator mode. See [`MppConfig::confidential_auditor`].
+    pub auditor: Option<[u8; 64]>,
+    /// Accept bundles whose amount cannot be decrypted (no recipient signer, no
+    /// auditor). Receipts then do not attest the amount. See
+    /// [`MppConfig::accept_unverified_confidential_amount`].
+    pub accept_unverified_amount: bool,
 }
 
 struct ConfidentialWorkerRuntime {
@@ -235,6 +241,8 @@ fn build_mpp(
         fee_payer_signer: Some(signer),
         // Recipient-key amount enforcement when the gateway controls the payee.
         recipient_signer: cfg.recipient_signer.clone(),
+        confidential_auditor: cfg.auditor,
+        accept_unverified_confidential_amount: cfg.accept_unverified_amount,
         store: Some(store),
         html: false,
         ..Default::default()
