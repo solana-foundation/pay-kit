@@ -35,7 +35,7 @@ import {
     type TransactionPartialSigner,
     type TransactionSigner,
 } from '@solana/kit';
-import { findAssociatedTokenPda } from '@solana-program/token';
+import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
@@ -1022,9 +1022,7 @@ export interface SubmitSettleAndDistributeArgs {
      * rent at distribute. Required (no payer fallback).
      */
     readonly rentPayer: string;
-    readonly rpc: {
-        sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
-    };
+    readonly rpc: SettleRpc;
     readonly signer: TransactionSigner;
     readonly splits: readonly { readonly bps: number; readonly recipient: string }[];
     readonly tokenProgram?: string | undefined;
@@ -1034,6 +1032,19 @@ export interface SubmitSettleAndDistributeArgs {
               readonly signed: SignedVoucher;
           }
         | undefined;
+}
+
+/** RPC subset used by {@link submitSettleAndDistribute}. */
+export interface SettleRpc {
+    getAccountInfo: (
+        address: Address,
+        config: {
+            readonly commitment: 'confirmed';
+            readonly dataSlice: { readonly length: number; readonly offset: number };
+            readonly encoding: 'base64';
+        },
+    ) => { send: () => Promise<{ readonly value: { readonly owner: string } | null }> };
+    sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
 }
 
 /** Result of a settle-and-distribute submission. */
@@ -1077,7 +1088,22 @@ export async function submitSettleAndDistribute(
         tokenProgram,
     });
 
-    const instructions: ServerInstruction[] = [...settle.instructions, distribute];
+    // Distribute transfers into the payer, payee, treasury and split ATAs;
+    // create any that are missing so the settlement can land atomically.
+    const createAtas = await buildMissingAtaCreateInstructions({
+        mint: args.mint,
+        owners: [
+            args.payer,
+            args.payee,
+            treasuryOwnerForNetwork(args.network),
+            ...args.splits.map(split => split.recipient),
+        ],
+        payer: args.signer,
+        rpc: args.rpc,
+        tokenProgram,
+    });
+
+    const instructions: ServerInstruction[] = [...settle.instructions, ...createAtas, distribute];
     const wire = await args.buildAndSignWireTransaction(instructions);
     const signature = await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
     return { instructions, signature };
@@ -1088,6 +1114,46 @@ export async function submitSettleAndDistribute(
 // ─────────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
+
+async function buildMissingAtaCreateInstructions(args: {
+    readonly mint: string;
+    readonly owners: readonly string[];
+    readonly payer: TransactionSigner;
+    readonly rpc: SettleRpc;
+    readonly tokenProgram: string;
+}): Promise<ServerInstruction[]> {
+    const mint = address(args.mint);
+    const tokenProgram = address(args.tokenProgram);
+    const owners = [...new Set(args.owners)].map(owner => address(owner));
+    const atas = await Promise.all(
+        owners.map(async owner => (await findAssociatedTokenPda({ mint, owner, tokenProgram }))[0]),
+    );
+    const infos = await Promise.all(
+        atas.map(ata =>
+            args.rpc
+                .getAccountInfo(ata, {
+                    commitment: 'confirmed',
+                    dataSlice: { length: 0, offset: 0 },
+                    encoding: 'base64',
+                })
+                .send(),
+        ),
+    );
+    const instructions: ServerInstruction[] = [];
+    owners.forEach((owner, index) => {
+        if (infos[index]?.value?.owner === tokenProgram) return;
+        instructions.push(
+            getCreateAssociatedTokenIdempotentInstruction({
+                ata: atas[index],
+                mint,
+                owner,
+                payer: args.payer,
+                tokenProgram,
+            }) as unknown as ServerInstruction,
+        );
+    });
+    return instructions;
+}
 
 function getBase58FromBytes(bytes: Uint8Array): Address {
     // base58 of a fixed-pattern 32-byte address; encode via a small library-free path.

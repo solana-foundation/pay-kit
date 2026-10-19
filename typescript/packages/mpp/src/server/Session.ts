@@ -38,6 +38,7 @@ import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     OPEN_SLOT_WINDOW,
     PAYMENT_CHANNELS_PROGRAM_ID,
+    type SettleRpc,
     submitOpenTx,
     submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
@@ -1361,9 +1362,7 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
 
         programId: args.programId,
         rentPayer: state.rentPayer,
-        rpc: args.rpc as unknown as {
-            sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
-        },
+        rpc: args.rpc as unknown as SettleRpc,
         signer: args.merchantSigner as unknown as TransactionSigner,
         splits: args.splits ?? [],
         tokenProgram: args.tokenProgram,

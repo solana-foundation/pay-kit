@@ -23,9 +23,11 @@ import {
     getTransactionEncoder,
     type KeyPairSigner,
 } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { describe, expect, test } from 'vitest';
 
 import { ActiveSession, signSessionAuthentication } from '../client/Session.js';
+import { ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM } from '../constants.js';
 import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
 import { ChannelStatus } from '../generated/payment-channels/types/channelStatus.js';
 import { session } from '../server/Session.js';
@@ -46,27 +48,42 @@ const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
  * (open/topUp/settle broadcast), and `getSignatureStatuses`
  * (submitTopUpTx confirmation).
  */
-function mockRpc(options: { accountData?: string; confirmErr?: unknown; sendErrors?: number } = {}) {
+function mockRpc(
+    options: {
+        accountData?: string;
+        confirmErr?: unknown;
+        sendErrors?: number;
+        /** Addresses served as existing system-owned accounts. */
+        foreignAccounts?: ReadonlySet<string>;
+        /** Addresses served as existing token accounts. */
+        tokenAccounts?: ReadonlySet<string>;
+    } = {},
+) {
     let sendErrors = options.sendErrors ?? 0;
     const sent: string[] = [];
     const statusCalls: string[] = [];
     const rpc = {
-        getAccountInfo: () => ({
+        getAccountInfo: (account: string) => ({
             send: () =>
-                Promise.resolve({
-                    context: { slot: 314n },
-                    value:
-                        options.accountData === undefined
-                            ? null
-                            : {
-                                  data: [options.accountData, 'base64'],
-                                  executable: false,
-                                  lamports: 1_000_000n,
-                                  owner: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
-                                  rentEpoch: 0n,
-                                  space: BigInt(getBase64Codec().encode(options.accountData).byteLength),
-                              },
-                }),
+                options.tokenAccounts?.has(account) || options.foreignAccounts?.has(account)
+                    ? Promise.resolve({
+                          context: { slot: 314n },
+                          value: { owner: options.tokenAccounts?.has(account) ? TOKEN_PROGRAM : SYSTEM_PROGRAM },
+                      })
+                    : Promise.resolve({
+                          context: { slot: 314n },
+                          value:
+                              options.accountData === undefined
+                                  ? null
+                                  : {
+                                        data: [options.accountData, 'base64'],
+                                        executable: false,
+                                        lamports: 1_000_000n,
+                                        owner: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+                                        rentEpoch: 0n,
+                                        space: BigInt(getBase64Codec().encode(options.accountData).byteLength),
+                                    },
+                      }),
         }),
         getLatestBlockhash: () => ({
             send: () =>
@@ -502,10 +519,14 @@ describe('session() verify() topUp', () => {
 
 // ── verify() — close final-voucher monotonicity + idempotent replay ──────
 
-async function watermarkedFixture(rpcOptions: { sendErrors?: number } = {}) {
-    const f = await makeFixture();
+async function watermarkedFixture(
+    rpcOptions: Parameters<typeof mockRpc>[0] = {},
+    methodOverrides: Record<string, unknown> = {},
+    fixture?: Fixture,
+) {
+    const f = fixture ?? (await makeFixture());
     const mock = mockRpc(rpcOptions);
-    const method = makeMethod(f, mock.rpc);
+    const method = makeMethod(f, mock.rpc, methodOverrides);
     await seedChannel(f);
 
     const active = new ActiveSession({ channelId: f.channel.address, signer: f.sessionSigner });
@@ -626,6 +647,33 @@ describe('session() verify() close monotonicity', () => {
     });
 });
 
+/** Decode a sent wire transaction into program / account addresses / data per instruction. */
+function decodeSent(wire: string): { accounts: string[]; data: Uint8Array; program: string }[] {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+        instructions: readonly {
+            accountIndices?: readonly number[];
+            data?: Uint8Array;
+            programAddressIndex: number;
+        }[];
+        staticAccounts: readonly string[];
+    };
+    return message.instructions.map(ix => ({
+        accounts: (ix.accountIndices ?? []).map(index => message.staticAccounts[index]!),
+        data: ix.data ?? new Uint8Array(),
+        program: message.staticAccounts[ix.programAddressIndex]!,
+    }));
+}
+
+async function usdcAta(owner: string): Promise<string> {
+    const [ata] = await findAssociatedTokenPda({
+        mint: address(USDC_DEVNET_MINT),
+        owner: address(owner),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    return ata;
+}
+
 describe('session() close settlement treasury', () => {
     // ATA(4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap, USDC_DEVNET_MINT, TOKEN_PROGRAM)
     const DEVNET_TREASURY_ATA = 'BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz';
@@ -639,20 +687,11 @@ describe('session() close settlement treasury', () => {
         expect(receipt.status).toBe('success');
         expect(sent).toHaveLength(1);
 
-        const tx = getTransactionDecoder().decode(getBase64Codec().encode(sent[0]!));
-        const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
-            instructions: readonly {
-                accountIndices?: readonly number[];
-                data?: Uint8Array;
-                programAddressIndex: number;
-            }[];
-            staticAccounts: readonly string[];
-        };
-        const distribute = message.instructions.find(
-            ix => message.staticAccounts[ix.programAddressIndex] === PAYMENT_CHANNELS_PROGRAM_ID && ix.data?.[0] === 7,
+        const distribute = decodeSent(sent[0]!).find(
+            ix => ix.program === PAYMENT_CHANNELS_PROGRAM_ID.toString() && ix.data[0] === 7,
         );
         expect(distribute).toBeDefined();
-        const treasuryAta = message.staticAccounts[distribute!.accountIndices![6]!];
+        const treasuryAta = distribute!.accounts[6];
         expect(treasuryAta).toBe(DEVNET_TREASURY_ATA);
         expect(treasuryAta).not.toBe(MAINNET_TREASURY_ATA);
     });
@@ -662,6 +701,102 @@ describe('session() close settlement treasury', () => {
         expect(() => makeMethod(f, mockRpc().rpc, { currency: USDC_DEVNET_MINT, network: 'testnet' })).toThrow(
             /Unsupported network "testnet"/,
         );
+    });
+});
+
+describe('session() close settlement destination ATAs', () => {
+    const DEVNET_TREASURY = '4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap';
+
+    /**
+     * Close a watermarked channel and return every idempotent ATA create in
+     * the settle transaction. `existing` / `foreign` pick owners whose USDC
+     * ATA address is served as a token account / a system-owned account.
+     */
+    async function closeAndInspect(options: {
+        existing?: (f: Fixture) => readonly string[];
+        foreign?: (f: Fixture) => readonly string[];
+        splits?: (f: Fixture) => readonly { recipient: string; shareBps: number }[];
+    }) {
+        const f = await makeFixture();
+        const atasOf = async (owners: readonly string[]) => new Set(await Promise.all(owners.map(usdcAta)));
+        const tokenAccounts = await atasOf(options.existing?.(f) ?? []);
+        const foreignAccounts = await atasOf(options.foreign?.(f) ?? []);
+        const { method, sent, voucher } = await watermarkedFixture(
+            { foreignAccounts, tokenAccounts },
+            options.splits ? { distributionSplits: options.splits(f) } : {},
+            f,
+        );
+
+        const receipt = await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const instructions = decodeSent(sent[0]!);
+        const creates = instructions
+            .filter(ix => ix.program === ASSOCIATED_TOKEN_PROGRAM)
+            .map(ix => ({
+                ata: ix.accounts[1],
+                data: Array.from(ix.data),
+                owner: ix.accounts[2],
+                payer: ix.accounts[0],
+            }));
+        const distributeIndex = instructions.findIndex(
+            ix => ix.program === PAYMENT_CHANNELS_PROGRAM_ID.toString() && ix.data[0] === 7,
+        );
+        const lastCreateIndex = instructions.map(ix => ix.program).lastIndexOf(ASSOCIATED_TOKEN_PROGRAM);
+        return { creates, distributeIndex, f, lastCreateIndex };
+    }
+
+    test('missing payer, payee and treasury ATAs are created before distribute', async () => {
+        const { creates, distributeIndex, f, lastCreateIndex } = await closeAndInspect({});
+
+        expect(creates).toEqual(
+            await Promise.all(
+                [f.payer.address, f.merchant.address, DEVNET_TREASURY].map(async owner => ({
+                    ata: await usdcAta(owner),
+                    data: [1],
+                    owner,
+                    payer: f.merchant.address,
+                })),
+            ),
+        );
+        expect(lastCreateIndex).toBeLessThan(distributeIndex);
+    });
+
+    test('only the missing payee ATA is created', async () => {
+        const { creates, f } = await closeAndInspect({ existing: f => [f.payer.address, DEVNET_TREASURY] });
+
+        expect(creates.map(create => create.owner)).toEqual([f.merchant.address]);
+    });
+
+    test('existing destination ATAs add no create instructions', async () => {
+        const { creates } = await closeAndInspect({
+            existing: f => [f.payer.address, f.merchant.address, DEVNET_TREASURY],
+        });
+
+        expect(creates).toEqual([]);
+    });
+
+    test('a system-owned account at the ATA address is still created', async () => {
+        // Lamports sent to an uninitialized ATA address leave it system-owned.
+        const { creates, f } = await closeAndInspect({
+            existing: f => [f.payer.address, DEVNET_TREASURY],
+            foreign: f => [f.merchant.address],
+        });
+
+        expect(creates.map(create => create.owner)).toEqual([f.merchant.address]);
+    });
+
+    test('split recipient ATAs are created once each, deduplicated against the payee', async () => {
+        const splitRecipient = (await generateKeyPairSigner()).address;
+        const { creates, f } = await closeAndInspect({
+            existing: f => [f.payer.address, DEVNET_TREASURY],
+            splits: f => [
+                { recipient: splitRecipient, shareBps: 500 },
+                { recipient: f.merchant.address, shareBps: 250 },
+            ],
+        });
+
+        expect(creates.map(create => create.owner)).toEqual([f.merchant.address, splitRecipient]);
     });
 });
 
