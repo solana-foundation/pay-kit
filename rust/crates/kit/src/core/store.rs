@@ -702,6 +702,68 @@ pub struct ChannelState {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// The deployment a channel record belongs to, stamped by the scheme that
+/// created it. Two ledgers that can name the same channel address (another
+/// payment scheme, recipient, cluster or program) refuse each other's records
+/// instead of accepting a voucher against the wrong one.
+///
+/// Persisted inside [`ChannelState::extra`], so stores and older readers carry
+/// it without a schema change. A field left `None` was not recorded.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelBinding {
+    /// Payment scheme that owns the record (e.g. `batch-settlement`).
+    pub scheme: String,
+}
+
+impl ChannelBinding {
+    /// The first recorded field `current` disagrees with, if any.
+    pub fn mismatch(&self, current: &ChannelBinding) -> Option<&'static str> {
+        (self.scheme != current.scheme).then_some("scheme")
+    }
+}
+
+const CHANNEL_BINDING_KEY: &str = "channelBinding";
+
+impl ChannelState {
+    /// The deployment binding stamped on this record, if any.
+    pub fn binding(&self) -> Result<Option<ChannelBinding>, StoreError> {
+        self.extra
+            .get(CHANNEL_BINDING_KEY)
+            .map(|value| {
+                serde_json::from_value(value.clone()).map_err(|e| {
+                    StoreError::Internal(format!(
+                        "channel {} has an unreadable binding: {e}",
+                        self.channel_id
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    /// Stamp `binding` on this record.
+    pub fn set_binding(&mut self, binding: &ChannelBinding) {
+        if let Ok(value) = serde_json::to_value(binding) {
+            self.extra.insert(CHANNEL_BINDING_KEY.to_string(), value);
+        }
+    }
+
+    /// Refuse a record bound to a different deployment. A record that
+    /// predates bindings carries none and is accepted.
+    pub fn check_binding(&self, current: &ChannelBinding) -> Result<(), StoreError> {
+        match self.binding()? {
+            Some(recorded) => match recorded.mismatch(current) {
+                Some(field) => Err(StoreError::Internal(format!(
+                    "channel {} belongs to another deployment ({field} differs)",
+                    self.channel_id
+                ))),
+                None => Ok(()),
+            },
+            None => Ok(()),
+        }
+    }
+}
+
 /// Cached result for one operator-signed `use` request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProcessedUse {
@@ -2624,6 +2686,35 @@ mod tests {
         assert_eq!(
             state.reserve_authorization("access:c2:700", "b", 700, LEASE, after_lease),
             BatchReservation::Reserved
+        );
+    }
+
+    #[test]
+    fn a_channel_binding_round_trips_and_refuses_other_deployments() {
+        let mut state = make_state("c1", 10_000);
+        let batch = ChannelBinding {
+            scheme: "batch-settlement".to_string(),
+        };
+        assert_eq!(state.binding().unwrap(), None);
+        state
+            .check_binding(&batch)
+            .expect("an unbound legacy record is accepted");
+        state.set_binding(&batch);
+        let decoded: ChannelState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(decoded.binding().unwrap(), Some(batch.clone()));
+        decoded.check_binding(&batch).unwrap();
+        let session = ChannelBinding {
+            scheme: "session".to_string(),
+        };
+        assert!(decoded.check_binding(&session).is_err());
+
+        state
+            .extra
+            .insert(CHANNEL_BINDING_KEY.to_string(), serde_json::json!(7));
+        assert!(
+            state.check_binding(&batch).is_err(),
+            "an unreadable binding fails closed"
         );
     }
 

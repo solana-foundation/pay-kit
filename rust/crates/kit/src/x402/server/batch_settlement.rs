@@ -44,7 +44,7 @@ use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
 use crate::core::store::{
-    BatchReservation, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
+    BatchReservation, ChannelBinding, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
     CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
 use crate::core::tx::{TxV1Mode, TxVersion};
@@ -985,11 +985,13 @@ impl X402BatchSettlement {
                 let fields: Arc<Mutex<Option<(bool, bool, u64, Option<String>, u64, String)>>> =
                     Arc::new(Mutex::new(None));
                 let out = Arc::clone(&fields);
+                let binding = self.binding();
                 self.store
                     .read_channel(
                         &channel_b58,
                         Box::new(move |state| {
                             if let Some(state) = state {
+                                state.check_binding(&binding)?;
                                 *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((
                                     state.sealed,
                                     state.close_requested_at.is_some(),
@@ -1003,7 +1005,9 @@ impl X402BatchSettlement {
                         }),
                     )
                     .await
-                    .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                    .map_err(|e| {
+                        batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}"))
+                    })?;
                 let (
                     sealed,
                     close_requested,
@@ -1068,6 +1072,9 @@ impl X402BatchSettlement {
                 let deposit_amount = deposit.amount()?;
                 let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
                 if let Some(state) = &stored {
+                    state
+                        .check_binding(&self.binding())
+                        .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, e.to_string()))?;
                     self.check_channel_open(state.sealed, state.close_requested_at.is_some())?;
                 }
                 let prior = stored.as_ref();
@@ -1733,6 +1740,7 @@ impl X402BatchSettlement {
         let max_claimable = outcome.max_claimable;
         let deposit_signature = outcome.deposit_signature.clone();
         let rent_payer = self.fee_payer();
+        let binding = self.binding();
         let now = now_unix() as i64;
         let committed = Arc::new(Mutex::new(None));
         let out = Arc::clone(&committed);
@@ -1761,6 +1769,11 @@ impl X402BatchSettlement {
                                 state.processed_topup_signatures.push(signature);
                             }
                         }
+                    }
+                    state.check_binding(&binding)?;
+                    // A record from before bindings adopts this deployment's.
+                    if state.binding()?.is_none() {
+                        state.set_binding(&binding);
                     }
                     state.last_activity_at = now.max(0) as u64;
                     state.commit_authorization(
@@ -2193,7 +2206,7 @@ impl X402BatchSettlement {
     /// A fresh channel record for this request's channel, holding no escrow and
     /// no accepted voucher.
     fn seed_state(&self, channel_id: &str, config: &BatchChannelConfig) -> ChannelState {
-        ChannelState {
+        let mut state = ChannelState {
             channel_id: channel_id.to_string(),
             authorized_signer: config.payer_authorizer.clone(),
             deposit: 0,
@@ -2224,6 +2237,16 @@ impl X402BatchSettlement {
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
+        };
+        state.set_binding(&self.binding());
+        state
+    }
+
+    /// The deployment binding this server stamps on and requires of the
+    /// channel records it accepts vouchers against.
+    pub fn binding(&self) -> ChannelBinding {
+        ChannelBinding {
+            scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
         }
     }
 
@@ -4432,6 +4455,61 @@ mod tests {
         assert!(X402BatchSettlement::with_store(config(30), store()).is_ok());
         assert!(X402BatchSettlement::with_store(config(599), store()).is_ok());
         assert!(X402BatchSettlement::with_store(config(600), store()).is_err());
+    }
+
+    /// A record another scheme's ledger stamped is not a batch channel, even
+    /// when it names the same PDA and the voucher signature is valid for it.
+    #[tokio::test]
+    async fn a_record_bound_to_another_scheme_is_refused() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, _, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(|current| {
+                    let mut state = current.unwrap();
+                    state.set_binding(&ChannelBinding {
+                        scheme: "session".to_string(),
+                    });
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("another scheme's record is refused");
+        assert!(err.to_string().contains("another deployment"), "{err}");
+    }
+
+    /// A record from before bindings is accepted and adopts this server's
+    /// binding when its next charge commits.
+    #[tokio::test]
+    async fn an_unbound_record_adopts_the_binding_on_commit() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+        let BatchAccess::Serve(outcome) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("an unbound record is served");
+        };
+        handler.mark_handler_succeeded(&outcome).await.unwrap();
+        handler.finish_commit(&outcome).await.unwrap();
+        let state = store
+            .get_channel(&outcome.channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.binding().unwrap(), Some(handler.binding()));
     }
 
     /// A voucher for a channel this store has no record of is refused, never
