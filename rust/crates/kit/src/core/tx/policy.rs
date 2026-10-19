@@ -182,6 +182,18 @@ pub fn check_v0_budget_caps(
                 "compute unit price {price} exceeds maximum {max_unit_price_micro_lamports}"
             )));
         }
+        // Without a declared limit the runtime prices the instruction-count
+        // default, which the cap must bound just the same.
+        if price > 0 && declared.unit_limit.is_none() {
+            let budgeted = instructions.len() - declared.instruction_indexes.len();
+            let implicit = super::budget::ComputeBudget::runtime_default(budgeted).unit_limit;
+            if implicit > max_unit_limit {
+                return Err(Error::Other(format!(
+                    "implicit compute unit limit {implicit} exceeds maximum {max_unit_limit}; \
+                     declare SetComputeUnitLimit"
+                )));
+            }
+        }
     }
     Ok(Some(declared))
 }
@@ -528,7 +540,28 @@ mod tests {
                 .to_string()
                 .contains("must be positive")
         );
-        assert!(check(&message(&[unit_limit_instruction(1), transfer])).is_ok());
+        assert!(check(&message(&[unit_limit_instruction(1), transfer.clone()])).is_ok());
+
+        // A priced budget with no limit is held to the cap through the
+        // runtime's per-instruction default.
+        assert!(check(&message(&[unit_price_instruction(10), transfer.clone()])).is_ok());
+        let two = message(&[
+            unit_price_instruction(10),
+            transfer.clone(),
+            transfer.clone(),
+        ]);
+        assert!(check(&two)
+            .unwrap_err()
+            .to_string()
+            .contains("implicit compute unit limit 400000"));
+        assert!(check(&message(&[transfer.clone(), transfer.clone()])).is_ok());
+        assert!(check(&message(&[
+            unit_limit_instruction(200_000),
+            unit_price_instruction(10),
+            transfer.clone(),
+            transfer
+        ]))
+        .is_ok());
     }
 
     #[test]

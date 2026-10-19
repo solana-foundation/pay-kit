@@ -1921,16 +1921,13 @@ fn verify_versioned_transaction_pre_broadcast(
     crate::core::tx::check_envelope(tx, accepted_versions)
         .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
     let fee_sponsored = method_details.fee_payer.unwrap_or(false);
-    crate::core::tx::check_v1_budget_caps(
-        &tx.message,
-        MAX_COMPUTE_UNIT_LIMIT,
-        if fee_sponsored {
-            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
-        } else {
-            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
-        },
-    )
-    .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+    let max_price = if fee_sponsored {
+        MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+    } else {
+        MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+    };
+    crate::core::tx::check_v1_budget_caps(&tx.message, MAX_COMPUTE_UNIT_LIMIT, max_price)
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
@@ -2084,6 +2081,10 @@ fn verify_versioned_transaction_pre_broadcast(
         )?;
     }
 
+    // Version 0: the budget as a whole (duplicates, and the implicit limit a
+    // price-only budget gets), after the per-instruction checks above.
+    crate::core::tx::check_v0_budget_caps(&tx.message, MAX_COMPUTE_UNIT_LIMIT, max_price)
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
     Ok(())
 }
 
@@ -4827,6 +4828,73 @@ mod tests {
         assert!(
             verify_transaction_pre_broadcast(&with_limit(1), &request, &method_details).is_ok()
         );
+    }
+
+    #[test]
+    fn fee_sponsored_price_without_limit_is_bounded_by_the_implicit_budget() {
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let (total, split_amount) = (500_000u64, 100_000u64);
+        let request = charge_request(total, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: split_amount.to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let payment = |budget: Vec<Instruction>| {
+            let mut ixs = budget;
+            ixs.push(system_transfer_ix(
+                &sender,
+                &recipient,
+                total - split_amount,
+            ));
+            ixs.push(system_transfer_ix(&sender, &split_recipient, split_amount));
+            dummy_tx(ixs, &fee_payer)
+        };
+        // Two transfers and no limit: the runtime budgets 400k CU at the
+        // sponsored price, twice the cap.
+        let price_only = payment(vec![compute_unit_price_ix(
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
+        )]);
+        let err =
+            verify_transaction_pre_broadcast(&price_only, &request, &method_details).unwrap_err();
+        assert!(
+            err.message.contains("implicit compute unit limit 400000"),
+            "{}",
+            err.message
+        );
+
+        // The same payment with an explicit limit within the cap passes, in
+        // either instruction order.
+        for budget in [
+            vec![
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+                compute_unit_limit_ix(MAX_COMPUTE_UNIT_LIMIT),
+            ],
+            vec![
+                compute_unit_limit_ix(MAX_COMPUTE_UNIT_LIMIT),
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+            ],
+        ] {
+            verify_transaction_pre_broadcast(&payment(budget), &request, &method_details).unwrap();
+        }
+        // Duplicated limits are rejected as a whole budget.
+        let duplicated = payment(vec![
+            compute_unit_limit_ix(MAX_COMPUTE_UNIT_LIMIT),
+            compute_unit_limit_ix(1_000),
+        ]);
+        let err =
+            verify_transaction_pre_broadcast(&duplicated, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("duplicate"), "{}", err.message);
     }
 
     #[test]
