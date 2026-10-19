@@ -2019,6 +2019,7 @@ fn verify_versioned_transaction_pre_broadcast(
             fee_payer.as_ref(),
             &ata_policy.required_owners,
         )?;
+        verify_required_signers(tx, account_keys, &matched_instruction_indexes)?;
     } else {
         let expected_mint =
             resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
@@ -2079,12 +2080,59 @@ fn verify_versioned_transaction_pre_broadcast(
             fee_payer.as_ref(),
             &ata_policy.required_owners,
         )?;
+        verify_required_signers(tx, account_keys, &matched_instruction_indexes)?;
     }
 
     // Version 0: the budget as a whole (duplicates, and the implicit limit a
     // price-only budget gets), after the per-instruction checks above.
     crate::core::tx::check_v0_budget_caps(&tx.message, MAX_COMPUTE_UNIT_LIMIT, max_price)
         .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+    Ok(())
+}
+
+/// Every required signer must be the fee payer or the authority of a matched
+/// payment transfer. Any other signer authorizes nothing and only adds a
+/// signature fee, which a sponsor would pay.
+fn verify_required_signers(
+    tx: &VersionedTransaction,
+    account_keys: &[Pubkey],
+    matched_payment_instruction_indexes: &HashSet<usize>,
+) -> Result<(), VerificationError> {
+    let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
+    let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+    let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+    let instructions = tx.message.instructions();
+    let mut allowed: HashSet<&Pubkey> = account_keys.first().into_iter().collect();
+    for index in matched_payment_instruction_indexes {
+        let Some(ix) = instructions.get(*index) else {
+            continue;
+        };
+        let program = account_keys.get(ix.program_id_index as usize);
+        let authority_position = if program == Some(&system_program) {
+            0
+        } else if program == Some(&token_program) || program == Some(&token_2022_program) {
+            3
+        } else {
+            continue;
+        };
+        if let Some(authority) = ix
+            .accounts
+            .get(authority_position)
+            .and_then(|i| account_keys.get(*i as usize))
+        {
+            allowed.insert(authority);
+        }
+    }
+    let required = usize::from(tx.message.header().num_required_signatures);
+    if account_keys
+        .iter()
+        .take(required)
+        .any(|signer| !allowed.contains(signer))
+    {
+        return Err(VerificationError::invalid_payload(
+            "Unexpected signer in payment transaction",
+        ));
+    }
     Ok(())
 }
 
@@ -2611,7 +2659,7 @@ fn verify_sol_transfer_instructions(
             continue;
         }
         // System program Transfer instruction: 4 bytes type (2u32 LE) + 8 bytes amount (u64 LE)
-        if ix.data.len() < 12 {
+        if ix.data.len() != 12 {
             continue;
         }
         let ix_type = u32::from_le_bytes(ix.data[0..4].try_into().unwrap());
@@ -2620,7 +2668,8 @@ fn verify_sol_transfer_instructions(
             continue;
         }
         let ix_amount = u64::from_le_bytes(ix.data[4..12].try_into().unwrap());
-        if ix.accounts.len() < 2 {
+        // Exactly [source, destination]: trailing accounts could add signers.
+        if ix.accounts.len() != 2 {
             continue;
         }
         let source = account_keys
@@ -2668,7 +2717,11 @@ fn verify_memo_instructions(
             let program_id = account_keys
                 .get(ix.program_id_index as usize)
                 .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
-            if program_id == &memo_program && ix.data.as_slice() == expected_data {
+            // Memo accounts are signers; the payment memo takes none.
+            if program_id == &memo_program
+                && ix.accounts.is_empty()
+                && ix.data.as_slice() == expected_data
+            {
                 matched_instruction_indexes.insert(index);
                 found = true;
                 break;
@@ -2717,11 +2770,12 @@ fn verify_spl_transfer_instructions(
         //   data[0] = 12 (instruction type)
         //   data[1..9] = amount (u64 LE)
         //   data[9] = decimals (u8)
-        // Accounts: [source, mint, destination, authority, ...]
+        // Accounts: exactly [source, mint, destination, authority]; trailing
+        // (multisig) accounts could add signers.
         if ix.data.is_empty() || ix.data[0] != 12 {
             continue;
         }
-        if ix.data.len() < 10 || ix.accounts.len() < 4 {
+        if ix.data.len() != 10 || ix.accounts.len() != 4 {
             continue;
         }
         let ix_amount = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
@@ -4989,6 +5043,137 @@ mod tests {
 
         let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
         assert!(err.message.contains("Fee payer cannot fund"));
+    }
+
+    // ── Exact payment shape: no extra signers for the sponsor to pay ──
+
+    fn sponsored_by(fee_payer: &Pubkey) -> MethodDetails {
+        MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn sponsored_spl_fixture() -> (Pubkey, Pubkey, Pubkey, Instruction, ChargeRequest) {
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let tp = token_program_id();
+        let transfer = spl_transfer_checked_ix(
+            &derive_ata(&sender, &mint, &tp),
+            &mint,
+            &derive_ata(&recipient, &mint, &tp),
+            &sender,
+            1_000_000,
+            6,
+        );
+        let mut request = charge_request(1_000_000, "USDC", &recipient);
+        request.external_id = Some("order-1".into());
+        (fee_payer, sender, recipient, transfer, request)
+    }
+
+    /// Splice `extra` into the signer prefix without referencing it from any
+    /// instruction (runtime-valid, but it adds a fee-bearing signature).
+    fn insert_unreferenced_signer(tx: &mut VersionedTransaction, extra: Pubkey) {
+        let VersionedMessage::V0(message) = &mut tx.message else {
+            panic!("expected a version-0 message");
+        };
+        message.account_keys.insert(1, extra);
+        for ix in &mut message.instructions {
+            if ix.program_id_index >= 1 {
+                ix.program_id_index += 1;
+            }
+            for account in &mut ix.accounts {
+                if *account >= 1 {
+                    *account += 1;
+                }
+            }
+        }
+        message.header.num_required_signatures += 1;
+        tx.signatures.insert(1, Signature::default());
+    }
+
+    #[test]
+    fn sponsored_spl_transfer_with_memo_passes() {
+        let (fee_payer, _, _, transfer, request) = sponsored_spl_fixture();
+        let tx = dummy_tx(vec![transfer, memo_ix("order-1")], &fee_payer);
+        verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap();
+    }
+
+    #[test]
+    fn sponsored_spl_transfer_with_extra_signer_account_rejected() {
+        let (fee_payer, _, _, mut transfer, request) = sponsored_spl_fixture();
+        transfer
+            .accounts
+            .push(AccountMeta::new_readonly(Pubkey::new_unique(), true));
+        let tx = dummy_tx(vec![transfer, memo_ix("order-1")], &fee_payer);
+        let err =
+            verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap_err();
+        assert!(err.message.contains("No matching SPL"), "{}", err.message);
+    }
+
+    #[test]
+    fn sponsored_memo_with_signer_account_rejected() {
+        let (fee_payer, _, _, transfer, request) = sponsored_spl_fixture();
+        let mut memo = memo_ix("order-1");
+        memo.accounts
+            .push(AccountMeta::new_readonly(Pubkey::new_unique(), true));
+        let tx = dummy_tx(vec![transfer, memo], &fee_payer);
+        let err =
+            verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap_err();
+        assert!(
+            err.message.contains("No memo instruction"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn sol_transfer_with_trailing_signer_account_rejected() {
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mut transfer = system_transfer_ix(&sender, &recipient, 500_000);
+        transfer
+            .accounts
+            .push(AccountMeta::new_readonly(Pubkey::new_unique(), true));
+        let tx = dummy_tx(vec![transfer], &fee_payer);
+        let request = charge_request(500_000, "SOL", &recipient);
+        let err =
+            verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap_err();
+        assert!(err.message.contains("No matching SOL"), "{}", err.message);
+    }
+
+    #[test]
+    fn unreferenced_signer_rejected_for_sol_and_spl() {
+        let (fee_payer, _, _, transfer, request) = sponsored_spl_fixture();
+        let mut tx = dummy_tx(vec![transfer, memo_ix("order-1")], &fee_payer);
+        insert_unreferenced_signer(&mut tx, Pubkey::new_unique());
+        tx.sanitize().unwrap();
+        let err =
+            verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap_err();
+        assert!(err.message.contains("Unexpected signer"), "{}", err.message);
+
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mut tx = dummy_tx(
+            vec![system_transfer_ix(&sender, &recipient, 500_000)],
+            &fee_payer,
+        );
+        insert_unreferenced_signer(&mut tx, Pubkey::new_unique());
+        let request = charge_request(500_000, "SOL", &recipient);
+        let err =
+            verify_transaction_pre_broadcast(&tx, &request, &sponsored_by(&fee_payer)).unwrap_err();
+        assert!(err.message.contains("Unexpected signer"), "{}", err.message);
+
+        // Client-paid: the payer is both fee payer and transfer authority.
+        let tx = dummy_tx(
+            vec![system_transfer_ix(&sender, &recipient, 500_000)],
+            &sender,
+        );
+        verify_transaction_pre_broadcast(&tx, &request, &MethodDetails::default()).unwrap();
     }
 
     // ── Pre-broadcast SPL verification tests ──
