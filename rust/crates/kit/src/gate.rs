@@ -154,6 +154,8 @@ pub struct PayKit {
     /// High-throughput x402 `batch-settlement` handler. `Some` only when
     /// `fee_payer_signer` is set (the operator signs settlement transactions).
     x402_batch: Option<Arc<X402BatchSettlement>>,
+    /// Co-signs and broadcasts x402 `exact` transaction payments.
+    fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
     disable_hint: bool,
 }
 
@@ -270,6 +272,7 @@ impl PayKit {
             x402: Arc::new(x402),
             x402_upto,
             x402_batch,
+            fee_payer_signer: config.fee_payer_signer,
             disable_hint: config.disable_hint,
         })
     }
@@ -653,19 +656,25 @@ fn attach_mpp_receipt(resp: &mut Response, receipt: &Receipt) {
     }
 }
 
-/// Extract a settlement reference from a verified x402 payment. Returns `None`
-/// when the transaction carries no signature (an unsigned tx), so the gate can
-/// reject rather than hand the handler an empty reference.
-fn x402_reference(verified: &VerifiedExactPayment) -> Option<String> {
-    let reference = match verified {
-        VerifiedExactPayment::Signature(sig) => sig.clone(),
-        VerifiedExactPayment::Transaction(tx) => tx
-            .signatures
-            .first()
-            .map(|s| s.to_string())
-            .unwrap_or_default(),
-    };
-    (!reference.is_empty()).then_some(reference)
+/// Settle a verified x402 `exact` payment and return its confirmed signature.
+/// A transaction proof moves no funds until it is broadcast, so it is never
+/// served without a fee-payer signer to settle it.
+async fn settle_x402(
+    pay: &PayKit,
+    verified: VerifiedExactPayment,
+) -> Result<String, crate::x402::Error> {
+    match (&verified, pay.fee_payer_signer.as_deref()) {
+        (VerifiedExactPayment::Signature(signature), _) => {
+            pay.x402.consume_signature(signature).await?;
+            Ok(signature.clone())
+        }
+        (VerifiedExactPayment::Transaction(_), Some(signer)) => {
+            pay.x402.settle_exact(verified, signer).await
+        }
+        (VerifiedExactPayment::Transaction(_), None) => Err(crate::x402::Error::Other(
+            "x402 transaction payments require a fee_payer_signer".into(),
+        )),
+    }
 }
 
 fn attach_x402_response(resp: &mut Response, reference: &str) {
@@ -735,8 +744,8 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
             .process_payment(&header_value, &amount, exact_options(&resource))
             .await
         {
-            Ok(verified) => match x402_reference(&verified) {
-                Some(reference) => {
+            Ok(verified) => match settle_x402(&state.pay, verified).await {
+                Ok(reference) => {
                     req.extensions_mut().insert(Payment {
                         amount,
                         protocol: Protocol::X402,
@@ -746,11 +755,8 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                     attach_x402_response(&mut resp, &reference);
                     resp
                 }
-                None => {
-                    tracing::warn!(
-                        amount = %amount,
-                        "x402 payment verified but carried no settlement reference"
-                    );
+                Err(e) => {
+                    tracing::warn!(amount = %amount, error = %e, "x402 settlement failed");
                     challenge_response(&state.pay, &amount, &req)
                 }
             },
@@ -2138,6 +2144,198 @@ mod tests {
             .unwrap();
         assert_eq!(replay.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(!replay.headers().contains_key(PAYMENT_RESPONSE_HEADER));
+    }
+
+    /// Minimal JSON-RPC node: confirms every broadcast unless `reject_sends`.
+    async fn mock_rpc(reject_sends: bool) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sends = Arc::new(AtomicUsize::new(0));
+        let counter = sends.clone();
+        let app = Router::new().route(
+            "/",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let counter = counter.clone();
+                async move {
+                    let id = body["id"].clone();
+                    let ok = |result: serde_json::Value| {
+                        axum::Json(
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                        )
+                    };
+                    match body["method"].as_str().unwrap_or_default() {
+                        "sendTransaction" if reject_sends => axum::Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "error": {"code": -32002, "message": "Transaction simulation failed"}
+                        })),
+                        "sendTransaction" => {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            let encoded = body["params"][0].as_str().unwrap();
+                            let tx = crate::core::tx::decode(encoded).unwrap();
+                            ok(serde_json::json!(tx.signatures[0].to_string()))
+                        }
+                        "getSignatureStatuses" => ok(serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": [{
+                                "slot": 1,
+                                "confirmations": null,
+                                "err": null,
+                                "status": {"Ok": null},
+                                "confirmationStatus": "confirmed"
+                            }]
+                        })),
+                        "getLatestBlockhash" => ok(serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": {
+                                "blockhash": solana_hash::Hash::new_unique().to_string(),
+                                "lastValidBlockHeight": 100
+                            }
+                        })),
+                        _ => axum::Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "error": {"code": -32601, "message": "method not found"}
+                        })),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{address}"), sends)
+    }
+
+    fn fee_payer_signer() -> Arc<dyn TransactionSigner> {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        Arc::new(crate::mpp::solana_keychain::MemorySigner::from_bytes(&keypair).unwrap())
+    }
+
+    fn exact_paykit(rpc_url: String, fee_payer: Option<Arc<dyn TransactionSigner>>) -> PayKit {
+        PayKit::new(PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            fee_payer_signer: fee_payer,
+            tx_v1: TxV1Mode::Off,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    /// A route that counts how often the protected handler runs.
+    fn counted_route(pay: &PayKit) -> (Router, Arc<std::sync::atomic::AtomicUsize>) {
+        let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = served.clone();
+        let handler = move |_payment: Payment| {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                "protected-content"
+            }
+        };
+        (
+            Router::new().route("/paid", paid_get(handler, "0.01", pay)),
+            served,
+        )
+    }
+
+    /// Pay the route's challenge with an unsigned client transaction.
+    async fn unsigned_exact_payment(app: &Router) -> (String, solana_pubkey::Pubkey) {
+        use crate::x402::server::exact::test_support::{exact_transaction, transaction_header};
+        let challenge = x402_challenge(
+            &app.clone()
+                .oneshot(get_with_host("/paid", None))
+                .await
+                .unwrap(),
+        );
+        let requirement = &challenge.accepts[0];
+        let fee_payer = requirement
+            .fee_payer_key
+            .as_deref()
+            .map(|key| key.parse().unwrap())
+            .unwrap_or_else(solana_pubkey::Pubkey::new_unique);
+        let tx = exact_transaction(
+            requirement,
+            &solana_pubkey::Pubkey::new_unique(),
+            &fee_payer,
+        );
+        assert!(tx
+            .signatures
+            .iter()
+            .all(|signature| *signature == Default::default()));
+        (
+            transaction_header(requirement, requirement.resource_info(), &tx),
+            fee_payer,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn x402_transaction_without_fee_payer_signer_is_not_served() {
+        let pay = exact_paykit("http://127.0.0.1:1".to_string(), None);
+        let (app, served) = counted_route(&pay);
+        let (header, _) = unsigned_exact_payment(&app).await;
+
+        let resp = app
+            .oneshot(get_with_host("/paid", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn x402_transaction_is_settled_before_the_handler_runs() {
+        let (rpc_url, sends) = mock_rpc(false).await;
+        let signer = fee_payer_signer();
+        let pay = exact_paykit(rpc_url, Some(signer.clone()));
+        let (app, served) = counted_route(&pay);
+        let (header, fee_payer) = unsigned_exact_payment(&app).await;
+        assert_eq!(fee_payer, signer.pubkey());
+
+        let resp = app
+            .clone()
+            .oneshot(get_with_host("/paid", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let reference = resp.headers()[PAYMENT_RESPONSE_HEADER].to_str().unwrap();
+        assert_ne!(
+            reference,
+            solana_signature::Signature::default().to_string(),
+            "the reference is the co-signed, broadcast signature"
+        );
+
+        // The same payment cannot be served twice.
+        let replay = app
+            .oneshot(get_with_host("/paid", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn x402_settlement_failure_does_not_run_the_handler() {
+        let (rpc_url, _) = mock_rpc(true).await;
+        let pay = exact_paykit(rpc_url, Some(fee_payer_signer()));
+        let (app, served) = counted_route(&pay);
+        let (header, _) = unsigned_exact_payment(&app).await;
+
+        let resp = app
+            .oneshot(get_with_host("/paid", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

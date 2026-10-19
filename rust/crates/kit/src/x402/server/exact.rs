@@ -731,7 +731,7 @@ impl X402 {
     }
 
     /// Atomically mark a payment signature as used.
-    async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
+    pub(crate) async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
         let inserted = self
             .replay_store
             .put_if_absent(&self.consumed_key(signature), serde_json::json!(true))
