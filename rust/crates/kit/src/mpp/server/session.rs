@@ -2592,9 +2592,7 @@ async fn prepare_open_transaction(
                 "open transaction accounts do not match the declared channel".to_string(),
             ));
         }
-        if config.channel_deployment()?.version == 2 {
-            verify_channel_privileges(&tx, &expected, params.rent_payer)?;
-        }
+        verify_channel_privileges(&tx, &expected, params.rent_payer)?;
         found_open = true;
     }
     if !found_open {
@@ -2864,9 +2862,7 @@ async fn verify_submit_and_fetch_topup(
                 "top-up transaction does not match channel and additionalAmount".to_string(),
             ));
         }
-        if deployment.version == 2 {
-            verify_channel_privileges(&tx, &expected, expected_fee_payer)?;
-        }
+        verify_channel_privileges(&tx, &expected, expected_fee_payer)?;
         found = true;
     }
     if !found {
@@ -3863,6 +3859,75 @@ mod tests {
             .to_string()
             .contains("invalid client transaction signature"));
         rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_v1_open_rejects_client_elevated_signer_privileges() {
+        use crate::core::signing::sign_versioned_transaction_slot;
+        use solana_message::{v0, VersionedMessage};
+        use solana_transaction::versioned::VersionedTransaction;
+
+        let sponsor = shared_signer(8);
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        let server = SessionServer::new(cfg, MemoryChannelStore::new());
+        let (canonical, params) = signed_open(&server, 6).await;
+        let challenged = test_blockhash().to_string();
+
+        // The canonical sponsored open is accepted and co-signed.
+        let accepted = prepare_open_transaction(
+            &canonical,
+            &params,
+            &challenged,
+            server.config.fee_payer_signer.as_deref(),
+            &server.accepted_versions,
+            &server.config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted.0.message.header().num_required_signatures, 2);
+
+        // Same program, data and account keys, but the client-controlled
+        // authorized signer is promoted to an extra (sponsor-paid) signer.
+        let mut elevated = payment_channels::build_open_instruction(&params);
+        let meta = elevated
+            .accounts
+            .iter_mut()
+            .find(|meta| meta.pubkey == params.authorized_signer)
+            .unwrap();
+        assert!(!meta.is_signer);
+        meta.is_signer = true;
+        let message =
+            v0::Message::try_compile(&params.rent_payer, &[elevated], &[], test_blockhash())
+                .unwrap();
+        let mut tx = VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                usize::from(message.header.num_required_signatures)
+            ],
+            message: VersionedMessage::V0(message),
+        };
+        sign_versioned_transaction_slot(signer(6).as_ref(), &mut tx)
+            .await
+            .unwrap();
+        sign_versioned_transaction_slot(signer(1).as_ref(), &mut tx)
+            .await
+            .unwrap();
+        assert_eq!(tx.message.header().num_required_signatures, 3);
+        let mut malicious = canonical;
+        malicious.transaction = crate::core::tx::encode(&tx).unwrap();
+        let error = prepare_open_transaction(
+            &malicious,
+            &params,
+            &challenged,
+            server.config.fee_payer_signer.as_deref(),
+            &server.accepted_versions,
+            &server.config,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("privileges"), "{error}");
     }
 
     #[test]
