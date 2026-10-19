@@ -7,6 +7,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
+use crate::core::store::{MemoryStore, Store};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
@@ -132,6 +133,8 @@ pub struct X402 {
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
     /// directly (prior behaviour).
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
+    /// Settled payment signatures, so one payment grants one use.
+    replay_store: Arc<dyn Store>,
 }
 
 impl X402 {
@@ -169,7 +172,16 @@ impl X402 {
             rpc,
             config,
             blockhash_cache: None,
+            replay_store: Arc::new(MemoryStore::new()),
         })
+    }
+
+    /// Record settled payment signatures in `store` instead of process memory.
+    /// Replicas serving the same routes must share one store, or a payment
+    /// settled on one replica can be presented again on another.
+    pub fn with_store(mut self, store: Arc<dyn Store>) -> Self {
+        self.replay_store = store;
+        self
     }
 
     /// Choose whether version-1 transactions are accepted and advertised. The
@@ -654,13 +666,19 @@ impl X402 {
     ///   still-empty fee-payer slot, then the transaction is simulated and
     ///   broadcast + confirmed. The confirmed signature is returned.
     /// - `Signature` proof (push): already on-chain — returned as-is.
+    ///
+    /// Either way the settled signature is consumed: settling the same payment
+    /// again fails, so one payment authorizes one request.
     pub async fn settle_exact(
         &self,
         verified: VerifiedExactPayment,
         fee_payer: &dyn TransactionSigner,
     ) -> Result<String, Error> {
         let mut tx = match verified {
-            VerifiedExactPayment::Signature(signature) => return Ok(signature),
+            VerifiedExactPayment::Signature(signature) => {
+                self.consume_signature(&signature).await?;
+                return Ok(signature);
+            }
             VerifiedExactPayment::Transaction(tx) => tx,
         };
 
@@ -673,14 +691,59 @@ impl X402 {
         crate::core::signing::cosign_versioned_fee_payer(fee_payer, &expected_fee_payer, &mut tx)
             .await?;
 
+        // Claim before broadcasting so concurrent submissions of one
+        // transaction cannot both confirm and both be served.
+        let signature = tx
+            .signatures
+            .first()
+            .ok_or_else(|| Error::Other("transaction has no signatures".into()))?
+            .to_string();
+        self.consume_signature(&signature).await?;
+
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
-            .map(|s| s.to_string())
-            .map_err(|e| Error::Rpc(format!("exact settlement broadcast failed: {e}")))
+        match crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx) {
+            Ok(confirmed) => Ok(confirmed.to_string()),
+            Err(e) => {
+                // Unsettled: let the payer retry the same transaction.
+                if let Err(release) = self
+                    .replay_store
+                    .delete(&self.consumed_key(&signature))
+                    .await
+                {
+                    tracing::warn!(error = %release, "failed to release unsettled x402 payment");
+                }
+                Err(Error::Rpc(format!(
+                    "exact settlement broadcast failed: {e}"
+                )))
+            }
+        }
+    }
+
+    fn consumed_key(&self, signature: &str) -> String {
+        format!(
+            "x402-exact:consumed:{}:{signature}",
+            caip2_network_for_cluster(&self.config.network)
+        )
+    }
+
+    /// Atomically mark a payment signature as used.
+    async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
+        let inserted = self
+            .replay_store
+            .put_if_absent(&self.consumed_key(signature), serde_json::json!(true))
+            .await
+            .map_err(|e| Error::Other(format!("x402 replay store error: {e}")))?;
+        if inserted {
+            Ok(())
+        } else {
+            Err(Error::Other(
+                "Payment signature already consumed".to_string(),
+            ))
+        }
     }
 
     async fn verify_envelope_payload(
@@ -1061,6 +1124,96 @@ pub(crate) mod test_support {
             resource,
             PaymentProof::Transaction {
                 transaction: crate::core::tx::encode(tx).unwrap(),
+            },
+        )
+    }
+
+    /// Swap the server's RPC for a mock.
+    pub(crate) fn with_rpc(mut x402: X402, rpc: RpcClient) -> X402 {
+        x402.rpc = Arc::new(rpc);
+        x402
+    }
+
+    /// A mock RPC whose `getTransaction` answers each entry of `transactions`
+    /// in turn.
+    pub(crate) fn mock_rpc_with_transactions(transactions: &[serde_json::Value]) -> RpcClient {
+        let mocks = transactions
+            .iter()
+            .map(|tx| {
+                (
+                    solana_rpc_client_api::request::RpcRequest::GetTransaction,
+                    tx.clone(),
+                )
+            })
+            .collect();
+        RpcClient::new_mock_with_mocks_map("succeeds", mocks)
+    }
+
+    /// `getTransaction` (jsonParsed) result for a confirmed `transferChecked`
+    /// paying `requirements` from `owner`.
+    pub(crate) fn confirmed_transfer(
+        requirements: &PaymentRequirements,
+        owner: &Pubkey,
+        amount: u64,
+        decimals: u8,
+        block_time: Option<i64>,
+    ) -> serde_json::Value {
+        let ix = transfer_checked(requirements, owner, amount, decimals);
+        let key = |index: usize| ix.accounts[index].pubkey.to_string();
+        serde_json::json!({
+            "slot": 7,
+            "blockTime": block_time,
+            "version": 0,
+            "transaction": {
+                "signatures": [solana_signature::Signature::from([3u8; 64]).to_string()],
+                "message": {
+                    "accountKeys": [
+                        { "pubkey": owner.to_string(), "writable": true, "signer": true, "source": "transaction" },
+                        { "pubkey": ix.program_id.to_string(), "writable": false, "signer": false, "source": "transaction" }
+                    ],
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                    "instructions": [{
+                        "program": "spl-token",
+                        "programId": ix.program_id.to_string(),
+                        "parsed": {
+                            "type": "transferChecked",
+                            "info": {
+                                "source": key(0),
+                                "mint": key(1),
+                                "destination": key(2),
+                                "authority": key(3),
+                                "tokenAmount": {
+                                    "amount": amount.to_string(),
+                                    "decimals": decimals,
+                                    "uiAmountString": "0"
+                                }
+                            }
+                        },
+                        "stackHeight": null
+                    }]
+                }
+            },
+            "meta": {
+                "err": null,
+                "status": { "Ok": null },
+                "fee": 5000,
+                "preBalances": [],
+                "postBalances": [],
+                "innerInstructions": [],
+                "logMessages": [],
+                "preTokenBalances": [],
+                "postTokenBalances": [],
+                "rewards": []
+            }
+        })
+    }
+
+    pub(crate) fn signature_header(requirements: &PaymentRequirements, signature: &str) -> String {
+        envelope_header(
+            requirements,
+            requirements.resource_info(),
+            PaymentProof::Signature {
+                signature: signature.to_string(),
             },
         )
     }
@@ -1962,6 +2115,147 @@ mod tests {
                 .await,
             Ok(VerifiedExactPayment::Transaction(_))
         ));
+    }
+
+    fn now_unix() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    /// Verify and settle a signature proof the way a gate does.
+    async fn verify_and_settle(x402: &X402, header: &str) -> Result<String, Error> {
+        let verified = x402
+            .process_payment(header, "0.01", ExactOptions::default())
+            .await?;
+        x402.settle_exact(verified, memory_signer(1).as_ref()).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_signature_settles_exactly_once() {
+        let requirements = X402::new(config())
+            .unwrap()
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let payer = Pubkey::new_unique();
+        let confirmed = confirmed_transfer(&requirements, &payer, 10_000, 6, Some(now_unix()));
+        let x402 = with_rpc(
+            X402::new(config()).unwrap(),
+            mock_rpc_with_transactions(&[confirmed.clone(), confirmed.clone(), confirmed]),
+        );
+        let signature = solana_signature::Signature::from([3u8; 64]).to_string();
+        let header = signature_header(&requirements, &signature);
+
+        assert_eq!(verify_and_settle(&x402, &header).await.unwrap(), signature);
+        let replay = verify_and_settle(&x402, &header).await.unwrap_err();
+        assert!(replay.to_string().contains("already consumed"), "{replay}");
+
+        // A different payment is unaffected by the consumed one.
+        let other = solana_signature::Signature::from([4u8; 64]).to_string();
+        assert_eq!(
+            verify_and_settle(&x402, &signature_header(&requirements, &other))
+                .await
+                .unwrap(),
+            other
+        );
+    }
+
+    #[tokio::test]
+    async fn replicas_sharing_a_store_reject_a_settled_signature() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let replica_a = X402::new(config()).unwrap().with_store(store.clone());
+        let replica_b = X402::new(config()).unwrap().with_store(store);
+        let isolated = X402::new(config()).unwrap();
+        let signature = solana_signature::Signature::from([5u8; 64]).to_string();
+        let signer = memory_signer(1);
+
+        replica_a
+            .settle_exact(
+                VerifiedExactPayment::Signature(signature.clone()),
+                signer.as_ref(),
+            )
+            .await
+            .unwrap();
+        let err = replica_b
+            .settle_exact(
+                VerifiedExactPayment::Signature(signature.clone()),
+                signer.as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already consumed"), "{err}");
+        // Without a shared store a separate process cannot know.
+        assert!(isolated
+            .settle_exact(VerifiedExactPayment::Signature(signature), signer.as_ref())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_transaction_settles_exactly_once() {
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let x402 = with_rpc(X402::new(cfg).unwrap(), RpcClient::new_mock("succeeds"));
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(&requirements, &payer, &sponsor.pubkey());
+
+        let settled = x402
+            .settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+            .await
+            .unwrap();
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already consumed"), "{err}");
+        // The broadcast transaction's signature cannot be replayed as a push proof.
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Signature(settled), sponsor.as_ref())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already consumed"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_broadcast_releases_the_claim() {
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let requirements = X402::new(cfg.clone())
+            .unwrap()
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+
+        let failing = with_rpc(
+            X402::new(cfg.clone()).unwrap().with_store(store.clone()),
+            RpcClient::new_mock("instruction_error"),
+        );
+        assert!(failing
+            .settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref()
+            )
+            .await
+            .is_err());
+
+        let healthy = with_rpc(
+            X402::new(cfg).unwrap().with_store(store),
+            RpcClient::new_mock("succeeds"),
+        );
+        assert!(healthy
+            .settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+            .await
+            .is_ok());
     }
 
     // ── is_loopback_rpc ────────────────────────────────────────────────────
