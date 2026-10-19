@@ -27,6 +27,12 @@ pub trait CommitTransport: Send + Sync {
         directive: &'a MeteringDirective,
         payload: CommitPayload,
     ) -> Pin<Box<dyn Future<Output = Result<CommitReceipt>> + Send + 'a>>;
+
+    /// Reject a directive this transport won't route, before a voucher is
+    /// signed for it.
+    fn check_directive(&self, _directive: &MeteringDirective) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl<T: CommitTransport + ?Sized> CommitTransport for Arc<T> {
@@ -36,6 +42,10 @@ impl<T: CommitTransport + ?Sized> CommitTransport for Arc<T> {
         payload: CommitPayload,
     ) -> Pin<Box<dyn Future<Output = Result<CommitReceipt>> + Send + 'a>> {
         self.as_ref().commit(directive, payload)
+    }
+
+    fn check_directive(&self, directive: &MeteringDirective) -> Result<()> {
+        self.as_ref().check_directive(directive)
     }
 }
 
@@ -100,7 +110,7 @@ impl<T: CommitTransport> SessionConsumer<T> {
                 directive.session_id
             )));
         }
-        Ok(())
+        self.transport.check_directive(directive)
     }
 }
 

@@ -249,6 +249,12 @@ impl<C: CommitTransport, T: DeserializeOwned> MeteredSseSession<'_, C, T> {
 }
 
 /// Minimal HTTP transport for commit endpoints.
+///
+/// The configured default commit URL is the trust anchor: a directive's
+/// `commitUrl` is honored only when it resolves to the same origin, so a
+/// response can't route the signed voucher or the `Authorization` header
+/// elsewhere. [`new`](Self::new) does not follow redirects; a client passed to
+/// [`with_client`](Self::with_client) should not either.
 #[derive(Clone)]
 pub struct HttpCommitTransport {
     client: reqwest::Client,
@@ -258,11 +264,12 @@ pub struct HttpCommitTransport {
 
 impl HttpCommitTransport {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            default_commit_url: None,
-            authorization: None,
-        }
+        Self::with_client(
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("reqwest client builds"),
+        )
     }
 
     pub fn with_client(client: reqwest::Client) -> Self {
@@ -282,6 +289,53 @@ impl HttpCommitTransport {
         self.authorization = Some(value.into());
         self
     }
+
+    /// The URL a commit for `directive` is sent to.
+    pub fn commit_url(&self, directive: &MeteringDirective) -> Result<url::Url> {
+        let trusted = self
+            .default_commit_url
+            .as_deref()
+            .map(|url| {
+                url::Url::parse(url)
+                    .map_err(|e| Error::Other(format!("invalid default commit URL: {e}")))
+                    .and_then(check_commit_url)
+            })
+            .transpose()?;
+        let Some(hint) = directive.commit_url.as_deref() else {
+            return trusted
+                .ok_or_else(|| Error::Other("metering directive missing commitUrl".to_string()));
+        };
+        let trusted = trusted.ok_or_else(|| {
+            Error::Other(
+                "directive commitUrl needs a configured default commit URL to trust".to_string(),
+            )
+        })?;
+        let url = trusted
+            .join(hint)
+            .map_err(|e| Error::Other(format!("invalid directive commitUrl: {e}")))
+            .and_then(check_commit_url)?;
+        if url.origin() != trusted.origin() {
+            return Err(Error::Other(format!(
+                "directive commitUrl origin {} does not match the configured commit origin {}",
+                url.origin().ascii_serialization(),
+                trusted.origin().ascii_serialization()
+            )));
+        }
+        Ok(url)
+    }
+}
+
+fn check_commit_url(url: url::Url) -> Result<url::Url> {
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none_or(str::is_empty)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(Error::Other(format!(
+            "commit URL must be http(s) without credentials: {url}"
+        )));
+    }
+    Ok(url)
 }
 
 impl Default for HttpCommitTransport {
@@ -297,11 +351,7 @@ impl CommitTransport for HttpCommitTransport {
         payload: CommitPayload,
     ) -> Pin<Box<dyn Future<Output = Result<CommitReceipt>> + Send + 'a>> {
         Box::pin(async move {
-            let url = directive
-                .commit_url
-                .as_ref()
-                .or(self.default_commit_url.as_ref())
-                .ok_or_else(|| Error::Other("metering directive missing commitUrl".to_string()))?;
+            let url = self.commit_url(directive)?;
 
             let mut request = self.client.post(url).json(&payload);
             if let Some(auth) = &self.authorization {
@@ -325,6 +375,10 @@ impl CommitTransport for HttpCommitTransport {
                 .await
                 .map_err(|e| Error::Other(format!("invalid commit receipt: {e}")))
         })
+    }
+
+    fn check_directive(&self, directive: &MeteringDirective) -> Result<()> {
+        self.commit_url(directive).map(|_| ())
     }
 }
 
@@ -811,6 +865,133 @@ mod tests {
         assert_eq!(receipt.amount, "275");
         assert_eq!(receipt.cumulative, "275");
         assert_eq!(state.commits.lock().unwrap().len(), 1);
+    }
+
+    fn directive_to(session_id: &str, commit_url: Option<&str>) -> MeteringDirective {
+        MeteringDirective {
+            commit_url: commit_url.map(str::to_string),
+            ..directive(session_id)
+        }
+    }
+
+    #[test]
+    fn commit_url_must_stay_on_the_configured_origin() {
+        let transport =
+            HttpCommitTransport::new().with_default_commit_url("https://api.example.com/v1/commit");
+        let resolve = |hint: Option<&str>| {
+            transport
+                .commit_url(&directive_to("s", hint))
+                .map(|url| url.to_string())
+        };
+        assert_eq!(resolve(None).unwrap(), "https://api.example.com/v1/commit");
+        assert_eq!(
+            resolve(Some("/v2/commit?id=1")).unwrap(),
+            "https://api.example.com/v2/commit?id=1"
+        );
+        assert_eq!(
+            resolve(Some("https://API.example.com:443/c")).unwrap(),
+            "https://api.example.com/c"
+        );
+        for hostile in [
+            "https://attacker.example/commit",
+            "//attacker.example/commit",
+            "http://api.example.com/commit",
+            "https://api.example.com:8443/commit",
+            "https://api.example.com.attacker.example/commit",
+            "https://user:pass@api.example.com/commit",
+            "ftp://api.example.com/commit",
+            "data:text/plain,commit",
+        ] {
+            assert!(resolve(Some(hostile)).is_err(), "{hostile}");
+        }
+
+        let untrusted = HttpCommitTransport::new();
+        assert!(untrusted
+            .commit_url(&directive_to("s", Some("https://api.example.com/commit")))
+            .unwrap_err()
+            .to_string()
+            .contains("needs a configured default"));
+        assert!(untrusted
+            .commit_url(&directive_to("s", None))
+            .unwrap_err()
+            .to_string()
+            .contains("missing commitUrl"));
+        assert!(HttpCommitTransport::new()
+            .with_default_commit_url("https://user@api.example.com/commit")
+            .commit_url(&directive_to("s", None))
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn hostile_commit_url_gets_neither_voucher_nor_authorization() {
+        let attacker = CommitServerState::default();
+        let attacker_url = spawn_app(
+            Router::new()
+                .route("/commit", post(commit_handler))
+                .with_state(attacker.clone()),
+        )
+        .await;
+        let legitimate = CommitServerState::default();
+        let legitimate_url = spawn_app(
+            Router::new()
+                .route("/commit", post(commit_handler))
+                .with_state(legitimate.clone()),
+        )
+        .await;
+
+        let session = super::super::session::ActiveSession::new(Pubkey::new_unique(), signer());
+        let directive = directive_to(
+            &session.channel_id_str(),
+            Some(&format!("{attacker_url}/commit")),
+        );
+        let transport = HttpCommitTransport::new()
+            .with_default_commit_url(format!("{legitimate_url}/commit"))
+            .with_authorization("Bearer sdk-test");
+        let mut consumer = SessionConsumer::new(session, transport);
+        let error = consumer.commit_directive(&directive).await.unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error}");
+        assert!(attacker.commits.lock().unwrap().is_empty());
+        assert!(legitimate.commits.lock().unwrap().is_empty());
+        assert_eq!(consumer.session().cumulative, 0);
+
+        // A same-origin hint is still honored.
+        let same_origin = directive_to(&consumer.session().channel_id_str(), Some("/commit"));
+        let receipt = consumer.commit_directive(&same_origin).await.unwrap();
+        assert_eq!(receipt.cumulative, "1000");
+        assert_eq!(legitimate.commits.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn commit_transport_does_not_follow_redirects() {
+        let attacker = CommitServerState::default();
+        let attacker_url = spawn_app(
+            Router::new()
+                .route("/commit", post(commit_handler))
+                .with_state(attacker.clone()),
+        )
+        .await;
+        let target = format!("{attacker_url}/commit");
+        let redirector = spawn_app(Router::new().route(
+            "/commit",
+            post(move || {
+                let target = target.clone();
+                async move {
+                    (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, target)]).into_response()
+                }
+            }),
+        ))
+        .await;
+        let session = super::super::session::ActiveSession::new(Pubkey::new_unique(), signer());
+        let directive = directive(&session.channel_id_str());
+        let mut consumer = SessionConsumer::new(
+            session,
+            HttpCommitTransport::new()
+                .with_default_commit_url(format!("{redirector}/commit"))
+                .with_authorization("Bearer sdk-test"),
+        );
+        let error = consumer.commit_directive(&directive).await.unwrap_err();
+        assert!(error.to_string().contains("307"), "{error}");
+        assert!(attacker.commits.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
