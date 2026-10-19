@@ -656,9 +656,7 @@ impl SubscriptionServer {
             .map_err(|e| VerificationError::new(e.to_string()))?;
         let (subscription_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
 
-        let delegation = self
-            .fetch_subscription_delegation(&subscription_pda)
-            .await?;
+        let delegation = self.fetch_activated_delegation(&subscription_pda).await?;
 
         // ── Validate snapshotted terms ──────────────────────────────────
         let expected_amount: u64 = request.amount.parse().map_err(|_| {
@@ -940,13 +938,11 @@ impl SubscriptionServer {
         &self,
         tx: &VersionedTransaction,
     ) -> Result<Signature, VerificationError> {
-        use solana_commitment_config::CommitmentConfig;
-        use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let tx = tx.clone();
         // RpcClient is blocking; offload to a worker thread.
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+            let rpc = confirmed_rpc(rpc_url);
             crate::core::rpc::send_and_confirm_transaction(&rpc, &tx).map_err(|e| {
                 VerificationError::transaction_failed(format!("Broadcast failed: {e}"))
             })
@@ -955,30 +951,68 @@ impl SubscriptionServer {
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
     }
 
-    // Live-RPC boundary; ownership and the decoder are covered independently.
+    /// Read the delegation a just-confirmed activation created, tolerating
+    /// an RPC node that has not caught up to the confirmation yet.
+    async fn fetch_activated_delegation(
+        &self,
+        subscription_pda: &Pubkey,
+    ) -> Result<SubscriptionDelegationView, VerificationError> {
+        for _ in 1..ACTIVATED_DELEGATION_READ_ATTEMPTS {
+            if let Some(delegation) = self
+                .try_fetch_subscription_delegation(subscription_pda)
+                .await?
+            {
+                return Ok(delegation);
+            }
+            tokio::time::sleep(ACTIVATED_DELEGATION_READ_BACKOFF).await;
+        }
+        self.fetch_subscription_delegation(subscription_pda).await
+    }
+
     async fn fetch_subscription_delegation(
         &self,
         subscription_pda: &Pubkey,
     ) -> Result<SubscriptionDelegationView, VerificationError> {
-        use solana_rpc_client::rpc_client::RpcClient;
+        self.try_fetch_subscription_delegation(subscription_pda)
+            .await?
+            .ok_or_else(|| {
+                VerificationError::not_found(format!(
+                    "SubscriptionDelegation account {subscription_pda} not found"
+                ))
+            })
+    }
+
+    // Live-RPC boundary; ownership and the decoder are covered independently.
+    async fn try_fetch_subscription_delegation(
+        &self,
+        subscription_pda: &Pubkey,
+    ) -> Result<Option<SubscriptionDelegationView>, VerificationError> {
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
         let expected_owner = parse_pubkey(&self.program_id, "program_id")
             .map_err(|error| VerificationError::new(error.to_string()))?;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
-            let account = rpc.get_account(&pda).map_err(|e| {
-                VerificationError::not_found(format!(
-                    "SubscriptionDelegation account {pda} not found: {e}"
-                ))
-            })?;
+            let rpc = confirmed_rpc(rpc_url);
+            let Some(account) = rpc
+                .get_account_with_commitment(&pda, rpc.commitment())
+                .map_err(|e| {
+                    VerificationError::network_error(format!(
+                        "SubscriptionDelegation account {pda} lookup failed: {e}"
+                    ))
+                })?
+                .value
+            else {
+                return Ok(None);
+            };
             if account.owner != expected_owner {
                 return Err(VerificationError::credential_mismatch(format!(
                     "SubscriptionDelegation owner mismatch: expected {expected_owner}, got {}",
                     account.owner
                 )));
             }
-            decode_subscription_delegation(&account.data).map_err(VerificationError::new)
+            decode_subscription_delegation(&account.data)
+                .map(Some)
+                .map_err(VerificationError::new)
         })
         .await
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
@@ -989,13 +1023,12 @@ impl SubscriptionServer {
         &self,
         authority_pda: &Pubkey,
     ) -> Result<i64, VerificationError> {
-        use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *authority_pda;
         let expected_owner = parse_pubkey(&self.program_id, "program_id")
             .map_err(|error| VerificationError::new(error.to_string()))?;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
+            let rpc = confirmed_rpc(rpc_url);
             let account = rpc.get_account(&pda).map_err(|error| {
                 VerificationError::not_found(format!(
                     "SubscriptionAuthority account {pda} not found: {error}"
@@ -1026,11 +1059,10 @@ impl SubscriptionServer {
         &self,
         subscription_pda: &Pubkey,
     ) -> Result<String, VerificationError> {
-        use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
+            let rpc = confirmed_rpc(rpc_url);
             let sigs = rpc.get_signatures_for_address(&pda).map_err(|e| {
                 VerificationError::network_error(format!(
                     "getSignaturesForAddress({pda}) failed: {e}"
@@ -1084,6 +1116,19 @@ impl SubscriptionServer {
 }
 
 // ── Verify helpers ──────────────────────────────────────────────────────────
+
+const ACTIVATED_DELEGATION_READ_ATTEMPTS: u32 = 5;
+const ACTIVATED_DELEGATION_READ_BACKOFF: std::time::Duration =
+    std::time::Duration::from_millis(400);
+
+/// Every activation read uses the commitment the broadcast confirmed at, so
+/// state a confirmed activation created is visible to the checks that follow.
+fn confirmed_rpc(rpc_url: String) -> solana_rpc_client::rpc_client::RpcClient {
+    solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
+        rpc_url,
+        solana_commitment_config::CommitmentConfig::confirmed(),
+    )
+}
 
 fn validate_activation_subscription_expiry(
     subscription_expires: Option<&str>,
@@ -1728,6 +1773,10 @@ fn now_unix_secs() -> i64 {
         .map(|d| d.as_secs())
         .unwrap_or(0) as i64
 }
+
+#[cfg(test)]
+#[path = "subscription_activation_tests.rs"]
+mod activation_tests;
 
 #[cfg(test)]
 mod tests {
