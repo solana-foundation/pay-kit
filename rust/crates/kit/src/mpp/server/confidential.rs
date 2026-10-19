@@ -632,6 +632,9 @@ struct FundedAccount {
     kind: FundedAccountKind,
     initialized: bool,
     closed: bool,
+    /// Allocated bytes, and record payload bytes written so far.
+    space: u64,
+    written: u64,
 }
 
 #[cfg(feature = "confidential")]
@@ -650,6 +653,9 @@ pub(crate) fn verify_confidential_account_lifecycle(
 
     for (tx_index, tx) in transactions.iter().enumerate() {
         let mut created_in_transaction = HashSet::new();
+        // Every transaction before the final transfer must advance a
+        // gateway-funded account; anything else only spends sponsored fees.
+        let mut advances_lifecycle = false;
         let keys = tx.message.static_account_keys();
         for ix in tx.message.instructions() {
             let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
@@ -702,6 +708,16 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         "confidential bundle funds {total_lamports} lamports of temporary accounts (max {MAX_CT_BUNDLE_CREATE_LAMPORTS})"
                     )));
                 }
+                let space = ix
+                    .data
+                    .get(12..20)
+                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                    .map(u64::from_le_bytes)
+                    .ok_or_else(|| {
+                        VerificationError::credential_mismatch(
+                            "create_account has malformed space data",
+                        )
+                    })?;
                 if account == *gateway
                     || funded
                         .insert(
@@ -710,6 +726,8 @@ pub(crate) fn verify_confidential_account_lifecycle(
                                 kind,
                                 initialized: false,
                                 closed: false,
+                                space,
+                                written: 0,
                             },
                         )
                         .is_some()
@@ -719,6 +737,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
                     ));
                 }
                 created_in_transaction.insert(account);
+                advances_lifecycle = true;
                 continue;
             }
 
@@ -789,6 +808,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
                     &created_in_transaction,
                     &mut funded,
                 )?;
+                advances_lifecycle |= !close;
             } else if *program == record_program {
                 let account = ix
                     .accounts
@@ -801,15 +821,18 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         )
                     })?;
                 match ix.data.first().copied() {
-                    Some(0) => transition(
-                        account,
-                        FundedAccountKind::Record,
-                        false,
-                        &created_in_transaction,
-                        &mut funded,
-                    )?,
+                    Some(0) => {
+                        transition(
+                            account,
+                            FundedAccountKind::Record,
+                            false,
+                            &created_in_transaction,
+                            &mut funded,
+                        )?;
+                        advances_lifecycle = true;
+                    }
                     Some(1) => {
-                        let state = funded.get(&account).ok_or_else(|| {
+                        let state = funded.get_mut(&account).ok_or_else(|| {
                             VerificationError::credential_mismatch(
                                 "confidential bundle writes a record it did not create",
                             )
@@ -822,6 +845,29 @@ pub(crate) fn verify_confidential_account_lifecycle(
                                 "confidential bundle writes outside an initialized record lifecycle",
                             ));
                         }
+                        // Write: tag | offset u64 | length u32 | data. Each
+                        // payload byte is staged once, so the total written
+                        // is bounded by the record's capacity.
+                        let length = ix
+                            .data
+                            .get(9..13)
+                            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                            .map(|bytes| u64::from(u32::from_le_bytes(bytes)))
+                            .ok_or_else(|| {
+                                VerificationError::credential_mismatch(
+                                    "spl-record write has malformed data",
+                                )
+                            })?;
+                        state.written = state.written.saturating_add(length);
+                        let capacity = state.space.saturating_sub(
+                            spl_record::state::RecordData::WRITABLE_START_INDEX as u64,
+                        );
+                        if state.written > capacity {
+                            return Err(VerificationError::credential_mismatch(
+                                "confidential bundle writes more record data than the record holds",
+                            ));
+                        }
+                        advances_lifecycle = true;
                     }
                     Some(3) => transition(
                         account,
@@ -837,6 +883,11 @@ pub(crate) fn verify_confidential_account_lifecycle(
                     }
                 }
             }
+        }
+        if tx_index != final_tx && !advances_lifecycle {
+            return Err(VerificationError::credential_mismatch(format!(
+                "confidential bundle transaction {tx_index} advances no temporary account"
+            )));
         }
     }
 
@@ -2037,5 +2088,102 @@ pub(crate) mod tests {
         ];
         let message = settle(builder_layout).await;
         assert!(message.contains("Simulation RPC error"), "{message}");
+    }
+
+    fn record_write(
+        record: &Pubkey,
+        gateway: &Pubkey,
+        offset: u64,
+        len: usize,
+    ) -> solana_instruction::Instruction {
+        spl_record::instruction::write(record, gateway, offset, &vec![7u8; len])
+    }
+
+    // A fee-only (empty / compute-budget / stateless-proof) transaction before
+    // the transfer costs the sponsor a signature fee and does nothing.
+    #[test]
+    fn non_final_transactions_must_advance_a_temporary_account() {
+        let gateway = Pubkey::new_unique();
+        let p = layout_pieces(&gateway, &Pubkey::new_unique());
+        let final_tx = v0_tx(&gateway, &[p.transfer.clone(), p.close.clone()]);
+        let setup = v0_tx(&gateway, &[p.create.clone(), p.initialize.clone()]);
+        let budget = crate::core::tx::ComputeBudget::new(1_000_001, 10_000);
+        let compute_only = crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            &gateway,
+            &[],
+            solana_hash::Hash::new_unique(),
+            Some(&budget),
+        )
+        .unwrap();
+        let stateless_proof = v0_tx(
+            &gateway,
+            &[solana_instruction::Instruction {
+                program_id: Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).unwrap(),
+                accounts: vec![],
+                data: vec![12, 0, 0],
+            }],
+        );
+        for filler in [v0_tx(&gateway, &[]), compute_only, stateless_proof] {
+            let err = verify_confidential_account_lifecycle(
+                &[setup.clone(), filler, final_tx.clone()],
+                &gateway,
+            )
+            .unwrap_err();
+            assert!(
+                err.message.contains("advances no temporary account"),
+                "{}",
+                err.message
+            );
+        }
+        verify_confidential_account_lifecycle(&[setup, final_tx], &gateway).unwrap();
+    }
+
+    #[test]
+    fn record_writes_are_bounded_by_the_record_capacity() {
+        let gateway = Pubkey::new_unique();
+        let record = Pubkey::new_unique();
+        let record_program = spl_record::id();
+        let capacity = 100usize;
+        let space = (capacity + spl_record::state::RecordData::WRITABLE_START_INDEX) as u64;
+        let create = solana_system_interface::instruction::create_account(
+            &gateway,
+            &record,
+            1_000,
+            space,
+            &record_program,
+        );
+        let initialize = spl_record::instruction::initialize(&record, &gateway);
+        let close = spl_record::instruction::close_account(&record, &gateway, &gateway);
+        let p = layout_pieces(&gateway, &Pubkey::new_unique());
+        let bundle = |writes: &[usize]| {
+            let mut txs = vec![v0_tx(
+                &gateway,
+                &[
+                    create.clone(),
+                    initialize.clone(),
+                    record_write(&record, &gateway, 0, writes[0]),
+                ],
+            )];
+            let mut offset = writes[0] as u64;
+            for len in &writes[1..] {
+                txs.push(v0_tx(
+                    &gateway,
+                    &[record_write(&record, &gateway, offset, *len)],
+                ));
+                offset += *len as u64;
+            }
+            txs.push(v0_tx(&gateway, &[p.transfer.clone(), close.clone()]));
+            txs
+        };
+        // Staging exactly the capacity in chunks is the builder's layout.
+        verify_confidential_account_lifecycle(&bundle(&[60, 40]), &gateway).unwrap();
+        // Re-writing chunks to pad the bundle with fee-bearing transactions.
+        let err =
+            verify_confidential_account_lifecycle(&bundle(&[60, 40, 1]), &gateway).unwrap_err();
+        assert!(err.message.contains("more record data"), "{}", err.message);
+        let err = verify_confidential_account_lifecycle(&bundle(&[60, 40, 40, 40]), &gateway)
+            .unwrap_err();
+        assert!(err.message.contains("more record data"), "{}", err.message);
     }
 }
