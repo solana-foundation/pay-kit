@@ -225,3 +225,76 @@ async fn unpaid_request_advertises_the_route_price() {
         (StatusCode::PAYMENT_REQUIRED, Some("10000".to_string()))
     );
 }
+
+fn external_path_price() -> solana_pay_kit::Price {
+    solana_pay_kit::Price::dynamic(|ctx| {
+        if ctx.uri.path() == "/api/premium" {
+            "5.00".to_string()
+        } else {
+            "0.10".to_string()
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_route_prices_from_the_public_path() {
+    let pay = paykit();
+    let nested: Router = Router::new().nest(
+        "/api",
+        Router::new().route("/premium", paid_get(protected, external_path_price(), &pay)),
+    );
+    let direct: Router = Router::new().route(
+        "/api/premium",
+        paid_get(protected, external_path_price(), &pay),
+    );
+    let premium = (StatusCode::PAYMENT_REQUIRED, Some("5000000".to_string()));
+    assert_eq!(advertised_amount(&direct, "/api/premium").await, premium);
+    assert_eq!(advertised_amount(&nested, "/api/premium").await, premium);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_route_query_pricing_sees_the_public_query() {
+    let pay = paykit();
+    let nested: Router = Router::new().nest(
+        "/v1",
+        Router::new().route(
+            "/quote",
+            paid_get(
+                protected,
+                solana_pay_kit::Price::dynamic(|ctx| match ctx.query_param("tier").as_deref() {
+                    Some("premium") => "5.00".to_string(),
+                    _ => "0.10".to_string(),
+                }),
+                &pay,
+            ),
+        ),
+    );
+    assert_eq!(
+        advertised_amount(&nested, "/v1/quote?tier=premium").await,
+        (StatusCode::PAYMENT_REQUIRED, Some("5000000".to_string()))
+    );
+    assert_eq!(
+        advertised_amount(&nested, "/v1/quote").await,
+        (StatusCode::PAYMENT_REQUIRED, Some("100000".to_string()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_paid_request_is_charged_the_public_path_price() {
+    let pay = paykit();
+    let nested: Router = Router::new().nest(
+        "/api",
+        Router::new().route(
+            "/premium",
+            paid_get(
+                |payment: Payment| async move { payment.amount },
+                external_path_price(),
+                &pay,
+            ),
+        ),
+    );
+    let resp = pay_and_fetch(&nested, "/api/premium").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(body.as_ref(), b"5.00");
+}

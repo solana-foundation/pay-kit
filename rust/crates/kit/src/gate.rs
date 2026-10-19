@@ -460,7 +460,8 @@ impl std::fmt::Debug for Price {
 pub struct PriceCtx<'a> {
     /// The request method.
     pub method: &'a Method,
-    /// The request URI (path and query).
+    /// The public request URI (path and query), including any `Router::nest`
+    /// prefix.
     pub uri: &'a Uri,
     /// The request headers.
     pub headers: &'a HeaderMap,
@@ -500,14 +501,23 @@ fn validate_price_query(query: Option<&str>) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The request URI as the client sent it. `Router::nest` strips the mount
+/// prefix from `req.uri()`; axum keeps the original in [`OriginalUri`](axum::extract::OriginalUri).
+fn external_uri(req: &Request) -> &Uri {
+    req.extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map_or(req.uri(), |original| &original.0)
+}
+
 /// Resolve the route price, or why the request can't be priced.
 fn resolve_amount(price: &Price, req: &Request) -> Result<String, &'static str> {
+    let uri = external_uri(req);
     if matches!(price, Price::Dynamic(_)) {
-        validate_price_query(req.uri().query())?;
+        validate_price_query(uri.query())?;
     }
     let ctx = PriceCtx {
         method: req.method(),
-        uri: req.uri(),
+        uri,
         headers: req.headers(),
     };
     Ok(price.resolve(&ctx))
@@ -1045,14 +1055,8 @@ fn batch_challenge_response<'a>(
 /// authorizes is bound to the channel and the price, never to this string.
 /// The browser hint also echoes this untrusted context. Proxies must sanitize
 /// `Host` and `x-forwarded-proto` if deployment-canonical URLs are required.
-///
-/// `Router::nest` strips the mount prefix from `req.uri()`, so prefer the
-/// pre-nesting URI axum records in [`OriginalUri`](axum::extract::OriginalUri).
 fn resource_url(req: &Request) -> Option<String> {
-    let uri = req
-        .extensions()
-        .get::<axum::extract::OriginalUri>()
-        .map_or(req.uri(), |original| &original.0);
+    let uri = external_uri(req);
     if uri.authority().is_some() {
         return Some(uri.to_string());
     }
