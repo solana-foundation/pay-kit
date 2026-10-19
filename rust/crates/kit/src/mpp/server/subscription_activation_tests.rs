@@ -779,3 +779,77 @@ fn subscribe_rent_payer_must_be_the_sponsor() {
 
     assert!(fixture.validate(&tx).is_err());
 }
+
+// ── SOLA1-148: identity proofs need a live on-chain subscription ───────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_without_a_delegation_has_no_active_subscription() {
+    let scenario = Scenario::new();
+    let mut state = ChainState::default();
+    state
+        .accounts
+        .insert(scenario.authority.to_string(), authority_bytes(INIT_ID));
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let server = scenario.server(&rpc.url);
+
+    let err = server
+        .verify_active_subscription(&scenario.subscriber, &AMOUNT.to_string())
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("not found"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_delegation_is_an_active_subscription() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(&scenario, DelegationState::default()),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+
+    let delegation = server
+        .verify_active_subscription(&scenario.subscriber, &AMOUNT.to_string())
+        .await
+        .unwrap();
+    assert_eq!(delegation.subscriber, scenario.subscriber);
+    // A different price is a different subscription.
+    assert!(server
+        .verify_active_subscription(&scenario.subscriber, &(AMOUNT - 1).to_string())
+        .await
+        .is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpaid_or_revoked_delegations_are_not_active() {
+    let scenario = Scenario::new();
+    let unpaid = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(
+            &scenario,
+            DelegationState {
+                amount_pulled_in_period: 0,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert!(scenario
+        .server(&unpaid.url)
+        .verify_active_subscription(&scenario.subscriber, &AMOUNT.to_string())
+        .await
+        .is_err());
+
+    let mut state = existing_delegation_state(&scenario, DelegationState::default());
+    state
+        .accounts
+        .insert(scenario.authority.to_string(), authority_bytes(INIT_ID + 1));
+    let revoked = RpcFixture::start(program_owner(), state).await;
+    let err = scenario
+        .server(&revoked.url)
+        .verify_active_subscription(&scenario.subscriber, &AMOUNT.to_string())
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("invalidated"), "{}", err.message);
+}

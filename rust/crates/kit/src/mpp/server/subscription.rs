@@ -812,25 +812,6 @@ impl SubscriptionServer {
             ));
         }
 
-        let delegation = self
-            .fetch_subscription_delegation(&expected_delegation)
-            .await?;
-        if delegation.plan_pda != plan_pda || delegation.subscriber != payer {
-            return Err(VerificationError::credential_mismatch(
-                "SubscriptionDelegation does not match the bound plan and payer",
-            ));
-        }
-        let mint = parse_pubkey(&self.config.mint, "mint")
-            .map_err(|error| VerificationError::new(error.to_string()))?;
-        let authority_pda = find_subscription_authority_pda(&payer, &mint, &program_id).0;
-        let authority_init_id = self
-            .fetch_subscription_authority_init_id(&authority_pda)
-            .await?;
-        if authority_init_id != delegation.authority_init_id {
-            return Err(VerificationError::credential_mismatch(
-                "Subscription authority has been invalidated",
-            ));
-        }
         let expected_amount = request.amount.parse::<u64>().map_err(|_| {
             VerificationError::invalid_payload("Subscription amount must be an unsigned integer")
         })?;
@@ -838,18 +819,15 @@ impl SubscriptionServer {
             .period_hours()
             .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
         let now = now_unix_secs();
-        if now < delegation.current_period_start_ts {
-            return Err(VerificationError::transaction_failed(
-                "Subscription is not paid for the current billing period",
-            ));
-        }
-        let period_end = ensure_live_delegation(
-            &delegation,
-            expected_amount,
-            period_hours,
-            request.subscription_expires.as_deref(),
-            now,
-        )?;
+        let (delegation, period_end) = self
+            .active_delegation(
+                &payer,
+                expected_amount,
+                period_hours,
+                request.subscription_expires.as_deref(),
+                now,
+            )
+            .await?;
 
         let anchor = binding
             .get("periodStartTs")
@@ -900,6 +878,84 @@ impl SubscriptionServer {
                 expires_at: request.subscription_expires.clone(),
             },
         })
+    }
+
+    /// Check on-chain that `subscriber` holds a live, paid subscription to
+    /// this server's plan at `amount_base_units` per period: the delegation
+    /// exists, its authority is current, the current period is paid, and
+    /// neither cancellation nor the configured expiry has taken effect.
+    ///
+    /// Use this after an identity-only check (such as the legacy
+    /// `authenticate` intent) before serving subscription-gated work.
+    pub async fn verify_active_subscription(
+        &self,
+        subscriber: &Pubkey,
+        amount_base_units: &str,
+    ) -> Result<SubscriptionDelegationView, VerificationError> {
+        let expected_amount = amount_base_units.parse::<u64>().map_err(|_| {
+            VerificationError::invalid_payload("Subscription amount must be an unsigned integer")
+        })?;
+        let period_hours = self
+            .config
+            .period_unit
+            .to_period_hours(self.config.period_count)
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        self.active_delegation(
+            subscriber,
+            expected_amount,
+            period_hours,
+            self.config.subscription_expires.as_deref(),
+            now_unix_secs(),
+        )
+        .await
+        .map(|(delegation, _)| delegation)
+    }
+
+    /// Load the subscriber's delegation and require it to be live at `now`.
+    /// Returns it with the current period's end.
+    async fn active_delegation(
+        &self,
+        subscriber: &Pubkey,
+        expected_amount: u64,
+        period_hours: u64,
+        subscription_expires: Option<&str>,
+        now: i64,
+    ) -> Result<(SubscriptionDelegationView, i64), VerificationError> {
+        let program_id = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let delegation_pda = find_subscription_pda(&plan_pda, subscriber, &program_id).0;
+        let delegation = self.fetch_subscription_delegation(&delegation_pda).await?;
+        if delegation.plan_pda != plan_pda || delegation.subscriber != *subscriber {
+            return Err(VerificationError::credential_mismatch(
+                "SubscriptionDelegation does not match the bound plan and payer",
+            ));
+        }
+        let mint = parse_pubkey(&self.config.mint, "mint")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let authority_pda = find_subscription_authority_pda(subscriber, &mint, &program_id).0;
+        let authority_init_id = self
+            .fetch_subscription_authority_init_id(&authority_pda)
+            .await?;
+        if authority_init_id != delegation.authority_init_id {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription authority has been invalidated",
+            ));
+        }
+        if now < delegation.current_period_start_ts {
+            return Err(VerificationError::transaction_failed(
+                "Subscription is not paid for the current billing period",
+            ));
+        }
+        let period_end = ensure_live_delegation(
+            &delegation,
+            expected_amount,
+            period_hours,
+            subscription_expires,
+            now,
+        )?;
+        Ok((delegation, period_end))
     }
 
     /// Broadcast a signed transaction and wait for `confirmed` (NOT

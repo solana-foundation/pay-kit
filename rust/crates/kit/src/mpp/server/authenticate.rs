@@ -280,8 +280,11 @@ impl AuthenticateServer {
 
     /// Verify an `authenticate` credential.
     ///
-    /// On success returns the proven subscriber `Pubkey`. Servers
-    /// route the request upstream after this check; no payment moves.
+    /// On success returns the proven subscriber `Pubkey`. This proves wallet
+    /// identity only: it does not show that a subscription exists or is paid.
+    /// Gate access on
+    /// [`SubscriptionServer::verify_active_subscription`](crate::mpp::server::subscription::SubscriptionServer::verify_active_subscription)
+    /// for the returned key.
     pub fn verify(&self, credential: &PaymentCredential) -> Result<Pubkey, VerifyError> {
         self.verify_at(credential, now_unix_secs())
     }
