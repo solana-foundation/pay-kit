@@ -120,6 +120,10 @@ pub struct AuthenticateConfig {
     /// value rather than inheriting an SDK-side default that's
     /// invisible at config-review time.
     pub realm: String,
+    /// Optional RFC3339 end of the endpoint's recurring authorization
+    /// (`SubscriptionEndpoint.expires_at`). Tokens stop verifying at this
+    /// instant even inside a paid billing period.
+    pub subscription_expires: Option<String>,
     /// Optional human-readable statement embedded in the challenge.
     pub statement: Option<String>,
     /// Optional replay store (currently unused — verify is stateless).
@@ -133,6 +137,7 @@ pub struct AuthenticateServer {
     program_id: String,
     challenge_binding_secret: String,
     realm: String,
+    subscription_expires_secs: Option<i64>,
     #[allow(dead_code)]
     store: Arc<dyn Store>,
 }
@@ -175,6 +180,18 @@ impl AuthenticateServer {
         let _ = Pubkey::try_from(program_id.as_str())
             .map_err(|e| Error::InvalidConfig(format!("invalid program_id: {e}")))?;
 
+        let subscription_expires_secs = config
+            .subscription_expires
+            .as_deref()
+            .map(|value| {
+                time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                    .map(|expires| expires.unix_timestamp())
+                    .map_err(|e| {
+                        Error::InvalidConfig(format!("subscription_expires must be RFC3339: {e}"))
+                    })
+            })
+            .transpose()?;
+
         let challenge_binding_secret = config.challenge_binding_secret.clone();
         let realm = config.realm.clone();
         let store = config
@@ -187,6 +204,7 @@ impl AuthenticateServer {
             program_id,
             challenge_binding_secret,
             realm,
+            subscription_expires_secs,
             store,
         })
     }
@@ -207,11 +225,19 @@ impl AuthenticateServer {
     /// [`Self::challenge`].
     pub fn challenge_at(&self, now_secs: i64) -> Result<PaymentChallenge, Error> {
         let issued_at = format_rfc3339_seconds(now_secs);
-        let expiration_secs = current_period_end_secs(
+        let mut expiration_secs = current_period_end_secs(
             self.config.plan_created_at,
             self.config.period_hours,
             now_secs,
         );
+        if let Some(endpoint_end) = self.subscription_expires_secs {
+            if now_secs >= endpoint_end {
+                return Err(Error::Other(
+                    "subscription authorization has expired".into(),
+                ));
+            }
+            expiration_secs = expiration_secs.min(endpoint_end);
+        }
         let expiration_time = format_rfc3339_seconds(expiration_secs);
         let nonce = self.compute_nonce(&expiration_time);
 
@@ -359,6 +385,12 @@ impl AuthenticateServer {
         );
         if expiration_secs > current_period_end + CLOCK_SKEW_TOLERANCE_SECS {
             return Err(VerifyError::OutsideValidityWindow);
+        }
+        // The endpoint cutoff is absolute: no skew allowance past it.
+        if let Some(endpoint_end) = self.subscription_expires_secs {
+            if now_secs >= endpoint_end || expiration_secs > endpoint_end {
+                return Err(VerifyError::OutsideValidityWindow);
+            }
         }
 
         // Nonce re-derivation.
@@ -564,8 +596,17 @@ mod tests {
             program_id: None,
             challenge_binding_secret: "test-secret".into(),
             realm: "api.example.com".into(),
+            subscription_expires: None,
             statement: Some("Sign in to use your active subscription.".into()),
             store: None,
+        })
+        .expect("valid config")
+    }
+
+    fn make_server_expiring_at(subscription_expires: i64) -> AuthenticateServer {
+        AuthenticateServer::new(AuthenticateConfig {
+            subscription_expires: Some(format_rfc3339_seconds(subscription_expires)),
+            ..make_server().config
         })
         .expect("valid config")
     }
@@ -759,5 +800,67 @@ mod tests {
         assert!(parse_rfc3339_seconds("not a date").is_err());
         assert!(parse_rfc3339_seconds("2026-05-29 22:25:22Z").is_err()); // space instead of T
         assert!(parse_rfc3339_seconds("2026-05-29T22:25:22").is_err()); // missing Z
+    }
+
+    #[test]
+    fn verify_rejects_token_after_endpoint_expiry_inside_paid_period() {
+        let now = PLAN_CREATED_AT + 60;
+        let cutoff = now + 3600;
+        let period_end = PLAN_CREATED_AT + (PERIOD_HOURS as i64) * 3600;
+        assert!(cutoff < period_end);
+        // A token issued before the endpoint cutoff by a server that did not
+        // clamp it still carries the period-end expiration.
+        let legacy = make_server().challenge_at(now).expect("challenge");
+        let credential = sign_payload_for_challenge(&legacy, &make_signer(), now);
+        let server = make_server_expiring_at(cutoff);
+
+        assert!(server.verify_at(&credential, now).is_err());
+        assert_eq!(
+            server.verify_at(&credential, cutoff),
+            Err(VerifyError::OutsideValidityWindow)
+        );
+        assert_eq!(
+            server.verify_at(&credential, cutoff + 30),
+            Err(VerifyError::OutsideValidityWindow)
+        );
+    }
+
+    #[test]
+    fn challenge_clamps_expiration_to_endpoint_expiry() {
+        let now = PLAN_CREATED_AT + 60;
+        let cutoff = now + 3600;
+        let server = make_server_expiring_at(cutoff);
+        let challenge = server.challenge_at(now).expect("challenge");
+        let request: AuthenticateRequest = challenge.request.decode().expect("decode");
+        assert_eq!(request.expiration_time, format_rfc3339_seconds(cutoff));
+
+        let credential = sign_payload_for_challenge(&challenge, &make_signer(), now);
+        server
+            .verify_at(&credential, cutoff - 1)
+            .expect("valid until the cutoff");
+        assert_eq!(
+            server.verify_at(&credential, cutoff),
+            Err(VerifyError::OutsideValidityWindow)
+        );
+        assert!(server.challenge_at(cutoff).is_err());
+    }
+
+    #[test]
+    fn endpoint_expiry_after_period_end_keeps_period_bound() {
+        let now = PLAN_CREATED_AT + 60;
+        let period_end = PLAN_CREATED_AT + (PERIOD_HOURS as i64) * 3600;
+        let server = make_server_expiring_at(period_end + 86_400);
+        let challenge = server.challenge_at(now).expect("challenge");
+        let credential = sign_payload_for_challenge(&challenge, &make_signer(), now);
+        server.verify_at(&credential, now).expect("verify");
+    }
+
+    #[test]
+    fn rejects_malformed_endpoint_expiry() {
+        assert!(AuthenticateServer::new(AuthenticateConfig {
+            subscription_expires: Some("next tuesday".into()),
+            ..make_server().config
+        })
+        .is_err());
     }
 }

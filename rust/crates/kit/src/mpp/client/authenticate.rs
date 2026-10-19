@@ -140,6 +140,7 @@ mod tests {
             program_id: None,
             challenge_binding_secret: "test-secret".into(),
             realm: "api.example.com".into(),
+            subscription_expires: None,
             statement: None,
             store: None,
         })
