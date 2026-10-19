@@ -26,7 +26,11 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 /// Build an `upto` payload for a `payment-channel` requirement.
 ///
 /// `expires_at` is the voucher/authorization deadline (Unix seconds); `nonce`
-/// uniquely identifies this authorization. The requirement SHOULD carry
+/// identifies the logical request and seeds the channel salt, so rebuilding
+/// the payment for the same request against the same challenge yields the
+/// same channel rather than a second deposit. An empty `nonce` draws a random
+/// salt. After an ambiguous outcome, resend the original header instead of
+/// building a new one under a fresh nonce. The requirement SHOULD carry
 /// `extra.recentBlockhash` and `extra.recentSlot` (the operator embeds both in
 /// the 402 challenge so the client skips an RPC round-trip): the slot feeds
 /// the program's `openSlot`, a channel-PDA seed the program only accepts
@@ -38,9 +42,10 @@ pub async fn build_upto_payload(
     rpc: &RpcClient,
     requirements: &UptoRequirements,
     expires_at: i64,
-    _nonce: impl Into<String>,
+    nonce: impl Into<String>,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<UptoPayload, Error> {
+    let nonce = nonce.into();
     let max = requirements.max_amount()?;
     let mint = Pubkey::from_str(&requirements.asset)
         .map_err(|e| Error::Other(format!("invalid asset mint: {e}")))?;
@@ -92,7 +97,7 @@ pub async fn build_upto_payload(
     let blockhash = Hash::from_str(&blockhash_str)
         .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
 
-    let salt = pc::random_salt();
+    let salt = salt_for_nonce(&nonce);
     // A seller that declares `extra.memo` requires exactly one matching Memo
     // after `open`; without the declaration the transaction stays a bare open.
     let options = pc::OpenTxOptions {
@@ -134,6 +139,20 @@ pub async fn build_upto_payload(
         open_slot: open_slot.to_string(),
         open_transaction: Some(open.transaction),
     })
+}
+
+/// The channel salt for a request `nonce`: derived from it, or random when the
+/// caller supplied none.
+fn salt_for_nonce(nonce: &str) -> u64 {
+    if nonce.is_empty() {
+        return pc::random_salt();
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(b"x402-upto-salt\0")
+        .chain_update(nonce.as_bytes())
+        .finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("8-byte prefix"))
 }
 
 fn parse_open_slot(value: &str) -> Result<u64, Error> {
@@ -335,6 +354,29 @@ mod tests {
                 .expect("payload from embedded hints");
         assert_eq!(payload.open_slot, "314");
         assert!(payload.open_transaction.is_some());
+    }
+
+    /// Rebuilding the payment for the same request against the same challenge
+    /// names the same channel, so a retry cannot open a second deposit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_request_nonce_pins_the_channel() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("fails".to_string());
+        let build = |nonce: &'static str| {
+            let signer = &signer;
+            let rpc = &rpc;
+            async move {
+                build_upto_payload(&**signer, rpc, &requirements(), 4_102_444_800, nonce, None)
+                    .await
+                    .unwrap()
+            }
+        };
+        let first = build("request-7").await;
+        let retry = build("request-7").await;
+        assert_eq!(first.channel_id, retry.channel_id);
+        assert_eq!(first.nonce, retry.nonce);
+        assert_ne!(build("request-8").await.channel_id, first.channel_id);
+        assert_ne!(build("").await.channel_id, build("").await.channel_id);
     }
 
     #[tokio::test(flavor = "multi_thread")]
