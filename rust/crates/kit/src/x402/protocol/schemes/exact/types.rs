@@ -410,9 +410,15 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
         let max_age =
             u64_field(object, "maxAge").or_else(|| u64_field(object, "maxTimeoutSeconds"));
 
-        let accepted = if object.contains_key("amount")
-            && object.contains_key("asset")
-            && object.contains_key("payTo")
+        // Keep the wire object for canonical v2 offers, and for any offer that
+        // declares another scheme so it is never re-serialized as `exact`.
+        let declares_other_scheme = object
+            .get("scheme")
+            .is_some_and(|scheme| scheme.as_str() != Some(EXACT_SCHEME));
+        let accepted = if declares_other_scheme
+            || (object.contains_key("amount")
+                && object.contains_key("asset")
+                && object.contains_key("payTo"))
         {
             Some(value.clone())
         } else {
@@ -1195,5 +1201,46 @@ mod tests {
         let ext = PaymentExtensions::default().with_payment_identifier_id("pay_aaaaaaaaaaaaaaaa");
         let s = serde_json::to_string(&ext).unwrap();
         assert!(s.contains("\"payment-identifier\""), "got {s}");
+    }
+
+    fn legacy_offer(scheme: Option<serde_json::Value>) -> PaymentRequirements {
+        let mut offer = serde_json::json!({
+            "network": SOLANA_MAINNET,
+            "maxAmountRequired": "1000",
+            "resource": "https://api.example.test/r",
+            "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "asset": mints::USDC_MAINNET,
+            "maxTimeoutSeconds": 60
+        });
+        if let Some(scheme) = scheme {
+            offer["scheme"] = scheme;
+        }
+        serde_json::from_value(offer).unwrap()
+    }
+
+    #[test]
+    fn legacy_offer_keeps_a_non_exact_scheme() {
+        for scheme in [
+            serde_json::json!("upto"),
+            serde_json::json!("batch-settlement"),
+            serde_json::json!("Exact"),
+            serde_json::json!(null),
+            serde_json::json!(1),
+        ] {
+            let requirement = legacy_offer(Some(scheme.clone()));
+            assert!(!requirement.is_exact_scheme(), "{scheme}");
+            assert_eq!(requirement.to_accepted_value()["scheme"], scheme);
+        }
+    }
+
+    #[test]
+    fn legacy_exact_offer_is_still_exact() {
+        for scheme in [None, Some(serde_json::json!(EXACT_SCHEME))] {
+            let requirement = legacy_offer(scheme);
+            assert!(requirement.is_exact_scheme());
+            assert!(requirement.accepted.is_none());
+            assert_eq!(requirement.amount, "1000");
+            assert_eq!(requirement.to_accepted_value()["scheme"], EXACT_SCHEME);
+        }
     }
 }

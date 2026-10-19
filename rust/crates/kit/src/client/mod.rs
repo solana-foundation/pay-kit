@@ -1657,4 +1657,50 @@ mod tests {
             task.abort();
         }
     }
+
+    #[tokio::test]
+    async fn legacy_non_exact_offer_is_never_signed() {
+        let offer = |scheme: &str| {
+            serde_json::json!({
+                "scheme": scheme,
+                "network": SOLANA_MAINNET,
+                "maxAmountRequired": "500000",
+                "asset": USDC_MAINNET,
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
+            })
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let (url, saw_payment, task) = x402_offer_server(offer("upto")).await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap();
+        assert!(matches!(
+            client.get(url).send().await,
+            Err(ClientError::NoSupportedChallenge)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!saw_payment.load(Ordering::SeqCst));
+        task.abort();
+
+        // The same legacy shape declaring `exact` is still paid.
+        let (url, saw_payment, task) = x402_offer_server(offer("exact")).await;
+        let response = x402_client(None).get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(saw_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
 }
