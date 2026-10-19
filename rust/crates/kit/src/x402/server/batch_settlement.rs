@@ -222,17 +222,45 @@ fn spawn_next_submission(
 /// the sync `RpcClient` call otherwise blocks a Tokio runtime thread for a full
 /// RPC round-trip on every stale-snapshot refresh, which under load serializes
 /// unrelated paid requests and collapses gateway throughput.
-fn rpc_lookup_channel(rpc: &RpcClient, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
+fn rpc_lookup_channel(
+    rpc: &RpcClient,
+    channel_id: &Pubkey,
+    program_id: &Pubkey,
+) -> Result<Option<Channel>, Error> {
     let account = rpc
         .get_account_with_commitment(channel_id, rpc.commitment())
         .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?
         .value;
     account
         .map(|account| {
-            Channel::from_bytes(&account.data)
-                .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+            decode_channel_account(
+                channel_id,
+                &pc::from_address(&account.owner),
+                &account.data,
+                program_id,
+            )
         })
         .transpose()
+}
+
+/// Decode a channel account owned by `program_id`. An account at the channel
+/// address owned by another program is an error, never an absence: it is not
+/// this deployment's channel, and its record must not be dropped for it.
+fn decode_channel_account(
+    channel_id: &Pubkey,
+    owner: &Pubkey,
+    data: &[u8],
+    program_id: &Pubkey,
+) -> Result<Channel, Error> {
+    if owner != program_id {
+        return Err(Error::Other(format!(
+            "channel account {} is owned by {}, not the configured program {}",
+            pc::pubkey_string(channel_id),
+            pc::pubkey_string(owner),
+            pc::pubkey_string(program_id)
+        )));
+    }
+    Channel::from_bytes(data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
 }
 
 /// Simulate, broadcast, and confirm a co-signed deposit/top-up with the
@@ -1872,9 +1900,11 @@ impl X402BatchSettlement {
         // Run the blocking RPC on a blocking thread so a stale-snapshot refresh
         // never stalls the async worker serving other paid requests.
         let rpc = Arc::clone(&self.rpc);
-        let fetched = tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id))
-            .await
-            .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
+        let program_id = self.program_id()?;
+        let fetched =
+            tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
+                .await
+                .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
         // A snapshot past its window cannot rule out a payer's close, so a
         // failed refresh refuses the voucher rather than serving on it.
         let onchain = fetched?;
@@ -2247,7 +2277,20 @@ impl X402BatchSettlement {
             scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
             pay_to: Some(self.config.pay_to.clone()),
             network: Some(self.network()),
+            program_id: Some(
+                self.config
+                    .program_id
+                    .clone()
+                    .unwrap_or_else(|| pc::pubkey_string(&pc::default_program_id())),
+            ),
         }
+    }
+
+    /// Whether a record whose channel is confirmed absent onchain may be
+    /// dropped: not while it carries in-flight work, and never when it belongs
+    /// to another deployment, whose absence this server cannot judge.
+    fn may_drop_absent_record(&self, state: &ChannelState) -> bool {
+        !state.has_in_flight_authorization() && state.check_binding(&self.binding()).is_ok()
     }
 
     /// Durably record that the payer has started a forced close, and return
@@ -2354,7 +2397,7 @@ impl X402BatchSettlement {
     /// absence: a durable record must not be dropped for a condition that can
     /// clear, because it holds the only copy of this server's charge watermark.
     fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
-        rpc_lookup_channel(&self.rpc, channel_id)
+        rpc_lookup_channel(&self.rpc, channel_id, &self.program_id()?)
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
@@ -2377,21 +2420,25 @@ impl X402BatchSettlement {
             .iter()
             .map(|channel_id| pc::parse_pubkey(channel_id))
             .collect::<Result<Vec<_>, _>>()?;
+        let program_id = self.program_id()?;
         let mut snapshots = Vec::with_capacity(addresses.len());
         for chunk in addresses.chunks(MAX_CHANNELS_PER_RPC_READ) {
             let rpc = Arc::clone(&self.rpc);
-            let chunk = chunk.to_vec();
-            let accounts = tokio::task::spawn_blocking(move || rpc.get_multiple_accounts(&chunk))
+            let request = chunk.to_vec();
+            let accounts = tokio::task::spawn_blocking(move || rpc.get_multiple_accounts(&request))
                 .await
                 .map_err(|error| Error::Other(format!("channel batch fetch join error: {error}")))?
                 .map_err(|error| Error::Rpc(format!("channel batch fetch failed: {error}")))?;
-            for account in accounts {
+            for (address, account) in chunk.iter().zip(accounts) {
                 snapshots.push(
                     account
                         .map(|account| {
-                            Channel::from_bytes(&account.data).map_err(|error| {
-                                Error::Other(format!("channel decode failed: {error}"))
-                            })
+                            decode_channel_account(
+                                address,
+                                &pc::from_address(&account.owner),
+                                &account.data,
+                                &program_id,
+                            )
                         })
                         .transpose()?,
                 );
@@ -2402,16 +2449,16 @@ impl X402BatchSettlement {
             if snapshot.is_some() {
                 continue;
             }
-            let in_flight = self
+            let keep = self
                 .store
                 .get_channel(channel_id)
                 .await
                 .map_err(|error| Error::Other(format!("store error: {error}")))?
-                .is_some_and(|state| state.has_in_flight_authorization());
-            if in_flight {
+                .is_some_and(|state| !self.may_drop_absent_record(&state));
+            if keep {
                 tracing::debug!(
                     channel = %channel_id,
-                    "channel is not onchain yet; keeping its in-flight record"
+                    "keeping a record that is in flight or bound to another deployment"
                 );
                 continue;
             }
@@ -2623,16 +2670,16 @@ impl X402BatchSettlement {
         // authorization with it — losing a charge that was served but not yet
         // committed, or freeing one whose handler already ran to be served a
         // second time.
-        let in_flight = self
+        let keep = self
             .store
             .get_channel(channel_id)
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?
-            .is_some_and(|state| state.has_in_flight_authorization());
-        if in_flight {
+            .is_some_and(|state| !self.may_drop_absent_record(&state));
+        if keep {
             tracing::debug!(
                 channel = %channel_id,
-                "channel is not onchain yet; keeping its in-flight record"
+                "keeping a record that is in flight or bound to another deployment"
             );
             return Ok(None);
         }
@@ -4476,6 +4523,7 @@ mod tests {
                         scheme: "session".to_string(),
                         pay_to: None,
                         network: None,
+                        program_id: None,
                     });
                     Ok(state)
                 }),
@@ -4590,6 +4638,63 @@ mod tests {
             .await
             .expect_err("another cluster's channel record is refused");
         assert!(err.to_string().contains("network differs"), "{err}");
+    }
+
+    /// An account at the channel address owned by another program is an
+    /// error rather than an absence, so lifecycle work never drops the record
+    /// (and its voucher watermark) on that basis; a record bound to another
+    /// program is neither served nor dropped.
+    #[tokio::test]
+    async fn a_channel_of_another_program_is_neither_served_nor_dropped() {
+        let channel = Pubkey::new_unique();
+        let ours = pc::default_program_id();
+        let custom = Pubkey::new_unique();
+        let err = decode_channel_account(&channel, &custom, &[], &ours)
+            .expect_err("a foreign owner is refused before decoding");
+        assert!(
+            err.to_string().contains("not the configured program"),
+            "{err}"
+        );
+        assert!(
+            decode_channel_account(&channel, &ours, &[], &ours)
+                .unwrap_err()
+                .to_string()
+                .contains("decode failed"),
+            "the right owner proceeds to decoding"
+        );
+
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, _, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let foreign = ChannelBinding {
+            program_id: Some(pc::pubkey_string(&custom)),
+            ..handler.binding()
+        };
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(move |current| {
+                    let mut state = current.unwrap();
+                    state.set_binding(&foreign);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(!handler.may_drop_absent_record(&state));
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("a record bound to another program is refused");
+        assert!(err.to_string().contains("programId differs"), "{err}");
+
+        let mut own = state.clone();
+        own.set_binding(&handler.binding());
+        assert!(handler.may_drop_absent_record(&own));
     }
 
     /// A record from before bindings is accepted and adopts this server's

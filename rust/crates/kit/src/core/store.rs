@@ -720,6 +720,9 @@ pub struct ChannelBinding {
     /// Network the channel lives on, as the owning scheme names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    /// Payment-channels program that owns the channel account (base58).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
 }
 
 impl ChannelBinding {
@@ -734,6 +737,8 @@ impl ChannelBinding {
             Some("payTo")
         } else if differs(&self.network, &current.network) {
             Some("network")
+        } else if differs(&self.program_id, &current.program_id) {
+            Some("programId")
         } else {
             None
         }
@@ -745,6 +750,10 @@ impl ChannelBinding {
             scheme: self.scheme.clone(),
             pay_to: self.pay_to.clone().or_else(|| current.pay_to.clone()),
             network: self.network.clone().or_else(|| current.network.clone()),
+            program_id: self
+                .program_id
+                .clone()
+                .or_else(|| current.program_id.clone()),
         }
     }
 }
@@ -2737,6 +2746,7 @@ mod tests {
             scheme: "batch-settlement".to_string(),
             pay_to: Some("api-a".to_string()),
             network: Some("devnet".to_string()),
+            program_id: Some("program-a".to_string()),
         };
         assert_eq!(state.binding().unwrap(), None);
         state
@@ -2762,6 +2772,11 @@ mod tests {
             ..batch.clone()
         };
         assert!(decoded.check_binding(&other_network).is_err());
+        let other_program = ChannelBinding {
+            program_id: Some("program-b".to_string()),
+            ..batch.clone()
+        };
+        assert!(decoded.check_binding(&other_program).is_err());
 
         // An older binding without a receiver is accepted and completed.
         let mut older = make_state("c2", 10_000);
@@ -2769,6 +2784,7 @@ mod tests {
             scheme: "batch-settlement".to_string(),
             pay_to: None,
             network: None,
+            program_id: None,
         });
         older.check_binding(&batch).unwrap();
         older.adopt_binding(&batch).unwrap();
