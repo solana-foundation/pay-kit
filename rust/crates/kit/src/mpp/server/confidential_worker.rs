@@ -13,6 +13,8 @@
 //!
 //! The worker binds an `Mpp` per settlement because `Mpp` fixes its recipient +
 //! currency at construction; the shared store is injected via `Config.store`.
+//! The store is the challenge replay ledger, so every replica (and a restarted
+//! process) must be given the same durable instance.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::charge::{Config as MppConfig, Mpp, VerificationError};
 use crate::core::tx::TxVersion;
-use crate::mpp::store::{MemoryStore, Store};
+use crate::mpp::store::Store;
 use crate::mpp::{ChargeRequest, PaymentCredential, Receipt};
 
 const SWEEP_INTERVAL_SECS: u64 = 300;
@@ -54,6 +56,10 @@ pub struct ConfidentialWorkerConfig {
     /// auditor). Receipts then do not attest the amount. See
     /// [`MppConfig::accept_unverified_confidential_amount`].
     pub accept_unverified_amount: bool,
+    /// Challenge replay and orphan-guard store. REQUIRED, and must be shared
+    /// by every worker settling the same challenges (replicas, restarts): a
+    /// process-local store lets a still-valid challenge settle twice.
+    pub store: Arc<dyn Store>,
 }
 
 struct ConfidentialWorkerRuntime {
@@ -124,7 +130,7 @@ pub fn spawn_with_tx_version(
     tx_version: TxVersion,
 ) -> ConfidentialHandle {
     let (tx, mut rx) = mpsc::channel::<ConfidentialMsg>(CHANNEL_CAPACITY);
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store = cfg.store.clone();
 
     tokio::spawn(async move {
         let runtime = ConfidentialWorkerRuntime {
@@ -250,4 +256,127 @@ fn build_mpp(
     .ok()?;
     mpp.accepted_versions = vec![tx_version];
     Some(mpp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mpp::store::MemoryStore;
+
+    const SECRET: &str = "worker-test-secret-with-at-least-32-bytes";
+    const REALM: &str = "worker-test";
+
+    fn gateway() -> Arc<dyn TransactionSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Arc::new(solana_keychain::MemorySigner::from_bytes(&kp).unwrap())
+    }
+
+    fn worker(store: Arc<dyn Store>) -> ConfidentialHandle {
+        let signer = gateway();
+        spawn(
+            ConfidentialWorkerConfig {
+                network: "mainnet".into(),
+                rpc_url: "http://127.0.0.1:1".into(),
+                challenge_binding_secret: Some(SECRET.into()),
+                realm: REALM.into(),
+                sweep_currency: "PYUSD".into(),
+                sweep_decimals: 6,
+                fee_payer_pubkey: signer.pubkey().to_string(),
+                recipient_signer: None,
+                auditor: None,
+                accept_unverified_amount: false,
+                store,
+            },
+            signer,
+        )
+    }
+
+    fn credential(bundle: &str) -> (PaymentCredential, ChargeRequest) {
+        let recipient = solana_pubkey::Pubkey::new_unique().to_string();
+        let mpp = Mpp::new(MppConfig {
+            recipient: recipient.clone(),
+            currency: "PYUSD".into(),
+            decimals: 6,
+            network: "mainnet".into(),
+            rpc_url: Some("http://127.0.0.1:1".into()),
+            challenge_binding_secret: Some(SECRET.into()),
+            realm: Some(REALM.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let request: ChargeRequest = mpp
+            .charge_challenge(&ChargeRequest {
+                amount: "1000000".into(),
+                currency: "PYUSD".into(),
+                recipient: Some(recipient),
+                method_details: Some(serde_json::json!({
+                    "network": "mainnet",
+                    "decimals": 6,
+                    "confidential": true,
+                })),
+                ..Default::default()
+            })
+            .unwrap()
+            .request
+            .decode()
+            .unwrap();
+        let challenge = mpp.charge_challenge(&request).unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "bundle", "transactions": [bundle] }),
+        );
+        (credential, request)
+    }
+
+    // A second worker (another replica, or this one after a restart) must see
+    // the first worker's claim on the challenge.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workers_sharing_a_store_settle_a_challenge_once() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let (first, request) = credential("AA==");
+        let mut second = first.clone();
+        second.payload = serde_json::json!({ "type": "bundle", "transactions": ["AQ=="] });
+
+        let a = worker(store.clone());
+        let err = a
+            .settle(first, request.clone(), "PYUSD".into(), 6)
+            .await
+            .unwrap_err();
+        assert!(
+            !err.message.contains("already presented"),
+            "{}",
+            err.message
+        );
+
+        let b = worker(store);
+        let err = b
+            .settle(second, request, "PYUSD".into(), 6)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("already presented"), "{}", err.message);
+    }
+
+    // Control: isolated stores are exactly what let the replay through.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workers_with_separate_stores_do_not_share_claims() {
+        let (first, request) = credential("AA==");
+        let mut second = first.clone();
+        second.payload = serde_json::json!({ "type": "bundle", "transactions": ["AQ=="] });
+        worker(Arc::new(MemoryStore::new()))
+            .settle(first, request.clone(), "PYUSD".into(), 6)
+            .await
+            .unwrap_err();
+        let err = worker(Arc::new(MemoryStore::new()))
+            .settle(second, request, "PYUSD".into(), 6)
+            .await
+            .unwrap_err();
+        assert!(
+            !err.message.contains("already presented"),
+            "{}",
+            err.message
+        );
+    }
 }

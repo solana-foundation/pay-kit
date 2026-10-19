@@ -462,6 +462,7 @@ async fn confidential_charge_via_worker() {
             recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
             auditor: None,
             accept_unverified_amount: false,
+            store: Arc::new(solana_pay_kit::mpp::store::MemoryStore::new()),
         },
         s.gateway_signer.clone(),
     );
