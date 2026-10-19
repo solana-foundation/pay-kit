@@ -1431,8 +1431,10 @@ async fn batch_gate_middleware(
     prevent_shared_caching(&mut resp);
 
     // A handler that failed charges nothing: release the authorization so the
-    // same voucher can be presented again.
-    if !resp.status().is_success() {
+    // same voucher can be presented again. Only an error status counts as a
+    // failure; a redirect is how a completed POST answers (POST/Redirect/GET),
+    // so its effect is paid for like any success.
+    if is_failed_handler_status(resp.status()) {
         if let Err(e) = batch.release_authorization(outcome).await {
             tracing::error!(
                 channel = %channel_id,
@@ -1507,6 +1509,12 @@ async fn batch_gate_middleware(
                 .into_response()
         }
     }
+}
+
+/// Whether a batch handler's response means it failed before delivering the
+/// paid effect, so its authorization is released rather than charged.
+fn is_failed_handler_status(status: StatusCode) -> bool {
+    status.is_client_error() || status.is_server_error()
 }
 
 /// Attempts a served request's charge is willing to make before giving up.
@@ -2126,6 +2134,210 @@ mod tests {
             !upto.is_in_flight(&channel),
             "the slot is released once the retries are exhausted"
         );
+    }
+
+    fn batch_channel_state(channel_id: &str, payer: &str) -> crate::core::store::ChannelState {
+        crate::core::store::ChannelState {
+            channel_id: channel_id.to_string(),
+            authorized_signer: payer.to_string(),
+            deposit: 5_000,
+            cumulative: 0,
+            sealed: false,
+            highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
+            close_requested_at: None,
+            final_cumulative: None,
+            open_slot: Some(341_000_000),
+            payer: payer.to_string(),
+            rent_payer: String::new(),
+            opening_challenge_id: String::new(),
+            authentication: None,
+            voucher_signer: "client".to_string(),
+            idle_timeout_seconds: None,
+            last_activity_at: 0,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            distributed_on_chain: 0,
+            processed_uses: vec![],
+            processed_topup_signatures: vec![],
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: Default::default(),
+            pending_setup: None,
+            onchain_checked_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            lifecycle: None,
+            schema_version: crate::core::store::CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
+        }
+    }
+
+    /// A seeded batch channel and a `PAYMENT-SIGNATURE` paying its first
+    /// 1,000-unit step.
+    async fn batch_paid_request(pay: &PayKit) -> (String, String) {
+        use crate::core::payment_channels as pc;
+        use crate::core::store::ChannelStore as _;
+        use crate::x402::batch_settlement::{
+            derive_channel_id, BatchChannelConfig, BatchPayload, BatchPaymentPayload, BatchVoucher,
+            VOUCHER_EXPIRES_AT,
+        };
+        use ed25519_dalek::Signer as _;
+
+        let batch = pay.x402_batch().expect("signer enables batch");
+        let requirements = batch.requirements("0.001").unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]);
+        let payer = bs58::encode(key.verifying_key().as_bytes()).into_string();
+        let config = BatchChannelConfig {
+            payer: payer.clone(),
+            payer_authorizer: payer.clone(),
+            receiver: requirements.pay_to.clone(),
+            receiver_authorizer: None,
+            token: requirements.asset.clone(),
+            withdraw_delay: requirements.extra.withdraw_delay,
+            salt: "42".to_string(),
+            open_slot: 341_000_000,
+            voucher_signer: None,
+        };
+        let channel =
+            derive_channel_id(&config, &batch.fee_payer(), &pc::default_program_id()).unwrap();
+        let channel_id = pc::pubkey_string(&channel);
+        let message = pc::voucher_message_bytes(&channel, 1_000, VOUCHER_EXPIRES_AT).unwrap();
+        let payment = BatchPaymentPayload {
+            x402_version: crate::x402::X402_VERSION_V2,
+            accepted: requirements,
+            payload: BatchPayload::Voucher {
+                channel_config: config,
+                voucher: BatchVoucher {
+                    channel_id: channel_id.clone(),
+                    max_claimable_amount: "1000".to_string(),
+                    expires_at: VOUCHER_EXPIRES_AT,
+                    signature: bs58::encode(key.sign(&message).to_bytes()).into_string(),
+                },
+            },
+        };
+        batch
+            .store()
+            .put_channel(&channel_id, batch_channel_state(&channel_id, &payer))
+            .await
+            .unwrap();
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&payment).unwrap(),
+        );
+        (channel_id, header)
+    }
+
+    async fn post_twice(app: Router, header: &str) -> Vec<Response> {
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            responses.push(
+                app.clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/orders")
+                            .header(PAYMENT_SIGNATURE_HEADER, header)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        responses
+    }
+
+    /// A state-changing handler that answers with a redirect is charged, so
+    /// the same voucher cannot run it a second time for free.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_redirect_is_charged_and_not_reexecuted() {
+        use crate::core::store::ChannelStore as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let pay = upto_paykit();
+        let (channel_id, header) = batch_paid_request(&pay).await;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&executions);
+        let handler = move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::SEE_OTHER,
+                    [(header::LOCATION, "/orders/created")],
+                    "created",
+                )
+                    .into_response()
+            }
+        };
+        let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
+
+        let responses = post_twice(app, &header).await;
+        assert_eq!(responses[0].status(), StatusCode::SEE_OTHER);
+        assert!(responses[0].headers().contains_key(PAYMENT_RESPONSE_HEADER));
+        // The retry replays the committed redirect instead of re-running it.
+        assert_eq!(responses[1].status(), StatusCode::SEE_OTHER);
+        assert_eq!(responses[1].headers()[PAYMENT_REPLAY_HEADER], "true");
+        assert_eq!(responses[1].headers()[header::LOCATION], "/orders/created");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+        let state = pay
+            .x402_batch()
+            .unwrap()
+            .store()
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 1_000, "the redirect was charged");
+    }
+
+    /// An error response still releases the authorization for a retry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_error_response_releases_the_voucher() {
+        use crate::core::store::ChannelStore as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let pay = upto_paykit();
+        let (channel_id, header) = batch_paid_request(&pay).await;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&executions);
+        let handler = move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        };
+        let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
+
+        let responses = post_twice(app, &header).await;
+        assert!(responses
+            .iter()
+            .all(|r| r.status() == StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        let state = pay
+            .x402_batch()
+            .unwrap()
+            .store()
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 0);
+        assert!(state.pending_deliveries.is_empty());
+    }
+
+    #[test]
+    fn only_error_statuses_release_a_batch_authorization() {
+        assert!(!is_failed_handler_status(StatusCode::OK));
+        assert!(!is_failed_handler_status(StatusCode::NO_CONTENT));
+        assert!(!is_failed_handler_status(StatusCode::SEE_OTHER));
+        assert!(!is_failed_handler_status(StatusCode::NOT_MODIFIED));
+        assert!(is_failed_handler_status(StatusCode::BAD_REQUEST));
+        assert!(is_failed_handler_status(StatusCode::INTERNAL_SERVER_ERROR));
     }
 
     #[tokio::test(flavor = "multi_thread")]
