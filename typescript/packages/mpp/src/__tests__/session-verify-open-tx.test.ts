@@ -229,6 +229,150 @@ describe('verifyOpenTx transaction shape', () => {
     });
 });
 
+// ── verifyOpenTx: Compute Budget policy ─────────────────────────────────
+
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
+
+function unitLimit(units: number): Uint8Array {
+    const data = new Uint8Array(5);
+    data[0] = 2;
+    new DataView(data.buffer).setUint32(1, units, true);
+    return data;
+}
+
+function unitPrice(microLamports: bigint): Uint8Array {
+    const data = new Uint8Array(9);
+    data[0] = 3;
+    new DataView(data.buffer).setBigUint64(1, microLamports, true);
+    return data;
+}
+
+/** Open fixture whose fee payer is an operator (sponsored) or the channel payer. */
+async function budgetOpenFixture(sponsored: boolean) {
+    const { payee, payer, sessionSigner } = await clientOpenFixture();
+    const operator = await generateKeyPairSigner();
+    const request = challengeRequest(
+        payee.address,
+        sponsored ? { feePayer: true, feePayerKey: operator.address } : {},
+    ) as unknown as SessionRequest;
+    const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: sessionSigner.address,
+        request,
+        salt: 7n,
+        signer: payer,
+    });
+    const feePayer = sponsored ? operator.address : payer.address;
+    const openPayload: OpenPayload = {
+        authorizedSigner: sessionSigner.address,
+        channelId: open.channelId,
+        depositAmount: open.deposit,
+        gracePeriodSeconds: open.gracePeriod,
+        mint: open.mint,
+        openSlot: open.openSlot,
+        payee: open.payee,
+        payer: open.payer,
+        salt: open.salt,
+        transaction: open.transaction,
+    };
+    const expected: VerifyOpenTxExpected = {
+        authorizedSigner: sessionSigner.address,
+        channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+        currency: 'USDC',
+        feePayer,
+        network: 'devnet',
+        openSlot: CHALLENGED_SLOT,
+        recentBlockhash: CHALLENGED_BLOCKHASH,
+        recipient: open.payee,
+        rentPayer: feePayer,
+        splits: [],
+        tokenProgram: TOKEN_PROGRAM,
+    };
+
+    /** Prepend Compute Budget instructions to the open and re-sign it as the payer. */
+    const withBudget = async (instructions: readonly { accounts?: number[]; data: Uint8Array }[]) => {
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(open.transaction));
+        const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            header: { numReadonlyNonSignerAccounts: number };
+            instructions: readonly unknown[];
+            staticAccounts: readonly string[];
+        };
+        const programIndex = compiled.staticAccounts.length;
+        const messageBytes = getCompiledTransactionMessageEncoder().encode({
+            ...compiled,
+            header: {
+                ...compiled.header,
+                numReadonlyNonSignerAccounts: compiled.header.numReadonlyNonSignerAccounts + 1,
+            },
+            instructions: [
+                ...instructions.map(ix => ({
+                    accountIndices: ix.accounts ?? [],
+                    data: ix.data,
+                    programAddressIndex: programIndex,
+                })),
+                ...compiled.instructions,
+            ],
+            staticAccounts: [...compiled.staticAccounts, COMPUTE_BUDGET_PROGRAM],
+        } as never);
+        const [payerSignature] = await payer.signMessages([{ content: messageBytes as Uint8Array } as never]);
+        const signed = getTransactionEncoder().encode({
+            messageBytes: messageBytes as never,
+            signatures: { ...tx.signatures, ...payerSignature } as never,
+        });
+        const transaction = getBase64Codec().decode(signed);
+        return await verifyOpenTx({ expected, openPayload: { ...openPayload, transaction } });
+    };
+    return { open, withBudget };
+}
+
+describe('verifyOpenTx Compute Budget policy', () => {
+    test('a sponsored open with a client-selected excessive priority fee is rejected', async () => {
+        const { withBudget } = await budgetOpenFixture(true);
+        await expect(withBudget([{ data: unitPrice(1_000_000n) }, { data: unitLimit(1_000_000) }])).rejects.toThrow(
+            /compute unit (price|limit) .* exceeds maximum/,
+        );
+    });
+
+    test('sponsored opens accept the caps exactly and reject one past them', async () => {
+        const { open, withBudget } = await budgetOpenFixture(true);
+        const verified = await withBudget([{ data: unitLimit(200_000) }, { data: unitPrice(10_000n) }]);
+        expect(verified.channelId).toBe(open.channelId);
+
+        await expect(withBudget([{ data: unitPrice(10_001n) }])).rejects.toThrow(
+            /compute unit price 10001 exceeds maximum 10000/,
+        );
+        await expect(withBudget([{ data: unitLimit(200_001) }])).rejects.toThrow(
+            /compute unit limit 200001 exceeds maximum 200000/,
+        );
+    });
+
+    test('payer-funded opens keep the general caps', async () => {
+        const { open, withBudget } = await budgetOpenFixture(false);
+        const verified = await withBudget([{ data: unitLimit(400_000) }, { data: unitPrice(5_000_000n) }]);
+        expect(verified.channelId).toBe(open.channelId);
+
+        await expect(withBudget([{ data: unitPrice(5_000_001n) }])).rejects.toThrow(/exceeds maximum 5000000/);
+        await expect(withBudget([{ data: unitLimit(400_001) }])).rejects.toThrow(/exceeds maximum 400000/);
+    });
+
+    test('duplicate, unsupported, malformed and account-bearing instructions are rejected', async () => {
+        const { withBudget } = await budgetOpenFixture(true);
+        await expect(withBudget([{ data: unitPrice(1n) }, { data: unitPrice(1n) }])).rejects.toThrow(
+            /duplicate SetComputeUnitPrice/,
+        );
+        await expect(withBudget([{ data: unitLimit(1) }, { data: unitLimit(1) }])).rejects.toThrow(
+            /duplicate SetComputeUnitLimit/,
+        );
+        // SetLoadedAccountsDataSizeLimit
+        await expect(withBudget([{ data: new Uint8Array([4, 0, 0, 1, 0]) }])).rejects.toThrow(
+            /unsupported compute budget instruction/,
+        );
+        await expect(withBudget([{ data: unitPrice(1n).slice(0, 8) }])).rejects.toThrow(
+            /unsupported compute budget instruction/,
+        );
+        await expect(withBudget([{ accounts: [0], data: unitPrice(1n) }])).rejects.toThrow(/must not have accounts/);
+    });
+});
+
 // ── verifyOpenTx: challenge binding of accounts and args ────────────────
 
 describe('verifyOpenTx binds the open instruction to the challenge', () => {

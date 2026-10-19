@@ -124,6 +124,20 @@ export function treasuryOwnerForNetwork(network: string): Address {
     return getBase58FromBytes(bytes);
 }
 
+const COMPUTE_BUDGET_PROGRAM_ADDRESS = 'ComputeBudget111111111111111111111111111111';
+
+/**
+ * Compute Budget ceilings for client-built channel transactions the server
+ * broadcasts. The general caps mirror `OPEN_MAX_COMPUTE_UNIT_LIMIT` /
+ * `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS` in
+ * `rust/crates/kit/src/core/payment_channel/v1.rs`; the tighter sponsored caps
+ * apply when the operator, not the channel payer, pays the fee.
+ */
+const MAX_COMPUTE_UNIT_LIMIT = 400_000;
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
+const MAX_SPONSORED_COMPUTE_UNIT_LIMIT = 200_000;
+const MAX_SPONSORED_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 10_000n;
+
 /** Payment-channel open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
 
@@ -614,12 +628,14 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
 
     let openIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
+    const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
     for (const ix of message.instructions) {
         const programIxAddr = message.staticAccounts[ix.programAddressIndex];
         if (programIxAddr !== programIdStr) {
-            if (programIxAddr !== 'ComputeBudget111111111111111111111111111111') {
+            if (programIxAddr !== COMPUTE_BUDGET_PROGRAM_ADDRESS) {
                 throw new Error(`verifyOpenTx: unexpected instruction program ${String(programIxAddr)}`);
             }
+            computeBudgetIxs.push(ix);
             continue;
         }
         // Some decoders omit `data` entirely for empty instruction data.
@@ -661,6 +677,10 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             `verifyOpenTx: transaction fee payer ${String(message.staticAccounts[0])} != expected ${expected.feePayer}`,
         );
     }
+    validateComputeBudgetInstructions(computeBudgetIxs, {
+        label: 'verifyOpenTx',
+        sponsored: expected.feePayer !== payerAddr,
+    });
     const signatures = decoded.signatures as Readonly<Record<string, Uint8Array | null>>;
     const payerSignature = signatures[payerAddr];
     if (!payerSignature || payerSignature.every(byte => byte === 0)) {
@@ -793,9 +813,13 @@ export async function submitTopUpTx(args: {
     };
     if (message.addressTableLookups?.length) throw new Error('submitTopUpTx: address lookup tables are not permitted');
     let found = false;
+    const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
     for (const ix of message.instructions) {
         const program = message.staticAccounts[ix.programAddressIndex];
-        if (program === 'ComputeBudget111111111111111111111111111111') continue;
+        if (program === COMPUTE_BUDGET_PROGRAM_ADDRESS) {
+            computeBudgetIxs.push(ix);
+            continue;
+        }
         if (program !== args.channelProgram || !ix.data || found) {
             throw new Error(`submitTopUpTx: unexpected instruction program ${String(program)}`);
         }
@@ -812,6 +836,10 @@ export async function submitTopUpTx(args: {
         found = true;
     }
     if (!found) throw new Error('submitTopUpTx: top-up instruction not found');
+    validateComputeBudgetInstructions(computeBudgetIxs, {
+        label: 'submitTopUpTx',
+        sponsored: message.staticAccounts[0] !== args.payer,
+    });
     let signature: Signature;
     try {
         signature = await args.rpc
@@ -1114,6 +1142,51 @@ export async function submitSettleAndDistribute(
 // ─────────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
+
+interface CompiledComputeBudgetInstruction {
+    readonly accountIndices?: readonly number[] | undefined;
+    readonly data?: Uint8Array | undefined;
+}
+
+/**
+ * Accept at most one SetComputeUnitLimit and one SetComputeUnitPrice, without
+ * accounts, within the caps. `sponsored` selects the tighter caps for
+ * transactions whose fee the operator pays.
+ */
+function validateComputeBudgetInstructions(
+    instructions: readonly CompiledComputeBudgetInstruction[],
+    options: { readonly label: string; readonly sponsored: boolean },
+): void {
+    const { label, sponsored } = options;
+    const maxUnits = sponsored ? MAX_SPONSORED_COMPUTE_UNIT_LIMIT : MAX_COMPUTE_UNIT_LIMIT;
+    const maxPrice = sponsored ? MAX_SPONSORED_COMPUTE_UNIT_PRICE_MICROLAMPORTS : MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS;
+    let seenLimit = false;
+    let seenPrice = false;
+    for (const ix of instructions) {
+        if ((ix.accountIndices ?? []).length !== 0) {
+            throw new Error(`${label}: compute budget instruction must not have accounts`);
+        }
+        const data = ix.data ?? new Uint8Array();
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        if (data[0] === 2 && data.length === 5) {
+            if (seenLimit) throw new Error(`${label}: duplicate SetComputeUnitLimit instruction`);
+            seenLimit = true;
+            const units = view.getUint32(1, true);
+            if (units > maxUnits) {
+                throw new Error(`${label}: compute unit limit ${units} exceeds maximum ${maxUnits}`);
+            }
+        } else if (data[0] === 3 && data.length === 9) {
+            if (seenPrice) throw new Error(`${label}: duplicate SetComputeUnitPrice instruction`);
+            seenPrice = true;
+            const price = view.getBigUint64(1, true);
+            if (price > maxPrice) {
+                throw new Error(`${label}: compute unit price ${price} exceeds maximum ${maxPrice}`);
+            }
+        } else {
+            throw new Error(`${label}: unsupported compute budget instruction`);
+        }
+    }
+}
 
 async function buildMissingAtaCreateInstructions(args: {
     readonly mint: string;

@@ -23,6 +23,7 @@ import {
     getTransactionEncoder,
     type KeyPairSigner,
 } from '@solana/kit';
+import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { describe, expect, test } from 'vitest';
 
@@ -31,7 +32,11 @@ import { ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM } from '../constants.js';
 import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
 import { ChannelStatus } from '../generated/payment-channels/types/channelStatus.js';
 import { session } from '../server/Session.js';
-import { buildTopUpInstruction, PAYMENT_CHANNELS_PROGRAM_ID } from '../server/session/on-chain.js';
+import {
+    buildTopUpInstruction,
+    PAYMENT_CHANNELS_PROGRAM_ID,
+    type ServerInstruction,
+} from '../server/session/on-chain.js';
 import { type ChannelState, createMemorySessionStore, type SessionStore } from '../server/session/store.js';
 import { buildAndSignWireTransaction } from '../server/session/wire-tx.js';
 
@@ -233,7 +238,13 @@ async function verify(method: Method, credential: ReturnType<typeof makeCred>) {
 }
 
 /** Build a real, signed top-up wire transaction bound to the fixture channel. */
-async function buildTopUpWire(f: Fixture, rpc: unknown, amount: bigint, payerSigner?: KeyPairSigner): Promise<string> {
+async function buildTopUpWire(
+    f: Fixture,
+    rpc: unknown,
+    amount: bigint,
+    payerSigner?: KeyPairSigner,
+    prefix: readonly ServerInstruction[] = [],
+): Promise<string> {
     const payer = payerSigner ?? f.payer;
     const instruction = await buildTopUpInstruction({
         amount,
@@ -242,7 +253,7 @@ async function buildTopUpWire(f: Fixture, rpc: unknown, amount: bigint, payerSig
         payer,
         tokenProgram: TOKEN_PROGRAM,
     });
-    return await buildAndSignWireTransaction(rpc as never, payer, [instruction]);
+    return await buildAndSignWireTransaction(rpc as never, payer, [...prefix, instruction]);
 }
 
 /** Re-encode a v0 wire transaction as a legacy (unversioned) wire transaction. */
@@ -295,6 +306,49 @@ describe('session() verify() topUp', () => {
         expect(statusCalls).toContain('MockSig1');
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.deposit).toBe(5_000n);
+    });
+
+    test('topUp accepts Compute Budget instructions within the caps', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc);
+        await seedChannel(f);
+
+        const budget = [
+            getSetComputeUnitLimitInstruction({ units: 400_000 }),
+            getSetComputeUnitPriceInstruction({ microLamports: 5_000_000n }),
+        ] as unknown as ServerInstruction[];
+        const wire = await buildTopUpWire(f, rpc, 4_000n, undefined, budget);
+        const receipt = await verify(
+            method,
+            makeCred(f, { action: 'topUp', additionalAmount: '4000', channelId: f.channel.address, transaction: wire }),
+        );
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+    });
+
+    test('topUp rejects an excessive Compute Budget price before broadcasting', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc);
+        await seedChannel(f);
+
+        const budget = [
+            getSetComputeUnitPriceInstruction({ microLamports: 5_000_001n }),
+        ] as unknown as ServerInstruction[];
+        const wire = await buildTopUpWire(f, rpc, 4_000n, undefined, budget);
+        await expect(
+            verify(
+                method,
+                makeCred(f, {
+                    action: 'topUp',
+                    additionalAmount: '4000',
+                    channelId: f.channel.address,
+                    transaction: wire,
+                }),
+            ),
+        ).rejects.toThrow(/submitTopUpTx: compute unit price 5000001 exceeds maximum 5000000/);
+        expect(sent).toHaveLength(0);
     });
 
     test('a resubmitted top-up transaction credits the deposit exactly once', async () => {
