@@ -55,8 +55,14 @@ if (!root) throw new Error('Missing #root');
 const SOLANA_LOGO = `<svg width="20" height="20" viewBox="0 0 397 312" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle;margin-right:8px"><defs><linearGradient id="sg" x1="360" y1="11" x2="141" y2="310" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" fill="url(#sg)"/><path d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" fill="url(#sg)"/><path d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" fill="url(#sg)"/></svg>`;
 
 const btn = document.createElement('button');
-const testBadge = testMode ? `<span style="font-size:10px;font-weight:500;background:var(--mppx-surface, #f5f5f5);color:var(--mppx-muted, #666);padding:2px 6px;border-radius:4px;margin-left:8px">${network}</span>` : '';
-btn.innerHTML = `${SOLANA_LOGO} Continue with Solana${testBadge}`;
+btn.innerHTML = SOLANA_LOGO;
+btn.append(' Continue with Solana');
+if (testMode) {
+  const testBadge = document.createElement('span');
+  testBadge.setAttribute('style', 'font-size:10px;font-weight:500;background:var(--mppx-surface, #f5f5f5);color:var(--mppx-muted, #666);padding:2px 6px;border-radius:4px;margin-left:8px');
+  testBadge.textContent = network;
+  btn.appendChild(testBadge);
+}
 btn.setAttribute('style', [
   'display:flex', 'align-items:center', 'justify-content:center',
   'width:100%', 'padding:14px 24px',
@@ -233,8 +239,15 @@ function pickWallet(wallets: readonly Wallet[]): Promise<Wallet> {
 
     for (const wallet of wallets) {
       const item = document.createElement('button');
-      const icon = wallet.icon ? `<img src="${wallet.icon}" width="24" height="24" style="border-radius:4px;margin-right:10px">` : '';
-      item.innerHTML = `${icon}${wallet.name}`;
+      if (wallet.icon) {
+        const icon = document.createElement('img');
+        icon.src = wallet.icon;
+        icon.width = 24;
+        icon.height = 24;
+        icon.setAttribute('style', 'border-radius:4px;margin-right:10px');
+        item.appendChild(icon);
+      }
+      item.append(wallet.name);
       item.setAttribute('style', 'display:flex;align-items:center;width:100%;padding:12px;margin-bottom:8px;border:1px solid var(--mppx-border, #e5e5e5);border-radius:var(--mppx-radius, 6px);background:var(--mppx-surface, #f5f5f5);color:var(--mppx-foreground, #000);font-size:15px;cursor:pointer;font-family:inherit');
       item.onclick = () => { overlay.remove(); resolve(wallet); };
       modal.appendChild(item);
