@@ -145,3 +145,57 @@ test('same-route: a freshly-issued challenge round-trips through request() with 
         expect(body.detail).not.toMatch(/does not match this route's requirements/i);
     }
 });
+
+const BOGUS_SIGNATURE = '5UfDuX6nSqMzMR8W7n6K3b1GKLmaqEisBFCcYPRLjNHrCbVQJF3BVjkE7aQJMQ2K';
+
+function externalIdRoute(handler: ReturnType<typeof makeHandler>, externalId: string | undefined) {
+    return handler.charge({
+        amount: '1000',
+        currency: 'sol',
+        expires: new Date(Date.now() + 60_000).toISOString(),
+        recipient: RECIPIENT,
+        ...(externalId !== undefined ? { externalId } : {}),
+    });
+}
+
+async function replayAcrossExternalIds(issuedFor: string | undefined, presentedAt: string | undefined) {
+    const handler = makeHandler();
+    const issued = await externalIdRoute(handler, issuedFor)(new Request('https://example.com/issue'));
+    if (issued.status !== 402) throw new Error(`expected 402 from issuing route, got ${issued.status}`);
+    const credential = Credential.from({
+        challenge: Challenge.fromResponse(issued.challenge),
+        payload: { type: 'signature', signature: BOGUS_SIGNATURE },
+    });
+    return await externalIdRoute(
+        handler,
+        presentedAt,
+    )(
+        new Request('https://example.com/replay', {
+            headers: { Authorization: Credential.serialize(credential) },
+        }),
+    );
+}
+
+test.each([
+    ['order-A', 'order-B'],
+    ['order-A', 'order-a'],
+    ['order-A', undefined],
+    [undefined, 'order-B'],
+])('cross-route: credential for externalId %s is rejected at externalId %s', async (issuedFor, presentedAt) => {
+    const result = await replayAcrossExternalIds(issuedFor, presentedAt);
+
+    expect(result.status).toBe(402);
+    if (result.status !== 402) return;
+    const body = (await result.challenge.json()) as { detail: string };
+    expect(body.detail).toMatch(/credential externalId does not match this route's requirements/i);
+});
+
+test('same-route: matching externalId passes the route binding check', async () => {
+    const result = await replayAcrossExternalIds('order-A', 'order-A');
+
+    // Verification fails downstream on the bogus signature, never on binding.
+    expect(result.status).toBe(402);
+    if (result.status !== 402) return;
+    const body = (await result.challenge.json()) as { detail: string };
+    expect(body.detail).not.toMatch(/does not match this route's requirements/i);
+});

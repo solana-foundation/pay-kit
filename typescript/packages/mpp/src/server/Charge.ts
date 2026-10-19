@@ -203,6 +203,8 @@ export function charge(parameters: charge.Parameters) {
             };
         },
 
+        stableBinding: chargeStableBinding,
+
         async verify({ credential }) {
             const cred = credential as unknown as CredentialPayload;
             const challenge = cred.challenge.request;
@@ -222,6 +224,21 @@ export function charge(parameters: charge.Parameters) {
     });
 
     return method;
+}
+
+// Route binding: every request field except the per-challenge blockhash must
+// match the route, so a credential cannot be replayed at a sibling route that
+// differs only by e.g. `externalId`.
+function chargeStableBinding(request: ChallengeRequest) {
+    const methodDetails = { ...request.methodDetails };
+    delete methodDetails.recentBlockhash;
+    return {
+        amount: request.amount,
+        currency: request.currency,
+        externalId: request.externalId,
+        methodDetails,
+        recipient: request.recipient,
+    };
 }
 
 // ── Split validation (issuance, audit #21) ──
