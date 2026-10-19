@@ -5124,6 +5124,104 @@ mod tests {
 
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_topup_with_zero_compute_unit_limit_is_rejected_before_cosigning() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        let (mut server, _session, channel_id) = client_server().await;
+        let payer = signer(5);
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new({
+                    let payer = payer.pubkey().to_string();
+                    let rent_payer = sponsor.pubkey().to_string();
+                    move |state| {
+                        let mut state = state.unwrap();
+                        state.payer = payer;
+                        state.rent_payer = rent_payer;
+                        Ok(state)
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        let channel = Pubkey::from_str(&channel_id).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let program_id = payment_channels::default_program_id();
+        let ix = payment_channels::build_top_up_instruction(
+            &payer.pubkey(),
+            &channel,
+            &mint,
+            100,
+            &token_program,
+            &program_id,
+        );
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
+            &[crate::core::tx::unit_limit_instruction(0), ix],
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
+            .await
+            .unwrap();
+        assert_eq!(tx.signatures[0], Signature::default());
+        let transaction = crate::core::tx::encode(&tx).unwrap();
+        let account = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: 7,
+            deposit: 1_100,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: server.config.grace_period_seconds,
+            distribution_hash: [0; 32],
+            payer: payment_channels::to_address(&payer.pubkey()),
+            payee: payment_channels::to_address(
+                &Pubkey::from_str(&server.config.recipient).unwrap(),
+            ),
+            authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
+            mint: payment_channels::to_address(&mint),
+            rent_payer: payment_channels::to_address(&sponsor.pubkey()),
+            open_slot: 42,
+        };
+        let (url, rpc, send_tx_count) = rpc_for_channel(account, 43).await;
+        server.config.rpc_url = Some(url);
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction,
+        };
+        let error = server
+            .process_topup_with_outcome(&payload)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must be positive"), "{error}");
+        assert_eq!(send_tx_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.deposit, 1_000);
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
     async fn confirmed_sponsored_topup_adds_only_the_declared_amount() {
         use payment_channels::generated::generated::types::SettlementWatermarks;
 

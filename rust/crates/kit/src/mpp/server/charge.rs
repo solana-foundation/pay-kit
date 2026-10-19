@@ -2478,6 +2478,11 @@ pub(crate) fn validate_compute_budget_instruction(
 
     match decode_compute_budget_op(ix) {
         Some(ComputeBudgetOp::UnitLimit(units)) => {
+            if units == 0 {
+                return Err(VerificationError::invalid_payload(
+                    "Compute unit limit must be positive",
+                ));
+            }
             if units > MAX_COMPUTE_UNIT_LIMIT {
                 return Err(VerificationError::invalid_payload(format!(
                     "Compute unit limit {units} exceeds maximum {MAX_COMPUTE_UNIT_LIMIT}"
@@ -4792,6 +4797,36 @@ mod tests {
         };
 
         assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn zero_compute_unit_limit_is_rejected() {
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+        let with_limit = |units| {
+            dummy_tx(
+                vec![
+                    compute_unit_limit_ix(units),
+                    compute_unit_price_ix(1),
+                    system_transfer_ix(&sender, &recipient, amount),
+                ],
+                &fee_payer,
+            )
+        };
+        let err = verify_transaction_pre_broadcast(&with_limit(0), &request, &method_details)
+            .unwrap_err();
+        assert!(err.message.contains("must be positive"), "{}", err.message);
+        assert!(
+            verify_transaction_pre_broadcast(&with_limit(1), &request, &method_details).is_ok()
+        );
     }
 
     #[test]

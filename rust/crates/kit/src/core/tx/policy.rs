@@ -109,6 +109,10 @@ pub fn check_v1_budget_caps(
     }
     let declared = DeclaredBudget::of(message)?;
     if let Some(limit) = declared.unit_limit {
+        // A zero limit fails execution after the fee payer is charged.
+        if limit == 0 {
+            return Err(Error::Other("compute unit limit must be positive".into()));
+        }
         if limit > max_unit_limit {
             return Err(Error::Other(format!(
                 "compute unit limit {limit} exceeds maximum {max_unit_limit}"
@@ -162,6 +166,10 @@ pub fn check_v0_budget_caps(
         ));
     }
     if let Some(limit) = declared.unit_limit {
+        // A zero limit fails execution after the fee payer is charged.
+        if limit == 0 {
+            return Err(Error::Other("compute unit limit must be positive".into()));
+        }
         if limit > max_unit_limit {
             return Err(Error::Other(format!(
                 "compute unit limit {limit} exceeds maximum {max_unit_limit}"
@@ -434,6 +442,12 @@ mod tests {
                 .to_string()
                 .contains("loaded accounts data size"));
         }
+        let zero = ComputeBudget::new(0, 0);
+        let tx = build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), Some(&zero)).unwrap();
+        assert!(check_v1_budget_caps(&tx.message, 200_000, 5_000_000)
+            .unwrap_err()
+            .to_string()
+            .contains("must be positive"));
         // Version 0 is left to the instruction-level checks.
         let v0 =
             build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), Some(&budget)).unwrap();
@@ -503,7 +517,18 @@ mod tests {
             transfer.clone()
         ]))
         .is_err());
-        assert!(check(&message(&[unit_price_instruction(10_001), transfer])).is_err());
+        assert!(check(&message(&[
+            unit_price_instruction(10_001),
+            transfer.clone()
+        ]))
+        .is_err());
+        assert!(
+            check(&message(&[unit_limit_instruction(0), transfer.clone()]))
+                .unwrap_err()
+                .to_string()
+                .contains("must be positive")
+        );
+        assert!(check(&message(&[unit_limit_instruction(1), transfer])).is_ok());
     }
 
     #[test]
