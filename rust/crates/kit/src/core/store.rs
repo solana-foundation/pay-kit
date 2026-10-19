@@ -2552,6 +2552,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn charge_replay_confirmed_record_survives_a_stale_failure() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let store = ChargeReplayStore::new(raw.clone());
+        assert_eq!(
+            store
+                .reserve("chal-keep", "same-credential", Duration::ZERO)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 0 }
+        );
+        assert_eq!(
+            store
+                .reserve("chal-keep", "same-credential", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 1 }
+        );
+        store
+            .mark_confirmed("chal-keep", "confirmed-by-reclaimer")
+            .await
+            .unwrap();
+        assert!(!store
+            .mark_failed("chal-keep", 0, "stale-owner-settlement-error")
+            .await
+            .unwrap());
+
+        // The confirmed generation is the latest one, with its signature.
+        assert!(raw
+            .get("solana-charge:record:chal-keep:3")
+            .await
+            .unwrap()
+            .is_none());
+        let record: ChargeRecord = serde_json::from_value(
+            raw.get("solana-charge:record:chal-keep:2")
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.state, ChargeRecordState::Confirmed);
+        assert_eq!(
+            record.final_signature.as_deref(),
+            Some("confirmed-by-reclaimer")
+        );
+        assert_eq!(record.failure_reason, None);
+        assert_eq!(
+            store
+                .reserve("chal-keep", "same-credential", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "confirmed-by-reclaimer".to_string()
+            }
+        );
+
+        // The current owner of a live reservation still records its failure.
+        store
+            .reserve("chal-own", "same-credential", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert!(store
+            .mark_failed("chal-own", 0, "simulation failed")
+            .await
+            .unwrap());
+        assert!(!store
+            .mark_failed("chal-own", 0, "second failure")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn charge_replay_late_confirmation_supersedes_a_failure() {
         let store = replay_store();
         store
