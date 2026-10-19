@@ -667,6 +667,7 @@ impl X402Upto {
             &payload.nonce,
             &payload.open_slot,
             requirements.extra.memo.as_deref(),
+            &expected_distribution,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
@@ -1000,6 +1001,7 @@ impl X402Upto {
         payload_nonce: &str,
         payload_open_slot: &str,
         expected_memo: Option<&str>,
+        expected_recipients: &[pc::Distribution],
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
         // The challenged recentSlot at verify time: freshly fetched (cache
@@ -1036,6 +1038,7 @@ impl X402Upto {
             Some(payload_open_slot),
             challenged_slot,
             expected_memo,
+            Some(expected_recipients),
         )
     }
 
@@ -1274,6 +1277,7 @@ pub(crate) fn validate_open_instruction(
     payload_open_slot: Option<&str>,
     recent_slot: Option<u64>,
     expected_memo: Option<&str>,
+    expected_recipients: Option<&[pc::Distribution]>,
 ) -> Result<(), Error> {
     // Reject v0 transactions that pull accounts from address lookup tables.
     // This validator (and the fee-payer co-sign) resolves every account via
@@ -1344,18 +1348,34 @@ pub(crate) fn validate_open_instruction(
     )?;
     expect(13, program_id, "self_program")?;
 
-    // openArgs layout:
-    // [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
-    if ix.data.len() < 1 + 8 + 8 + 4 + 8 {
-        return Err(Error::Other(format!(
-            "open instruction data too short ({} bytes)",
-            ix.data.len()
-        )));
+    // [discriminator u8][OpenArgs], decoded whole: trailing or malformed bytes
+    // are refused, and the recipients — not a PDA seed, so free to differ
+    // under the same channel address — are checked before co-signing.
+    let args = ix
+        .data
+        .get(1..)
+        .ok_or_else(|| Error::Other("open instruction data is empty".to_string()))
+        .and_then(|data| {
+            <pc::generated::types::OpenArgs as borsh::BorshDeserialize>::try_from_slice(data)
+                .map_err(|e| Error::Other(format!("open instruction args are malformed: {e}")))
+        })?;
+    let (salt, deposit, grace_period, open_slot) =
+        (args.salt, args.deposit, args.grace_period, args.open_slot);
+    if let Some(expected) = expected_recipients {
+        let recipients: Vec<pc::Distribution> = args
+            .recipients
+            .iter()
+            .map(|entry| pc::Distribution {
+                recipient: pc::from_address(&entry.recipient),
+                bps: entry.bps,
+            })
+            .collect();
+        if recipients != expected {
+            return Err(Error::Other(
+                "open distribution does not match the expected recipient split".to_string(),
+            ));
+        }
     }
-    let salt = u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice"));
-    let deposit = u64::from_le_bytes(ix.data[9..17].try_into().expect("8-byte slice"));
-    let grace_period = u32::from_le_bytes(ix.data[17..21].try_into().expect("4-byte slice"));
-    let open_slot = u64::from_le_bytes(ix.data[21..29].try_into().expect("8-byte slice"));
     if let Some(payload_nonce) = payload_nonce {
         if payload_nonce != salt.to_string() {
             return Err(Error::Other(format!(
@@ -1544,6 +1564,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_ok());
     }
@@ -1594,6 +1615,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_ok());
 
@@ -1610,6 +1632,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1655,6 +1678,7 @@ mod tests {
                 None,
                 recent_slot,
                 None,
+                None,
             )
         };
         assert!(check(&channel, Some(1_000_000), Some(314)).is_ok());
@@ -1699,6 +1723,7 @@ mod tests {
                 Some(payload_open_slot),
                 Some(314),
                 None,
+                None,
             )
         };
         assert!(strict(900, "7", "314").is_ok());
@@ -1736,6 +1761,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1782,6 +1808,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_err());
 
@@ -1799,6 +1826,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1880,6 +1908,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -2038,6 +2067,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_err());
     }
@@ -2067,6 +2097,7 @@ mod tests {
             &mint,
             &wrong_token_program,
             &channel,
+            None,
             None,
             None,
             None,
@@ -2222,6 +2253,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -2315,6 +2347,7 @@ mod tests {
                 None,
                 None,
                 expected,
+                None,
             )
         };
         let open = build_open_instruction(&params);
@@ -2376,6 +2409,69 @@ mod tests {
         );
         assert!(sealed_only.iter().any(|ix| ix.program_id == program_id));
         assert!(settled_voucher_expiry(&sealed_only, &open, 400) > now_unix());
+    }
+
+    /// A payer-chosen split keeps the channel address (recipients are not a
+    /// PDA seed) but must be refused before the operator co-signs the open.
+    #[test]
+    fn a_payer_selected_distribution_is_refused_before_cosigning() {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let beneficiary = Pubkey::new_unique();
+        let attacker = Pubkey::new_unique();
+        let with_recipients = |recipients: Vec<pc::Distribution>| {
+            let mut params = open_params(payer, payee, mint, operator);
+            params.recipients = recipients;
+            params
+        };
+        let expected = pc::sole_recipient(&beneficiary);
+        let malicious = with_recipients(vec![
+            pc::Distribution {
+                recipient: attacker,
+                bps: 9_999,
+            },
+            pc::Distribution {
+                recipient: beneficiary,
+                bps: 1,
+            },
+        ]);
+        let honest = with_recipients(expected.clone());
+        let channel = derive_channel_addresses(&honest).channel;
+        assert_eq!(derive_channel_addresses(&malicious).channel, channel);
+
+        let validate = |params: &OpenChannelParams, data_suffix: &[u8]| {
+            let mut open = build_open_instruction(params);
+            open.data.extend_from_slice(data_suffix);
+            validate_open_instruction(
+                &unsigned_tx(&[open]),
+                &[TxVersion::V0],
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &payee,
+                &mint,
+                &token_program(),
+                &channel,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&expected),
+            )
+        };
+        assert!(validate(&malicious, &[]).is_err());
+        validate(&honest, &[]).expect("the configured split validates");
+        assert!(
+            validate(&honest, &[0]).is_err(),
+            "trailing bytes after the args are refused"
+        );
     }
 
     fn multi_currency_engine(symbols: &[&str]) -> X402Upto {
@@ -2558,6 +2654,7 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
                 None,
                 None,
                 None,
