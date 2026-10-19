@@ -1395,11 +1395,28 @@ impl Mpp {
         // (e.g. mainnet keypair pointed at a sandbox-configured server, or
         // vice versa). Cheaper and clearer than letting the broadcast fail.
         let tx_recent_blockhash = tx.message.recent_blockhash().to_string();
-        let uses_challenge_blockhash = method_details
-            .recent_blockhash
-            .as_deref()
-            .map(|recent_blockhash| recent_blockhash == tx_recent_blockhash)
-            .unwrap_or(false);
+        // Bind the signed message to the authenticated challenge it is
+        // presented with: a transaction signed for another challenge carries
+        // that challenge's blockhash. `method_details` is the caller's rebuilt
+        // expectation, whose blockhash is fresh, so read the echoed challenge.
+        let challenged_blockhash = challenge
+            .request
+            .decode::<ChargeRequest>()
+            .ok()
+            .and_then(|issued| issued.method_details)
+            .and_then(|md| serde_json::from_value::<MethodDetails>(md).ok())
+            .and_then(|md| md.recent_blockhash);
+        if method_details.channel_charge.is_none() {
+            if let Some(challenged) = challenged_blockhash.as_deref() {
+                if challenged != tx_recent_blockhash {
+                    return Err(VerificationError::credential_mismatch(
+                        "Transaction does not use the challenged blockhash",
+                    ));
+                }
+            }
+        }
+        let uses_challenge_blockhash =
+            challenged_blockhash.as_deref() == Some(&tx_recent_blockhash);
         check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
@@ -7645,6 +7662,62 @@ mod tests {
                 .contains("push-mode credentials are not allowed"),
             "B34 fired on a pull credential: {err:?}"
         );
+    }
+
+    // A transaction signed for challenge A cannot settle challenge B: the
+    // signed blockhash must be the one B's authenticated echo carries, not the
+    // caller's freshly rebuilt expectation.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_transaction_must_use_the_challenged_blockhash() {
+        let challenged = Hash::new_unique();
+        let issued = |blockhash: Hash| ChargeRequest {
+            amount: "1000".into(),
+            currency: "SOL".into(),
+            recipient: Some(TEST_RECIPIENT.into()),
+            method_details: Some(serde_json::json!({
+                "network": "devnet",
+                "decimals": 9,
+                "recentBlockhash": blockhash.to_string(),
+            })),
+            ..Default::default()
+        };
+        let expected = issued(Hash::new_unique());
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+
+        for (signed_with, rejected) in [(Hash::new_unique(), true), (challenged, false)] {
+            let mpp = Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                currency: "SOL".to_string(),
+                decimals: 9,
+                network: "devnet".to_string(),
+                rpc_url: Some("http://127.0.0.1:1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+            let tx = crate::core::tx::build_unsigned_unchecked(
+                TxVersion::V0,
+                &sender,
+                &[system_transfer_ix(&sender, &recipient, 1000)],
+                signed_with,
+                None,
+            )
+            .unwrap();
+            let transaction = crate::core::tx::encode(&tx).unwrap();
+            let cred = build_credential(
+                &mpp,
+                &issued(challenged),
+                serde_json::json!({ "type": "transaction", "transaction": transaction }),
+            );
+            let err = mpp.verify(&cred, &expected).await.unwrap_err();
+            let reached = if rejected {
+                "challenged blockhash"
+            } else {
+                "Broadcast RPC error"
+            };
+            assert!(err.message.contains(reached), "{}", err.message);
+        }
     }
 
     // ── Replay protection tests ──
