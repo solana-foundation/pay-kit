@@ -477,9 +477,9 @@ fn mpp_candidate(challenge: &PaymentChallenge, order: usize) -> Option<Candidate
 }
 
 /// Normalize one x402 accept to a [`Candidate`]. Returns `None` for
-/// SOL-denominated, unparseable, or non-Solana requirements.
+/// SOL-denominated, non-`exact`, unparseable, or non-Solana requirements.
 fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Candidate> {
-    if requirement.currency.eq_ignore_ascii_case("SOL") {
+    if requirement.currency.eq_ignore_ascii_case("SOL") || !requirement.is_exact_scheme() {
         return None;
     }
     // Resolve the canonical CAIP-2 `network` (e.g. "solana:EtWT…" for devnet)
@@ -849,5 +849,78 @@ mod tests {
             .expect("the USDG upto accept should be fundable");
         assert_eq!(selected.protocol(), "x402-upto");
         assert_eq!(selected.mint(), mints::USDG_MAINNET);
+    }
+
+    /// An `upto` offer missing its channel metadata: the typed `upto` parser
+    /// drops it, the generic x402 parser keeps it.
+    fn malformed_upto_body(ceiling: u64) -> String {
+        serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "upto",
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": ceiling.to_string(),
+                "asset": mints::USDC_MAINNET,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+                "extra": { "recentBlockhash": RECIPIENT, "memo": "malformed-upto" },
+            }],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn malformed_upto_offer_is_never_selected_as_exact() {
+        let body = malformed_upto_body(1_000_000);
+        assert!(parse_upto_accepts(&[], Some(&body)).is_empty());
+        assert_eq!(parse_x402_accepts(&[], Some(&body)).len(), 1);
+
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+        let err = select_payment(
+            &[],
+            Some(&body),
+            &funded,
+            &OrderingStrategy::CheapestPayable,
+        )
+        .expect_err("a non-exact offer must not become an exact candidate");
+        assert!(err.offered.is_empty(), "{err}");
+    }
+
+    #[test]
+    fn valid_upto_offer_is_selected_only_as_upto() {
+        let body = upto_body("USDC", 1000);
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+        for order in [
+            OrderingStrategy::HighestBalance,
+            OrderingStrategy::CheapestPayable,
+            OrderingStrategy::MppFirst,
+        ] {
+            let selected = select_payment(&[], Some(&body), &funded, &order).unwrap();
+            assert!(
+                matches!(selected, SelectedPayment::X402Upto { .. }),
+                "{selected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_offer_with_explicit_scheme_is_still_selected() {
+        let body = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": "1000",
+                "asset": mints::USDC_MAINNET,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+                "extra": { "decimals": 6 },
+            }],
+        })
+        .to_string();
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+        let selected =
+            select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance).unwrap();
+        assert!(matches!(selected, SelectedPayment::X402Exact { .. }));
     }
 }

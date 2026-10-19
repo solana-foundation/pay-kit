@@ -28,6 +28,11 @@ pub async fn build_payment(
     requirements: &PaymentRequirements,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<PaymentPayload, Error> {
+    if !requirements.is_exact_scheme() {
+        return Err(Error::InvalidPayloadType(
+            "refusing to sign a non-exact offer as an exact payment".into(),
+        ));
+    }
     let amount: u64 = requirements
         .amount
         .parse()
@@ -1280,5 +1285,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(instructions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn build_payment_refuses_a_non_exact_offer() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        for scheme in ["upto", "batch-settlement", "EXACT", ""] {
+            let mut requirements = test_requirements("USDC");
+            requirements.accepted = Some(serde_json::json!({ "scheme": scheme }));
+            let err = build_payment(&signer, &rpc, &requirements, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidPayloadType(_)),
+                "{scheme}: {err}"
+            );
+            assert!(
+                build_payment_header(&signer, &rpc, &requirements, None, None)
+                    .await
+                    .is_err(),
+                "{scheme}"
+            );
+        }
+
+        let mut requirements = test_requirements("USDC");
+        requirements.accepted = Some(serde_json::json!({ "scheme": EXACT_SCHEME }));
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_ok());
     }
 }

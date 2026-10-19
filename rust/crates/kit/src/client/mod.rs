@@ -75,7 +75,7 @@ use crate::{
     },
     x402::{
         client::exact::{build_payment_header, parse_x402_accepts},
-        exact::{cluster_for_caip2_network, PaymentRequirements, EXACT_SCHEME},
+        exact::{cluster_for_caip2_network, PaymentRequirements},
     },
 };
 
@@ -452,7 +452,7 @@ impl PaymentOffer {
         mut requirement: PaymentRequirements,
         origin: &str,
     ) -> Result<Option<Self>, PermissionRejection> {
-        if requirement.currency.eq_ignore_ascii_case("SOL") || !is_exact(&requirement) {
+        if requirement.currency.eq_ignore_ascii_case("SOL") || !requirement.is_exact_scheme() {
             return Ok(None);
         }
         let network = cluster_for_caip2_network(&requirement.network)
@@ -493,16 +493,6 @@ impl PaymentOffer {
     fn candidate(&self) -> PaymentCandidate<'_> {
         PaymentCandidate::new(&self.origin, self.network, &self.mint, self.amount)
     }
-}
-
-fn is_exact(requirement: &PaymentRequirements) -> bool {
-    requirement
-        .accepted
-        .as_ref()
-        .and_then(|value| value.get("scheme"))
-        .and_then(serde_json::Value::as_str)
-        .map(|scheme| scheme == EXACT_SCHEME)
-        .unwrap_or(true)
 }
 
 fn parse_network(value: &str) -> Option<SolanaNetwork> {

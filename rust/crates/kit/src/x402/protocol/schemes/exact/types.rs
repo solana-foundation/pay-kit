@@ -264,6 +264,15 @@ pub struct PaymentRequirements {
 }
 
 impl PaymentRequirements {
+    /// False when the offer declares a scheme other than `exact`. The exact
+    /// signing path must never sign an offer made under another scheme.
+    pub(crate) fn is_exact_scheme(&self) -> bool {
+        self.accepted
+            .as_ref()
+            .and_then(|value| value.get("scheme"))
+            .is_none_or(|scheme| scheme.as_str() == Some(EXACT_SCHEME))
+    }
+
     /// Canonical v2 accepted object for the selected SVM exact requirement.
     pub fn to_accepted_value(&self) -> serde_json::Value {
         if let Some(accepted) = &self.accepted {
