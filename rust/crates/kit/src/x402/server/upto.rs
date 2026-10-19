@@ -1113,6 +1113,7 @@ impl X402Upto {
         }
     }
 
+    #[cfg(all(test, feature = "axum"))]
     pub(crate) fn is_in_flight(&self, channel_id: &Pubkey) -> bool {
         self.in_flight
             .lock()
