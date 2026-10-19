@@ -16,6 +16,7 @@
 //! }
 //!
 //! let pay = PayKit::new(PayKitConfig {
+//!     realm: Some("my-service".to_string()),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
 //!     ..Default::default()
 //! })
@@ -105,6 +106,8 @@ pub struct PayKitConfig {
     /// MPP HMAC challenge-binding secret (>= 32 bytes). Reads `MPP_SECRET_KEY`
     /// when `None`.
     pub challenge_binding_secret: Option<String>,
+    /// MPP realm (credential namespace). REQUIRED and unique per service.
+    pub realm: Option<String>,
     /// When set, the server sponsors the network fee: drives MPP fee-sponsored
     /// mode and is used as the x402 fee-payer address.
     pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
@@ -139,6 +142,7 @@ impl Default for PayKitConfig {
             network: "mainnet".to_string(),
             rpc_url: None,
             challenge_binding_secret: None,
+            realm: None,
             fee_payer_signer: None,
             accept_push_mode: false,
             store: None,
@@ -217,6 +221,7 @@ impl PayKit {
         };
 
         let mpp = Mpp::new(MppConfig {
+            realm: config.realm.clone(),
             recipient: config.recipient.clone(),
             currency: config.currency.clone(),
             decimals: config.decimals,
@@ -1721,6 +1726,7 @@ mod tests {
         assert!(!PayKitConfig::default().disable_hint);
         for disabled in [false, true] {
             let pay = PayKit::new(PayKitConfig {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),
@@ -1886,6 +1892,7 @@ mod tests {
                 // Deliberately omit recipient/secret: provider policy is checked
                 // before protocol configuration, environment access or RPC.
                 let result = PayKit::new(PayKitConfig {
+                    realm: Some("test-realm".to_string()),
                     currency: currency.to_string(),
                     network: network.to_string(),
                     credit_providers: vec![CreditProvider::Coinflow],
@@ -1935,6 +1942,7 @@ mod tests {
 
     fn test_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
@@ -2022,6 +2030,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, rpc).await.unwrap() });
         for disabled in [false, true] {
             let pay = PayKit::new(PayKitConfig {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),
@@ -2113,6 +2122,7 @@ mod tests {
     /// offline and the gate surfaces a retryable 503.
     fn upto_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),

@@ -338,6 +338,7 @@ fn channel_charge_server_opt_in_and_direct_transfer_wire() {
     assert!(!disabled.channel_charge_enabled());
     assert!(disabled.charge_challenge(&request).is_err());
     let enabled = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         channel_charge: Some(ChannelChargeConfig {
             payee_signer: signer(4),
             hooks: v2::ChannelHooks::default(),
@@ -418,6 +419,7 @@ async fn channel_charge_network_is_checked_during_issuance_signing_and_verificat
 #[test]
 fn channel_charge_mainnet_configuration_fails_without_changing_direct_charge() {
     let config = || Config {
+        realm: Some("test-realm".to_string()),
         recipient: signer(3).pubkey().to_string(),
         currency: "USDC".into(),
         network: "mainnet".into(),
@@ -427,6 +429,7 @@ fn channel_charge_mainnet_configuration_fails_without_changing_direct_charge() {
     };
     assert!(Mpp::new(config()).is_ok());
     let error = match Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         channel_charge: Some(ChannelChargeConfig {
             payee_signer: signer(3),
             hooks: v2::ChannelHooks::default(),

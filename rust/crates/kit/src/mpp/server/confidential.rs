@@ -1836,6 +1836,7 @@ pub(crate) mod tests {
     #[test]
     fn malformed_auditor_keypair_is_rejected_at_boot() {
         let result = Mpp::new(super::super::charge::Config {
+            realm: Some("test-realm".to_string()),
             recipient: Pubkey::new_unique().to_string(),
             currency: "SOL".to_string(),
             network: "localnet".to_string(),

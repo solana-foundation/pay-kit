@@ -46,6 +46,7 @@ async fn report(payment: Payment) -> String {
 async fn main() {
     let pay = PayKit::new(PayKitConfig {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+        realm: Some("my-service".to_string()),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
         ..Default::default()
@@ -110,6 +111,7 @@ use std::sync::Arc;
 
 let pay = PayKit::new(PayKitConfig {
     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+    realm: Some("my-service".to_string()),
     network: "mainnet".to_string(),
     rpc_url: Some("https://mainnet.helius-rpc.com/?api-key=YOUR_KEY".to_string()),
     challenge_binding_secret: Some(std::env::var("MPP_SECRET_KEY")?),

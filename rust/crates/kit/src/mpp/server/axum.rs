@@ -29,6 +29,7 @@
 //! }
 //!
 //! let mpp = Arc::new(Mpp::new(Config {
+//!     realm: Some("test-realm".to_string()),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
 //!     ..Default::default()
 //! }).unwrap());
@@ -234,6 +235,7 @@ mod tests {
     fn test_mpp() -> Arc<Mpp> {
         Arc::new(
             Mpp::new(Config {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),

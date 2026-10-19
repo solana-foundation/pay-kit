@@ -17,6 +17,7 @@ async fn main() {
     // snippet:start
     let pay = PayKit::new(PayKitConfig {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+        realm: Some("my-service".to_string()),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
         ..Default::default()

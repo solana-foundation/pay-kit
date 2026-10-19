@@ -6,6 +6,7 @@
 //! use crate::mpp::server::Mpp;
 //!
 //! let mpp = Mpp::new(crate::mpp::server::Config {
+//!     realm: Some("test-realm".to_string()),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
 //!     ..Default::default()
 //! })?;
@@ -71,27 +72,6 @@ pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
 const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
-
-/// Audit #15: derive a per-app default realm from the recipient pubkey.
-///
-/// `realm` is part of the HMAC ID input. With a fixed default of
-/// `"MPP Payment"`, two services that shared `MPP_SECRET_KEY` and both
-/// kept the default would participate in one shared credential namespace,
-/// enabling cross-service credential replay. Deriving from `recipient`
-/// (a Solana pubkey, unique per merchant) means two services with the
-/// same secret but different recipients automatically get different
-/// realms, so cross-service replay fails at HMAC verification.
-///
-/// Format: `"App Id - #<8-digit decimal>"`. Decimal is `u32::from_be_bytes`
-/// over the first 4 bytes of `SHA-256(recipient)`, modulo 10^8 for a
-/// compact display. Deterministic for a given recipient.
-fn derive_default_realm(recipient: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(recipient.as_bytes());
-    let first_four = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
-    let app_id = first_four % 100_000_000;
-    format!("App Id - #{app_id}")
-}
 
 /// Minimum length, in bytes, for the HMAC-SHA256 key used to bind
 /// challenge IDs. NIST SP 800-107 recommends a key at least as long as
@@ -216,7 +196,10 @@ pub struct Config {
     /// rejected at `Mpp::new` time. If `None`, the value is read from the
     /// `MPP_SECRET_KEY` environment variable.
     pub challenge_binding_secret: Option<String>,
-    /// Server realm.
+    /// Server realm: the credential namespace, part of every challenge's HMAC.
+    /// REQUIRED — stable across replicas of one service and distinct across
+    /// services, so credentials cannot cross between services that share a
+    /// recipient and secret.
     pub realm: Option<String>,
     /// Whether server pays transaction fees.
     pub fee_payer: bool,
@@ -400,13 +383,12 @@ impl Mpp {
             .map_or_else(detect_challenge_binding_secret, Ok)?;
         validate_challenge_binding_secret(&challenge_binding_secret)?;
         let realm = match config.realm {
-            Some(r) if r.is_empty() => {
+            Some(r) if !r.is_empty() => r,
+            _ => {
                 return Err(Error::InvalidConfig(
-                    "Config.realm must be non-empty when provided".into(),
+                    "Config.realm is required: set a non-empty realm unique to this service".into(),
                 ));
             }
-            Some(r) => r,
-            None => derive_default_realm(&config.recipient),
         };
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
         #[cfg(feature = "confidential")]
@@ -5827,6 +5809,7 @@ mod tests {
 
     fn test_mpp() -> Mpp {
         Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
@@ -5837,6 +5820,7 @@ mod tests {
 
     fn test_mpp_sol() -> Mpp {
         Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
@@ -5951,6 +5935,7 @@ mod tests {
         let signer: Arc<dyn solana_keychain::TransactionSigner> =
             Arc::new(TransactionOnlySigner(fee_payer));
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
@@ -5993,6 +5978,7 @@ mod tests {
         let signer: Arc<dyn solana_keychain::TransactionSigner> =
             Arc::new(TransactionOnlySigner(sponsor));
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
@@ -6042,6 +6028,7 @@ mod tests {
     #[test]
     fn new_missing_recipient_errors() {
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: String::new(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             ..Default::default()
@@ -6057,6 +6044,7 @@ mod tests {
     #[test]
     fn new_invalid_recipient_pubkey_errors() {
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: "not-a-valid-pubkey!!!".to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             ..Default::default()
@@ -6077,6 +6065,7 @@ mod tests {
         unsafe { std::env::remove_var(SECRET_KEY_ENV_VAR) };
 
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
             ..Default::default()
@@ -6103,6 +6092,7 @@ mod tests {
         };
 
         let result = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
             ..Default::default()
@@ -6122,6 +6112,7 @@ mod tests {
     fn new_rejects_empty_secret_key() {
         // Audit #24: short keys weaken the HMAC binding.
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(String::new()),
             ..Default::default()
@@ -6139,6 +6130,7 @@ mod tests {
         // Just below the 32-byte minimum.
         let short = "a".repeat(MIN_SECRET_KEY_BYTES - 1);
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(short),
             ..Default::default()
@@ -6155,6 +6147,7 @@ mod tests {
     fn new_accepts_secret_key_at_minimum_length() {
         let exact = "a".repeat(MIN_SECRET_KEY_BYTES);
         let result = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(exact),
             ..Default::default()
@@ -6170,6 +6163,7 @@ mod tests {
         unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "too-short") };
 
         let result = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
             ..Default::default()
@@ -6191,8 +6185,7 @@ mod tests {
     #[test]
     fn new_valid_config_succeeds() {
         let mpp = test_mpp();
-        // Audit #15: default realm now derives from recipient.
-        assert_eq!(mpp.realm(), derive_default_realm(TEST_RECIPIENT));
+        assert_eq!(mpp.realm(), "test-realm");
         assert_eq!(mpp.currency(), "USDC");
         assert_eq!(mpp.recipient(), TEST_RECIPIENT);
         assert_eq!(mpp.decimals(), 6);
@@ -6210,48 +6203,69 @@ mod tests {
         assert_eq!(mpp.realm(), "Custom Realm");
     }
 
-    // ── Audit #15: derived default realm ──
+    // ── Realm is required: no shared default namespace ──
 
     #[test]
-    fn new_default_realm_format() {
-        // The derived default looks like "App Id - #<digits>" (max 8).
-        let realm = derive_default_realm(TEST_RECIPIENT);
-        assert!(
-            realm.starts_with("App Id - #"),
-            "unexpected realm format: {realm}"
+    fn new_requires_a_realm() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("missing realm must fail");
+        assert!(err.to_string().contains("realm is required"), "{err}");
+    }
+
+    // Two services sharing recipient and secret: with distinct realms, a
+    // credential issued by one cannot settle on the other.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn services_sharing_recipient_and_secret_do_not_share_credentials() {
+        let service = |realm: &str| {
+            Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                currency: "SOL".to_string(),
+                decimals: 9,
+                network: "devnet".to_string(),
+                rpc_url: Some("http://127.0.0.1:1".to_string()),
+                realm: Some(realm.to_string()),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let a = service("service-a");
+        let challenge = a.charge("0.000001").unwrap();
+        let expected: ChargeRequest = challenge.request.decode().unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
         );
-        let digits = realm.trim_start_matches("App Id - #");
-        assert!(digits.chars().all(|c| c.is_ascii_digit()), "got: {realm}");
-        assert!(!digits.is_empty() && digits.len() <= 8, "got: {realm}");
-    }
+        let err = service("service-b")
+            .verify_credential_with_expected(&credential, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("Challenge ID mismatch"),
+            "{}",
+            err.message
+        );
 
-    #[test]
-    fn new_default_realm_deterministic_for_same_recipient() {
-        // Restart-safe: same recipient must always derive to the same realm,
-        // otherwise in-flight challenges would fail to verify after a deploy.
-        let a = derive_default_realm(TEST_RECIPIENT);
-        let b = derive_default_realm(TEST_RECIPIENT);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn new_default_realm_differs_across_recipients() {
-        // Two servers with shared secret but different recipients must end
-        // up with different default realms — closes the audit threat shape
-        // (shared MPP_SECRET_KEY + shared default realm == shared
-        // credential namespace).
-        let other = "8tNDNRkk3JG1WK9NSRwUjytkGwY6Jq6gqQwNFmKt3pkP";
-        assert_ne!(
-            derive_default_realm(TEST_RECIPIENT),
-            derive_default_realm(other),
+        // Control: a replica of service A (same realm) authenticates it.
+        let err = service("service-a")
+            .verify_credential_with_expected(&credential, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            !err.message.contains("Challenge ID mismatch"),
+            "{}",
+            err.message
         );
     }
 
     #[test]
     fn new_rejects_empty_realm() {
-        // Explicitly providing an empty realm bypasses the derivation —
-        // reject so an operator can't reintroduce the audit threat with a
-        // typo.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
@@ -6260,10 +6274,7 @@ mod tests {
         })
         .err()
         .expect("empty realm should be rejected");
-        assert!(
-            err.to_string().contains("realm must be non-empty"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("realm is required"), "got: {err}");
     }
 
     // ── Audit #37: network allowlist + mainnet canonicalization ──
@@ -6272,6 +6283,7 @@ mod tests {
     fn new_accepts_canonical_networks() {
         for net in ["mainnet", "devnet", "localnet"] {
             Mpp::new(Config {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: net.to_string(),
@@ -6284,6 +6296,7 @@ mod tests {
     #[test]
     fn new_rejects_unknown_network() {
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "testnet".to_string(),
@@ -6297,6 +6310,7 @@ mod tests {
     #[test]
     fn new_rejects_empty_network() {
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: String::new(),
@@ -6315,6 +6329,7 @@ mod tests {
         // Audit #37: canonicalize on "mainnet" — the legacy "mainnet-beta"
         // is an RPC hostname, not a wire-format slug.
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "mainnet-beta".to_string(),
@@ -6329,6 +6344,7 @@ mod tests {
     fn new_custom_rpc_url() {
         // Should not fail — just verifying it accepts a custom RPC URL.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
@@ -6341,6 +6357,7 @@ mod tests {
     fn new_custom_store() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let result = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store),
@@ -6354,6 +6371,7 @@ mod tests {
     #[test]
     fn new_resolves_token_program_for_sol_currency() {
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
@@ -6376,6 +6394,7 @@ mod tests {
         // PYUSD is Token-2022; if this returns the legacy Token Program
         // (the old bug), the regression is back.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "PYUSD".to_string(),
@@ -6391,6 +6410,7 @@ mod tests {
         // Not a known symbol and not a valid base58 pubkey — must reject
         // up front, never silently fall back to the legacy Token Program.
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "not-a-symbol-or-mint!!".to_string(),
@@ -6409,6 +6429,7 @@ mod tests {
     #[test]
     fn new_rejects_fee_payer_true_without_signer() {
         let err = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: true,
@@ -6444,6 +6465,7 @@ mod tests {
         // Regression: the default config has no signer and fee_payer=false;
         // it must keep working.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
@@ -6460,6 +6482,7 @@ mod tests {
         // Mpp is configured fee_payer=false, no signer. A per-call
         // ChargeOptions.fee_payer = true override must be rejected.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
@@ -6488,6 +6511,7 @@ mod tests {
     fn charge_options_fee_payer_succeeds_when_signer_configured() {
         // Happy path: server has a signer, per-call override works.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
@@ -6524,7 +6548,7 @@ mod tests {
         let mpp = test_mpp();
         let challenge = mpp.charge("0.10").unwrap();
 
-        assert_eq!(challenge.realm, derive_default_realm(TEST_RECIPIENT));
+        assert_eq!(challenge.realm, "test-realm");
         assert_eq!(challenge.method.as_str(), "solana");
         assert_eq!(challenge.intent.as_str(), "charge");
         assert!(!challenge.id.is_empty());
@@ -7325,6 +7349,7 @@ mod tests {
     async fn verify_credential_with_expected_authenticates_before_route_validation() {
         let issuer = test_mpp();
         let verifier = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some("another-server-secret-at-least-32-bytes".to_string()),
             network: "devnet".to_string(),
@@ -7798,6 +7823,7 @@ mod tests {
         // (e.g. on-chain verification against a fake signature) is fine,
         // just not the "Push-mode credentials are disabled" one.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
@@ -7841,6 +7867,7 @@ mod tests {
         // the B34 fee-payer-specific path in isolation, opt push mode in
         // here so the audit #5 gate passes and B34 fires.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
@@ -7880,6 +7907,7 @@ mod tests {
         // We do not drive broadcast here, only assert the early reject does
         // not fire: any error must come from broadcast, not from B34.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
@@ -7932,6 +7960,7 @@ mod tests {
 
         for (signed_with, rejected) in [(Hash::new_unique(), true), (challenged, false)] {
             let mpp = Mpp::new(Config {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 currency: "SOL".to_string(),
@@ -8035,6 +8064,7 @@ mod tests {
         let rpc_url = stub_rpc(signature, status.clone(), blockhash_valid.clone()).await;
         let store = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
@@ -8206,6 +8236,7 @@ mod tests {
 
     fn offline_sol_mpp() -> Mpp {
         Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
@@ -8306,6 +8337,7 @@ mod tests {
     async fn replay_protection_marks_and_detects_consumed() {
         let store = Arc::new(MemoryStore::new());
         let _mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
@@ -8339,6 +8371,7 @@ mod tests {
 
         let mpp = Arc::new(
             Mpp::new(Config {
+                realm: Some("test-realm".to_string()),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 store: Some(Arc::new(MemoryStore::new())),
@@ -8400,6 +8433,7 @@ mod tests {
     async fn verify_identical_retry_after_confirmation_rejects_without_resettling() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
@@ -8452,6 +8486,7 @@ mod tests {
     async fn verify_conflicting_retry_under_same_challenge_id_is_rejected() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
@@ -8528,6 +8563,7 @@ mod tests {
     async fn verify_identical_retry_is_stable_even_when_callers_expected_request_drifts() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
@@ -9993,6 +10029,7 @@ mod tests {
     #[test]
     fn charge_with_fee_payer_includes_method_details() {
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: true,
@@ -10015,6 +10052,7 @@ mod tests {
         // Audit #16: per-call ChargeOptions.fee_payer requires the server
         // to have a signer configured.
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -10041,6 +10079,7 @@ mod tests {
     fn charge_with_split_ata_creation_includes_method_details() {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
@@ -10084,6 +10123,7 @@ mod tests {
     fn charge_variants_with_options_returns_single_challenge() {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
@@ -10116,6 +10156,7 @@ mod tests {
     fn charge_with_split_ata_creation_rejects_symbol_currency() {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "USDC".to_string(),

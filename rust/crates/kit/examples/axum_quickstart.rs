@@ -33,6 +33,7 @@ async fn main() {
     // hosted Surfpool sandbox. Swap in your own wallet for production, and set
     // MPP_SECRET_KEY to a >= 32-byte secret (`openssl rand -base64 32`).
     let pay = PayKit::new(PayKitConfig {
+        realm: Some("axum-quickstart".to_string()),
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),

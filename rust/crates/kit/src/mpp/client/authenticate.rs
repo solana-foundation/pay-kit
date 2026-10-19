@@ -190,6 +190,7 @@ mod tests {
         // Build a charge challenge instead of authenticate — should fail
         // at the intent check before any signing happens.
         let challenge = crate::mpp::server::Mpp::new(crate::mpp::server::Config {
+            realm: Some("test-realm".to_string()),
             recipient: signer.pubkey().to_string(),
             currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
             decimals: 6,

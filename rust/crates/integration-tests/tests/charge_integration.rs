@@ -132,6 +132,7 @@ async fn sol_charge_full_flow() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -191,6 +192,7 @@ async fn sol_charge_wrong_amount_rejected_before_broadcast() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -279,6 +281,7 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: real_recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -358,6 +361,7 @@ async fn sol_charge_identical_retry_is_rejected() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -426,6 +430,7 @@ async fn sol_charge_expired_challenge_rejected() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -478,6 +483,7 @@ async fn sol_charge_www_authenticate_roundtrip() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "SOL".to_string(),
         decimals: 9,
@@ -554,6 +560,7 @@ async fn usdc_charge_full_flow() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "USDC".to_string(),
         decimals: 6,
@@ -647,6 +654,7 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
         .unwrap();
 
     let mpp = Mpp::new(Config {
+        realm: Some("test-realm".to_string()),
         recipient: recipient.pubkey().to_string(),
         currency: "USDC".to_string(),
         decimals: 6,

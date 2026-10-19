@@ -17,6 +17,7 @@
 //! use crate::mpp::server::{Mpp, Config};
 //!
 //! let mpp = Mpp::new(Config {
+//!     realm: Some("my-service".to_string()),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
 //!     ..Default::default()
 //! })?;

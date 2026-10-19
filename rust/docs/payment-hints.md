@@ -95,7 +95,7 @@ use solana_pay_kit::PayKitConfig;
 
 let config = PayKitConfig {
     disable_hint: true,
-    // Set your recipient and other payment configuration as usual.
+    // Set your recipient, realm, and other payment configuration as usual.
     ..Default::default()
 };
 ```
