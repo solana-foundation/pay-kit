@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
@@ -13,6 +14,12 @@ from solana_pay_kit.protocols.mpp.server.payment_page import (
     is_service_worker_request,
     service_worker_js,
 )
+
+
+def _embedded_data(html: str) -> dict:
+    match = re.search(r'id="__MPP_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    assert match is not None
+    return json.loads(match.group(1))
 
 
 class TestChallengeToHtml:
@@ -116,7 +123,7 @@ class TestChallengeToHtml:
         )
         html = challenge_to_html(challenge, "https://api.devnet.solana.com", "devnet")
         assert '"network":"devnet"' in html
-        assert "api.devnet.solana.com" in html
+        assert _embedded_data(html)["rpcUrl"] == "https://api.devnet.solana.com"
 
     def test_network_mainnet(self):
         challenge = PaymentChallenge(
