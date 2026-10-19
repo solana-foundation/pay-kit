@@ -290,6 +290,7 @@ pub async fn build_prepared_charge(
             "channelCharge requires the explicit build_channel_charge_credential API".into(),
         ));
     }
+    require_supported_network(method_details)?;
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
         return Err(Error::TooManySplits);
@@ -410,6 +411,7 @@ pub async fn build_charge_transaction_with_options(
             "channelCharge requires the explicit build_channel_charge_credential API".into(),
         ));
     }
+    require_supported_network(method_details)?;
     let total_amount: u64 = amount
         .parse()
         .map_err(|_| Error::Other(format!("Invalid amount: {amount}")))?;
@@ -638,7 +640,9 @@ pub fn select_charge_challenge<'a>(
 
         let (request, method_details) = decode_charge_challenge(challenge)?;
 
-        if !matches_network(&method_details, options.network) {
+        if require_supported_network(&method_details).is_err()
+            || !matches_network(&method_details, options.network)
+        {
             continue;
         }
 
@@ -979,6 +983,19 @@ fn decode_charge_challenge(
     let method_details = serde_json::from_value(method_details)
         .map_err(|e| Error::Other(format!("Invalid method details: {e}")))?;
     Ok((request, method_details))
+}
+
+/// Refuse a challenge on a network the client cannot identify, so it never
+/// resolves to a mainnet mint by default.
+fn require_supported_network(method_details: &MethodDetails) -> Result<(), Error> {
+    crate::mpp::protocol::solana::canonical_network(method_details.network.as_deref())
+        .map(|_| ())
+        .ok_or_else(|| {
+            Error::InvalidConfig(format!(
+                "Unsupported challenge network `{}` (allowed: `mainnet`, `devnet`, `localnet`)",
+                method_details.network.as_deref().unwrap_or_default()
+            ))
+        })
 }
 
 fn matches_network(method_details: &MethodDetails, network: Option<&str>) -> bool {
@@ -3590,5 +3607,74 @@ mod tests {
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid method details"));
+    }
+
+    #[test]
+    fn select_charge_challenge_skips_unsupported_networks_without_a_preference() {
+        for network in ["attacker-chain", "testnet", "Mainnet", ""] {
+            let challenges = vec![selection_challenge("bad", "solana", "USDC", network)];
+            assert!(
+                select_charge_challenge(&challenges, SelectChargeChallengeOptions::default())
+                    .unwrap()
+                    .is_none(),
+                "{network:?}"
+            );
+        }
+
+        let challenges = vec![
+            selection_challenge("bad", "solana", "USDC", "attacker-chain"),
+            selection_challenge("good", "solana", "USDC", "mainnet"),
+        ];
+        let selected =
+            select_charge_challenge(&challenges, SelectChargeChallengeOptions::default())
+                .unwrap()
+                .unwrap();
+        assert_eq!(selected.id, "good");
+    }
+
+    #[tokio::test]
+    async fn build_charge_refuses_an_unsupported_network() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        for network in ["attacker-chain", "testnet", "solana:mainnet"] {
+            let md = MethodDetails {
+                recent_blockhash: Some(ZERO_HASH.to_string()),
+                network: Some(network.to_string()),
+                ..Default::default()
+            };
+            let err =
+                build_charge_transaction(signer.as_ref(), &rpc, "1000", "USDC", RECIPIENT, &md)
+                    .await
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("Unsupported challenge network"),
+                "{network}: {err}"
+            );
+            assert!(build_prepared_charge(
+                signer.pubkey(),
+                &rpc,
+                1000,
+                "USDC",
+                RECIPIENT,
+                &md,
+                &BuildChargeTransactionOptions::default(),
+            )
+            .await
+            .is_err());
+        }
+
+        for network in [None, Some("mainnet"), Some("devnet")] {
+            let md = MethodDetails {
+                recent_blockhash: Some(ZERO_HASH.to_string()),
+                network: network.map(str::to_string),
+                ..Default::default()
+            };
+            assert!(
+                build_charge_transaction(signer.as_ref(), &rpc, "1000", "SOL", RECIPIENT, &md)
+                    .await
+                    .is_ok(),
+                "{network:?}"
+            );
+        }
     }
 }
