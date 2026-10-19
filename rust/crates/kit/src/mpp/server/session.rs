@@ -1406,6 +1406,38 @@ impl<S: ChannelStore> SessionServer<S> {
         payload: &VoucherPayload,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
+        self.verify_voucher_priced(payload, self.config.amount, guard)
+            .await
+    }
+
+    /// Verify a voucher paying for one request priced at `amount` base units.
+    ///
+    /// `amount` is the price the client was challenged with — the
+    /// authenticated `SessionRequest.amount` echoed by the credential — and
+    /// replaces [`SessionConfig::amount`] for both the availability check and
+    /// the debit, in the same atomic transition. Hosts that override the
+    /// challenge price per route must use this instead of
+    /// [`verify_voucher`](Self::verify_voucher). A zero amount is rejected.
+    pub async fn verify_voucher_for_amount(
+        &self,
+        payload: &VoucherPayload,
+        amount: u64,
+    ) -> Result<VoucherAcceptance> {
+        if amount == 0 {
+            return Err(Error::Other(
+                "session voucher request amount must be positive".to_string(),
+            ));
+        }
+        self.verify_voucher_priced(payload, amount, |_| Ok(()))
+            .await
+    }
+
+    async fn verify_voucher_priced(
+        &self,
+        payload: &VoucherPayload,
+        amount: u64,
+        guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
+    ) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
         // The top-level channelId is the routing key; it must never diverge
         // from the signed voucher's inner channelId (spec: servers MUST
@@ -1441,7 +1473,6 @@ impl<S: ChannelStore> SessionServer<S> {
         // channel's forced-close grace period: a non-zero voucher expiry must
         // outlast it so the operator can still redeem on-chain after the async
         // forced-close delay.
-        let amount = self.config.amount;
         let owner = self.config.operator.clone();
         let acceptance = crate::core::session::accept_voucher_with_commit(
             &self.store,
@@ -1454,9 +1485,9 @@ impl<S: ChannelStore> SessionServer<S> {
             self.config.grace_period_seconds as i64,
             // Reject a voucher whose newly authorized credit
             // (`acceptedCumulative - spentAmount`) can't cover this action's
-            // fixed price, before the watermark advances — matches the
+            // price, before the watermark advances — matches the
             // TypeScript/Python session servers' availability gate.
-            self.config.amount,
+            amount,
             move |state, replay| {
                 guard(state).map_err(|error| StoreError::Internal(error.to_string()))?;
                 let debit = if replay { 0 } else { amount };
@@ -4860,6 +4891,83 @@ mod tests {
         );
         assert!(stored.processed_topup_signatures.is_empty());
         rpc.abort();
+    }
+
+    async fn stored(server: &SessionServer<MemoryChannelStore>, channel_id: &str) -> ChannelState {
+        server.store.get_channel(channel_id).await.unwrap().unwrap()
+    }
+
+    fn voucher_payload(voucher: SignedVoucher) -> VoucherPayload {
+        VoucherPayload {
+            channel_id: voucher.data.channel_id.clone(),
+            voucher,
+        }
+    }
+
+    #[tokio::test]
+    async fn priced_voucher_must_cover_the_challenged_amount() {
+        let (mut server, session, channel_id) = client_server().await;
+        // Static unit price; the request was challenged at 100.
+        server.config.amount = 1;
+        let under = session.prepare_increment(1).await.unwrap();
+        let error = server
+            .verify_voucher_for_amount(&voucher_payload(under), 100)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("availability"), "{error}");
+        let off_by_one = session.prepare_increment(99).await.unwrap();
+        assert!(server
+            .verify_voucher_for_amount(&voucher_payload(off_by_one), 100)
+            .await
+            .is_err());
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (0, 0));
+        assert!(state.highest_voucher_signature.is_none());
+
+        let exact = session.prepare_increment(100).await.unwrap();
+        let accepted = server
+            .verify_voucher_for_amount(&voucher_payload(exact), 100)
+            .await
+            .unwrap();
+        assert_eq!((accepted.cumulative, accepted.charged), (100, 100));
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (100, 100));
+    }
+
+    #[tokio::test]
+    async fn priced_voucher_debits_the_challenged_amount_not_the_unit_price() {
+        let (mut server, mut session, channel_id) = client_server().await;
+        server.config.amount = 1;
+        let first = session.sign_increment(300).await.unwrap();
+        server
+            .verify_voucher_for_amount(&voucher_payload(first), 250)
+            .await
+            .unwrap();
+        assert_eq!(stored(&server, &channel_id).await.spent_amount, 250);
+        // 50 of prepaid credit remains; the next 250 request needs +200 more.
+        let short = session.prepare_increment(199).await.unwrap();
+        assert!(server
+            .verify_voucher_for_amount(&voucher_payload(short), 250)
+            .await
+            .is_err());
+        let enough = session.prepare_increment(200).await.unwrap();
+        server
+            .verify_voucher_for_amount(&voucher_payload(enough), 250)
+            .await
+            .unwrap();
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (500, 500));
+    }
+
+    #[tokio::test]
+    async fn priced_voucher_rejects_a_zero_amount() {
+        let (server, session, channel_id) = client_server().await;
+        let voucher = session.prepare_increment(25).await.unwrap();
+        assert!(server
+            .verify_voucher_for_amount(&voucher_payload(voucher), 0)
+            .await
+            .is_err());
+        assert_eq!(stored(&server, &channel_id).await.cumulative, 0);
     }
 
     #[tokio::test]
