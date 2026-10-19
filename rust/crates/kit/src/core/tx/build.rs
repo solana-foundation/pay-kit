@@ -69,6 +69,30 @@ pub fn build_unsigned(
     Ok(tx)
 }
 
+/// [`build_unsigned`] with the lowest version in `accepted` whose limits the
+/// transaction fits. Fails with the highest version's limit error when none
+/// does, so an oversize transaction is never built for a version the
+/// counterparty cannot take.
+pub fn build_unsigned_fitting(
+    accepted: &[TxVersion],
+    fee_payer: &Pubkey,
+    instructions: &[Instruction],
+    recent_blockhash: Hash,
+    budget: Option<&ComputeBudget>,
+) -> Result<VersionedTransaction> {
+    let mut versions = accepted.to_vec();
+    versions.sort();
+    versions.dedup();
+    let mut last = Error::Other("no transaction version accepted".into());
+    for version in versions {
+        match build_unsigned(version, fee_payer, instructions, recent_blockhash, budget) {
+            Ok(tx) => return Ok(tx),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 /// Enforce `version`'s wire limits on a built transaction: serialized size,
 /// static account count, and, where the format bounds them, instruction and
 /// signature counts.
@@ -176,6 +200,101 @@ mod tests {
         (0..n)
             .map(|_| system_instruction::transfer(from, &Pubkey::new_unique(), 1))
             .collect()
+    }
+
+    fn hooked_close(operator: &Pubkey) -> Vec<Instruction> {
+        use crate::core::payment_channels as pc;
+        use crate::core::payment_channels_v2 as v2;
+        let hook = |seed: u8| v2::HookDescriptor {
+            program_id: Pubkey::new_from_array([seed; 32]).to_string(),
+            entrypoint: *b"payout!!",
+            accounts: (0..v2::MAX_HOOK_ACCOUNTS as u8)
+                .map(|offset| v2::HookAccount {
+                    address: Pubkey::new_from_array([seed.wrapping_add(offset + 1); 32])
+                        .to_string(),
+                    writable: offset % 2 == 0,
+                })
+                .collect(),
+            static_data: vec![seed; 32],
+        };
+        let hooks = v2::ChannelHooks {
+            pre_distribute: Some(hook(40)),
+            post_distribute: Some(hook(80)),
+            ..Default::default()
+        };
+        let recipients = (0..8)
+            .map(|index| pc::Distribution {
+                recipient: Pubkey::new_from_array([20 + index; 32]),
+                bps: 1_250,
+            })
+            .collect::<Vec<_>>();
+        let program = Pubkey::from_str_const(v2::PAYMENT_CHANNELS_PROGRAM_ID);
+        let channel = Pubkey::new_from_array([2; 32]);
+        let mut ixs = pc::build_settle_and_seal_instructions(
+            operator,
+            &channel,
+            &Pubkey::new_from_array([4; 32]),
+            Some(&[42; 64]),
+            50_000,
+            500,
+            &program,
+        )
+        .unwrap();
+        ixs.push(
+            v2::build_distribute_instruction(
+                &channel,
+                &Pubkey::new_from_array([3; 32]),
+                &Pubkey::new_from_array([5; 32]),
+                operator,
+                &Pubkey::new_from_array([7; 32]),
+                &Pubkey::new_from_array([6; 32]),
+                &recipients,
+                &Pubkey::new_from_array([8; 32]),
+                &program,
+                &hooks,
+            )
+            .unwrap(),
+        );
+        ixs
+    }
+
+    #[test]
+    fn fitting_build_escalates_only_within_the_accepted_set() {
+        let operator = Pubkey::new_from_array([1; 32]);
+        let close = hooked_close(&operator);
+        let v0 = build_unsigned(TxVersion::V0, &operator, &close, Hash::default(), None);
+        assert!(v0.unwrap_err().to_string().contains("1232-byte limit"));
+
+        let tx = build_unsigned_fitting(
+            &[TxVersion::V1, TxVersion::V0],
+            &operator,
+            &close,
+            Hash::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(TxVersion::of(&tx.message).unwrap(), TxVersion::V1);
+        assert!(serialized_size(&tx).unwrap() <= TxVersion::V1.limits().max_bytes);
+
+        // A V0-only cluster fails closed instead of building the oversize tx.
+        let err =
+            build_unsigned_fitting(&[TxVersion::V0], &operator, &close, Hash::default(), None)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("1232-byte limit"), "{err}");
+        assert!(build_unsigned_fitting(&[], &operator, &close, Hash::default(), None).is_err());
+
+        // A close that fits stays on the lowest accepted version.
+        let small = &close[..close.len() - 1];
+        let tx = build_unsigned_fitting(
+            &[TxVersion::V0, TxVersion::V1],
+            &operator,
+            small,
+            Hash::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(TxVersion::of(&tx.message).unwrap(), TxVersion::V0);
     }
 
     #[test]
