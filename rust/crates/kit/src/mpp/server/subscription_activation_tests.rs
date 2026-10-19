@@ -268,6 +268,7 @@ impl Scenario {
             rpc_url: Some(rpc_url.to_string()),
             challenge_binding_secret: "test-secret".into(),
             realm: "test-realm".into(),
+            amount_base_units: AMOUNT.to_string(),
             plan_id_numeric: Some(1),
             plan_bump: Some(255),
             plan_created_at: Some(1_700_000_000),

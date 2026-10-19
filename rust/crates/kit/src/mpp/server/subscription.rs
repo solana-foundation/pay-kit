@@ -23,6 +23,7 @@
 //!     recipient: "9xAX...".to_string(),
 //!     period_unit: SubscriptionPeriodUnit::Day,
 //!     period_count: 30,
+//!     amount_base_units: "10000000".to_string(),
 //!     ..Default::default()
 //! })?;
 //!
@@ -78,6 +79,10 @@ pub struct SubscriptionConfig {
     pub period_unit: SubscriptionPeriodUnit,
     /// Positive integer count of `period_unit` per billing period.
     pub period_count: u64,
+    /// Amount charged per period, in base units. REQUIRED — credentials whose
+    /// challenged terms differ from this route's are rejected, so a proof for a
+    /// cheaper route sharing the Plan cannot unlock this one.
+    pub amount_base_units: String,
     /// Optional RFC3339 expiry of the recurring authorization.
     pub subscription_expires: Option<String>,
     /// Solana network: mainnet, devnet, testnet, or localnet.
@@ -145,6 +150,7 @@ impl Default for SubscriptionConfig {
             recipient: String::new(),
             period_unit: SubscriptionPeriodUnit::Day,
             period_count: 30,
+            amount_base_units: String::new(),
             subscription_expires: None,
             network: "mainnet".into(),
             program_id: None,
@@ -216,6 +222,14 @@ impl SubscriptionServer {
 
         // Validate the period mapping.
         config.period_unit.to_period_hours(config.period_count)?;
+        match config.amount_base_units.parse::<u64>() {
+            Ok(amount) if amount > 0 => {}
+            _ => {
+                return Err(Error::InvalidConfig(
+                    "amount_base_units must be a positive integer".into(),
+                ))
+            }
+        }
         if let Some(subscription_expires) = config.subscription_expires.as_deref() {
             let subscription_expires = time::OffsetDateTime::parse(
                 subscription_expires,
@@ -284,6 +298,12 @@ impl SubscriptionServer {
         let _amount: u64 = amount_base_units
             .parse()
             .map_err(|_| Error::Other(format!("Invalid amount: {amount_base_units}")))?;
+        if amount_base_units != self.config.amount_base_units {
+            return Err(Error::Other(format!(
+                "Amount {amount_base_units} does not match the configured amount {}",
+                self.config.amount_base_units
+            )));
+        }
 
         // Build the typed methodDetails struct. The wire form is
         // camelCase serde-driven from the struct definition; no manual
@@ -483,6 +503,20 @@ impl SubscriptionServer {
                 "methodDetails.network does not match this server (expected `{}`)",
                 self.config.network
             )));
+        }
+        // Routes may share a Plan; bind activation and reusable proofs alike
+        // to this route's own terms.
+        let period_hours = self
+            .config
+            .period_unit
+            .to_period_hours(self.config.period_count)
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        if request.amount != self.config.amount_base_units
+            || request.period_hours().ok() != Some(period_hours)
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription terms do not match this server",
+            ));
         }
 
         if credential
@@ -1995,6 +2029,7 @@ mod tests {
             recipient: keypair_base58(),
             challenge_binding_secret: "test-secret".to_string(),
             realm: "test-realm".to_string(),
+            amount_base_units: "10000000".to_string(),
             ..Default::default()
         }
     }
@@ -2320,10 +2355,70 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_invalid_configured_amount() {
+        for amount in ["", "0", "-1", "1.5", "abc"] {
+            let mut cfg = make_config();
+            cfg.amount_base_units = amount.into();
+            assert!(SubscriptionServer::new(cfg).is_err(), "amount={amount:?}");
+        }
+    }
+
+    #[test]
+    fn challenge_rejects_an_amount_other_than_the_configured_one() {
+        let server = SubscriptionServer::new(make_config()).unwrap();
+        assert!(server.subscription_challenge("10000000").is_ok());
+        assert!(server.subscription_challenge("9999999").is_err());
+        assert!(server.subscription_challenge("10000001").is_err());
+    }
+
+    // Two routes sharing realm, secret, mint, recipient, and Plan PDA: a
+    // credential (activation or reusable proof) issued for the cheaper route
+    // must not verify on the other one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_for_a_cheaper_route_sharing_the_plan_is_rejected() {
+        let mut cheap_cfg = make_config();
+        cheap_cfg.rpc_url = Some("http://127.0.0.1:1".into());
+        let cheap = SubscriptionServer::new(cheap_cfg.clone()).unwrap();
+        let challenge = cheap.subscription_challenge("10000000").unwrap();
+
+        let mut pricier_amount = cheap_cfg.clone();
+        pricier_amount.amount_base_units = "100000000".into();
+        let mut longer_period = cheap_cfg.clone();
+        longer_period.period_count = 365;
+        let mut both = cheap_cfg.clone();
+        both.amount_base_units = "100000000".into();
+        both.period_count = 365;
+
+        for payload in [
+            serde_json::json!({ "type": "proof" }),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        ] {
+            let credential = PaymentCredential::new(challenge.to_echo(), payload.clone());
+            for cfg in [&pricier_amount, &longer_period, &both] {
+                let other = SubscriptionServer::new(cfg.clone()).unwrap();
+                let err = other.verify_credential(&credential).await.unwrap_err();
+                assert!(
+                    err.message.contains("terms do not match"),
+                    "payload={payload} got: {}",
+                    err.message
+                );
+            }
+            // Positive control: the issuing route gets past the terms check.
+            let err = cheap.verify_credential(&credential).await.unwrap_err();
+            assert!(
+                !err.message.contains("terms do not match"),
+                "{}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
     fn week_period_round_trip_in_challenge() {
         let mut cfg = make_config();
         cfg.period_unit = SubscriptionPeriodUnit::Week;
         cfg.period_count = 2;
+        cfg.amount_base_units = "5000000".into();
         let server = SubscriptionServer::new(cfg).expect("server");
         let challenge = server.subscription_challenge("5000000").unwrap();
         let header = challenge.to_header().unwrap();
@@ -2526,6 +2621,7 @@ mod tests {
             recipient: recipient.to_string(),
             challenge_binding_secret: "test-secret".into(),
             realm: "test-realm".into(),
+            amount_base_units: amount.to_string(),
             ..Default::default()
         };
         let request = SubscriptionRequest {
@@ -2918,6 +3014,7 @@ mod tests {
             plan_id_numeric: Some(1),
             plan_bump: Some(255),
             plan_created_at: Some(1_700_000_000),
+            amount_base_units: "10000000".into(),
             ..Default::default()
         };
         let server = SubscriptionServer::new(config).unwrap();
