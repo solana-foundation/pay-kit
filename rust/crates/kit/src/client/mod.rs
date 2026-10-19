@@ -196,11 +196,20 @@ impl PayKitClient {
                 })
             })?;
         let (header_name, header_value) = self.payment_header(&offer, authorization).await?;
-        *retry.url_mut() = response_url;
+        *retry.url_mut() = response_url.clone();
         retry
             .headers_mut()
             .insert(header_name, HeaderValue::from_str(&header_value)?);
-        Ok(self.inner.http.execute(retry).await?)
+        let paid = self.inner.http.execute(retry).await?;
+        // A caller-supplied HTTP client may follow redirects across origins;
+        // never hand back a response from an origin that was not authorized.
+        if paid.url().origin() != response_url.origin() {
+            return Err(ClientError::RedirectedPaidRetry {
+                from: response_url.to_string(),
+                to: paid.url().to_string(),
+            });
+        }
+        Ok(paid)
     }
 
     fn collect_offers(
@@ -325,6 +334,10 @@ impl PayKitClientBuilder {
     }
 
     /// Use a preconfigured HTTP client.
+    ///
+    /// The paid retry carries the payment credential and the caller's
+    /// headers, so the client must not follow cross-origin redirects. The
+    /// default client follows same-origin redirects only.
     pub fn http_client(mut self, client: reqwest::Client) -> Self {
         self.http = Some(client);
         self
@@ -350,7 +363,7 @@ impl PayKitClientBuilder {
         }
         Ok(PayKitClient {
             inner: Arc::new(PayKitClientInner {
-                http: self.http.unwrap_or_default(),
+                http: self.http.unwrap_or_else(default_http_client),
                 signer,
                 rpc_url,
                 permissions,
@@ -506,6 +519,32 @@ fn parse_network(value: &str) -> Option<SolanaNetwork> {
     }
 }
 
+/// Follow redirects only within the origin of the original request, so a
+/// payment credential or caller header is never forwarded to another origin.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let Some(first) = attempt.previous().first() else {
+            return attempt.stop();
+        };
+        if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else if attempt.url().origin() == first.origin() {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+const MAX_REDIRECTS: usize = 10;
+
+fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(same_origin_redirects())
+        .build()
+        .expect("default HTTP client")
+}
+
 fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -554,6 +593,15 @@ pub enum ClientError {
         /// Original request URL.
         from: String,
         /// Final URL that returned the 402.
+        to: String,
+    },
+    /// The paid retry was answered from an origin other than the one that
+    /// issued the challenge.
+    #[error("paid retry to {from} was answered from {to}")]
+    RedirectedPaidRetry {
+        /// URL the paid retry was sent to.
+        from: String,
+        /// Final URL that answered it.
         to: String,
     },
     /// The 402 did not contain a supported MPP charge or x402 exact offer.
@@ -1315,5 +1363,174 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(!saw_payment.load(Ordering::SeqCst));
         task.abort();
+    }
+
+    #[derive(Clone)]
+    struct RedirectingState {
+        challenge: String,
+        location: String,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct Captured {
+        requests: usize,
+        payment_signature: bool,
+        api_key: bool,
+        body: Vec<u8>,
+    }
+
+    /// Challenges the first request; answers the paid retry with a 307 to
+    /// `location`.
+    async fn redirecting_paid_endpoint(
+        State(state): State<RedirectingState>,
+        headers: HeaderMap,
+    ) -> axum::response::Response {
+        if headers.contains_key("payment-signature") {
+            return (
+                StatusCode::TEMPORARY_REDIRECT,
+                [(reqwest::header::LOCATION.as_str(), state.location)],
+            )
+                .into_response();
+        }
+        (
+            StatusCode::PAYMENT_REQUIRED,
+            [("payment-required", state.challenge)],
+            "payment required",
+        )
+            .into_response()
+    }
+
+    async fn capture(
+        State(captured): State<Arc<std::sync::Mutex<Captured>>>,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> &'static str {
+        let mut captured = captured.lock().unwrap();
+        captured.requests += 1;
+        captured.payment_signature |= headers.contains_key("payment-signature");
+        captured.api_key |= headers.contains_key("x-api-key");
+        captured.body = body.to_vec();
+        "captured"
+    }
+
+    async fn serve(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{address}")
+    }
+
+    fn x402_challenge_header() -> String {
+        let envelope = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": SOLANA_MAINNET,
+                "amount": "500000",
+                "asset": USDC_MAINNET,
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
+            }]
+        });
+        base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&envelope).unwrap())
+    }
+
+    /// A paying origin whose paid retry redirects to `location` (absolute, or
+    /// a path on the paying origin), plus a capture endpoint on each origin.
+    async fn redirect_fixture(cross_origin: bool) -> (String, Arc<std::sync::Mutex<Captured>>) {
+        let captured = Arc::new(std::sync::Mutex::new(Captured::default()));
+        let other_origin = serve(
+            Router::new()
+                .route("/collect", axum::routing::any(capture))
+                .with_state(captured.clone()),
+        )
+        .await;
+        let location = if cross_origin {
+            format!("{other_origin}/collect")
+        } else {
+            "/collect".to_string()
+        };
+        let paying_origin = serve(
+            Router::new()
+                .route("/paid", axum::routing::post(redirecting_paid_endpoint))
+                .with_state(RedirectingState {
+                    challenge: x402_challenge_header(),
+                    location,
+                })
+                .merge(
+                    Router::new()
+                        .route("/collect", axum::routing::any(capture))
+                        .with_state(captured.clone()),
+                ),
+        )
+        .await;
+        (format!("{paying_origin}/paid"), captured)
+    }
+
+    fn x402_client(http: Option<reqwest::Client>) -> PayKitClient {
+        let mut builder = PayKitClient::builder()
+            .signer(test_signer())
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::X402]);
+        if let Some(http) = http {
+            builder = builder.http_client(http);
+        }
+        builder.build().unwrap()
+    }
+
+    #[tokio::test]
+    async fn paid_retry_is_not_forwarded_across_origins() {
+        let (url, captured) = redirect_fixture(true).await;
+        let response = x402_client(None)
+            .post(url)
+            .header("X-Api-Key", "caller-secret")
+            .body(b"private".to_vec())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.requests, 0, "{captured:?}");
+        assert!(!captured.payment_signature);
+        assert!(!captured.api_key);
+    }
+
+    #[tokio::test]
+    async fn redirect_following_client_cannot_return_a_foreign_paid_response() {
+        let (url, _) = redirect_fixture(true).await;
+        let error = x402_client(Some(reqwest::Client::new()))
+            .post(url)
+            .body(b"private".to_vec())
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::RedirectedPaidRetry { .. }),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paid_retry_follows_same_origin_redirects() {
+        let (url, captured) = redirect_fixture(false).await;
+        let response = x402_client(None)
+            .post(url)
+            .header("X-Api-Key", "caller-secret")
+            .body(b"private".to_vec())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.requests, 1);
+        assert!(captured.payment_signature);
+        assert_eq!(captured.body, b"private");
     }
 }
