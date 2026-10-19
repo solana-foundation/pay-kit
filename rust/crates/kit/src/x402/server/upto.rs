@@ -382,6 +382,18 @@ impl X402Upto {
         cc: &CurrencyConfig,
         max_amount: &str,
     ) -> Result<UptoRequirements, Error> {
+        self.upto_requirements_for_route(cc, max_amount, None)
+    }
+
+    /// [`Self::upto_requirements_for`] bound to `route`: the requirement
+    /// declares [`Self::route_memo`] as `extra.memo`, which the client signs
+    /// into its channel open, so the authorization only verifies for `route`.
+    pub fn upto_requirements_for_route(
+        &self,
+        cc: &CurrencyConfig,
+        max_amount: &str,
+        route: Option<&str>,
+    ) -> Result<UptoRequirements, Error> {
         let mint = self.mint_for(cc)?;
         let token_program = self.token_program_for(cc)?;
         let base_units = crate::x402::server::exact::parse_units(max_amount, cc.decimals)?;
@@ -402,9 +414,9 @@ impl X402Upto {
                 last_valid_block_height: None,
                 recent_slot: None,
                 valid_after: None,
-                // No seller memo: the server accepts (but never requires) the
+                // Unbound: the server accepts (but never requires) the
                 // client's own memo after `open`.
-                memo: None,
+                memo: route.map(Self::route_memo),
                 transaction_versions: crate::core::tx::advertised(&self.accepted_versions),
             },
         })
@@ -419,6 +431,27 @@ impl X402Upto {
     /// window, and clients MUST take it from the challenge rather than fetch a
     /// slot themselves.
     pub fn upto(&self, max_amount: &str) -> Result<UptoRequiredEnvelope, Error> {
+        self.upto_for_route(max_amount, None)
+    }
+
+    /// The memo a route-bound challenge declares for `route` (a canonical
+    /// request identity such as `"GET /reports?id=7"`).
+    pub fn route_memo(route: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::new()
+            .chain_update(b"x402-upto-route\0")
+            .chain_update(route.as_bytes())
+            .finalize();
+        let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+        format!("x402-upto:{hex}")
+    }
+
+    /// [`Self::upto`] bound to `route`; see [`Self::upto_requirements_for_route`].
+    pub fn upto_for_route(
+        &self,
+        max_amount: &str,
+        route: Option<&str>,
+    ) -> Result<UptoRequiredEnvelope, Error> {
         // Fail loudly (retryable) rather than issuing a 402 with no blockhash /
         // recentSlot: the in-SDK client hard-requires both to build the channel
         // open, so a silent `None` would surface as a non-retryable payment
@@ -443,7 +476,7 @@ impl X402Upto {
         let currencies = self.offered_currencies();
         let mut accepts = Vec::with_capacity(currencies.len());
         for cc in currencies {
-            let mut requirement = self.upto_requirements_for(cc, max_amount)?;
+            let mut requirement = self.upto_requirements_for_route(cc, max_amount, route)?;
             requirement.extra.recent_blockhash = Some(hint.blockhash.clone());
             requirement.extra.last_valid_block_height =
                 Some(hint.last_valid_block_height.to_string());
@@ -466,7 +499,16 @@ impl X402Upto {
 
     /// `(header-name, base64-value)` for the `upto` 402 challenge.
     pub fn payment_required_header(&self, max_amount: &str) -> Result<(String, String), Error> {
-        let envelope = self.upto(max_amount)?;
+        self.payment_required_header_for_route(max_amount, None)
+    }
+
+    /// [`Self::payment_required_header`] bound to `route`.
+    pub fn payment_required_header_for_route(
+        &self,
+        max_amount: &str,
+        route: Option<&str>,
+    ) -> Result<(String, String), Error> {
+        let envelope = self.upto_for_route(max_amount, route)?;
         let json = serde_json::to_string(&envelope)
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
         Ok((
@@ -515,6 +557,18 @@ impl X402Upto {
         header: &str,
         max_amount: &str,
     ) -> Result<VerifiedUptoOpen, Error> {
+        self.verify_open_for_route(header, max_amount, None).await
+    }
+
+    /// [`Self::verify_open`] for a challenge bound to `route`: the payer's
+    /// signed open must carry that route's memo, so an authorization issued
+    /// for another route does not verify here.
+    pub async fn verify_open_for_route(
+        &self,
+        header: &str,
+        max_amount: &str,
+        route: Option<&str>,
+    ) -> Result<VerifiedUptoOpen, Error> {
         let envelope = self.parse_payment_signature(header)?;
         let payload = &envelope.payload;
 
@@ -527,7 +581,7 @@ impl X402Upto {
         let offered = self
             .offered_currencies()
             .iter()
-            .map(|cc| self.upto_requirements_for(cc, max_amount))
+            .map(|cc| self.upto_requirements_for_route(cc, max_amount, route))
             .collect::<Result<Vec<_>, _>>()?;
         let requirements = match_offered_requirement(&offered, &envelope.accepted)?.clone();
 
@@ -612,6 +666,7 @@ impl X402Upto {
             max,
             &payload.nonce,
             &payload.open_slot,
+            requirements.extra.memo.as_deref(),
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
@@ -908,6 +963,7 @@ impl X402Upto {
         max_amount: u64,
         payload_nonce: &str,
         payload_open_slot: &str,
+        expected_memo: Option<&str>,
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
         // The challenged recentSlot at verify time: freshly fetched (cache
@@ -943,6 +999,7 @@ impl X402Upto {
             Some(payload_nonce),
             Some(payload_open_slot),
             challenged_slot,
+            expected_memo,
         )
     }
 
@@ -1133,13 +1190,14 @@ fn validate_distribution_hash(
 /// the operator would blindly authorize. For the same reason no wrapper
 /// instruction may name the fee payer among its accounts.
 ///
-/// The memo's *contents* are not checked: a facilitator only pins them when the
-/// seller declares `extra.memo`, and this server never does (it advertises
-/// `memo: None`), so any memo the client chooses is acceptable here.
+/// The memo's *contents* are checked only when the challenge was bound to a
+/// route (see [`X402Upto::route_memo`]); unbound challenges advertise
+/// `memo: None`, so any memo the client chose is acceptable there.
 fn find_canonical_open_instruction<'tx>(
     tx: &'tx VersionedTransaction,
     keys: &[Pubkey],
     program_id: &Pubkey,
+    expected_memo: Option<&str>,
 ) -> Result<&'tx CompiledInstruction, Error> {
     Ok(pc::scan_channel_tx_layout(
         tx,
@@ -1147,9 +1205,13 @@ fn find_canonical_open_instruction<'tx>(
         program_id,
         OPEN_INSTRUCTION_DISCRIMINATOR,
         "open",
-        // `upto` servers never declare `extra.memo`, so whatever memo the
-        // client chose is acceptable; only its presence is bounded.
-        pc::MemoPolicy::Optional,
+        // A route-bound challenge declares `extra.memo`, which the payer signs
+        // into the open; otherwise any client memo is acceptable and only its
+        // presence is bounded.
+        match expected_memo {
+            Some(memo) => pc::MemoPolicy::Required(Some(memo)),
+            None => pc::MemoPolicy::Optional,
+        },
     )?)
 }
 
@@ -1175,6 +1237,7 @@ pub(crate) fn validate_open_instruction(
     payload_nonce: Option<&str>,
     payload_open_slot: Option<&str>,
     recent_slot: Option<u64>,
+    expected_memo: Option<&str>,
 ) -> Result<(), Error> {
     // Reject v0 transactions that pull accounts from address lookup tables.
     // This validator (and the fee-payer co-sign) resolves every account via
@@ -1193,7 +1256,7 @@ pub(crate) fn validate_open_instruction(
     )?;
 
     let keys = tx.message.static_account_keys();
-    let ix = find_canonical_open_instruction(tx, keys, program_id)?;
+    let ix = find_canonical_open_instruction(tx, keys, program_id, expected_memo)?;
     // Account order from `build_open_instruction`:
     // [payer, rentPayer, payee, mint, authorized_signer, channel, ...].
     // rentPayer (slot 1) is whoever funds the channel PDA + escrow-ATA rent and
@@ -1444,6 +1507,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_ok());
     }
@@ -1493,6 +1557,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_ok());
 
@@ -1509,6 +1574,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1552,6 +1618,7 @@ mod tests {
                 None,
                 None,
                 recent_slot,
+                None,
             )
         };
         assert!(check(&channel, Some(1_000_000), Some(314)).is_ok());
@@ -1595,6 +1662,7 @@ mod tests {
                 Some(payload_nonce),
                 Some(payload_open_slot),
                 Some(314),
+                None,
             )
         };
         assert!(strict(900, "7", "314").is_ok());
@@ -1632,6 +1700,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1676,6 +1745,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_err());
 
@@ -1693,6 +1763,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1773,6 +1844,7 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
             None,
             None,
             None,
@@ -1929,6 +2001,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .is_err());
     }
@@ -1958,6 +2031,7 @@ mod tests {
             &mint,
             &wrong_token_program,
             &channel,
+            None,
             None,
             None,
             None,
@@ -2111,6 +2185,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -2162,6 +2237,71 @@ mod tests {
         open.expires_at = now - 10;
         let instructions = engine.settlement_instructions(&open, 400).await.unwrap();
         assert!(settled_voucher_expiry(&instructions, &open, 400) > now);
+    }
+
+    /// A route-bound challenge pins the payer-signed open to its route: the
+    /// memo is part of what the payer signs, so an open built from route A's
+    /// challenge does not validate for route B, even with `accepted` rewritten.
+    #[test]
+    fn a_route_bound_open_only_validates_for_its_route() {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let memo_a = X402Upto::route_memo("GET /route-a");
+        let memo_b = X402Upto::route_memo("GET /route-b");
+        assert_ne!(memo_a, memo_b);
+        let validate = |instructions: &[Instruction], expected: Option<&str>| {
+            validate_open_instruction(
+                &unsigned_tx(instructions),
+                &[TxVersion::V0],
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &payee,
+                &mint,
+                &token_program(),
+                &channel,
+                None,
+                None,
+                None,
+                None,
+                None,
+                expected,
+            )
+        };
+        let open = build_open_instruction(&params);
+        let bound_to_a = [open.clone(), memo_ix(&memo_a)];
+
+        validate(&bound_to_a, Some(&memo_a)).expect("route A accepts its own open");
+        assert!(validate(&bound_to_a, Some(&memo_b)).is_err());
+        assert!(validate(std::slice::from_ref(&open), Some(&memo_b)).is_err());
+        // Unbound verification keeps accepting any client memo.
+        validate(&bound_to_a, None).expect("unbound accepts a client memo");
+    }
+
+    #[test]
+    fn route_bound_requirements_do_not_match_another_route() {
+        let engine = multi_currency_engine(&["USDC"]);
+        let usdc = &engine.config.currencies[0];
+        let a = engine
+            .upto_requirements_for_route(usdc, "0.01", Some("GET /route-a"))
+            .unwrap();
+        let b = engine
+            .upto_requirements_for_route(usdc, "0.01", Some("GET /route-b"))
+            .unwrap();
+        assert_eq!(
+            a.extra.memo.as_deref(),
+            Some(X402Upto::route_memo("GET /route-a").as_str())
+        );
+        let accepted_a = serde_json::to_value(&a).unwrap();
+        assert!(match_offered_requirement(std::slice::from_ref(&b), &accepted_a).is_err());
+        assert!(match_offered_requirement(std::slice::from_ref(&a), &accepted_a).is_ok());
     }
 
     fn multi_currency_engine(symbols: &[&str]) -> X402Upto {
@@ -2344,6 +2484,7 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
                 None,
                 None,
                 None,

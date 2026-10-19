@@ -854,7 +854,7 @@ pub const MIN_MEMO_NONCE_BYTES: usize = 16;
 pub enum MemoPolicy<'a> {
     /// A Memo may appear at most once and its contents are not inspected.
     ///
-    /// Used by `upto`, whose server never declares `extra.memo`, so any memo
+    /// Used by an unbound `upto` challenge, which declares no `extra.memo`, so any memo
     /// the client chose is acceptable.
     Optional,
     /// Exactly one Memo is required.

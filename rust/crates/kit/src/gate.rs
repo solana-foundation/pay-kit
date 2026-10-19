@@ -855,7 +855,8 @@ where
 /// recent blockhash is available — return a retryable `503` instead of a `402`
 /// carrying no challenge the client could act on.
 fn upto_challenge_response(upto: &X402Upto, amount: &str, pay: &PayKit, req: &Request) -> Response {
-    let (name, value) = match upto.payment_required_header(amount) {
+    let route = upto_route(req);
+    let (name, value) = match upto.payment_required_header_for_route(amount, Some(&route)) {
         Ok(header) => header,
         Err(e) => {
             tracing::warn!(amount = %amount, error = %e, "failed to build upto challenge");
@@ -879,6 +880,18 @@ fn upto_challenge_response(upto: &X402Upto, amount: &str, pay: &PayKit, req: &Re
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
+}
+
+/// The request identity an `upto` authorization is bound to: method and the
+/// pre-nesting path and query. The host is left out because it is
+/// client-supplied and does not select the handler.
+fn upto_route(req: &Request) -> String {
+    let uri = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map_or(req.uri(), |original| &original.0);
+    let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
+    format!("{} {path}", req.method())
 }
 
 /// Usage-based gate: verify the authorization and broadcast the channel open,
@@ -912,8 +925,13 @@ async fn upto_gate_middleware(
         return upto_challenge_response(&upto, &amount, &state.pay, &req);
     };
 
-    // Verify the authorization and broadcast + confirm the channel open.
-    let open = match upto.verify_open(&header_value, &amount).await {
+    // Verify the authorization and broadcast + confirm the channel open. The
+    // challenge bound it to this route, so another route's authorization fails.
+    let route = upto_route(&req);
+    let open = match upto
+        .verify_open_for_route(&header_value, &amount, Some(&route))
+        .await
+    {
         Ok(open) => open,
         Err(e) => {
             tracing::warn!(amount = %amount, error = %e, "upto open verification failed");
@@ -2364,6 +2382,32 @@ mod tests {
         })
         .unwrap();
         assert!(Arc::ptr_eq(pay.x402_batch().unwrap().store(), &store));
+    }
+
+    #[test]
+    fn upto_route_binds_method_path_and_query() {
+        let req = |method: &str, uri: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "attacker.example")
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(upto_route(&req("GET", "/route-a?x=1")), "GET /route-a?x=1");
+        assert_ne!(
+            upto_route(&req("GET", "/route-a")),
+            upto_route(&req("GET", "/route-b"))
+        );
+        assert_ne!(
+            upto_route(&req("GET", "/orders")),
+            upto_route(&req("POST", "/orders"))
+        );
+        let mut nested = req("GET", "/inner");
+        nested
+            .extensions_mut()
+            .insert(axum::extract::OriginalUri("/api/inner".parse().unwrap()));
+        assert_eq!(upto_route(&nested), "GET /api/inner");
     }
 
     #[tokio::test(flavor = "multi_thread")]
