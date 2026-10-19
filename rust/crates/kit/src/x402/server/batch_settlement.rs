@@ -2246,6 +2246,7 @@ impl X402BatchSettlement {
         ChannelBinding {
             scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
             pay_to: Some(self.config.pay_to.clone()),
+            network: Some(self.network()),
         }
     }
 
@@ -4474,6 +4475,7 @@ mod tests {
                     state.set_binding(&ChannelBinding {
                         scheme: "session".to_string(),
                         pay_to: None,
+                        network: None,
                     });
                     Ok(state)
                 }),
@@ -4542,6 +4544,52 @@ mod tests {
             .unwrap();
         assert_eq!(state.cumulative, 1_000);
         assert!(state.pending_deliveries.is_empty());
+    }
+
+    /// A record written by a deployment on another cluster is refused even
+    /// when the channel inputs, and so the PDA and voucher, are identical and
+    /// the caller rewrote the unsigned `accepted.network`.
+    #[tokio::test]
+    async fn a_channel_bound_to_another_cluster_is_refused() {
+        let mint = pc::pubkey_string(&Pubkey::from([0x4d; 32]));
+        let make = |cluster: &str, store: Arc<MemoryChannelStore>| {
+            let mut config = BatchConfig::new(PAY_TO, cluster, Arc::new(TestSigner::new(21)));
+            config.withdraw_delay = 3600;
+            config.currency = mint.clone();
+            config.token_program = Some(programs::TOKEN_PROGRAM.to_string());
+            X402BatchSettlement::with_store(config, store).unwrap()
+        };
+        let store = Arc::new(MemoryChannelStore::new());
+        let source = make("devnet", store.clone());
+        let destination = make("mainnet", store.clone());
+        let fee_payer = pc::parse_pubkey(&source.fee_payer()).unwrap();
+        let requirements = destination.requirements("0.001").unwrap();
+        assert_ne!(
+            source.requirements("0.001").unwrap().network,
+            requirements.network
+        );
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let mut imported = seeded(&channel, &config, 5_000, 0);
+        imported.set_binding(&source.binding());
+        store
+            .put_channel(&pc::pubkey_string(&channel), imported)
+            .await
+            .unwrap();
+
+        let err = destination
+            .verify_and_reserve_payment(
+                &header(
+                    &requirements,
+                    BatchPayload::Voucher {
+                        channel_config: config,
+                        voucher: voucher(&key, &channel, 1_000),
+                    },
+                ),
+                "0.001",
+            )
+            .await
+            .expect_err("another cluster's channel record is refused");
+        assert!(err.to_string().contains("network differs"), "{err}");
     }
 
     /// A record from before bindings is accepted and adopts this server's

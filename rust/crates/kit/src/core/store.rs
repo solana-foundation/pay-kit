@@ -717,6 +717,9 @@ pub struct ChannelBinding {
     /// Receiver the channel's distribution pays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pay_to: Option<String>,
+    /// Network the channel lives on, as the owning scheme names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 impl ChannelBinding {
@@ -729,6 +732,8 @@ impl ChannelBinding {
             Some("scheme")
         } else if differs(&self.pay_to, &current.pay_to) {
             Some("payTo")
+        } else if differs(&self.network, &current.network) {
+            Some("network")
         } else {
             None
         }
@@ -739,6 +744,7 @@ impl ChannelBinding {
         ChannelBinding {
             scheme: self.scheme.clone(),
             pay_to: self.pay_to.clone().or_else(|| current.pay_to.clone()),
+            network: self.network.clone().or_else(|| current.network.clone()),
         }
     }
 }
@@ -2730,6 +2736,7 @@ mod tests {
         let batch = ChannelBinding {
             scheme: "batch-settlement".to_string(),
             pay_to: Some("api-a".to_string()),
+            network: Some("devnet".to_string()),
         };
         assert_eq!(state.binding().unwrap(), None);
         state
@@ -2750,12 +2757,18 @@ mod tests {
             ..batch.clone()
         };
         assert!(decoded.check_binding(&other_receiver).is_err());
+        let other_network = ChannelBinding {
+            network: Some("mainnet".to_string()),
+            ..batch.clone()
+        };
+        assert!(decoded.check_binding(&other_network).is_err());
 
         // An older binding without a receiver is accepted and completed.
         let mut older = make_state("c2", 10_000);
         older.set_binding(&ChannelBinding {
             scheme: "batch-settlement".to_string(),
             pay_to: None,
+            network: None,
         });
         older.check_binding(&batch).unwrap();
         older.adopt_binding(&batch).unwrap();
