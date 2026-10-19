@@ -7,7 +7,7 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::{TransactionVersion, VersionedTransaction};
 
-use super::budget::DeclaredBudget;
+use super::budget::{DeclaredBudget, MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES};
 use super::build::check_limits;
 use super::version::TxVersion;
 use crate::core::{Error, Result};
@@ -121,6 +121,13 @@ pub fn check_v1_budget_caps(
                 "compute unit price {price} exceeds maximum {max_unit_price_micro_lamports}"
             )));
         }
+    }
+    // An absent or smaller loaded-data limit can fail the transaction at
+    // load time, after fees are charged; version 0 always gets the maximum.
+    if declared.loaded_accounts_data_size_limit != Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES) {
+        return Err(Error::Other(format!(
+            "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+        )));
     }
     Ok(Some(declared))
 }
@@ -403,6 +410,30 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unit price"));
+        // The loaded-data limit must be the runtime maximum: zero (or
+        // absent) fails loading after the sponsor is charged.
+        for loaded in [
+            Some(0),
+            Some(1),
+            Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES + 1),
+            None,
+        ] {
+            let mut config = budget.v1_config();
+            config.loaded_accounts_data_size_limit = loaded;
+            let msg = VersionedMessage::V1(
+                solana_message::v1::Message::try_compile_with_config(
+                    &payer,
+                    &ixs,
+                    Hash::default(),
+                    config,
+                )
+                .unwrap(),
+            );
+            assert!(check_v1_budget_caps(&msg, 200_000, 5_000_000)
+                .unwrap_err()
+                .to_string()
+                .contains("loaded accounts data size"));
+        }
         // Version 0 is left to the instruction-level checks.
         let v0 =
             build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), Some(&budget)).unwrap();
