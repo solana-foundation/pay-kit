@@ -1406,7 +1406,7 @@ impl<S: ChannelStore> SessionServer<S> {
         payload: &VoucherPayload,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
-        self.verify_voucher_priced(payload, self.config.amount, guard)
+        self.verify_voucher_priced(payload, self.config.amount, true, guard)
             .await
     }
 
@@ -1418,6 +1418,10 @@ impl<S: ChannelStore> SessionServer<S> {
     /// the debit, in the same atomic transition. Hosts that override the
     /// challenge price per route must use this instead of
     /// [`verify_voucher`](Self::verify_voucher). A zero amount is rejected.
+    ///
+    /// Each accepted voucher authorizes exactly one request: an exact replay
+    /// of the highest voucher is rejected rather than accepted as a no-charge
+    /// no-op, and no state changes.
     pub async fn verify_voucher_for_amount(
         &self,
         payload: &VoucherPayload,
@@ -1428,7 +1432,7 @@ impl<S: ChannelStore> SessionServer<S> {
                 "session voucher request amount must be positive".to_string(),
             ));
         }
-        self.verify_voucher_priced(payload, amount, |_| Ok(()))
+        self.verify_voucher_priced(payload, amount, false, |_| Ok(()))
             .await
     }
 
@@ -1436,6 +1440,7 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &VoucherPayload,
         amount: u64,
+        allow_replay: bool,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
@@ -1489,6 +1494,11 @@ impl<S: ChannelStore> SessionServer<S> {
             // TypeScript/Python session servers' availability gate.
             amount,
             move |state, replay| {
+                if replay && !allow_replay {
+                    return Err(StoreError::Internal(
+                        "voucher was already accepted; sign a new voucher for this request".into(),
+                    ));
+                }
                 guard(state).map_err(|error| StoreError::Internal(error.to_string()))?;
                 let debit = if replay { 0 } else { amount };
                 state.spent_amount = state
@@ -4957,6 +4967,35 @@ mod tests {
             .unwrap();
         let state = stored(&server, &channel_id).await;
         assert_eq!((state.cumulative, state.spent_amount), (500, 500));
+    }
+
+    #[tokio::test]
+    async fn priced_voucher_exact_replay_is_rejected_without_state_change() {
+        let (server, mut session, channel_id) = client_server().await;
+        let payload = voucher_payload(session.sign_increment(25).await.unwrap());
+        let accepted = server
+            .verify_voucher_for_amount(&payload, 25)
+            .await
+            .unwrap();
+        assert!(!accepted.replay);
+        let before = stored(&server, &channel_id).await;
+        let error = server
+            .verify_voucher_for_amount(&payload, 25)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already accepted"), "{error}");
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(
+            (after.cumulative, after.spent_amount, after.last_activity_at),
+            (25, 25, before.last_activity_at)
+        );
+        // The next request is paid with a fresh voucher.
+        let next = voucher_payload(session.sign_increment(25).await.unwrap());
+        let accepted = server.verify_voucher_for_amount(&next, 25).await.unwrap();
+        assert_eq!((accepted.cumulative, accepted.charged), (50, 25));
+        assert_eq!(stored(&server, &channel_id).await.spent_amount, 50);
+        // The idempotent unpriced path keeps its replay semantics.
+        assert!(server.verify_voucher(&next).await.unwrap().replay);
     }
 
     #[tokio::test]
