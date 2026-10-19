@@ -714,12 +714,32 @@ pub struct ChannelState {
 pub struct ChannelBinding {
     /// Payment scheme that owns the record (e.g. `batch-settlement`).
     pub scheme: String,
+    /// Receiver the channel's distribution pays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pay_to: Option<String>,
 }
 
 impl ChannelBinding {
     /// The first recorded field `current` disagrees with, if any.
     pub fn mismatch(&self, current: &ChannelBinding) -> Option<&'static str> {
-        (self.scheme != current.scheme).then_some("scheme")
+        fn differs(recorded: &Option<String>, current: &Option<String>) -> bool {
+            matches!((recorded, current), (Some(a), Some(b)) if a != b)
+        }
+        if self.scheme != current.scheme {
+            Some("scheme")
+        } else if differs(&self.pay_to, &current.pay_to) {
+            Some("payTo")
+        } else {
+            None
+        }
+    }
+
+    /// This binding with any field it did not record taken from `current`.
+    pub fn filled_from(&self, current: &ChannelBinding) -> ChannelBinding {
+        ChannelBinding {
+            scheme: self.scheme.clone(),
+            pay_to: self.pay_to.clone().or_else(|| current.pay_to.clone()),
+        }
     }
 }
 
@@ -741,6 +761,19 @@ impl ChannelState {
             .transpose()
     }
 
+    /// Record `current` on a record that has no binding, or fill the fields an
+    /// older binding did not record.
+    pub fn adopt_binding(&mut self, current: &ChannelBinding) -> Result<(), StoreError> {
+        let recorded = self.binding()?;
+        let adopted = recorded
+            .as_ref()
+            .map_or_else(|| current.clone(), |recorded| recorded.filled_from(current));
+        if recorded.as_ref() != Some(&adopted) {
+            self.set_binding(&adopted);
+        }
+        Ok(())
+    }
+
     /// Stamp `binding` on this record.
     pub fn set_binding(&mut self, binding: &ChannelBinding) {
         if let Ok(value) = serde_json::to_value(binding) {
@@ -750,6 +783,8 @@ impl ChannelState {
 
     /// Refuse a record bound to a different deployment. A record that
     /// predates bindings carries none and is accepted.
+    ///
+    /// See [`Self::adopt_binding`] for completing an older binding.
     pub fn check_binding(&self, current: &ChannelBinding) -> Result<(), StoreError> {
         match self.binding()? {
             Some(recorded) => match recorded.mismatch(current) {
@@ -2694,6 +2729,7 @@ mod tests {
         let mut state = make_state("c1", 10_000);
         let batch = ChannelBinding {
             scheme: "batch-settlement".to_string(),
+            pay_to: Some("api-a".to_string()),
         };
         assert_eq!(state.binding().unwrap(), None);
         state
@@ -2706,8 +2742,24 @@ mod tests {
         decoded.check_binding(&batch).unwrap();
         let session = ChannelBinding {
             scheme: "session".to_string(),
+            ..batch.clone()
         };
         assert!(decoded.check_binding(&session).is_err());
+        let other_receiver = ChannelBinding {
+            pay_to: Some("api-b".to_string()),
+            ..batch.clone()
+        };
+        assert!(decoded.check_binding(&other_receiver).is_err());
+
+        // An older binding without a receiver is accepted and completed.
+        let mut older = make_state("c2", 10_000);
+        older.set_binding(&ChannelBinding {
+            scheme: "batch-settlement".to_string(),
+            pay_to: None,
+        });
+        older.check_binding(&batch).unwrap();
+        older.adopt_binding(&batch).unwrap();
+        assert_eq!(older.binding().unwrap(), Some(batch.clone()));
 
         state
             .extra

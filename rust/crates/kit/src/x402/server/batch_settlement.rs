@@ -1772,9 +1772,7 @@ impl X402BatchSettlement {
                     }
                     state.check_binding(&binding)?;
                     // A record from before bindings adopts this deployment's.
-                    if state.binding()?.is_none() {
-                        state.set_binding(&binding);
-                    }
+                    state.adopt_binding(&binding)?;
                     state.last_activity_at = now.max(0) as u64;
                     state.commit_authorization(
                         &id,
@@ -2247,6 +2245,7 @@ impl X402BatchSettlement {
     pub fn binding(&self) -> ChannelBinding {
         ChannelBinding {
             scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
+            pay_to: Some(self.config.pay_to.clone()),
         }
     }
 
@@ -4474,6 +4473,7 @@ mod tests {
                     let mut state = current.unwrap();
                     state.set_binding(&ChannelBinding {
                         scheme: "session".to_string(),
+                        pay_to: None,
                     });
                     Ok(state)
                 }),
@@ -4486,6 +4486,62 @@ mod tests {
             .await
             .expect_err("another scheme's record is refused");
         assert!(err.to_string().contains("another deployment"), "{err}");
+    }
+
+    /// A channel committed to one API's receiver is refused by another API
+    /// sharing the fee payer and store, even though the receiver is not a PDA
+    /// seed and only unsigned metadata names it.
+    #[tokio::test]
+    async fn a_channel_bound_to_another_receiver_is_refused() {
+        const API_B: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+        let store = Arc::new(MemoryChannelStore::new());
+        let (api_a, fee_payer) = handler(store.clone());
+        let mut config_b = BatchConfig::new(API_B, "localnet", Arc::new(TestSigner::new(21)));
+        config_b.withdraw_delay = 3600;
+        config_b.memo = Some("invoice-1".to_string());
+        let api_b = X402BatchSettlement::with_store(config_b, store.clone()).unwrap();
+
+        let requirements_a = api_a.requirements("0.001").unwrap();
+        let requirements_b = api_b.requirements("0.001").unwrap();
+        let (key, config_a, channel) = client(&fee_payer, &requirements_a);
+        let mut seeded_a = seeded(&channel, &config_a, 5_000, 1_000);
+        seeded_a.set_binding(&api_a.binding());
+        store
+            .put_channel(&pc::pubkey_string(&channel), seeded_a)
+            .await
+            .unwrap();
+        let mut config_b_channel = config_a.clone();
+        config_b_channel.receiver = requirements_b.pay_to.clone();
+        assert_eq!(
+            derive_channel_id(
+                &config_b_channel,
+                &api_b.fee_payer(),
+                &pc::default_program_id()
+            )
+            .unwrap(),
+            channel,
+            "the receiver is not a PDA seed"
+        );
+        let header_b = header(
+            &requirements_b,
+            BatchPayload::Voucher {
+                channel_config: config_b_channel,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let err = api_b
+            .verify_and_reserve_payment(&header_b, "0.001")
+            .await
+            .expect_err("API B must not serve against API A's channel");
+        assert!(err.to_string().contains("payTo differs"), "{err}");
+        let state = store
+            .get_channel(&pc::pubkey_string(&channel))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 1_000);
+        assert!(state.pending_deliveries.is_empty());
     }
 
     /// A record from before bindings is accepted and adopts this server's
