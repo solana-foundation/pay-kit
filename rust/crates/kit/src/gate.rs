@@ -122,6 +122,11 @@ pub struct PayKitConfig {
     pub tx_v1: TxV1Mode,
     /// Disable advisory setup guidance on PayKit-owned 402 responses (default `false`).
     pub disable_hint: bool,
+    /// Channel store for the x402 `batch-settlement` routes. It is the only
+    /// record of accepted vouchers, so production deployments should pass a
+    /// durable store shared by every replica. `None` keeps an in-memory store:
+    /// its channels are refused after a restart and must be reopened.
+    pub batch_channel_store: Option<Arc<dyn crate::core::store::ChannelStore>>,
 }
 
 impl Default for PayKitConfig {
@@ -140,6 +145,7 @@ impl Default for PayKitConfig {
             accepted_currencies: None,
             tx_v1: TxV1Mode::Auto,
             disable_hint: false,
+            batch_channel_store: None,
         }
     }
 }
@@ -277,9 +283,12 @@ impl PayKit {
                 batch.currency = config.currency.clone();
                 batch.decimals = config.decimals;
                 batch.rpc_url = config.rpc_url.clone();
-                X402BatchSettlement::new(batch)
-                    .map(|batch| Arc::new(batch.with_tx_v1(config.tx_v1)))
-                    .map_err(|e| PayKitError::X402(e.to_string()))
+                match config.batch_channel_store.clone() {
+                    Some(store) => X402BatchSettlement::with_store(batch, store),
+                    None => X402BatchSettlement::new(batch),
+                }
+                .map(|batch| Arc::new(batch.with_tx_v1(config.tx_v1)))
+                .map_err(|e| PayKitError::X402(e.to_string()))
             })
             .transpose()?;
 
@@ -2338,6 +2347,23 @@ mod tests {
         assert!(!is_failed_handler_status(StatusCode::NOT_MODIFIED));
         assert!(is_failed_handler_status(StatusCode::BAD_REQUEST));
         assert!(is_failed_handler_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn batch_routes_use_the_configured_channel_store() {
+        let store: Arc<dyn crate::core::store::ChannelStore> =
+            Arc::new(crate::core::store::MemoryChannelStore::new());
+        let pay = PayKit::new(PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            fee_payer_signer: Some(test_signer()),
+            batch_channel_store: Some(Arc::clone(&store)),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(pay.x402_batch().unwrap().store(), &store));
     }
 
     #[tokio::test(flavor = "multi_thread")]
