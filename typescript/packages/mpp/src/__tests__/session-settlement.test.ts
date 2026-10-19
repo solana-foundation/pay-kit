@@ -626,6 +626,45 @@ describe('session() verify() close monotonicity', () => {
     });
 });
 
+describe('session() close settlement treasury', () => {
+    // ATA(4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap, USDC_DEVNET_MINT, TOKEN_PROGRAM)
+    const DEVNET_TREASURY_ATA = 'BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz';
+    // ATA(Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP, USDC_DEVNET_MINT, TOKEN_PROGRAM)
+    const MAINNET_TREASURY_ATA = 'FhCMrXE7ciBXZpSwuNwPT4HTkWcsUaMkFrUvDGJD8sP2';
+
+    test('a devnet close distributes to the devnet treasury ATA', async () => {
+        const { f, method, sent, voucher } = await watermarkedFixture();
+
+        const receipt = await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(sent[0]!));
+        const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            instructions: readonly {
+                accountIndices?: readonly number[];
+                data?: Uint8Array;
+                programAddressIndex: number;
+            }[];
+            staticAccounts: readonly string[];
+        };
+        const distribute = message.instructions.find(
+            ix => message.staticAccounts[ix.programAddressIndex] === PAYMENT_CHANNELS_PROGRAM_ID && ix.data?.[0] === 7,
+        );
+        expect(distribute).toBeDefined();
+        const treasuryAta = message.staticAccounts[distribute!.accountIndices![6]!];
+        expect(treasuryAta).toBe(DEVNET_TREASURY_ATA);
+        expect(treasuryAta).not.toBe(MAINNET_TREASURY_ATA);
+    });
+
+    test('session construction rejects a network without a known deployment', async () => {
+        const f = await makeFixture();
+        expect(() => makeMethod(f, mockRpc().rpc, { currency: USDC_DEVNET_MINT, network: 'testnet' })).toThrow(
+            /Unsupported network "testnet"/,
+        );
+    });
+});
+
 // ── verify() — close retry after a failed settlement ─────────────────────
 
 describe('session() verify() close retry', () => {

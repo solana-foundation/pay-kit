@@ -37,7 +37,13 @@ import {
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 
-import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    defaultTokenProgramForCurrency,
+    normalizeNetwork,
+    resolveStablecoinMint,
+    validateNetwork,
+} from '../../constants.js';
 import { fetchChannel } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
 import { getOpenInstructionDataDecoder } from '../../generated/payment-channels/instructions/open.js';
@@ -88,15 +94,35 @@ export const PAYMENT_CHANNELS_PROGRAM_ID = PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 export const OPEN_SLOT_WINDOW = 1_500n;
 
 /**
- * Treasury owner baked into the deployed (mainnet-build) payment-channels
- * program — Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP. The treasury ATA is
+ * Treasury owner baked into the mainnet-build payment-channels program —
+ * Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP. The treasury ATA is
  * ATA(TREASURY_OWNER, mint, tokenProgram). Mirrors `TREASURY_OWNER` in
- * `rust/crates/core/src/payment_channels.rs`.
+ * `rust/crates/kit/src/core/payment_channel/v1.rs`.
  */
 const TREASURY_OWNER_BYTES = new Uint8Array([
     0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09, 0xa5, 0x3a, 0x0e,
     0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,
 ]);
+
+/**
+ * Treasury owner baked into the devnet-build payment-channels program —
+ * 4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap. Mirrors
+ * `DEVNET_TREASURY_OWNER` in `rust/crates/kit/src/core/payment_channel/v1.rs`.
+ */
+const DEVNET_TREASURY_OWNER_BYTES = new Uint8Array([
+    0x3b, 0x4b, 0x4a, 0x4c, 0x3e, 0xcd, 0x7e, 0x59, 0xd6, 0x34, 0xae, 0x67, 0xe5, 0xde, 0xbb, 0xec, 0x0a, 0xd0, 0x6f,
+    0x20, 0x4d, 0xf0, 0x13, 0xa6, 0x95, 0xa3, 0x37, 0x6a, 0x57, 0xb9, 0x8d, 0x05,
+]);
+
+/**
+ * Treasury owner the payment-channels deployment on `network` was built
+ * with. Localnet runs the mainnet build. Throws on unsupported networks.
+ */
+export function treasuryOwnerForNetwork(network: string): Address {
+    validateNetwork(network);
+    const bytes = normalizeNetwork(network) === 'devnet' ? DEVNET_TREASURY_OWNER_BYTES : TREASURY_OWNER_BYTES;
+    return getBase58FromBytes(bytes);
+}
 
 /** Payment-channel open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
@@ -281,6 +307,8 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
 export interface DistributeBuildArgs {
     readonly channelState: { readonly channelId: string; readonly payee: string; readonly payer: string };
     readonly mint: string;
+    /** Cluster the channel lives on; selects the deployment's treasury owner. */
+    readonly network: string;
     readonly payerAddr?: string | undefined;
     readonly programId?: Address | undefined;
     /**
@@ -323,7 +351,7 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
     const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: payer, tokenProgram });
     const [payeeTokenAccount] = await findAssociatedTokenPda({ mint, owner: payee, tokenProgram });
     const [eventAuthority] = await findEventAuthorityPda({ programAddress: programId });
-    const treasury = deriveTreasuryAddress();
+    const treasury = treasuryOwnerForNetwork(args.network);
     const [treasuryTokenAccount] = await findAssociatedTokenPda({ mint, owner: treasury, tokenProgram });
 
     const recipientTokenAccounts: Address[] = [];
@@ -984,7 +1012,8 @@ export interface SubmitSettleAndDistributeArgs {
     readonly channelId: string;
     readonly currency?: string | undefined;
     readonly mint: string;
-    readonly network?: string | undefined;
+    /** Cluster the channel lives on; selects the deployment's treasury owner. */
+    readonly network: string;
     readonly payee: string;
     readonly payer: string;
     readonly programId?: Address | undefined;
@@ -1040,6 +1069,7 @@ export async function submitSettleAndDistribute(
     const distribute = await buildDistributeInstruction({
         channelState: { channelId: args.channelId, payee: args.payee, payer: args.payer },
         mint: args.mint,
+        network: args.network,
         payerAddr: args.payer,
         programId: args.programId,
         rentPayer: args.rentPayer,
@@ -1058,10 +1088,6 @@ export async function submitSettleAndDistribute(
 // ─────────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
-
-function deriveTreasuryAddress(): Address {
-    return getBase58FromBytes(TREASURY_OWNER_BYTES);
-}
 
 function getBase58FromBytes(bytes: Uint8Array): Address {
     // base58 of a fixed-pattern 32-byte address; encode via a small library-free path.

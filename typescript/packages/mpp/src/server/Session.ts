@@ -43,6 +43,7 @@ import {
     type SubmitSettleAndDistributeResult,
     submitTopUpTx,
     transactionSignatureFromWire,
+    treasuryOwnerForNetwork,
     verifyOpenTx,
 } from './session/on-chain.js';
 import {
@@ -149,6 +150,8 @@ export function session(parameters: session.Parameters) {
     const operator = operatorVoucherSigner?.address;
     const store = resolveSessionStore(parameters);
     const resolvedProgramId = (channelProgram ?? PAYMENT_CHANNELS_PROGRAM_ID) as Address;
+    // Settlement derives the treasury ATA per cluster; reject unknown networks up front.
+    treasuryOwnerForNetwork(network);
     const resolvedMint = resolveStablecoinMint(currency, network);
     if (!resolvedMint) throw new Error('session currency must be an SPL token mint; use wrapped SOL instead of SOL');
     const resolvedDecimals = decimals ?? (stablecoinSymbolForCurrency(resolvedMint) ? 6 : undefined);

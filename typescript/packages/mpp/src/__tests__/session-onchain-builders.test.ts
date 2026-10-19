@@ -46,6 +46,7 @@ import {
     INSTRUCTIONS_SYSVAR_ADDRESS,
     PAYMENT_CHANNELS_PROGRAM_ID,
     type ServerInstruction,
+    treasuryOwnerForNetwork,
 } from '../server/session/on-chain.js';
 import type { SignedVoucher } from '../shared/session-types.js';
 
@@ -352,6 +353,7 @@ describe('buildDistributeInstruction', () => {
         const ix = await buildDistributeInstruction({
             channelState: { channelId: CHANNEL_ID, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            network: 'mainnet',
             rentPayer: operator.address,
             splits: [
                 { bps: 1000, recipient: SPLIT_RECIPIENT },
@@ -401,12 +403,58 @@ describe('buildDistributeInstruction', () => {
         const ix = await buildDistributeInstruction({
             channelState: { channelId: CHANNEL_ID, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            network: 'mainnet',
             rentPayer: operator.address,
             splits: [],
             tokenProgram: TOKEN_PROGRAM,
         });
         expect(ix.accounts).toHaveLength(11);
         expect(hex(ix.data)).toBe('0700000000'); // [disc=7][count=0]
+    });
+});
+
+describe('distribute treasury per network', () => {
+    const MAINNET_TREASURY = 'Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP';
+    const DEVNET_TREASURY = '4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap';
+    const DEVNET_USDC = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+    // ATA(owner, DEVNET_USDC, TOKEN_PROGRAM)
+    const DEVNET_TREASURY_DEVNET_USDC_ATA = 'BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz';
+    const MAINNET_TREASURY_DEVNET_USDC_ATA = 'FhCMrXE7ciBXZpSwuNwPT4HTkWcsUaMkFrUvDGJD8sP2';
+
+    async function treasuryAccount(network: string, mint: string) {
+        const [payer, operator, payee] = await loadFixedSigners();
+        const ix = await buildDistributeInstruction({
+            channelState: { channelId: CHANNEL_ID, payee: payee.address, payer: payer.address },
+            mint,
+            network,
+            rentPayer: operator.address,
+            splits: [],
+            tokenProgram: TOKEN_PROGRAM,
+        });
+        return ix.accounts[6]?.address;
+    }
+
+    test('treasury owner resolves per cluster', () => {
+        expect(treasuryOwnerForNetwork('mainnet')).toBe(MAINNET_TREASURY);
+        expect(treasuryOwnerForNetwork('mainnet-beta')).toBe(MAINNET_TREASURY);
+        expect(treasuryOwnerForNetwork('localnet')).toBe(MAINNET_TREASURY);
+        expect(treasuryOwnerForNetwork('devnet')).toBe(DEVNET_TREASURY);
+    });
+
+    test('devnet distribute targets the devnet treasury ATA', async () => {
+        const treasuryAta = await treasuryAccount('devnet', DEVNET_USDC);
+        expect(treasuryAta).toBe(DEVNET_TREASURY_DEVNET_USDC_ATA);
+        expect(treasuryAta).not.toBe(MAINNET_TREASURY_DEVNET_USDC_ATA);
+    });
+
+    test('mainnet and localnet distribute keep the mainnet treasury ATA', async () => {
+        expect(await treasuryAccount('mainnet', USDC.mainnet!)).toBe(TREASURY_USDC_ATA);
+        expect(await treasuryAccount('mainnet-beta', USDC.mainnet!)).toBe(TREASURY_USDC_ATA);
+        expect(await treasuryAccount('localnet', USDC.mainnet!)).toBe(TREASURY_USDC_ATA);
+    });
+
+    test.each(['testnet', '', 'Devnet ', 'solana:devnet'])('unsupported network %j is rejected', async network => {
+        await expect(treasuryAccount(network, DEVNET_USDC)).rejects.toThrow(/network/);
     });
 });
 
