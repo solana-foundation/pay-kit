@@ -5147,6 +5147,59 @@ mod tests {
         assert!(server.seal_params(&channel_id).await.is_err());
     }
 
+    fn action_voucher(action: crate::mpp::SessionAction) -> VoucherPayload {
+        match action {
+            crate::mpp::SessionAction::Voucher(payload) => payload,
+            other => panic!("expected voucher action, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn out_of_order_vouchers_from_advancing_signer_overstate_the_watermark() {
+        // The hazard: signing advances the client watermark before delivery,
+        // so the server only sees the higher voucher as fresh.
+        let (server, mut session, channel_id) = client_server().await;
+        let low = action_voucher(session.voucher_action(25).await.unwrap());
+        let high = action_voucher(session.voucher_action(25).await.unwrap());
+        server.verify_voucher_for_amount(&high, 25).await.unwrap();
+        assert!(server.verify_voucher_for_amount(&low, 25).await.is_err());
+        let state = stored(&server, &channel_id).await;
+        // The rejected request is not debited.
+        assert_eq!((state.cumulative, state.spent_amount), (50, 25));
+    }
+
+    #[tokio::test]
+    async fn concurrent_prepared_vouchers_never_settle_a_rejected_request() {
+        let (server, mut session, channel_id) = client_server().await;
+        let (first, second) = tokio::join!(
+            session.prepare_voucher_action(25),
+            session.prepare_voucher_action(25)
+        );
+        let (first, second) = (
+            action_voucher(first.unwrap()),
+            action_voucher(second.unwrap()),
+        );
+        assert_eq!(first.voucher.data.cumulative_amount, "25");
+        assert_eq!(first.voucher.signature, second.voucher.signature);
+
+        // Whichever lands first is served; the other is rejected and costs
+        // nothing, so the watermark always equals what was served.
+        server.verify_voucher_for_amount(&second, 25).await.unwrap();
+        assert!(server.verify_voucher_for_amount(&first, 25).await.is_err());
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (25, 25));
+        assert_eq!(server.seal_params(&channel_id).await.unwrap().settled, 25);
+
+        // The client records only the accepted voucher, then retries.
+        session.record_voucher(&second.voucher).unwrap();
+        let retry = action_voucher(session.prepare_voucher_action(25).await.unwrap());
+        assert_eq!(retry.voucher.data.cumulative_amount, "50");
+        server.verify_voucher_for_amount(&retry, 25).await.unwrap();
+        session.record_voucher(&retry.voucher).unwrap();
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (50, 50));
+    }
+
     #[tokio::test]
     async fn priced_voucher_rejects_a_zero_amount() {
         let (server, session, channel_id) = client_server().await;

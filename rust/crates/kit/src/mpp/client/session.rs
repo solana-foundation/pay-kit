@@ -182,7 +182,26 @@ impl ActiveSession {
         self.sign_voucher(self.cumulative + amount).await
     }
 
+    /// Build a `SessionAction::Voucher` for an increment without advancing the
+    /// local watermark. Call [`record_voucher`](Self::record_voucher) once the
+    /// server accepts it; concurrent prepares sign the same voucher, which the
+    /// server accepts once, so a rejected request never raises the watermark.
+    pub async fn prepare_voucher_action(&self, amount: u64) -> Result<SessionAction> {
+        let voucher = self.prepare_increment(amount).await?;
+        Ok(SessionAction::Voucher(VoucherPayload {
+            channel_id: voucher.data.channel_id.clone(),
+            voucher,
+        }))
+    }
+
     /// Build a `SessionAction::Voucher` wrapping a freshly-signed increment.
+    ///
+    /// The local watermark advances before the server has seen the voucher.
+    /// Requests sharing one session must not be in flight concurrently with
+    /// this: if a higher voucher lands first, the lower request is rejected
+    /// while the channel still settles the higher watermark. Use
+    /// [`prepare_voucher_action`](Self::prepare_voucher_action) and
+    /// [`record_voucher`](Self::record_voucher) instead.
     pub async fn voucher_action(&mut self, amount: u64) -> Result<SessionAction> {
         let voucher = self.sign_increment(amount).await?;
         Ok(SessionAction::Voucher(VoucherPayload {
