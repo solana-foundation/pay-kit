@@ -623,7 +623,20 @@ impl SubscriptionServer {
                     signature
                 } else {
                     reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
-                    self.broadcast_and_confirm(&tx).await?
+                    match self.broadcast_and_confirm(&tx).await {
+                        Ok(signature) => signature,
+                        // A transaction that can no longer land needs no
+                        // replay record; ambiguous outcomes keep theirs.
+                        Err(BroadcastError::Rejected(error)) => {
+                            self.store.delete(&key).await.map_err(|e| {
+                                VerificationError::new(format!(
+                                    "Failed to release activation reservation: {e}"
+                                ))
+                            })?;
+                            return Err(error);
+                        }
+                        Err(BroadcastError::Unknown(error)) => return Err(error),
+                    }
                 };
                 (subscriber, Some(sig.to_string()))
             }
@@ -994,18 +1007,59 @@ impl SubscriptionServer {
     async fn broadcast_and_confirm(
         &self,
         tx: &VersionedTransaction,
-    ) -> Result<Signature, VerificationError> {
+    ) -> Result<Signature, BroadcastError> {
+        use solana_rpc_client_api::client_error::ErrorKind;
         let rpc_url = self.rpc_url.clone();
         let tx = tx.clone();
         // RpcClient is blocking; offload to a worker thread.
         tokio::task::spawn_blocking(move || {
             let rpc = confirmed_rpc(rpc_url);
-            crate::core::rpc::send_and_confirm_transaction(&rpc, &tx).map_err(|e| {
+            let failed = |e: &dyn std::fmt::Display| {
                 VerificationError::transaction_failed(format!("Broadcast failed: {e}"))
-            })
+            };
+            let signature = crate::core::rpc::send_transaction(
+                &rpc,
+                &tx,
+                crate::core::rpc::preflight_config(&rpc),
+            )
+            .map_err(|e| match e.kind() {
+                // The node refused it (preflight or sanitization): never sent.
+                ErrorKind::RpcError(
+                    solana_rpc_client_api::request::RpcError::RpcResponseError { .. },
+                ) => BroadcastError::Rejected(failed(&e)),
+                _ => BroadcastError::Unknown(failed(&e)),
+            })?;
+            let blockhash = *tx.message.recent_blockhash();
+            loop {
+                match rpc
+                    .get_signature_status_with_commitment(&signature, rpc.commitment())
+                    .map_err(|e| BroadcastError::Unknown(failed(&e)))?
+                {
+                    Some(Ok(())) => return Ok(signature),
+                    Some(Err(e)) => return Err(BroadcastError::Rejected(failed(&e))),
+                    None => {
+                        let valid = rpc
+                            .is_blockhash_valid(
+                                &blockhash,
+                                solana_commitment_config::CommitmentConfig::processed(),
+                            )
+                            .map_err(|e| BroadcastError::Unknown(failed(&e)))?;
+                        if !valid {
+                            return Err(BroadcastError::Rejected(failed(
+                                &"its blockhash expired before it confirmed",
+                            )));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            }
         })
         .await
-        .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
+        .map_err(|e| {
+            BroadcastError::Unknown(VerificationError::network_error(format!(
+                "RPC task join: {e}"
+            )))
+        })?
     }
 
     /// Read the delegation a just-confirmed activation created, tolerating
@@ -1170,6 +1224,14 @@ impl SubscriptionServer {
 }
 
 // ── Verify helpers ──────────────────────────────────────────────────────────
+
+/// Outcome of a failed activation broadcast.
+enum BroadcastError {
+    /// The transaction did not and cannot land.
+    Rejected(VerificationError),
+    /// It may still land; the replay reservation must be kept.
+    Unknown(VerificationError),
+}
 
 const ACTIVATED_DELEGATION_READ_ATTEMPTS: u32 = 5;
 const ACTIVATED_DELEGATION_READ_BACKOFF: std::time::Duration =

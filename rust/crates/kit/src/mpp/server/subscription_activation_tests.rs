@@ -29,6 +29,10 @@ pub(super) struct ChainState {
     pub hidden_landed_reads: usize,
     /// JSON-RPC error object returned by `sendTransaction`.
     pub send_error: Option<serde_json::Value>,
+    /// Status recorded for a sent transaction; success when `None`.
+    pub sent_status: Option<serde_json::Value>,
+    /// JSON-RPC error object returned by `getSignatureStatuses`.
+    pub status_error: Option<serde_json::Value>,
     /// Signature statuses keyed by signature.
     pub statuses: HashMap<String, serde_json::Value>,
     pub sends: usize,
@@ -118,6 +122,12 @@ impl RpcFixture {
                             });
                             serde_json::json!({"context": {"slot": 1}, "value": value})
                         }
+                        "getSignatureStatuses" if state.status_error.is_some() => {
+                            return Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": request["id"],
+                                "error": state.status_error.clone().unwrap()
+                            }));
+                        }
                         "getSignatureStatuses" => {
                             let value: Vec<serde_json::Value> = params[0]
                                 .as_array()
@@ -142,8 +152,9 @@ impl RpcFixture {
                             }
                             let tx = crate::core::tx::decode(params[0].as_str().unwrap()).unwrap();
                             let signature = tx.signatures[0].to_string();
-                            state.statuses.insert(signature.clone(), success_status());
-                            state.sent = true;
+                            let status = state.sent_status.clone().unwrap_or_else(success_status);
+                            state.sent = status["err"].is_null();
+                            state.statuses.insert(signature.clone(), status);
                             serde_json::json!(signature)
                         }
                         method => panic!("unexpected RPC method {method}"),
@@ -1018,4 +1029,100 @@ async fn activation_retry_after_authority_reinitialization_is_rejected() {
 
     let err = server.verify_credential(&credential).await.unwrap_err();
     assert!(err.message.contains("invalidated"), "{}", err.message);
+}
+
+// ── SOLA1-214: failed broadcasts release their replay reservation ──────────
+
+fn consumed_key(signature: &str) -> String {
+    format!("solana-subscription:consumed:{signature}")
+}
+
+async fn server_with_store(
+    scenario: &Scenario,
+    rpc: &RpcFixture,
+) -> (SubscriptionServer, Arc<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let server = SubscriptionServer::new(SubscriptionConfig {
+        store: Some(store.clone()),
+        ..scenario.config(&rpc.url)
+    })
+    .unwrap();
+    (server, store)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preflight_rejected_activation_releases_its_reservation() {
+    let scenario = Scenario::new();
+    let mut state = fresh_activation_state(&scenario);
+    state.send_error = Some(serde_json::json!({
+        "code": -32002,
+        "message": "Transaction simulation failed: Attempt to debit an account but found no record of a prior credit."
+    }));
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let (server, store) = server_with_store(&scenario, &rpc).await;
+    let (credential, signature) = scenario.activation(&server).await;
+
+    assert!(server.verify_credential(&credential).await.is_err());
+    assert_eq!(store.get(&consumed_key(&signature)).await.unwrap(), None);
+
+    // The same signed transaction is not reported as consumed afterwards.
+    let challenge = server.subscription_challenge(&AMOUNT.to_string()).unwrap();
+    let (retry, retry_signature) = scenario.activation_for(&challenge).await;
+    assert_eq!(retry_signature, signature);
+    let err = server.verify_credential(&retry).await.unwrap_err();
+    assert!(!err.message.contains("consumed"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_that_failed_on_chain_releases_its_reservation() {
+    let scenario = Scenario::new();
+    let mut state = fresh_activation_state(&scenario);
+    state.sent_status = Some(failed_status());
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let (server, store) = server_with_store(&scenario, &rpc).await;
+    let (credential, signature) = scenario.activation(&server).await;
+
+    assert!(server.verify_credential(&credential).await.is_err());
+    assert_eq!(store.get(&consumed_key(&signature)).await.unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ambiguous_broadcast_keeps_its_reservation() {
+    let scenario = Scenario::new();
+    let mut state = fresh_activation_state(&scenario);
+    state.status_error = Some(serde_json::json!({"code": -32005, "message": "node is behind"}));
+    // The outcome stays unknown: nothing is visible on-chain yet.
+    state.landed.clear();
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let (server, store) = server_with_store(&scenario, &rpc).await;
+    let (credential, signature) = scenario.activation(&server).await;
+
+    assert!(server.verify_credential(&credential).await.is_err());
+    assert!(store
+        .get(&consumed_key(&signature))
+        .await
+        .unwrap()
+        .is_some());
+
+    // Another challenge must not reuse a transaction that may have landed.
+    let challenge = server.subscription_challenge(&AMOUNT.to_string()).unwrap();
+    let (retry, _) = scenario.activation_for(&challenge).await;
+    let err = server.verify_credential(&retry).await.unwrap_err();
+    assert!(err.message.contains("consumed"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn confirmed_activation_keeps_its_reservation() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(program_owner(), fresh_activation_state(&scenario)).await;
+    let (server, store) = server_with_store(&scenario, &rpc).await;
+    let (credential, signature) = scenario.activation(&server).await;
+
+    server.verify_credential(&credential).await.unwrap();
+    assert!(store
+        .get(&consumed_key(&signature))
+        .await
+        .unwrap()
+        .is_some());
 }
