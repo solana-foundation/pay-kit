@@ -1365,4 +1365,54 @@ mod tests {
             .await
             .is_ok());
     }
+
+    fn envelope_payment_identifier(header: &str) -> Option<String> {
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, header).unwrap();
+        let envelope: PaymentSignatureEnvelope = serde_json::from_slice(&decoded).unwrap();
+        envelope
+            .extensions
+            .and_then(|extensions| extensions.payment_identifier)
+            .and_then(|identifier| identifier.info.id)
+    }
+
+    #[tokio::test]
+    async fn retries_carry_the_caller_owned_payment_identifier() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let requirements = test_requirements("USDC");
+        let inbound = serde_json::json!({
+            "payment-identifier": { "info": { "required": true } }
+        });
+        let echoed = PaymentExtensions::echoing(Some(&inbound)).unwrap().unwrap();
+        assert!(echoed.requires_payment_identifier());
+
+        // The kit never mints or rotates the id; the caller's logical request
+        // owns it, so every retry of that request carries the same id.
+        let unset = build_payment_header(&signer, &rpc, &requirements, Some(echoed.clone()), None)
+            .await
+            .unwrap();
+        assert_eq!(envelope_payment_identifier(&unset), None);
+
+        let id = crate::x402::protocol::schemes::exact::generate_payment_identifier_id();
+        let attempt = echoed.with_payment_identifier_id(id.clone());
+        let first = build_payment_header(&signer, &rpc, &requirements, Some(attempt.clone()), None)
+            .await
+            .unwrap();
+        let retry = build_payment_header(&signer, &rpc, &requirements, Some(attempt), None)
+            .await
+            .unwrap();
+        assert_ne!(first, retry, "each build signs a fresh transaction");
+        assert_eq!(
+            envelope_payment_identifier(&first).as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(
+            envelope_payment_identifier(&retry).as_deref(),
+            Some(id.as_str())
+        );
+    }
 }
