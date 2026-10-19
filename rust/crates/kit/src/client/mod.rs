@@ -1203,4 +1203,127 @@ mod tests {
         assert!(!saw_payment.load(Ordering::SeqCst));
         task.abort();
     }
+
+    /// Serve a single-offer x402 402 whose paid retry is recorded.
+    async fn x402_offer_server(
+        accept: serde_json::Value,
+    ) -> (String, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
+        let envelope = serde_json::json!({ "x402Version": 2, "accepts": [accept] });
+        let payment_required = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&envelope).unwrap());
+        let saw_payment = Arc::new(AtomicBool::new(false));
+        let app = Router::new()
+            .route("/report", get(paid_resource))
+            .with_state(ChallengeState {
+                payment_required,
+                saw_payment: saw_payment.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/report"), saw_payment, task)
+    }
+
+    fn origin_of(url: &str) -> String {
+        Url::parse(url).unwrap().origin().ascii_serialization()
+    }
+
+    #[tokio::test]
+    async fn unapproved_origin_is_denied_before_signing_on_every_protocol() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let (url, saw_x402_payment, task) = dual_challenge_server(Pubkey::new_unique()).await;
+        let permissions = ClientPermissions::builder()
+            .allow_origin("https://approved.example")
+            .unwrap()
+            .without_amount_cap()
+            .build()
+            .unwrap();
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .permissions(permissions)
+            .build()
+            .unwrap();
+
+        let error = client.get(url).send().await.unwrap_err();
+        let ClientError::PermissionDenied(denial) = error else {
+            panic!("expected permission denial");
+        };
+        assert_eq!(denial.rejections.len(), 2, "{denial:?}");
+        assert!(denial
+            .rejections
+            .iter()
+            .all(|rejection| rejection.code == PermissionDeniedCode::OriginNotAllowed));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!saw_x402_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn approved_origin_signs_the_permitted_offer() {
+        let (url, saw_x402_payment, task) = dual_challenge_server(Pubkey::new_unique()).await;
+        let permissions = ClientPermissions::builder()
+            .allow_origin(origin_of(&url))
+            .unwrap()
+            .build()
+            .unwrap();
+        let client = PayKitClient::builder()
+            .signer(test_signer())
+            .rpc_url("http://127.0.0.1:1")
+            .permissions(permissions)
+            .build()
+            .unwrap();
+
+        let response = client.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(saw_x402_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn challenge_selected_custom_mint_is_denied_before_signing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let (url, saw_payment, task) = x402_offer_server(serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "1",
+            "asset": Pubkey::new_unique().to_string(),
+            "payTo": Pubkey::new_unique().to_string(),
+            "maxTimeoutSeconds": 300,
+            "extra": {
+                "decimals": 2,
+                "tokenProgram": TOKEN_PROGRAM,
+                "recentBlockhash": Hash::new_unique().to_string(),
+            }
+        }))
+        .await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap();
+
+        let error = client.get(url).send().await.unwrap_err();
+        let ClientError::PermissionDenied(denial) = error else {
+            panic!("expected permission denial");
+        };
+        assert_eq!(
+            denial.rejections[0].code,
+            PermissionDeniedCode::AssetNotAllowed
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!saw_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
 }
