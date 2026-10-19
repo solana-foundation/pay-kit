@@ -56,7 +56,10 @@ pub(crate) const MAX_CT_CREATE_ACCOUNT_LAMPORTS: u64 = 50_000_000; // ~0.05 SOL
 /// A fee-bearing version-0 transfer creates five proof contexts and one record.
 /// Bound the aggregate exposure as well as each individual account.
 #[cfg(feature = "confidential")]
-pub(crate) const MAX_CT_BUNDLE_CREATE_LAMPORTS: u64 = MAX_CT_CREATE_ACCOUNT_LAMPORTS * 6;
+pub(crate) const MAX_CT_BUNDLE_FUNDED_ACCOUNTS: usize = 6;
+#[cfg(feature = "confidential")]
+pub(crate) const MAX_CT_BUNDLE_CREATE_LAMPORTS: u64 =
+    MAX_CT_CREATE_ACCOUNT_LAMPORTS * MAX_CT_BUNDLE_FUNDED_ACCOUNTS as u64;
 /// Max base64 length of a single bundle transaction, by the largest accepted
 /// version: 1232 wire bytes (~1644 base64 chars) for version 0, 4096 (5464)
 /// for version 1. Caps decode/deserialize allocation so a client can't force
@@ -736,6 +739,12 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         "confidential bundle creates the same temporary account more than once",
                     ));
                 }
+                // Each funded account also adds a sponsored signature.
+                if funded.len() > MAX_CT_BUNDLE_FUNDED_ACCOUNTS {
+                    return Err(VerificationError::credential_mismatch(format!(
+                        "confidential bundle creates more than {MAX_CT_BUNDLE_FUNDED_ACCOUNTS} temporary accounts"
+                    )));
+                }
                 created_in_transaction.insert(account);
                 advances_lifecycle = true;
                 continue;
@@ -1000,6 +1009,8 @@ pub(crate) fn verify_confidential_bundle_tx(
     }
 
     let mut transfer_count = 0usize;
+    let mut created_accounts = std::collections::HashSet::<Pubkey>::new();
+    let mut transfer_accounts = std::collections::HashSet::<Pubkey>::new();
     for ix in tx.message.instructions() {
         let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
             VerificationError::invalid_payload("instruction references unknown program")
@@ -1055,6 +1066,9 @@ pub(crate) fn verify_confidential_bundle_tx(
                 return Err(VerificationError::credential_mismatch(
                     "create_account exceeds the allowed size/rent for a proof/record account",
                 ));
+            }
+            if let Some(created) = ix.accounts.get(1).and_then(|i| keys.get(*i as usize)) {
+                created_accounts.insert(*created);
             }
         } else if *program == zk_program {
             // Every gateway-funded context account must be OWNED by the gateway,
@@ -1192,11 +1206,39 @@ pub(crate) fn verify_confidential_bundle_tx(
                 ));
             }
             transfer_count += 1;
+            transfer_accounts.extend(
+                ix.accounts
+                    .iter()
+                    .filter_map(|i| keys.get(*i as usize).copied()),
+            );
         } else {
             return Err(VerificationError::credential_mismatch(format!(
                 "disallowed program {program}"
             )));
         }
+    }
+
+    // The gateway pays one signature fee per required signer. Beyond its own
+    // slot, only ephemeral accounts this transaction creates and a single
+    // transfer authority may sign; anything else authorizes nothing.
+    let required = usize::from(tx.message.header().num_required_signatures);
+    let mut transfer_signers = 0usize;
+    for signer in keys.iter().take(required).skip(1) {
+        if created_accounts.contains(signer) {
+            continue;
+        }
+        if transfer_accounts.contains(signer) {
+            transfer_signers += 1;
+            continue;
+        }
+        return Err(VerificationError::credential_mismatch(
+            "unexpected signer in confidential bundle transaction",
+        ));
+    }
+    if transfer_signers > 1 {
+        return Err(VerificationError::credential_mismatch(
+            "confidential transfer has more than one authority signer",
+        ));
     }
 
     Ok(transfer_count)
@@ -2187,5 +2229,163 @@ pub(crate) mod tests {
         let err = verify_confidential_account_lifecycle(&bundle(&[60, 40, 40, 40]), &gateway)
             .unwrap_err();
         assert!(err.message.contains("more record data"), "{}", err.message);
+    }
+
+    /// Splice `extra` into the signer prefix without referencing it.
+    fn insert_unreferenced_signers(tx: &mut VersionedTransaction, extra: &[Pubkey]) {
+        use solana_message::VersionedMessage;
+        let inserted = extra.len() as u8;
+        let (header, account_keys, instructions) = match &mut tx.message {
+            VersionedMessage::V0(m) => (&mut m.header, &mut m.account_keys, &mut m.instructions),
+            VersionedMessage::Legacy(m) => {
+                (&mut m.header, &mut m.account_keys, &mut m.instructions)
+            }
+            _ => panic!("expected a version-0 or legacy message"),
+        };
+        account_keys.splice(1..1, extra.iter().copied());
+        for ix in instructions.iter_mut() {
+            if ix.program_id_index >= 1 {
+                ix.program_id_index += inserted;
+            }
+            for account in &mut ix.accounts {
+                if *account >= 1 {
+                    *account += inserted;
+                }
+            }
+        }
+        header.num_required_signatures += inserted;
+        tx.signatures.splice(
+            1..1,
+            std::iter::repeat_n(solana_signature::Signature::default(), extra.len()),
+        );
+    }
+
+    fn accepts(
+        tx: &VersionedTransaction,
+        gateway: &Pubkey,
+        recipient_ata: &Pubkey,
+    ) -> Result<usize, VerificationError> {
+        verify_confidential_bundle_tx(
+            tx,
+            gateway,
+            &Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap(),
+            recipient_ata,
+            &[TxVersion::V0, TxVersion::V1],
+        )
+    }
+
+    // Fresh signer keys referenced by no instruction each add a sponsored
+    // signature fee without authorizing anything.
+    #[test]
+    fn unreferenced_signers_are_rejected() {
+        let gateway = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let p = layout_pieces(&gateway, &ata);
+        let mut tx = v0_tx(&gateway, &[p.transfer, p.close]);
+        assert_eq!(accepts(&tx, &gateway, &ata).unwrap(), 1);
+        insert_unreferenced_signers(
+            &mut tx,
+            &[
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+            ],
+        );
+        tx.sanitize().unwrap();
+        let err = accepts(&tx, &gateway, &ata).unwrap_err();
+        assert!(err.message.contains("unexpected signer"), "{}", err.message);
+
+        let mut setup = v0_tx(&gateway, &[p.create, p.initialize]);
+        assert_eq!(accepts(&setup, &gateway, &ata).unwrap(), 0);
+        insert_unreferenced_signers(&mut setup, &[Pubkey::new_unique()]);
+        let err = accepts(&setup, &gateway, &ata).unwrap_err();
+        assert!(err.message.contains("unexpected signer"), "{}", err.message);
+    }
+
+    #[test]
+    fn transfer_may_carry_only_one_authority_signer() {
+        use solana_instruction::AccountMeta;
+        let gateway = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let mut transfer = layout_pieces(&gateway, &ata).transfer;
+        transfer
+            .accounts
+            .push(AccountMeta::new_readonly(Pubkey::new_unique(), true));
+        assert_eq!(
+            accepts(&v0_tx(&gateway, &[transfer.clone()]), &gateway, &ata).unwrap(),
+            1
+        );
+        transfer
+            .accounts
+            .push(AccountMeta::new_readonly(Pubkey::new_unique(), true));
+        let err = accepts(&v0_tx(&gateway, &[transfer]), &gateway, &ata).unwrap_err();
+        assert!(
+            err.message.contains("more than one authority"),
+            "{}",
+            err.message
+        );
+    }
+
+    // The builder's own transactions: gateway + sender for the inline
+    // transfer, gateway + ephemeral account for a proof context.
+    #[test]
+    fn builder_signer_layouts_pass() {
+        let gateway = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let tx = inline_transfer_tx(
+            &gateway,
+            &Pubkey::new_unique(),
+            &ata,
+            ElGamalKeypair::new_rand().pubkey(),
+            None,
+            1_000,
+            None,
+        );
+        assert_eq!(tx.message.header().num_required_signatures, 2);
+        assert_eq!(accepts(&tx, &gateway, &ata).unwrap(), 1);
+        let p = layout_pieces(&gateway, &ata);
+        let setup = v0_tx(&gateway, &[p.create, p.initialize]);
+        assert_eq!(setup.message.header().num_required_signatures, 2);
+        assert_eq!(accepts(&setup, &gateway, &ata).unwrap(), 0);
+    }
+
+    #[test]
+    fn bundle_funded_account_count_is_bounded() {
+        let gateway = Pubkey::new_unique();
+        let record_program = spl_record::id();
+        let lifecycle = |count: usize| {
+            let records: Vec<Pubkey> = (0..count).map(|_| Pubkey::new_unique()).collect();
+            let mut txs: Vec<_> = records
+                .iter()
+                .map(|record| {
+                    v0_tx(
+                        &gateway,
+                        &[
+                            solana_system_interface::instruction::create_account(
+                                &gateway,
+                                record,
+                                1_000,
+                                100,
+                                &record_program,
+                            ),
+                            spl_record::instruction::initialize(record, &gateway),
+                        ],
+                    )
+                })
+                .collect();
+            let closes: Vec<_> = records
+                .iter()
+                .map(|record| spl_record::instruction::close_account(record, &gateway, &gateway))
+                .collect();
+            txs.push(v0_tx(&gateway, &closes));
+            verify_confidential_account_lifecycle(&txs, &gateway)
+        };
+        lifecycle(MAX_CT_BUNDLE_FUNDED_ACCOUNTS).unwrap();
+        let err = lifecycle(MAX_CT_BUNDLE_FUNDED_ACCOUNTS + 1).unwrap_err();
+        assert!(
+            err.message.contains("temporary accounts"),
+            "{}",
+            err.message
+        );
     }
 }
