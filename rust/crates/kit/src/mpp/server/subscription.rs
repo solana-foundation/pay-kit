@@ -582,13 +582,11 @@ impl SubscriptionServer {
                         .await?;
                 }
 
-                // Idempotent broadcast: if the delegation PDA already exists
-                // (a previous activation landed on-chain but the receipt
-                // round-trip failed), skip the broadcast — the on-chain
-                // `Subscribe` instruction would reject with
-                // `AlreadySubscribed` (0x205) and abort the whole tx,
-                // burying the actual outcome. The subsequent fetch +
-                // terms-check on lines below catches any divergence.
+                // Idempotent retry: if the delegation PDA already exists, a
+                // previous broadcast of this same transaction may have landed
+                // while the receipt round-trip failed. Accept that only when
+                // this exact transaction succeeded on-chain; the subsequent
+                // fetch and terms check catch any divergence.
                 let program_id = parse_pubkey(&self.program_id, "program_id")
                     .map_err(|e| VerificationError::new(e.to_string()))?;
                 let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
@@ -600,36 +598,24 @@ impl SubscriptionServer {
                     .await
                     .is_ok();
 
+                let signature = *tx.signatures.first().ok_or_else(|| {
+                    VerificationError::invalid_payload(
+                        "Activation transaction has no signature slot",
+                    )
+                })?;
+                let key = format!("solana-subscription:consumed:{signature}");
+                let binding = serde_json::json!({
+                    "challengeId": credential.challenge.id,
+                });
                 let sig = if delegation_already_exists {
-                    // Look up the original landing tx so the receipt can
-                    // carry the signature instead of the bare PDA.
-                    self.fetch_subscription_creation_signature(&delegation_pda)
-                        .await
-                        .ok()
-                        .or_else(|| tx.signatures.first().map(ToString::to_string))
-                } else {
-                    let signature = tx.signatures.first().ok_or_else(|| {
-                        VerificationError::invalid_payload(
-                            "Activation transaction has no signature slot",
-                        )
-                    })?;
-                    let key = format!("solana-subscription:consumed:{signature}");
-                    let binding = serde_json::json!({
-                        "challengeId": credential.challenge.id,
-                    });
+                    self.ensure_activation_landed(&signature).await?;
                     reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
-                    Some(self.broadcast_and_confirm(&tx).await?.to_string())
+                    signature
+                } else {
+                    reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
+                    self.broadcast_and_confirm(&tx).await?
                 };
-                if delegation_already_exists {
-                    if let Some(signature) = sig.as_deref() {
-                        let key = format!("solana-subscription:consumed:{signature}");
-                        let binding = serde_json::json!({
-                            "challengeId": credential.challenge.id,
-                        });
-                        reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
-                    }
-                }
-                (subscriber, sig)
+                (subscriber, Some(sig.to_string()))
             }
             "signature" => {
                 // Push mode (client already broadcast). Not yet supported
@@ -1035,38 +1021,35 @@ impl SubscriptionServer {
         .map_err(|error| VerificationError::network_error(format!("RPC task join: {error}")))?
     }
 
-    /// Look up the activation transaction signature for an existing
-    /// `SubscriptionDelegation` PDA by walking `getSignaturesForAddress`.
-    ///
-    /// The PDA's signature history is "newest first"; the original
-    /// `Subscribe` transaction is the last entry. We page through with a
-    /// reasonable limit — for a freshly-activated subscription this is
-    /// just one entry, and a long-lived subscription with many renewals
-    /// would still yield the activation tx as the oldest record.
-    // Live-RPC boundary; only pagination/transport behavior lives here.
-    async fn fetch_subscription_creation_signature(
+    /// Require `signature` to be a transaction that landed successfully.
+    // Live-RPC boundary; covered by the scripted-node activation tests.
+    async fn ensure_activation_landed(
         &self,
-        subscription_pda: &Pubkey,
-    ) -> Result<String, VerificationError> {
+        signature: &Signature,
+    ) -> Result<(), VerificationError> {
         let rpc_url = self.rpc_url.clone();
-        let pda = *subscription_pda;
-        tokio::task::spawn_blocking(move || {
+        let signature = *signature;
+        let status = tokio::task::spawn_blocking(move || {
             let rpc = confirmed_rpc(rpc_url);
-            let sigs = rpc.get_signatures_for_address(&pda).map_err(|e| {
-                VerificationError::network_error(format!(
-                    "getSignaturesForAddress({pda}) failed: {e}"
-                ))
-            })?;
-            // The activation tx is the oldest signature for this PDA — the
-            // RPC returns newest-first, so take the last entry.
-            sigs.into_iter().last().map(|s| s.signature).ok_or_else(|| {
-                VerificationError::not_found(format!(
-                    "No signatures returned for SubscriptionDelegation {pda}"
-                ))
-            })
+            rpc.get_signature_status_with_commitment_and_history(&signature, rpc.commitment(), true)
         })
         .await
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
+        .map_err(|e| {
+            VerificationError::network_error(format!(
+                "getSignatureStatuses({signature}) failed: {e}"
+            ))
+        })?;
+        match status {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) => Err(VerificationError::transaction_failed(format!(
+                "Activation transaction {signature} failed on-chain: {error}"
+            ))),
+            None => Err(VerificationError::credential_mismatch(
+                "SubscriptionDelegation already exists and this activation transaction did not \
+                 create it; present the subscription proof instead",
+            )),
+        }
     }
 
     // ── Accessors ──
@@ -2727,10 +2710,10 @@ mod tests {
                                 "owner": owner, "rentEpoch": 0, "space": 155
                             }})
                         }
-                        "getSignaturesForAddress" => serde_json::json!([{
-                            "signature": Signature::default().to_string(), "slot": 1,
-                            "err": null, "memo": null, "blockTime": period_start
-                        }]),
+                        "getSignatureStatuses" => serde_json::json!({"context": {"slot": 1}, "value": [{
+                            "slot": 1, "confirmations": null, "err": null,
+                            "status": {"Ok": null}, "confirmationStatus": "confirmed"
+                        }]}),
                         method => panic!("unexpected RPC method {method}"),
                     };
                     Json(serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))

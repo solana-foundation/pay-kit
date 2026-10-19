@@ -29,8 +29,6 @@ pub(super) struct ChainState {
     pub hidden_landed_reads: usize,
     /// JSON-RPC error object returned by `sendTransaction`.
     pub send_error: Option<serde_json::Value>,
-    /// `getSignaturesForAddress` result, newest first.
-    pub history: Vec<serde_json::Value>,
     /// Signature statuses keyed by signature.
     pub statuses: HashMap<String, serde_json::Value>,
     pub sends: usize,
@@ -62,7 +60,20 @@ pub(super) fn success_status() -> serde_json::Value {
     status(serde_json::Value::Null)
 }
 
+pub(super) fn failed_status() -> serde_json::Value {
+    status(serde_json::json!({"InstructionError": [0, {"Custom": 1}]}))
+}
+
 impl RpcFixture {
+    /// Record `signature` as a transaction that landed with `status`.
+    pub fn set_status(&self, signature: &str, status: serde_json::Value) {
+        self.state
+            .lock()
+            .unwrap()
+            .statuses
+            .insert(signature.to_string(), status);
+    }
+
     pub async fn start(owner: Pubkey, state: ChainState) -> Self {
         let state = Arc::new(Mutex::new(state));
         let shared = Arc::clone(&state);
@@ -122,7 +133,6 @@ impl RpcFixture {
                                 .collect();
                             serde_json::json!({"context": {"slot": 1}, "value": value})
                         }
-                        "getSignaturesForAddress" => serde_json::json!(state.history),
                         "sendTransaction" => {
                             state.sends += 1;
                             if let Some(error) = state.send_error.clone() {
@@ -395,10 +405,6 @@ pub(super) fn existing_delegation_state(
         scenario.delegation.to_string(),
         scenario.delegation_bytes(delegation),
     );
-    state.history = vec![serde_json::json!({
-        "signature": Signature::from([7u8; 64]).to_string(), "slot": 1,
-        "err": null, "memo": null, "blockTime": now_unix_secs() - 60
-    })];
     state
 }
 
@@ -419,7 +425,8 @@ async fn expired_cancelled_delegation_is_not_accepted_as_activation() {
     )
     .await;
     let server = scenario.server(&rpc.url);
-    let (credential, _) = scenario.activation(&server).await;
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
 
     let err = server.verify_credential(&credential).await.unwrap_err();
     assert!(err.message.contains("cancellation"), "{}", err.message);
@@ -442,9 +449,11 @@ async fn delegation_cancelled_at_this_second_is_not_accepted() {
     )
     .await;
     let server = scenario.server(&rpc.url);
-    let (credential, _) = scenario.activation(&server).await;
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
 
-    assert!(server.verify_credential(&credential).await.is_err());
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("cancellation"), "{}", err.message);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -463,7 +472,8 @@ async fn delegation_from_an_ended_billing_period_is_not_accepted() {
     )
     .await;
     let server = scenario.server(&rpc.url);
-    let (credential, _) = scenario.activation(&server).await;
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
 
     let err = server.verify_credential(&credential).await.unwrap_err();
     assert!(err.message.contains("not paid"), "{}", err.message);
@@ -485,10 +495,69 @@ async fn cancelled_delegation_inside_its_paid_period_is_still_live() {
     )
     .await;
     let server = scenario.server(&rpc.url);
-    let (credential, _) = scenario.activation(&server).await;
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
 
     server
         .verify_credential(&credential)
         .await
         .expect("a cancellation that has not taken effect keeps the paid period");
+}
+
+// ── SOLA1-85: existing-PDA retries are bound to the submitted transaction ──
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_activation_transaction_is_not_accepted_for_an_existing_pda() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(&scenario, DelegationState::default()),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, failed_status());
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("failed on-chain"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unrelated_history_does_not_stand_in_for_the_activation() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(&scenario, DelegationState::default()),
+    )
+    .await;
+    // Another transaction touched the PDA; the submitted one never landed.
+    rpc.set_status(&Signature::from([7u8; 64]).to_string(), success_status());
+    let server = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&server).await;
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("already exists"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_of_a_landed_activation_reports_its_own_signature() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(&scenario, DelegationState::default()),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
+
+    let ReceiptKind::Subscription { base, .. } =
+        server.verify_credential(&credential).await.unwrap()
+    else {
+        panic!("expected subscription receipt")
+    };
+    assert_eq!(base.reference, signature);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
 }
