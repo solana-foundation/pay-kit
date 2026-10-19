@@ -355,6 +355,11 @@ let route = paid_get(
 The resolved amount is what the credential is pinned against, so dynamic pricing
 is replay-safe too.
 
+`ctx.uri` is the public URI (including any `Router::nest` prefix), and query
+names and values are form-decoded. Dynamically priced routes answer `400` to
+query strings with malformed percent-escapes or a repeated parameter name, so
+the price and the handler can't read different values.
+
 ## Signers
 
 Key handling is built on

@@ -298,3 +298,89 @@ async fn nested_paid_request_is_charged_the_public_path_price() {
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     assert_eq!(body.as_ref(), b"5.00");
 }
+
+fn tier_price() -> solana_pay_kit::Price {
+    solana_pay_kit::Price::dynamic(|ctx| match ctx.query_param("tier").as_deref() {
+        Some("premium") => "5.00".to_string(),
+        _ => "0.10".to_string(),
+    })
+}
+
+async fn tiered(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    payment: Payment,
+) -> String {
+    format!("{} at {}", params["tier"], payment.amount)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_price_query_key_is_rejected_before_pricing() {
+    let app: Router = Router::new().route("/quote", paid_get(tiered, tier_price(), &paykit()));
+    for uri in [
+        "/quote?tier=basic&tier=premium",
+        "/quote?tier=premium&tier=basic",
+        "/quote?tier=basic&%74ier=premium",
+    ] {
+        assert_eq!(
+            advertised_amount(&app, uri).await,
+            (StatusCode::BAD_REQUEST, None),
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_query_key_with_a_credential_never_reaches_the_handler() {
+    let app: Router = Router::new().route("/quote", paid_get(tiered, tier_price(), &paykit()));
+    // A credential for the basic price must not unlock a premium-reading handler.
+    let basic = pay_and_fetch(&app, "/quote?tier=basic").await;
+    assert_eq!(basic.status(), StatusCode::OK);
+    let header = {
+        let challenge = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/quote?tier=basic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let required = challenge.headers()[PAYMENT_REQUIRED_HEADER]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let mut requirements =
+            parse_x402_challenge(&[(PAYMENT_REQUIRED_HEADER.to_string(), required)], None).unwrap();
+        requirements.recent_blockhash = Some(ZERO_BLOCKHASH.to_string());
+        build_payment_header(
+            &payer(),
+            &RpcClient::new(OFFLINE_RPC.to_string()),
+            &requirements,
+            None,
+            Some(TxVersion::V0),
+        )
+        .await
+        .unwrap()
+    };
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/quote?tier=basic&tier=premium")
+                .header(PAYMENT_SIGNATURE_HEADER, header)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn single_valued_premium_query_is_charged_the_premium_price() {
+    let app: Router = Router::new().route("/quote", paid_get(tiered, tier_price(), &paykit()));
+    let resp = pay_and_fetch(&app, "/quote?tier=premium&other=1").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(body.as_ref(), b"premium at 5.00");
+}

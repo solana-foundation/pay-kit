@@ -479,7 +479,7 @@ impl PriceCtx<'_> {
     /// escapes and `+` as space), as axum's `Query` extractor decodes them, so
     /// `?%74ier=premi%75m` matches `"tier"` / `"premium"` instead of falling
     /// through to a cheaper default price. Gated routes reject malformed
-    /// escapes before the price is resolved.
+    /// escapes and repeated parameter names before the price is resolved.
     pub fn query_param(&self, name: &str) -> Option<String> {
         url::form_urlencoded::parse(self.uri.query()?.as_bytes())
             .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
@@ -497,6 +497,12 @@ fn validate_price_query(query: Option<&str>) -> Result<(), &'static str> {
         if !escape.is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)) {
             return Err("malformed percent-encoding in query string");
         }
+    }
+    // Extractors disagree on which duplicate wins (axum's `Query<HashMap>`
+    // keeps the last, `query_param` the first), so refuse to choose.
+    let mut names = std::collections::HashSet::new();
+    if !url::form_urlencoded::parse(bytes).all(|(name, _)| names.insert(name)) {
+        return Err("duplicate query parameter");
     }
     Ok(())
 }
