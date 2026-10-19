@@ -667,6 +667,80 @@ mod tests {
         );
     }
 
+    /// A V1-ABI close whose split plan exceeds the version-0 packet limit:
+    /// settled when the worker is configured for message version 1, and an
+    /// explicit pre-signing error (nothing broadcast) on version 0.
+    #[tokio::test]
+    async fn oversize_split_close_needs_the_configured_v1_message_version() {
+        use crate::core::payment_channels as pc;
+        let operator = Pubkey::new_from_array([0xAA; 32]);
+        let program = pc::default_program_id();
+        let channel = Pubkey::new_from_array([0x10; 32]);
+        let recipients = (0..8u8)
+            .map(|index| pc::Distribution {
+                recipient: Pubkey::new_from_array([0x40 + index; 32]),
+                bps: 1_250,
+            })
+            .collect::<Vec<_>>();
+        let mut close = pc::build_settle_and_seal_instructions(
+            &operator,
+            &channel,
+            &operator,
+            Some(&[7; 64]),
+            1_000,
+            0,
+            &program,
+        )
+        .unwrap();
+        close.push(pc::build_distribute_instruction(
+            &channel,
+            &Pubkey::new_from_array([0x20; 32]),
+            &operator,
+            &operator,
+            &Pubkey::new_from_array([0x21; 32]),
+            &Pubkey::new_from_array([0x22; 32]),
+            &recipients,
+            &Pubkey::new_from_array([0x23; 32]),
+            &program,
+        ));
+        assert!(
+            tx_size(TxVersion::V0, &close, &operator, None).unwrap()
+                > TxVersion::V0.limits().max_bytes
+        );
+        assert!(
+            tx_size(TxVersion::V1, &close, &operator, None).unwrap()
+                <= TxVersion::V1.limits().max_bytes
+        );
+
+        let run = |version: TxVersion| {
+            let close = close.clone();
+            async move {
+                let bc = Arc::new(MockBroadcaster::default());
+                let cfg = SettlementConfig::new(operator, Arc::new(TestSigner(operator)))
+                    .with_tx_version(version);
+                let h = spawn(
+                    SettlementConfig {
+                        linger: Duration::from_millis(10),
+                        ..cfg
+                    },
+                    bc.clone(),
+                );
+                let result = h.settle(channel.to_string(), close).await;
+                let sent = bc.sent.lock().unwrap().clone();
+                (result, sent)
+            }
+        };
+        let (result, sent) = run(TxVersion::V0).await;
+        assert!(result.unwrap_err().contains("1232-byte limit"));
+        assert!(
+            sent.is_empty(),
+            "an unbuildable close must not be broadcast"
+        );
+        let (result, sent) = run(TxVersion::V1).await;
+        assert!(result.is_ok());
+        assert_eq!(sent.len(), 1);
+    }
+
     /// End-to-end (minus the program executing): drive the worker over K
     /// channels built with the REAL settle+seal instructions and assert the
     /// emitted transactions are correctly batched, operator-signed, and
