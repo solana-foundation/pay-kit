@@ -113,6 +113,17 @@ pub struct OpenAcceptance {
 const OPEN_INTENT_KEY: &str = "mppSessionOpenIntent";
 const OPEN_TERMINAL_KEY: &str = "mppSessionOpenTerminal";
 const OPEN_TERMINAL_ERROR: &str = "session open expired without funding; request a new channel";
+const OPENED_ELSEWHERE_ERROR: &str =
+    "channel was opened outside this server's ledger and cannot be adopted; open a new channel";
+
+/// Outcome of broadcasting a verified open.
+enum OpenSubmission {
+    /// The open is confirmed on-chain, with its settled watermark.
+    Landed { signature: String, settled: u64 },
+    /// A fresh open whose transaction had already landed before this
+    /// server's first broadcast: another ledger owns the channel.
+    OpenedElsewhere,
+}
 
 /// Whether an open has been retired after finalized expiry reconciliation.
 /// This is a local tombstone, not an on-chain seal. Keep the row and open a
@@ -1118,10 +1129,16 @@ impl<S: ChannelStore> SessionServer<S> {
             &self.config,
         )
         .await?;
+        // A fresh open's own broadcast lands after this observed slot; one that
+        // landed at or before it was opened elsewhere and has no ledger here.
         #[cfg(feature = "server")]
-        if fresh_open {
-            validate_open_slot(&pipeline, params.open_slot).await?;
-        }
+        let adoption_floor = if fresh_open {
+            Some(validate_open_slot(&pipeline, params.open_slot).await?)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "server"))]
+        let adoption_floor: Option<u64> = None;
 
         let authentication = payload
             .authentication
@@ -1286,8 +1303,41 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?;
 
-        let (transaction_signature, onchain_settled) =
-            submit_and_fetch_open(prepared.0, &params, &pipeline, fresh_open, &self.config).await?;
+        let opened =
+            submit_and_fetch_open(prepared.0, &params, &pipeline, adoption_floor, &self.config)
+                .await;
+        let (transaction_signature, onchain_settled) = match opened? {
+            OpenSubmission::Landed { signature, settled } => (signature, settled),
+            OpenSubmission::OpenedElsewhere => {
+                // Retire the reservation so no retry can activate it.
+                let expected_intent = intent.clone();
+                self.store
+                    .inner
+                    .update_channel(
+                        session_id,
+                        Box::new(move |state| {
+                            let mut state = state.ok_or_else(|| {
+                                StoreError::Internal("open intent disappeared".into())
+                            })?;
+                            if state.extra.get(OPEN_INTENT_KEY) != Some(&expected_intent) {
+                                return Err(StoreError::Internal(
+                                    "open intent changed before retirement".into(),
+                                ));
+                            }
+                            state.extra.insert(
+                                OPEN_TERMINAL_KEY.into(),
+                                serde_json::json!({ "version": 1, "openedElsewhere": true }),
+                            );
+                            state.pending_setup = None;
+                            state.lifecycle = None;
+                            Ok(state)
+                        }),
+                    )
+                    .await
+                    .map_err(store_err)?;
+                return Err(Error::Other(OPENED_ELSEWHERE_ERROR.into()));
+            }
+        };
         let expected_binding = self.store.binding.clone();
         let state = self
             .store
@@ -2576,9 +2626,10 @@ async fn submit_and_fetch_open(
     tx: solana_transaction::versioned::VersionedTransaction,
     params: &payment_channels::OpenChannelParams,
     pipeline: &crate::core::tx_pipeline::TxPipeline,
-    fresh_open: bool,
+    adoption_floor: Option<u64>,
     config: &SessionConfig,
-) -> Result<(String, u64)> {
+) -> Result<OpenSubmission> {
+    let fresh_open = adoption_floor.is_some();
     let transaction_signature = tx
         .signatures
         .first()
@@ -2593,7 +2644,10 @@ async fn submit_and_fetch_open(
             // already-landed signature instead of resubmitting: co-signing and
             // rebroadcasting an open that has nothing left to do would burn a
             // sponsor fee on every duplicate open request, not just the first.
-            return Ok((transaction_signature, settled));
+            return Ok(OpenSubmission::Landed {
+                signature: transaction_signature,
+                settled,
+            });
         }
     }
     // A broadcast rejection is not authoritative: a retry of an open whose
@@ -2605,19 +2659,32 @@ async fn submit_and_fetch_open(
     let submission = pipeline.submit_verified(&tx).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
     let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot, config).await;
+    // With no ledger row this server has never broadcast the open, so a
+    // channel that landed before this attempt (or that this attempt cannot
+    // prove it landed) was opened elsewhere — another endpoint sharing the
+    // challenge secret, or a ledger that was lost. Adopting it would start an
+    // independent watermark against escrow another ledger already spends.
+    if let (Some(floor), Ok(landed)) = (adoption_floor, &submission) {
+        if landed.slot <= floor {
+            return Ok(OpenSubmission::OpenedElsewhere);
+        }
+    }
     let settled = match (submission, confirmed) {
         (Ok(_), confirmed) => confirmed,
         (Err(_), Ok(settled)) => Ok(settled),
         (Err(error), Err(_)) => Err(Error::Rpc(format!("open submission failed: {error}"))),
     }?;
-    Ok((transaction_signature, settled))
+    Ok(OpenSubmission::Landed {
+        signature: transaction_signature,
+        settled,
+    })
 }
 
 #[cfg(feature = "server")]
 async fn validate_open_slot(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     open_slot: u64,
-) -> Result<()> {
+) -> Result<u64> {
     let current_slot = pipeline
         .current_slot()
         .await
@@ -2633,7 +2700,7 @@ async fn validate_open_slot(
             payment_channels::OPEN_SLOT_WINDOW
         )));
     }
-    Ok(())
+    Ok(current_slot)
 }
 
 #[cfg(feature = "server")]
@@ -2898,9 +2965,9 @@ async fn submit_and_fetch_open(
     _tx: solana_transaction::versioned::VersionedTransaction,
     _params: &payment_channels::OpenChannelParams,
     _pipeline: &(),
-    _fresh_open: bool,
+    _adoption_floor: Option<u64>,
     _config: &SessionConfig,
-) -> Result<(String, u64)> {
+) -> Result<OpenSubmission> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
     ))
@@ -3306,13 +3373,16 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let account_data = borsh::to_vec(&channel).unwrap();
+        // The cluster advances past every landing, so a transaction always
+        // lands after the slot getSlot reported before its broadcast.
+        let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(current_slot));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         // Mainnet-faithful duplicate handling: a signature lands exactly once,
         // so a repeated `sendTransaction` is rejected at preflight the way a
         // real RPC rejects it, and `getSignatureStatuses` reports only
         // signatures that actually landed.
-        let landed: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        let landed: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
             std::sync::Arc::default();
         let send_tx_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let send_tx_count_srv = std::sync::Arc::clone(&send_tx_count);
@@ -3321,6 +3391,7 @@ mod tests {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let account_data = account_data.clone();
                 let landed = std::sync::Arc::clone(&landed);
+                let slot = std::sync::Arc::clone(&slot);
                 let send_tx_count = std::sync::Arc::clone(&send_tx_count_srv);
                 tokio::spawn(async move {
                     let mut bytes = Vec::new();
@@ -3363,7 +3434,7 @@ mod tests {
                             assert_eq!(request["params"][1]["commitment"], "finalized");
                             Ok(json!({"context": {"slot": 42}, "value": true}))
                         }
-                        "getSlot" => Ok(json!(current_slot)),
+                        "getSlot" => Ok(json!(slot.load(std::sync::atomic::Ordering::SeqCst))),
                         "sendTransaction" => {
                             send_tx_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let signature = payment_channels::decode_transaction(
@@ -3372,7 +3443,8 @@ mod tests {
                             .unwrap()
                             .signatures[0]
                                 .to_string();
-                            if !landed.lock().unwrap().insert(signature.clone()) {
+                            let mut landed = landed.lock().unwrap();
+                            if landed.contains_key(&signature) {
                                 Err(json!({
                                     "code": -32002,
                                     "message": "Transaction simulation failed: This transaction has already been processed",
@@ -3384,6 +3456,8 @@ mod tests {
                                     }
                                 }))
                             } else {
+                                let at = slot.fetch_add(2, std::sync::atomic::Ordering::SeqCst) + 1;
+                                landed.insert(signature.clone(), at);
                                 Ok(json!(signature))
                             }
                         }
@@ -3393,7 +3467,11 @@ mod tests {
                                 .unwrap()
                                 .iter()
                                 .map(|signature| {
-                                    if landed.lock().unwrap().contains(signature.as_str().unwrap())
+                                    if let Some(landed_slot) = landed
+                                        .lock()
+                                        .unwrap()
+                                        .get(signature.as_str().unwrap())
+                                        .copied()
                                     {
                                         if landed_status == LandedStatus::Failed {
                                             // A signature the RPC saw land, but
@@ -3403,7 +3481,7 @@ mod tests {
                                             // tracker's fast (non-timeout)
                                             // failure path.
                                             json!({
-                                                "slot": 43,
+                                                "slot": landed_slot,
                                                 "confirmations": null,
                                                 "err": "AlreadyProcessed",
                                                 "confirmationStatus": "finalized",
@@ -3411,7 +3489,7 @@ mod tests {
                                             })
                                         } else if landed_status == LandedStatus::ConfirmedOnly {
                                             json!({
-                                                "slot": 43,
+                                                "slot": landed_slot,
                                                 "confirmations": 1,
                                                 "err": null,
                                                 "confirmationStatus": "confirmed",
@@ -3419,7 +3497,7 @@ mod tests {
                                             })
                                         } else {
                                             json!({
-                                                "slot": 43,
+                                                "slot": landed_slot,
                                                 "confirmations": null,
                                                 "err": null,
                                                 "confirmationStatus": "finalized",
@@ -3432,12 +3510,12 @@ mod tests {
                                 })
                                 .collect::<Vec<_>>();
                             Ok(json!({
-                                "context": { "slot": 43 },
+                                "context": { "slot": slot.load(std::sync::atomic::Ordering::SeqCst) },
                                 "value": statuses
                             }))
                         }
                         "getAccountInfo" => Ok(json!({
-                            "context": { "slot": 43 },
+                            "context": { "slot": slot.load(std::sync::atomic::Ordering::SeqCst) },
                             "value": {
                                 "data": [
                                     base64::engine::general_purpose::STANDARD.encode(account_data),
@@ -3469,7 +3547,7 @@ mod tests {
                                 .map(|_| account.clone())
                                 .collect::<Vec<_>>();
                             Ok(json!({
-                                "context": { "slot": 43 },
+                                "context": { "slot": slot.load(std::sync::atomic::Ordering::SeqCst) },
                                 "value": values
                             }))
                         }
@@ -4727,7 +4805,7 @@ mod tests {
     /// verified open params is the only signal left — it must be accepted.
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn retried_open_survives_preflight_rejection_without_stored_state() {
+    async fn open_landed_outside_this_ledger_is_never_adopted() {
         use payment_channels::generated::generated::types::SettlementWatermarks;
 
         let mut server =
@@ -4772,28 +4850,64 @@ mod tests {
             .unwrap();
         assert!(!first.replay);
 
-        // Same signed transaction against the same RPC (which now rejects the
-        // duplicate at preflight), but an empty store: the retry must still
-        // succeed and re-create the channel state.
-        let fresh = SessionServer::new(server.config.clone(), MemoryChannelStore::new());
-        let retried = fresh
+        // The ledger that broadcast the open retries it idempotently.
+        let replayed = server
             .process_open_with_outcome(&open, context)
             .await
             .unwrap();
-        assert!(!retried.replay);
-        assert_eq!(retried.state.deposit, 1_000);
-        assert_eq!(retried.state.opening_challenge_id, "opening");
+        assert!(replayed.replay);
+        assert_eq!(replayed.state.deposit, 1_000);
+
+        // The same signed open presented to a ledger that never saw it (a
+        // second endpoint sharing the challenge secret, or a wiped store)
+        // must not start an independent watermark against the same escrow.
+        let fresh = SessionServer::new(server.config.clone(), MemoryChannelStore::new());
+        let error = fresh
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot be adopted"), "{error}");
+        let retired = fresh
+            .store
+            .inner
+            .get_channel(&open.channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(session_open_is_terminal(&retired));
+        assert!(retired.pending_setup.is_none());
+        assert_eq!(retired.deposit, 0);
+        // A retry stays refused rather than activating the reservation.
+        assert!(fresh
+            .process_open_with_outcome(&open, context)
+            .await
+            .is_err());
+        let proof = open.authentication.clone().unwrap();
+        assert!(fresh
+            .process_use(
+                &UsePayload {
+                    channel_id: open.channel_id.clone(),
+                    authentication: proof,
+                },
+                "use",
+                "key",
+            )
+            .await
+            .is_err());
         rpc.abort();
     }
 
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn readopted_open_seeds_the_watermark_from_onchain_settlement() {
+    async fn open_never_accepts_vouchers_at_or_below_the_onchain_settlement() {
         let mut server =
             SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
         let (open, params) = signed_open(&server, 6).await;
+        // The confirmed channel already carries a settled watermark (e.g. the
+        // ledger row was rebuilt after vouchers were redeemed).
         let mut channel = channel_for_params(&params);
-        let (url, rpc, _) = rpc_for_channel(channel.clone(), 43).await;
+        channel.settlement.settled = 300;
+        let (url, rpc, _) = rpc_for_channel(channel, 43).await;
         server.config.rpc_url = Some(url);
         let challenged_blockhash = test_blockhash().to_string();
         let context = SessionOpenContext {
@@ -4802,40 +4916,18 @@ mod tests {
             recent_blockhash: &challenged_blockhash,
             recent_slot: CHALLENGED_SLOT,
         };
-        let first = server
+        let opened = server
             .process_open_with_outcome(&open, context)
             .await
             .unwrap();
-        assert_eq!(first.state.cumulative, 0);
+        assert_eq!(opened.state.cumulative, 300);
+        assert_eq!(opened.state.settled_on_chain, 300);
+        assert_eq!(opened.state.spent_amount, 300);
+
         let channel_pubkey = Pubkey::from_str(&open.channel_id).unwrap();
         let mut session = ActiveSession::new(channel_pubkey, signer(1));
         let settled_voucher = session.sign_increment(300).await.unwrap();
-        server
-            .verify_voucher(&VoucherPayload {
-                channel_id: open.channel_id.clone(),
-                voucher: settled_voucher.clone(),
-            })
-            .await
-            .unwrap();
-        rpc.abort();
-
-        // The ledger is lost after 300 was settled on-chain; the same signed
-        // open is retried against an empty store.
-        channel.settlement.settled = 300;
-        let (url, rpc, _) = rpc_for_channel(channel, 43).await;
-        let mut cfg = server.config.clone();
-        cfg.rpc_url = Some(url);
-        let fresh = SessionServer::new(cfg, MemoryChannelStore::new());
-        let readopted = fresh
-            .process_open_with_outcome(&open, context)
-            .await
-            .unwrap();
-        assert_eq!(readopted.state.cumulative, 300);
-        assert_eq!(readopted.state.settled_on_chain, 300);
-        assert_eq!(readopted.state.spent_amount, 300);
-
-        // The already-settled voucher cannot authorize service again.
-        assert!(fresh
+        assert!(server
             .verify_voucher(&VoucherPayload {
                 channel_id: open.channel_id.clone(),
                 voucher: settled_voucher,
@@ -4843,7 +4935,7 @@ mod tests {
             .await
             .is_err());
         let next = session.sign_increment(50).await.unwrap();
-        let accepted = fresh
+        let accepted = server
             .verify_voucher(&VoucherPayload {
                 channel_id: open.channel_id.clone(),
                 voucher: next,
