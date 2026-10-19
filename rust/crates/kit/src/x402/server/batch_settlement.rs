@@ -165,6 +165,16 @@ fn has_active_pending_open(state: &ChannelState, now: u64) -> bool {
 /// Broadcasting and confirmation use the shared asynchronous transaction
 /// pipeline, which globally paces submissions and coalesces signature-status
 /// polling across concurrent lifecycle chunks.
+/// A record left behind by a released opening deposit: no escrow, no accepted
+/// voucher and no work in flight. It authorizes nothing.
+fn is_empty_tombstone(state: &ChannelState) -> bool {
+    state.deposit == 0
+        && state.cumulative == 0
+        && state.pending_setup.is_none()
+        && state.pending_deliveries.is_empty()
+        && state.committed_deliveries.is_empty()
+}
+
 fn spawn_next_submission(
     version: TxVersion,
     in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
@@ -1622,12 +1632,13 @@ impl X402BatchSettlement {
     /// the same voucher.
     ///
     /// Nothing is charged and no setup transaction is broadcast. A record that
-    /// existed only to hold an opening deposit is removed with it.
+    /// existed only to hold an opening deposit is left as an empty tombstone:
+    /// deleting it in a second step could erase a newer request's commitment
+    /// made on another replica in between. An empty record authorizes nothing.
     pub async fn release_authorization(&self, outcome: BatchOutcome) -> Result<(), Error> {
         let Authorization { id, fingerprint } = self.authorization_of(&outcome)?;
         let deposit_signature = outcome.deposit_signature.clone();
-        let state = self
-            .store
+        self.store
             .update_channel(
                 &outcome.channel_id,
                 Box::new(move |current| {
@@ -1651,19 +1662,6 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        // A record holding no escrow, no watermark and no other authorization
-        // was created by this request alone; leaving it behind would make a
-        // later voucher look like it had a channel.
-        if state.deposit == 0
-            && state.cumulative == 0
-            && state.pending_deliveries.is_empty()
-            && state.committed_deliveries.is_empty()
-        {
-            self.store
-                .delete_channel(&outcome.channel_id)
-                .await
-                .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        }
         Ok(())
     }
 
@@ -1811,12 +1809,14 @@ impl X402BatchSettlement {
             .read_channel(
                 channel_b58,
                 Box::new(move |state| {
-                    *out.lock().unwrap_or_else(|e| e.into_inner()) = state.map(|state| {
-                        (
-                            state.onchain_checked_at,
-                            has_active_pending_open(state, now),
-                        )
-                    });
+                    *out.lock().unwrap_or_else(|e| e.into_inner()) = state
+                        .filter(|state| !is_empty_tombstone(state))
+                        .map(|state| {
+                            (
+                                state.onchain_checked_at,
+                                has_active_pending_open(state, now),
+                            )
+                        });
                     Ok(())
                 }),
             )
@@ -1826,7 +1826,8 @@ impl X402BatchSettlement {
             *snapshot.lock().unwrap_or_else(|e| e.into_inner())
         else {
             // Nothing to reconcile: an unknown channel is refused by
-            // verification, and a deposit confirms its own channel.
+            // verification, a deposit confirms its own channel, and an empty
+            // tombstone left by a released opener holds nothing to protect.
             return Ok(());
         };
         let age = now.saturating_sub(onchain_checked_at);
@@ -4109,6 +4110,121 @@ mod tests {
         // And the escrow must cover what the caller needs it to.
         check(&onchain(&|_| {}), 5_000).expect("a deposit that exactly covers passes");
         check(&onchain(&|_| {}), 5_001).expect_err("an escrow short of the need is refused");
+    }
+
+    /// A released opening deposit leaves its record in place instead of
+    /// deleting it in a second, unconditional step: by then another replica
+    /// may have reserved and committed the same channel, and the delete would
+    /// erase that commitment and reopen its voucher.
+    #[tokio::test]
+    async fn a_released_opener_never_deletes_the_channel_record() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let first_voucher = voucher(&key, &channel, 1_000);
+        let authorization = authorization_for(&channel_b58, &first_voucher, 1_000, &requirements);
+
+        // Replica A reserved an opening deposit: the record holds only that.
+        let mut opening = handler.seed_state(&channel_b58, &config);
+        opening.pending_setup = Some(PendingSetup {
+            payer_signature: "opener-a".to_string(),
+            deposit: 5_000,
+            opens_channel: true,
+            expires_at: now_unix() as i64 + 300,
+        });
+        assert_eq!(
+            opening.reserve_authorization(
+                &authorization.id,
+                &authorization.fingerprint,
+                1_000,
+                std::time::Duration::from_secs(300),
+                now_unix() as i64,
+            ),
+            BatchReservation::Reserved
+        );
+        store.put_channel(&channel_b58, opening).await.unwrap();
+        let outcome_a = BatchOutcome {
+            serve: true,
+            replay: false,
+            channel_id: channel_b58.clone(),
+            payer: config.payer.clone(),
+            charged_amount: 1_000,
+            payload: BatchPayload::Voucher {
+                channel_config: config.clone(),
+                voucher: first_voucher.clone(),
+            },
+            requirements: requirements.clone(),
+            max_claimable: 1_000,
+            deposit_signature: Some("opener-a".to_string()),
+            opens_channel: true,
+            authorization: Some(authorization),
+            _guard: handler.in_flight.acquire(&channel_b58).unwrap(),
+        };
+
+        handler.release_authorization(outcome_a).await.unwrap();
+        let tombstone = store
+            .get_channel(&channel_b58)
+            .await
+            .unwrap()
+            .expect("the record survives the release");
+        assert!(tombstone.pending_setup.is_none());
+        assert!(tombstone.pending_deliveries.is_empty());
+        assert!(is_empty_tombstone(&tombstone));
+
+        // Replica B's later commitment on the same record is what the delete
+        // used to race with; it stays put.
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(|current| {
+                    let mut state = current.unwrap();
+                    state.deposit = 5_000;
+                    state.cumulative = 1_000;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            1_000
+        );
+    }
+
+    /// An empty tombstone is not reconciled against the chain: a retried
+    /// opening deposit must reach its reservation, not an absent-channel error.
+    #[tokio::test]
+    async fn an_empty_tombstone_needs_no_reconciliation() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let signer = TestSigner::new(21);
+        let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(signer));
+        config.withdraw_delay = 3600;
+        config.rpc_url = Some("http://127.0.0.1:1".to_string());
+        let handler = X402BatchSettlement::with_store(config, store.clone()).unwrap();
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, client_config, channel) = client(
+            &pc::parse_pubkey(&handler.fee_payer()).unwrap(),
+            &requirements,
+        );
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .put_channel(
+                &channel_b58,
+                handler.seed_state(&channel_b58, &client_config),
+            )
+            .await
+            .unwrap();
+        handler
+            .reconcile_channel(&channel_b58)
+            .await
+            .expect("no RPC is needed for a record that holds nothing");
     }
 
     /// A voucher for a channel this store has no record of is refused, never
