@@ -561,3 +561,221 @@ async fn retry_of_a_landed_activation_reports_its_own_signature() {
     assert_eq!(base.reference, signature);
     assert_eq!(rpc.state.lock().unwrap().sends, 0);
 }
+
+// ── Activation scope fixtures ──────────────────────────────────────────────
+
+/// Canonical activation instructions for `scenario`, optionally sponsored.
+pub(super) struct ScopeFixture {
+    pub scenario: Scenario,
+    pub config: SubscriptionConfig,
+    pub request: SubscriptionRequest,
+    pub fee_payer: Option<Pubkey>,
+}
+
+impl ScopeFixture {
+    pub fn new(fee_payer: Option<Pubkey>) -> Self {
+        let scenario = Scenario::new();
+        let mut config = scenario.config("http://127.0.0.1:1");
+        if let Some(fee_payer) = fee_payer {
+            config.fee_payer = true;
+            config.fee_payer_pubkey = Some(fee_payer.to_string());
+        }
+        let request = SubscriptionRequest {
+            amount: AMOUNT.to_string(),
+            recipient: scenario.recipient.to_string(),
+            ..Default::default()
+        };
+        Self {
+            scenario,
+            config,
+            request,
+            fee_payer,
+        }
+    }
+
+    pub fn ata(&self, owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+        let token_program =
+            Pubkey::from_str_const(crate::mpp::protocol::solana::programs::TOKEN_PROGRAM);
+        Pubkey::find_program_address(
+            &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+            &Pubkey::from_str_const(ASSOCIATED_TOKEN_PROGRAM_ID),
+        )
+        .0
+    }
+
+    pub fn subscribe(&self) -> solana_instruction::Instruction {
+        use crate::mpp::program::subscriptions::{
+            build_subscribe_ix, SubscribeAccounts, SubscribeData,
+        };
+        let s = &self.scenario;
+        build_subscribe_ix(
+            program_owner(),
+            SubscribeAccounts {
+                subscriber: s.subscriber,
+                merchant: s.puller,
+                plan_pda: s.plan,
+                subscription_pda: s.delegation,
+                subscription_authority_pda: s.authority,
+                event_authority: find_event_authority_pda(&program_owner()).0,
+                payer: self.fee_payer,
+            },
+            &SubscribeData {
+                plan_id: 1,
+                plan_bump: 255,
+                expected_mint: s.mint,
+                expected_amount: AMOUNT,
+                expected_period_hours: PERIOD_HOURS,
+                expected_created_at: 1_700_000_000,
+                expected_subscription_authority_init_id: INIT_ID,
+            },
+        )
+    }
+
+    pub fn transfer(&self) -> solana_instruction::Instruction {
+        use crate::mpp::program::subscriptions::{
+            build_transfer_subscription_ix, TransferData, TransferSubscriptionAccounts,
+        };
+        let s = &self.scenario;
+        build_transfer_subscription_ix(
+            program_owner(),
+            TransferSubscriptionAccounts {
+                subscription_pda: s.delegation,
+                plan_pda: s.plan,
+                subscription_authority: s.authority,
+                delegator_ata: self.ata(&s.subscriber, &s.mint),
+                receiver_ata: self.ata(&s.recipient, &s.mint),
+                caller: s.puller,
+                token_mint: s.mint,
+                token_program: Pubkey::from_str_const(
+                    crate::mpp::protocol::solana::programs::TOKEN_PROGRAM,
+                ),
+                event_authority: find_event_authority_pda(&program_owner()).0,
+            },
+            &TransferData {
+                amount: AMOUNT,
+                delegator: s.subscriber,
+                mint: s.mint,
+            },
+        )
+    }
+
+    pub fn tx(&self, instructions: &[solana_instruction::Instruction]) -> VersionedTransaction {
+        crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &self.fee_payer.unwrap_or(self.scenario.subscriber),
+            instructions,
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap()
+    }
+
+    pub fn validate(&self, tx: &VersionedTransaction) -> Result<(), VerificationError> {
+        validate_activation_scope(
+            tx,
+            &self.request,
+            SUBSCRIPTIONS_PROGRAM_ID,
+            self.scenario.subscriber,
+            &self.config,
+        )
+    }
+}
+
+// ── SOLA1-131: setup instructions are bound to the challenged activation ───
+
+fn init_authority_ix(
+    fixture: &ScopeFixture,
+    mint: Pubkey,
+    payer: Option<Pubkey>,
+) -> solana_instruction::Instruction {
+    use solana_instruction::AccountMeta;
+    let s = &fixture.scenario;
+    let mut accounts = vec![
+        AccountMeta::new(s.subscriber, true),
+        AccountMeta::new(
+            find_subscription_authority_pda(&s.subscriber, &mint, &program_owner()).0,
+            false,
+        ),
+        AccountMeta::new_readonly(mint, false),
+        AccountMeta::new(fixture.ata(&s.subscriber, &mint), false),
+        AccountMeta::new_readonly(Pubkey::from_str_const(SYSTEM_PROGRAM_ID), false),
+        AccountMeta::new_readonly(
+            Pubkey::from_str_const(crate::mpp::protocol::solana::programs::TOKEN_PROGRAM),
+            false,
+        ),
+    ];
+    if let Some(payer) = payer {
+        accounts.push(AccountMeta::new(payer, true));
+    }
+    solana_instruction::Instruction {
+        program_id: program_owner(),
+        accounts,
+        data: vec![INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY],
+    }
+}
+
+#[test]
+fn sponsored_activation_rejects_unrelated_authority_init() {
+    let fee_payer = Pubkey::new_unique();
+    let fixture = ScopeFixture::new(Some(fee_payer));
+    let unrelated = init_authority_ix(&fixture, Pubkey::new_unique(), Some(fee_payer));
+    let tx = fixture.tx(&[unrelated, fixture.subscribe(), fixture.transfer()]);
+
+    let err = fixture.validate(&tx).unwrap_err();
+    assert!(
+        err.message.contains("initialize_subscription_authority"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn activation_rejects_authority_init_even_for_the_challenged_mint() {
+    let fixture = ScopeFixture::new(None);
+    let init = init_authority_ix(&fixture, fixture.scenario.mint, None);
+    let tx = fixture.tx(&[init, fixture.subscribe(), fixture.transfer()]);
+
+    assert!(fixture.validate(&tx).is_err());
+}
+
+#[test]
+fn canonical_activation_passes_scope_validation() {
+    let sponsored = ScopeFixture::new(Some(Pubkey::new_unique()));
+    sponsored
+        .validate(&sponsored.tx(&[sponsored.subscribe(), sponsored.transfer()]))
+        .unwrap();
+    let unsponsored = ScopeFixture::new(None);
+    unsponsored
+        .validate(&unsponsored.tx(&[unsponsored.subscribe(), unsponsored.transfer()]))
+        .unwrap();
+}
+
+#[test]
+fn subscribe_for_another_plan_is_rejected() {
+    let fixture = ScopeFixture::new(None);
+    let mut subscribe = fixture.subscribe();
+    subscribe.accounts[2].pubkey = Pubkey::new_unique();
+    let tx = fixture.tx(&[subscribe, fixture.transfer()]);
+
+    let err = fixture.validate(&tx).unwrap_err();
+    assert!(
+        err.message.contains("subscribe accounts"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn subscribe_rent_payer_must_be_the_sponsor() {
+    let fixture = ScopeFixture::new(None);
+    let mut subscribe = fixture.subscribe();
+    subscribe
+        .accounts
+        .push(solana_instruction::AccountMeta::new(
+            Pubkey::new_unique(),
+            true,
+        ));
+    let tx = fixture.tx(&[subscribe, fixture.transfer()]);
+
+    assert!(fixture.validate(&tx).is_err());
+}

@@ -2,8 +2,11 @@
 //!
 //! Builds the activation transaction defined by `draft-solana-subscription-00`:
 //!
-//!   `[compute_budget_*, initialize_subscription_authority?, subscribe,
+//!   `[compute_budget_*, create_ata_idempotent, subscribe,
 //!     transfer_subscription, memo(externalId)?]`
+//!
+//! A missing `SubscriptionAuthority` is initialized in its own transaction
+//! first; servers reject it inside the activation transaction.
 //!
 //! The transaction is signed (or partially signed when the server is fee
 //! payer) and returned as a `CredentialPayload::Transaction` ready to send

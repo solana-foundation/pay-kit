@@ -1398,9 +1398,14 @@ fn validate_activation_scope(
     let puller = parse_pubkey(&config.puller, "puller")
         .map_err(|e| VerificationError::new(e.to_string()))?;
 
+    let plan_pda = parse_pubkey(&config.plan_id, "plan_id")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let expected_subscription = find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
+    let expected_authority = find_subscription_authority_pda(&subscriber, &mint, &program_id).0;
+    let sponsor = keys.first().copied().filter(|_| config.fee_payer);
+
     let mut subscribe_idx: Option<usize> = None;
     let mut transfer_idx: Option<usize> = None;
-    let mut init_idx: Option<usize> = None;
     let mut ata_idx: Option<usize> = None;
     let mut saw_memo = false;
     let mut saw_compute_limit = false;
@@ -1499,16 +1504,40 @@ fn validate_activation_scope(
                 "Activation tx contains an empty subscriptions-program instruction",
             ));
         };
+        let account = |position: usize| -> Option<Pubkey> {
+            ix.accounts
+                .get(position)
+                .and_then(|index| keys.get(*index as usize))
+                .copied()
+        };
         if disc == INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY {
-            if init_idx.replace(i).is_some() {
-                return Err(VerificationError::invalid_payload(
-                    "Activation tx contains multiple initialize_subscription_authority instructions",
-                ));
-            }
+            // The authority's init_id is set at its landing slot, which a
+            // same-transaction Subscribe cannot pin; clients initialize it
+            // in its own transaction.
+            return Err(VerificationError::invalid_payload(
+                "initialize_subscription_authority is not allowed in an activation tx",
+            ));
         } else if disc == INSTRUCTION_SUBSCRIBE {
             if subscribe_idx.is_some() {
                 return Err(VerificationError::invalid_payload(
                     "Activation tx contains multiple subscribe instructions",
+                ));
+            }
+            let payer_ok = match ix.accounts.len() {
+                8 => true,
+                9 => sponsor.is_some() && account(8) == sponsor,
+                _ => false,
+            };
+            if !payer_ok
+                || account(0) != Some(subscriber)
+                || account(2) != Some(plan_pda)
+                || account(3) != Some(expected_subscription)
+                || account(4) != Some(expected_authority)
+                || account(5) != Some(system_program)
+                || account(7) != Some(program_id)
+            {
+                return Err(VerificationError::invalid_payload(
+                    "subscribe accounts do not match the challenged activation",
                 ));
             }
             subscribe_idx = Some(i);
@@ -1523,20 +1552,8 @@ fn validate_activation_scope(
                     "transfer_subscription does not match the Codama v0.5 schema",
                 ));
             }
-            let account = |position: usize| -> Option<Pubkey> {
-                ix.accounts
-                    .get(position)
-                    .and_then(|index| keys.get(*index as usize))
-                    .copied()
-            };
             let recipient = parse_pubkey(&request.recipient, "recipient")
                 .map_err(|e| VerificationError::new(e.to_string()))?;
-            let plan_pda = parse_pubkey(&config.plan_id, "plan_id")
-                .map_err(|e| VerificationError::new(e.to_string()))?;
-            let expected_subscription =
-                find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
-            let expected_authority =
-                find_subscription_authority_pda(&subscriber, &mint, &program_id).0;
             let expected_delegator_ata = Pubkey::find_program_address(
                 &[subscriber.as_ref(), token_program.as_ref(), mint.as_ref()],
                 &associated_token_program,
@@ -1595,7 +1612,7 @@ fn validate_activation_scope(
             "subscribe must precede transfer_subscription in activation tx",
         ));
     }
-    if init_idx.is_some_and(|idx| idx > subscribe) || ata_idx.is_some_and(|idx| idx > subscribe) {
+    if ata_idx.is_some_and(|idx| idx > subscribe) {
         return Err(VerificationError::invalid_payload(
             "Activation setup instructions must precede subscribe",
         ));
@@ -2242,7 +2259,7 @@ mod tests {
         let tx = crate::core::tx::build_unsigned_unchecked(
             crate::core::tx::TxVersion::V0,
             &subscriber,
-            &[subscribe, foreign, transfer],
+            &[foreign, subscribe, transfer],
             solana_hash::Hash::default(),
             None,
         )
