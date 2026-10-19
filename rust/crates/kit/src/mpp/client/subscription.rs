@@ -115,12 +115,7 @@ pub async fn build_subscription_activation_credential(
     challenge: &PaymentChallenge,
 ) -> Result<SubscriptionActivation, Error> {
     let request: SubscriptionRequest = challenge.request.decode()?;
-    let method_details = request
-        .method_details
-        .as_ref()
-        .ok_or_else(|| Error::Other("Subscription request is missing methodDetails".into()))?;
-    let method_details = SubscriptionMethodDetails::from_json(method_details)?;
-    method_details.validate()?;
+    let method_details = request.validated_method_details()?;
     let program_id = parse_pubkey(
         method_details
             .subscription_program
@@ -930,5 +925,63 @@ mod tests {
         let limit_ix = crate::core::tx::unit_limit_instruction(200_000);
         assert_eq!(limit_ix.data[0], 2);
         assert_eq!(limit_ix.data.len(), 5);
+    }
+
+    fn challenge_for(request: &SubscriptionRequest) -> PaymentChallenge {
+        PaymentChallenge::new(
+            "challenge-id",
+            "realm",
+            "solana",
+            "subscription",
+            crate::mpp::protocol::core::Base64UrlJson::from_typed(request).unwrap(),
+        )
+    }
+
+    fn request_for(md: &SubscriptionMethodDetails) -> SubscriptionRequest {
+        SubscriptionRequest {
+            amount: md.amount.clone().unwrap(),
+            currency: md.mint.clone(),
+            period_unit: crate::mpp::protocol::intents::SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: md.recipient.clone().unwrap(),
+            method_details: Some(serde_json::to_value(md).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_credential_rejects_currency_differing_from_signed_mint() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let md = make_method_details(false, None);
+        let mut request = request_for(&md);
+        // Displayed as USDT while the transaction would authorize USDC.
+        request.currency = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into();
+
+        let err = build_subscription_activation_credential(
+            signer.as_ref(),
+            &rpc,
+            &challenge_for(&request),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("currency"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_credential_rejects_amount_differing_from_signed_amount() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let md = make_method_details(false, None);
+        let mut request = request_for(&md);
+        request.amount = "1".into();
+
+        assert!(build_subscription_activation_credential(
+            signer.as_ref(),
+            &rpc,
+            &challenge_for(&request)
+        )
+        .await
+        .is_err());
     }
 }

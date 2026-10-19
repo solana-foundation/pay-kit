@@ -917,3 +917,14 @@ fn signature_vector_must_match_the_required_signer_count() {
     tx.signatures.push(Signature::default());
     assert!(fixture.validate(&tx).is_err());
 }
+
+// ── SOLA1-162: server challenges satisfy the client's consistency check ────
+
+#[test]
+fn issued_challenge_passes_client_method_details_validation() {
+    let scenario = Scenario::new();
+    let server = scenario.server("http://127.0.0.1:1");
+    let challenge = server.subscription_challenge(&AMOUNT.to_string()).unwrap();
+    let request: SubscriptionRequest = challenge.request.decode().unwrap();
+    request.validated_method_details().unwrap();
+}

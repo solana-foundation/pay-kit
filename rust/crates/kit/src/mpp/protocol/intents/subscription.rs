@@ -156,6 +156,47 @@ pub struct SubscriptionRequest {
 }
 
 impl SubscriptionRequest {
+    /// Decode and validate `methodDetails`, requiring the fields the
+    /// activation transaction is built from to match the request fields a
+    /// wallet displays: mint, amount, recipient and period.
+    pub fn validated_method_details(&self) -> Result<SubscriptionMethodDetails, Error> {
+        let method_details = self
+            .method_details
+            .as_ref()
+            .ok_or_else(|| Error::Other("Subscription request is missing methodDetails".into()))?;
+        let method_details = SubscriptionMethodDetails::from_json(method_details)?;
+        method_details.validate()?;
+        if method_details.mint != self.currency {
+            return Err(Error::Other(
+                "Subscription currency must match methodDetails.mint".into(),
+            ));
+        }
+        if method_details.amount.as_deref() != Some(self.amount.as_str()) {
+            return Err(Error::Other(
+                "Subscription methodDetails.amount must match amount".into(),
+            ));
+        }
+        let recipient = method_details
+            .recipient
+            .as_deref()
+            .unwrap_or(&method_details.puller);
+        if recipient != self.recipient {
+            return Err(Error::Other(
+                "Subscription methodDetails.recipient must match recipient".into(),
+            ));
+        }
+        if method_details
+            .expected_period_hours
+            .is_some_and(|hours| Some(hours) != self.period_hours().ok())
+        {
+            return Err(Error::Other(
+                "Subscription methodDetails.expectedPeriodHours must match the billing period"
+                    .into(),
+            ));
+        }
+        Ok(method_details)
+    }
+
     /// Parse `period_count` as a `u64`.
     pub fn parse_period_count(&self) -> Result<u64, Error> {
         self.period_count
@@ -607,5 +648,77 @@ mod tests {
         assert!(json.contains("\"periodStart\""));
         assert!(json.contains("\"periodEnd\""));
         assert!(json.contains("\"expiresAt\""));
+    }
+
+    fn consistent_request() -> SubscriptionRequest {
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let recipient = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
+        SubscriptionRequest {
+            amount: "10000000".into(),
+            currency: mint.into(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: recipient.into(),
+            method_details: Some(serde_json::json!({
+                "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+                "mint": mint,
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+                "recipient": recipient,
+                "amount": "10000000",
+                "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+                "expectedPeriodHours": 720
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn with_detail(key: &str, value: serde_json::Value) -> SubscriptionRequest {
+        let mut request = consistent_request();
+        request.method_details.as_mut().unwrap()[key] = value;
+        request
+    }
+
+    #[test]
+    fn validated_method_details_accepts_consistent_request() {
+        let details = consistent_request().validated_method_details().unwrap();
+        assert_eq!(details.amount.as_deref(), Some("10000000"));
+    }
+
+    #[test]
+    fn validated_method_details_rejects_mint_differing_from_currency() {
+        let request = with_detail(
+            "mint",
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into(),
+        );
+        let err = request.validated_method_details().unwrap_err();
+        assert!(err.to_string().contains("currency"), "{err}");
+    }
+
+    #[test]
+    fn validated_method_details_rejects_other_display_mismatches() {
+        assert!(with_detail("amount", "10000001".into())
+            .validated_method_details()
+            .is_err());
+        assert!(with_detail(
+            "recipient",
+            "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()
+        )
+        .validated_method_details()
+        .is_err());
+        assert!(with_detail("expectedPeriodHours", 168.into())
+            .validated_method_details()
+            .is_err());
+        let mut no_recipient = consistent_request();
+        no_recipient
+            .method_details
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("recipient");
+        // Without a recipient the builder pays the puller, which is not what
+        // the request shows.
+        assert!(no_recipient.validated_method_details().is_err());
     }
 }
