@@ -1914,6 +1914,50 @@ impl<S: ChannelStore> SessionServer<S> {
         })
     }
 
+    /// Record the final usage of a reserved delivery, at most its reserved
+    /// amount, before the client commits it.
+    ///
+    /// The commit must then pay exactly `amount`; without a recorded usage it
+    /// must pay the full reservation. A usage of `0` releases the reservation.
+    pub async fn record_delivery_usage(
+        &self,
+        channel_id: &str,
+        delivery_id: &str,
+        amount: u64,
+    ) -> Result<()> {
+        let delivery_id = delivery_id.to_string();
+        self.store
+            .update_channel(
+                channel_id,
+                Box::new(move |state_opt| {
+                    let mut state = state_opt
+                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
+                    let index = state
+                        .pending_deliveries
+                        .iter()
+                        .position(|delivery| delivery.delivery_id == delivery_id)
+                        .ok_or_else(|| {
+                            StoreError::Internal(format!("Delivery {delivery_id} not found"))
+                        })?;
+                    let reserved = state.pending_deliveries[index].amount;
+                    if amount > reserved {
+                        return Err(StoreError::Internal(format!(
+                            "Usage {amount} exceeds reserved amount {reserved}"
+                        )));
+                    }
+                    if amount == 0 {
+                        state.pending_deliveries.remove(index);
+                    } else {
+                        state.pending_deliveries[index].amount = amount;
+                    }
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
     /// Commit a reserved delivery by verifying the attached voucher and
     /// advancing the settled watermark.
     pub async fn process_commit(&self, payload: &CommitPayload) -> Result<CommitReceipt> {
@@ -2061,10 +2105,12 @@ impl<S: ChannelStore> SessionServer<S> {
                                 state.deposit
                             )));
                         }
+                        // The client signs the amount; only the server decides
+                        // how much was delivered (see `record_delivery_usage`).
                         let actual_amount = new_cumulative - state.cumulative;
-                        if actual_amount > pending.amount {
+                        if actual_amount != pending.amount {
                             return Err(StoreError::Internal(format!(
-                                "Commit amount {actual_amount} exceeds reserved amount {}",
+                                "Commit amount {actual_amount} does not match delivery amount {}",
                                 pending.amount
                             )));
                         }
@@ -5118,6 +5164,10 @@ mod tests {
         assert_eq!(server.seal_params(&channel_id).await.unwrap().settled, 200);
 
         // Committing up to the escrow cap still works.
+        server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 800)
+            .await
+            .unwrap();
         let receipt = server
             .process_commit(&CommitPayload {
                 delivery_id: directive.delivery_id,
@@ -5298,6 +5348,91 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seal.settled, 1);
+    }
+
+    #[tokio::test]
+    async fn metered_commit_must_pay_the_full_reservation() {
+        let (server, session, channel_id) = client_server().await;
+        let directive = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 100))
+            .await
+            .unwrap();
+        for wrong in [1, 99, 101] {
+            let error = server
+                .process_commit(&CommitPayload {
+                    delivery_id: directive.delivery_id.clone(),
+                    voucher: session.prepare_increment(wrong).await.unwrap(),
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("does not match"), "{error}");
+        }
+        let state = stored(&server, &channel_id).await;
+        assert_eq!((state.cumulative, state.spent_amount), (0, 0));
+        assert_eq!(state.pending_deliveries.len(), 1);
+
+        let receipt = server
+            .process_commit(&CommitPayload {
+                delivery_id: directive.delivery_id,
+                voucher: session.prepare_increment(100).await.unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipt.amount, "100");
+        assert_eq!(server.seal_params(&channel_id).await.unwrap().settled, 100);
+    }
+
+    #[tokio::test]
+    async fn server_recorded_usage_sets_the_commit_amount() {
+        let (server, session, channel_id) = client_server().await;
+        let directive = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 100))
+            .await
+            .unwrap();
+        assert!(server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 101)
+            .await
+            .is_err());
+        assert!(server
+            .record_delivery_usage(&channel_id, "unknown", 10)
+            .await
+            .is_err());
+        server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 64)
+            .await
+            .unwrap();
+        assert!(server
+            .process_commit(&CommitPayload {
+                delivery_id: directive.delivery_id.clone(),
+                voucher: session.prepare_increment(1).await.unwrap(),
+            })
+            .await
+            .is_err());
+        let receipt = server
+            .process_commit(&CommitPayload {
+                delivery_id: directive.delivery_id,
+                voucher: session.prepare_increment(64).await.unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (receipt.amount.as_str(), receipt.cumulative.as_str()),
+            ("64", "64")
+        );
+        assert_eq!(stored(&server, &channel_id).await.spent_amount, 64);
+
+        let unused = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 50))
+            .await
+            .unwrap();
+        server
+            .record_delivery_usage(&channel_id, &unused.delivery_id, 0)
+            .await
+            .unwrap();
+        assert!(stored(&server, &channel_id)
+            .await
+            .pending_deliveries
+            .is_empty());
     }
 
     #[tokio::test]
@@ -5482,6 +5617,10 @@ mod tests {
         };
         assert!(server.begin_delivery(duplicate).await.is_err());
 
+        server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 75)
+            .await
+            .unwrap();
         let payload = CommitPayload {
             delivery_id: directive.delivery_id,
             voucher: session.sign_increment(75).await.unwrap(),
