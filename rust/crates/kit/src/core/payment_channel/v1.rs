@@ -550,6 +550,58 @@ pub fn decode_open_for_channel(
     })
 }
 
+/// Distinct channels the top-level `program_id` instructions in `message`
+/// operate on, in order of first appearance.
+///
+/// The settlement worker packs several channels' settlements into one
+/// transaction and returns that one signature to each of them, so a
+/// signature alone does not identify a channel. Anything that attributes a
+/// transaction's transfers to a single channel must first check that this
+/// returns exactly that channel.
+pub fn channels_in_message(
+    message: &solana_message::VersionedMessage,
+    program_id: &Pubkey,
+) -> Vec<Pubkey> {
+    use crate::generated::payment_channels::generated::instructions::{
+        DISTRIBUTE_DISCRIMINATOR, OPEN_DISCRIMINATOR, RECLAIM_DISCRIMINATOR,
+        REQUEST_CLOSE_DISCRIMINATOR, SEAL_DISCRIMINATOR, SETTLE_AND_SEAL_DISCRIMINATOR,
+        SETTLE_DISCRIMINATOR, TOP_UP_DISCRIMINATOR, WITHDRAW_PAYER_DISCRIMINATOR,
+    };
+    let keys = message.static_account_keys();
+    let mut channels = Vec::new();
+    for ix in message.instructions() {
+        if keys.get(usize::from(ix.program_id_index)) != Some(program_id) {
+            continue;
+        }
+        let slot = match ix.data.first().copied() {
+            Some(OPEN_DISCRIMINATOR) => OPEN_CHANNEL_ACCOUNT_INDEX,
+            Some(
+                TOP_UP_DISCRIMINATOR
+                | SETTLE_AND_SEAL_DISCRIMINATOR
+                | REQUEST_CLOSE_DISCRIMINATOR
+                | WITHDRAW_PAYER_DISCRIMINATOR,
+            ) => 1,
+            Some(
+                SETTLE_DISCRIMINATOR
+                | DISTRIBUTE_DISCRIMINATOR
+                | SEAL_DISCRIMINATOR
+                | RECLAIM_DISCRIMINATOR,
+            ) => 0,
+            _ => continue,
+        };
+        if let Some(channel) = ix
+            .accounts
+            .get(slot)
+            .and_then(|index| keys.get(usize::from(*index)))
+        {
+            if !channels.contains(channel) {
+                channels.push(*channel);
+            }
+        }
+    }
+    channels
+}
+
 pub fn build_top_up_instruction(
     payer: &Pubkey,
     channel: &Pubkey,
@@ -1214,6 +1266,54 @@ mod tests {
         assert_eq!(args.deposit, 1_000);
         assert_eq!(args.recipients.len(), 1);
         assert_eq!(args.recipients[0].bps, 10_000);
+    }
+
+    #[test]
+    fn batched_settlements_report_every_channel_they_touch() {
+        use solana_message::{v0, VersionedMessage};
+        let program = default_program_id();
+        let operator = pk(1);
+        let close = |channel: &Pubkey| {
+            let mut ixs = build_settle_and_seal_instructions(
+                &operator,
+                channel,
+                &pk(4),
+                Some(&[7; 64]),
+                900,
+                0,
+                &program,
+            )
+            .unwrap();
+            ixs.push(build_distribute_instruction(
+                channel,
+                &pk(3),
+                &operator,
+                &operator,
+                &pk(5),
+                &pk(6),
+                &[],
+                &pk(8),
+                &program,
+            ));
+            ixs
+        };
+        let compile = |ixs: &[Instruction]| {
+            VersionedMessage::V0(
+                v0::Message::try_compile(&operator, ixs, &[], Hash::default()).unwrap(),
+            )
+        };
+        let (a, b) = (pk(30), pk(31));
+        assert_eq!(channels_in_message(&compile(&close(&a)), &program), vec![a]);
+        let batch = [close(&a), close(&b)].concat();
+        assert_eq!(channels_in_message(&compile(&batch), &program), vec![a, b]);
+        // Another program's instructions never name a channel.
+        assert!(channels_in_message(&compile(&close(&a)), &pk(99)).is_empty());
+        let top_up = build_top_up_instruction(&pk(3), &a, &pk(6), 10, &pk(8), &program);
+        let reclaim = build_reclaim_instruction(&b, &operator, &program);
+        assert_eq!(
+            channels_in_message(&compile(&[top_up, reclaim]), &program),
+            vec![a, b]
+        );
     }
 
     #[test]
