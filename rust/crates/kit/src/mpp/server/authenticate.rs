@@ -328,6 +328,14 @@ impl AuthenticateServer {
             .request
             .decode()
             .map_err(|e| VerifyError::MalformedPayload(format!("request: {e}")))?;
+        // The challenge must have been issued for THIS resource: realm, secret
+        // and plan can be shared across origins.
+        if request.domain != self.config.domain {
+            return Err(VerifyError::PinnedFieldMismatch("domain"));
+        }
+        if request.uri != self.config.uri {
+            return Err(VerifyError::PinnedFieldMismatch("uri"));
+        }
 
         // Decode the credential payload (signed by the client).
         let payload: AuthenticatePayload = serde_json::from_value(credential.payload.clone())
@@ -675,6 +683,33 @@ mod tests {
         )
         .expect("valid");
         assert_eq!(proven, expected_pubkey);
+    }
+
+    // Resources sharing realm, secret, and plan but served from different
+    // origins must not accept each other's credentials.
+    #[test]
+    fn verify_rejects_a_credential_issued_for_another_resource() {
+        let issuer = make_server();
+        let now = PLAN_CREATED_AT + 60;
+        let challenge = issuer.challenge_at(now).expect("challenge");
+        let credential = sign_payload_for_challenge(&challenge, &make_signer(), now);
+        let other = |domain: &str, uri: &str| {
+            let mut config = issuer.config.clone();
+            config.domain = domain.into();
+            config.uri = uri.into();
+            AuthenticateServer::new(config).expect("valid config")
+        };
+        assert!(matches!(
+            other("api.other.com", "https://api.other.com/v1").verify_at(&credential, now),
+            Err(VerifyError::PinnedFieldMismatch("domain"))
+        ));
+        assert!(matches!(
+            other("api.example.com", "https://api.example.com/v2").verify_at(&credential, now),
+            Err(VerifyError::PinnedFieldMismatch("uri"))
+        ));
+        assert!(other("api.example.com", "https://api.example.com/v1")
+            .verify_at(&credential, now)
+            .is_ok());
     }
 
     #[test]
