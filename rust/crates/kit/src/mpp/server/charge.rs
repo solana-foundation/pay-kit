@@ -1185,6 +1185,20 @@ impl Mpp {
                     "This challenge was already presented with a different request or credential",
                 ));
             }
+            ChargeReservation::PendingConfirmation {
+                generation,
+                final_signature,
+            } => {
+                return self
+                    .reconcile_pending_charge(
+                        &charge_store,
+                        &challenge_id,
+                        generation,
+                        &final_signature,
+                        &payload,
+                    )
+                    .await;
+            }
             ChargeReservation::Reserved { generation } => generation,
         };
 
@@ -1215,7 +1229,31 @@ impl Mpp {
                 }
                 Ok(Receipt::success(METHOD_NAME, &signature_str, challenge_id))
             }
-            Err(err) => {
+            Err(SettleFailure::Unconfirmed { signature, error }) => {
+                // The transaction may still land: keep its signature so a retry
+                // reconciles it instead of the payer paying again.
+                match charge_store
+                    .mark_pending(&challenge_id, generation, &signature)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => tracing::warn!(
+                        challenge_id = %challenge_id,
+                        "charge reservation was superseded; pending broadcast not recorded"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        challenge_id = %challenge_id,
+                        "failed to persist pending charge record"
+                    ),
+                }
+                Err(VerificationError::settlement_in_progress(format!(
+                    "Transaction {signature} was broadcast but not yet confirmed; retry with the \
+                     same credential to reconcile, do not pay again: {}",
+                    error.message
+                )))
+            }
+            Err(SettleFailure::Failed(err)) => {
                 if method_details.channel_charge.is_none() {
                     match charge_store
                         .mark_failed(&challenge_id, generation, &err.message)
@@ -1238,6 +1276,82 @@ impl Mpp {
         }
     }
 
+    /// Resolve a charge whose broadcast outcome was unknown. The record is
+    /// owned by this caller (same challenge and digest); it is never
+    /// re-broadcast, only settled from the signature's on-chain status.
+    async fn reconcile_pending_charge(
+        &self,
+        charge_store: &ChargeReplayStore,
+        challenge_id: &str,
+        generation: u64,
+        final_signature: &str,
+        payload: &CredentialPayload,
+    ) -> Result<Receipt, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
+        let signature = Signature::from_str(final_signature).map_err(|e| {
+            VerificationError::new(format!("Invalid pending settlement signature: {e}"))
+        })?;
+        let unresolved = |detail: String| {
+            VerificationError::settlement_in_progress(format!(
+                "Transaction {final_signature} is not yet confirmed; retry shortly, do not pay \
+                 again{detail}"
+            ))
+        };
+        // Read expiry first: once the blockhash cannot land, a later missing
+        // status is definitive.
+        let expired = match pending_blockhash(payload) {
+            Some(blockhash) => self
+                .rpc
+                .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
+                .map(|valid| !valid)
+                .map_err(|e| unresolved(format!(": {e}")))?,
+            None => false,
+        };
+        let status = self
+            .rpc
+            .get_signature_status_with_commitment_and_history(
+                &signature,
+                CommitmentConfig::confirmed(),
+                true,
+            )
+            .map_err(|e| unresolved(format!(": {e}")))?;
+        let failure = match status {
+            Some(Ok(())) => {
+                if let Err(e) = charge_store
+                    .mark_confirmed(challenge_id, final_signature)
+                    .await
+                {
+                    tracing::warn!(error = %e, %challenge_id, "failed to persist reconciled charge record");
+                }
+                return Ok(Receipt::success(
+                    METHOD_NAME,
+                    final_signature,
+                    challenge_id.to_string(),
+                ));
+            }
+            Some(Err(error)) => VerificationError::transaction_failed(format!(
+                "Transaction landed on-chain but failed: {error}"
+            )),
+            None if expired => VerificationError::transaction_failed(format!(
+                "Transaction {final_signature} expired without landing"
+            )),
+            None => return Err(unresolved(String::new())),
+        };
+        match charge_store
+            .mark_failed(challenge_id, generation, &failure.message)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(%challenge_id, "pending charge was superseded; failure not recorded")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, %challenge_id, "failed to persist failed charge record")
+            }
+        }
+        Err(failure)
+    }
+
     /// Settle a decoded credential payload against `request`/`method_details`
     /// and return the final on-chain signature.
     ///
@@ -1250,14 +1364,15 @@ impl Mpp {
         request: &ChargeRequest,
         method_details: &MethodDetails,
         challenge: &crate::mpp::protocol::core::ChallengeEcho,
-    ) -> Result<String, VerificationError> {
+    ) -> Result<String, SettleFailure> {
         if method_details.channel_charge.is_some() {
             self.validate_channel_policy(request, method_details)
                 .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
             if !matches!(payload, CredentialPayload::Transaction { .. }) {
                 return Err(VerificationError::invalid_payload(
                     "channel charges require a decoded transaction credential",
-                ));
+                )
+                .into());
             }
         }
         match payload {
@@ -1272,8 +1387,13 @@ impl Mpp {
                         .map_err(|error| VerificationError::settlement_in_progress(format!(
                             "Channel transaction {signature} requires outcome reconciliation; do not pay again: {error}",
                         )))?;
-                } else {
-                    self.await_pull_confirmation(&signature)?;
+                } else if let Err(error) = self.await_pull_confirmation(&signature) {
+                    // Timeouts and RPC errors are retryable: the transaction
+                    // may still land. A landed-and-failed status is not.
+                    if !error.retryable {
+                        return Err(error.into());
+                    }
+                    return Err(SettleFailure::Unconfirmed { signature, error });
                 }
                 Ok(signature)
             }
@@ -1286,7 +1406,7 @@ impl Mpp {
                 if !self.accept_push_mode {
                     return Err(VerificationError::credential_mismatch(
                         "Push-mode credentials are disabled on this server (Config.accept_push_mode is false; spec §13.5)",
-                    ));
+                    ).into());
                 }
                 // B34: reject push-mode credentials (`type=signature`) on
                 // routes that require a server-side fee payer. A signature-
@@ -1299,7 +1419,7 @@ impl Mpp {
                 if method_details.fee_payer.unwrap_or(false) {
                     return Err(VerificationError::credential_mismatch(
                         "Push-mode credentials are not allowed when the route uses a server-side fee payer",
-                    ));
+                    ).into());
                 }
                 let signature_str = self.verify_push(signature, request, method_details)?;
                 self.consume_signature(&signature_str).await?;
@@ -1313,7 +1433,7 @@ impl Mpp {
                 // and the recipient-recovered amount matches the charge.
                 // TODO: pending-delivery semantics — a future Receipt revision
                 // could mark delivery as "pending" for asynchronous flows.
-                self.settle_confidential_bundle(transactions, request, method_details)
+                self.settle_confidential_bundle_inner(transactions, request, method_details)
                     .await
             }
             #[cfg(not(feature = "confidential"))]
@@ -1323,7 +1443,8 @@ impl Mpp {
                 // closed when it is not compiled in.
                 Err(VerificationError::credential_mismatch(
                     "Confidential-transfer bundle credentials are not supported by this server (built without the `confidential` feature)",
-                ))
+                )
+                .into())
             }
         }
     }
@@ -2389,6 +2510,36 @@ fn splits_eq(a: Option<&[Split]>, b: Option<&[Split]>) -> bool {
             && x.label == y.label
             && x.memo == y.memo
     })
+}
+
+/// Why settlement produced no receipt.
+pub(crate) enum SettleFailure {
+    /// Terminal: nothing was broadcast, or it landed and failed.
+    Failed(VerificationError),
+    /// Broadcast, but the outcome is unknown; `signature` must be reconciled.
+    Unconfirmed {
+        signature: String,
+        error: VerificationError,
+    },
+}
+
+impl From<VerificationError> for SettleFailure {
+    fn from(error: VerificationError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// Blockhash of the transaction whose signature settles `payload` (the final
+/// bundle transaction for a confidential charge).
+fn pending_blockhash(payload: &CredentialPayload) -> Option<solana_hash::Hash> {
+    let encoded = match payload {
+        CredentialPayload::Transaction { transaction } => transaction,
+        CredentialPayload::Bundle { transactions } => transactions.last()?,
+        CredentialPayload::Signature { .. } => return None,
+    };
+    crate::core::tx::decode(encoded)
+        .ok()
+        .map(|tx| *tx.message.recent_blockhash())
 }
 
 /// Audit #3: interpret a post-timeout `get_signature_status` result.
@@ -7748,6 +7899,243 @@ mod tests {
             };
             assert!(err.message.contains(reached), "{}", err.message);
         }
+    }
+
+    // ── Ambiguous confirmation is pending, not failed ──
+
+    /// JSON-RPC stub: `sendTransaction` returns `signature`; `status`
+    /// selects the signature status (0 unknown, 1 landed ok, 2 landed failed)
+    /// and `blockhash_valid` the blockhash validity.
+    async fn stub_rpc(
+        signature: Signature,
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    ) -> String {
+        use axum::{routing::post, Json, Router};
+        use std::sync::atomic::Ordering;
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let (status, blockhash_valid) = (status.clone(), blockhash_valid.clone());
+                async move {
+                    let context = serde_json::json!({ "slot": 1 });
+                    let result = match request["method"].as_str() {
+                        Some("sendTransaction") => serde_json::json!(signature.to_string()),
+                        Some("isBlockhashValid") => serde_json::json!({
+                            "context": context,
+                            "value": blockhash_valid.load(Ordering::SeqCst),
+                        }),
+                        Some("getSignatureStatuses") => {
+                            let entry = match status.load(Ordering::SeqCst) {
+                                1 => serde_json::json!({
+                                    "slot": 1, "confirmations": null, "err": null,
+                                    "status": { "Ok": null }, "confirmationStatus": "confirmed",
+                                }),
+                                2 => serde_json::json!({
+                                    "slot": 1, "confirmations": null,
+                                    "err": { "InstructionError": [0, { "Custom": 1 }] },
+                                    "status": { "Err": { "InstructionError": [0, { "Custom": 1 }] } },
+                                    "confirmationStatus": "confirmed",
+                                }),
+                                _ => serde_json::Value::Null,
+                            };
+                            serde_json::json!({ "context": context, "value": [entry] })
+                        }
+                        other => panic!("unexpected RPC method {other:?}"),
+                    };
+                    Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    struct AmbiguousCharge {
+        mpp: Mpp,
+        store: Arc<MemoryStore>,
+        credential: PaymentCredential,
+        expected: ChargeRequest,
+        signature: Signature,
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    /// A SOL pull charge whose broadcast is accepted but never observed.
+    async fn ambiguous_charge() -> (AmbiguousCharge, VerificationError) {
+        let signature = Signature::from([7u8; 64]);
+        let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let blockhash_valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let rpc_url = stub_rpc(signature, status.clone(), blockhash_valid.clone()).await;
+        let store = Arc::new(MemoryStore::new());
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let blockhash = Hash::new_unique();
+        let expected = ChargeRequest {
+            amount: "1000".into(),
+            currency: "SOL".into(),
+            recipient: Some(TEST_RECIPIENT.into()),
+            method_details: Some(serde_json::json!({
+                "network": "devnet",
+                "decimals": 9,
+                "recentBlockhash": blockhash.to_string(),
+            })),
+            ..Default::default()
+        };
+        let sender = Pubkey::new_unique();
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V0,
+            &sender,
+            &[system_transfer_ix(
+                &sender,
+                &Pubkey::from_str(TEST_RECIPIENT).unwrap(),
+                1000,
+            )],
+            blockhash,
+            None,
+        )
+        .unwrap();
+        let credential = build_credential(
+            &mpp,
+            &expected,
+            serde_json::json!({
+                "type": "transaction",
+                "transaction": crate::core::tx::encode(&tx).unwrap(),
+            }),
+        );
+        let first = mpp.verify(&credential, &expected).await.unwrap_err();
+        (
+            AmbiguousCharge {
+                mpp,
+                store,
+                credential,
+                expected,
+                signature,
+                status,
+                blockhash_valid,
+            },
+            first,
+        )
+    }
+
+    /// The latest generation of a charge record.
+    async fn charge_record(
+        store: &MemoryStore,
+        challenge_id: &str,
+    ) -> crate::mpp::store::ChargeRecord {
+        let mut raw = store
+            .get(&format!("solana-charge:record:{challenge_id}"))
+            .await
+            .unwrap()
+            .unwrap();
+        for generation in 1.. {
+            match store
+                .get(&format!("solana-charge:record:{challenge_id}:{generation}"))
+                .await
+                .unwrap()
+            {
+                Some(next) => raw = next,
+                None => break,
+            }
+        }
+        serde_json::from_value(raw).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambiguous_confirmation_is_reconciled_to_a_receipt_on_retry() {
+        use std::sync::atomic::Ordering;
+        let (charge, first) = ambiguous_charge().await;
+        assert_eq!(first.code, Some("settlement-in-progress"), "{first:?}");
+        assert!(
+            first.message.contains("do not pay again"),
+            "{}",
+            first.message
+        );
+        let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
+        assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Pending);
+        assert_eq!(
+            record.final_signature.as_deref(),
+            Some(charge.signature.to_string().as_str())
+        );
+
+        // Still unknown: stays pending and never re-broadcasts.
+        let err = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+
+        // A different payload cannot claim the pending challenge.
+        let mut other = charge.credential.clone();
+        other.payload = serde_json::json!({ "type": "transaction", "transaction": "AA==" });
+        let err = charge
+            .mpp
+            .verify(&other, &charge.expected)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("already presented"), "{}", err.message);
+
+        // It landed: the identical retry returns the original receipt.
+        charge.status.store(1, Ordering::SeqCst);
+        let receipt = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap();
+        assert_eq!(receipt.reference, charge.signature.to_string());
+        assert_eq!(receipt.challenge_id, charge.credential.challenge.id);
+        let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
+        assert_eq!(
+            record.state,
+            crate::mpp::store::ChargeRecordState::Confirmed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambiguous_confirmation_fails_only_once_definitive() {
+        use std::sync::atomic::Ordering;
+        let (charge, _) = ambiguous_charge().await;
+        // The blockhash expired and the signature never landed: definitive.
+        charge.blockhash_valid.store(false, Ordering::SeqCst);
+        let err = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("expired without landing"),
+            "{}",
+            err.message
+        );
+        let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
+        assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Failed);
+
+        let (charge, _) = ambiguous_charge().await;
+        charge.status.store(2, Ordering::SeqCst);
+        let err = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("landed on-chain but failed"),
+            "{}",
+            err.message
+        );
+        let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
+        assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Failed);
     }
 
     // ── Replay protection tests ──

@@ -19,8 +19,22 @@ use crate::mpp::store::Store;
 
 use super::charge::{
     check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, ComputeBudgetOp, Mpp,
-    VerificationError, COMPUTE_BUDGET_PROGRAM, MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
+    SettleFailure, VerificationError, COMPUTE_BUDGET_PROGRAM,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
 };
+
+/// Outcome of broadcasting a validated confidential bundle.
+#[cfg(feature = "confidential")]
+#[derive(Debug)]
+pub(crate) enum BundleSettlement {
+    /// The final (transfer) transaction confirmed.
+    Confirmed(String),
+    /// The final transaction was broadcast but its outcome is unknown.
+    Unconfirmed {
+        signature: String,
+        error: VerificationError,
+    },
+}
 
 /// Upper bound on transactions in a gateway-paid confidential bundle. A
 /// version-1 bundle is one transaction (proofs verified inline); the version-0
@@ -101,12 +115,30 @@ impl Mpp {
     ///
     /// Returns the final (transfer) transaction signature.
     #[cfg(feature = "confidential")]
+    pub(crate) async fn settle_confidential_bundle_inner(
+        &self,
+        transactions: &[String],
+        request: &ChargeRequest,
+        method_details: &MethodDetails,
+    ) -> Result<String, SettleFailure> {
+        match self
+            .settle_confidential_bundle(transactions, request, method_details)
+            .await?
+        {
+            BundleSettlement::Confirmed(signature) => Ok(signature),
+            BundleSettlement::Unconfirmed { signature, error } => {
+                Err(SettleFailure::Unconfirmed { signature, error })
+            }
+        }
+    }
+
+    #[cfg(feature = "confidential")]
     pub(crate) async fn settle_confidential_bundle(
         &self,
         transactions: &[String],
         request: &ChargeRequest,
         method_details: &MethodDetails,
-    ) -> Result<String, VerificationError> {
+    ) -> Result<BundleSettlement, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use spl_associated_token_account::get_associated_token_address_with_program_id;
 
@@ -301,6 +333,7 @@ impl Mpp {
         // and confirm each (already-validated) tx IN ORDER. The final tx carries
         // the confidential transfer; its signature is the settlement signature.
         let mut final_sig = String::new();
+        let bundle_len = decoded.len();
         for (idx, tx) in decoded.iter_mut().enumerate() {
             // The gateway is every bundle tx's fee payer, so it is account key
             // zero. Keep that as an `invalid_payload` diagnostic naming the tx.
@@ -356,6 +389,12 @@ impl Mpp {
                 VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
             })?;
             let signature_str = signature.to_string();
+            let is_final = idx + 1 == bundle_len;
+            if is_final {
+                // Reserve before polling, as pull settlement does, so an
+                // unconfirmed transfer can be reconciled but never re-sent.
+                self.consume_signature(&signature_str).await?;
+            }
 
             // Confirm at `confirmed` before moving on: later txs in the bundle
             // (and the final balance read) depend on earlier ones landing.
@@ -379,16 +418,24 @@ impl Mpp {
                 .await;
             }
             if !confirmed {
-                return Err(VerificationError::network_error(format!(
+                let error = VerificationError::network_error(format!(
                     "Bundle tx {idx} ({signature_str}) was not confirmed in time"
-                )));
+                ));
+                // Earlier transactions move no funds; only the final transfer
+                // can have landed unseen.
+                if is_final {
+                    return Ok(BundleSettlement::Unconfirmed {
+                        signature: signature_str,
+                        error,
+                    });
+                }
+                return Err(error);
             }
 
             final_sig = signature_str;
         }
 
-        self.consume_signature(&final_sig).await?;
-        Ok(final_sig)
+        Ok(BundleSettlement::Confirmed(final_sig))
     }
 
     /// Sweep gateway-owned orphaned confidential proof/record accounts left by

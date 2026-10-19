@@ -177,6 +177,10 @@ pub enum ChargeRecordState {
     Confirmed,
     /// Settlement failed terminally; `failure_reason` explains why.
     Failed,
+    /// Broadcast, but confirmation was ambiguous (timeout, RPC error).
+    /// `final_signature` is the broadcast signature; a retry reconciles it
+    /// before any replacement payment is allowed.
+    Pending,
 }
 
 /// A durable record of one charge-settlement attempt, keyed by challenge id.
@@ -212,6 +216,14 @@ pub enum ChargeReservation {
     /// An earlier presentation with the same digest already failed
     /// terminally.
     AlreadyFailed { reason: String },
+    /// An earlier presentation with the same digest was broadcast but its
+    /// outcome is unknown. The caller reconciles `final_signature` and settles
+    /// it with `mark_confirmed`, or `mark_failed` for `generation`; it must
+    /// NOT broadcast again.
+    PendingConfirmation {
+        generation: u64,
+        final_signature: String,
+    },
     /// An earlier presentation with the same digest is still being settled
     /// (or its owner crashed before the lease expired). The caller must NOT
     /// settle again; it should ask the client to retry shortly.
@@ -342,6 +354,13 @@ impl ChargeReplayStore {
                         reason: existing.failure_reason.unwrap_or_default(),
                     })
                 }
+                // Never lease-reclaimed: the broadcast may still land.
+                ChargeRecordState::Pending => {
+                    return Ok(ChargeReservation::PendingConfirmation {
+                        generation,
+                        final_signature: existing.final_signature.unwrap_or_default(),
+                    })
+                }
                 ChargeRecordState::Reserved if existing.expires_at > now => {
                     return Ok(ChargeReservation::InProgress)
                 }
@@ -398,10 +417,39 @@ impl ChargeReplayStore {
         )))
     }
 
-    /// Record a terminal settlement failure for the reservation `generation`
-    /// returned by [`Self::reserve`].
+    /// Record that `final_signature` was broadcast but its outcome is unknown,
+    /// for the reservation `generation` returned by [`Self::reserve`].
     ///
     /// Returns `false`, writing nothing, when that reservation is no longer
+    /// current.
+    pub async fn mark_pending(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
+        let (tip, record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        if tip != generation || record.state != ChargeRecordState::Reserved {
+            return Ok(false);
+        }
+        let pending = terminal(
+            record,
+            ChargeRecordState::Pending,
+            Some(final_signature.to_string()),
+            None,
+        );
+        self.append(challenge_id, generation + 1, &pending).await
+    }
+
+    /// Record a terminal settlement failure for the `generation` returned by
+    /// [`Self::reserve`] (a reservation, or a pending broadcast being
+    /// reconciled).
+    ///
+    /// Returns `false`, writing nothing, when that generation is no longer
     /// current: its lease was taken over or another outcome was recorded.
     pub async fn mark_failed(
         &self,
@@ -414,7 +462,12 @@ impl ChargeReplayStore {
                 "cannot settle charge record `{challenge_id}`: no reservation found"
             ))
         })?;
-        if tip != generation || record.state != ChargeRecordState::Reserved {
+        if tip != generation
+            || !matches!(
+                record.state,
+                ChargeRecordState::Reserved | ChargeRecordState::Pending
+            )
+        {
             return Ok(false);
         }
         let failed = terminal(
@@ -2445,6 +2498,91 @@ mod tests {
             outcome,
             ChargeReservation::AlreadyFailed {
                 reason: "simulation failed".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_pending_record_hands_back_its_signature() {
+        let store = replay_store();
+        let ChargeReservation::Reserved { generation } = store
+            .reserve("chal-p", "digest-a", Duration::from_secs(0))
+            .await
+            .unwrap()
+        else {
+            panic!("expected a fresh reservation");
+        };
+        assert!(store
+            .mark_pending("chal-p", generation, "sig-pending")
+            .await
+            .unwrap());
+        // Only the reservation's owner records the broadcast.
+        assert!(!store
+            .mark_pending("chal-p", generation, "sig-other")
+            .await
+            .unwrap());
+
+        // Never lease-reclaimed into a fresh settlement: the broadcast may land.
+        let outcome = store
+            .reserve("chal-p", "digest-a", Duration::from_secs(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ChargeReservation::PendingConfirmation {
+                generation: generation + 1,
+                final_signature: "sig-pending".to_string()
+            }
+        );
+        let outcome = store
+            .reserve("chal-p", "digest-b", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::Conflict);
+
+        store.mark_confirmed("chal-p", "sig-pending").await.unwrap();
+        let outcome = store
+            .reserve("chal-p", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "sig-pending".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_pending_record_fails_only_for_its_generation() {
+        let store = replay_store();
+        let ChargeReservation::Reserved { generation } = store
+            .reserve("chal-pf", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a fresh reservation");
+        };
+        assert!(store
+            .mark_pending("chal-pf", generation, "sig-pending")
+            .await
+            .unwrap());
+        // The reservation generation is superseded by the pending one.
+        assert!(!store
+            .mark_failed("chal-pf", generation, "stale")
+            .await
+            .unwrap());
+        assert!(store
+            .mark_failed("chal-pf", generation + 1, "expired without landing")
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-pf", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::AlreadyFailed {
+                reason: "expired without landing".to_string()
             }
         );
     }
