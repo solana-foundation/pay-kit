@@ -55,6 +55,9 @@ const CHANNEL_STATUS_OPEN: u8 = 0;
 /// (`crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR`).
 const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 
+/// Shortest lifetime of a settlement voucher this server signs.
+const MIN_SETTLEMENT_VOUCHER_TTL_SECONDS: u64 = 60;
+
 /// Server configuration for the Solana x402 `upto` scheme.
 #[derive(Clone)]
 pub struct UptoConfig {
@@ -744,6 +747,11 @@ impl X402Upto {
         actual: u64,
     ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
+        // The voucher is signed by this server, so its deadline is chosen here
+        // rather than taken from the client's unsigned `expiresAt`: a deadline
+        // that lapses before the settlement lands would leave the request
+        // served and the charge unredeemable.
+        let expires_at = self.settlement_voucher_expiry();
 
         // `settle_and_seal`'s payee signer is the channel payee — the fee
         // payer. The receiver authorizer signs only the Ed25519 voucher
@@ -755,12 +763,11 @@ impl X402Upto {
                 &self.receiver_authorizer,
                 None,
                 0,
-                open.expires_at,
+                expires_at,
                 &open.program_id,
             )?
         } else {
-            let voucher_bytes =
-                pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
+            let voucher_bytes = pc::voucher_message_bytes(&open.channel_id, actual, expires_at)?;
             let sig_bytes: [u8; 64] = self
                 .receiver_authorizer_signer()
                 .sign_message(&voucher_bytes)
@@ -773,7 +780,7 @@ impl X402Upto {
                 &self.receiver_authorizer,
                 Some(&sig_bytes),
                 actual,
-                open.expires_at,
+                expires_at,
                 &open.program_id,
             )?
         };
@@ -836,14 +843,9 @@ impl X402Upto {
     /// Settle like [`settle_actual`](Self::settle_actual) but route the
     /// instructions through the shared batched-settlement worker instead of
     /// broadcasting inline: the worker packs concurrent channel settlements into
-    /// one operator-signed transaction, **sends without waiting for
-    /// confirmation**, and confirms/retries in the background. Returns once the
-    /// batch is sent, carrying the (already-final) settle signature for the
-    /// receipt — taking the multi-second confirm poll off the caller's path.
-    ///
-    /// The client's funds are locked by the confirmed channel `open`, so a
-    /// late or failed background confirm is an operator-retry concern (the
-    /// channel store sweeps it), not client-loss.
+    /// one operator-signed transaction. Returns only once that transaction is
+    /// confirmed, so a successful receipt always names a settlement that
+    /// landed; an on-chain failure or an unconfirmed window is an error.
     ///
     /// The worker is spawned lazily on first use and shared across calls (it is
     /// keyed to this handler's operator + RPC), mirroring the mpp session
@@ -878,7 +880,7 @@ impl X402Upto {
             .await;
 
         let signature = handle
-            .settle(open.channel_id.to_string(), instructions)
+            .settle_confirmed(open.channel_id.to_string(), instructions)
             .await
             .map_err(|e| Error::Rpc(format!("upto settlement worker: {e}")))?;
 
@@ -964,6 +966,16 @@ impl X402Upto {
         .await
         .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
+    }
+
+    /// Deadline for a settlement voucher signed now: the route's completion
+    /// window, with a floor so a zero window still leaves time to land.
+    fn settlement_voucher_expiry(&self) -> i64 {
+        let ttl = self
+            .config
+            .max_timeout_seconds
+            .max(MIN_SETTLEMENT_VOUCHER_TTL_SECONDS);
+        now_unix().saturating_add(i64::try_from(ttl).unwrap_or(i64::MAX))
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
@@ -2111,6 +2123,47 @@ mod tests {
 
     /// Build an engine offering the given currency symbols (each with 6
     /// decimals and program derived from the symbol).
+    /// The voucher expiry comes from the voucher bytes the precompile verifies.
+    fn settled_voucher_expiry(
+        instructions: &[Instruction],
+        open: &VerifiedUptoOpen,
+        actual: u64,
+    ) -> i64 {
+        let message = pc::voucher_message_bytes(&open.channel_id, actual, 0).unwrap();
+        let prefix = &message[..message.len() - 8];
+        let data = instructions
+            .iter()
+            .find_map(|ix| {
+                ix.data
+                    .windows(prefix.len())
+                    .position(|w| w == prefix)
+                    .map(|at| ix.data[at + prefix.len()..at + prefix.len() + 8].to_vec())
+            })
+            .expect("voucher message present");
+        i64::from_le_bytes(data.try_into().unwrap())
+    }
+
+    /// A client-chosen `expiresAt` that lapses before settlement does not end
+    /// up in the settlement voucher: the server signs its own deadline.
+    #[tokio::test]
+    async fn settlement_voucher_deadline_is_server_derived() {
+        let engine = multi_currency_engine(&["USDC"]);
+        let mut open = engine.test_open(Pubkey::new_unique(), 1_000);
+        let now = now_unix();
+        open.expires_at = now + 1;
+
+        let instructions = engine.settlement_instructions(&open, 400).await.unwrap();
+        let expiry = settled_voucher_expiry(&instructions, &open, 400);
+        assert!(
+            expiry >= now + 300,
+            "voucher expiry {expiry} must cover the completion window"
+        );
+
+        open.expires_at = now - 10;
+        let instructions = engine.settlement_instructions(&open, 400).await.unwrap();
+        assert!(settled_voucher_expiry(&instructions, &open, 400) > now);
+    }
+
     fn multi_currency_engine(symbols: &[&str]) -> X402Upto {
         let currencies = symbols
             .iter()

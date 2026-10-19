@@ -50,6 +50,9 @@ pub struct SettlementUnit {
     /// links to its settlement tx in the trace view.
     pub parent: tracing::Span,
     pub reply: oneshot::Sender<SettlementResult>,
+    /// Reply only once the transaction is confirmed (or has failed), instead of
+    /// on broadcast.
+    pub await_confirmation: bool,
 }
 
 /// Outcome of a confirmation poll for a previously-sent signature.
@@ -131,12 +134,33 @@ impl SettlementHandle {
         channel_id: impl Into<String>,
         instructions: Vec<Instruction>,
     ) -> SettlementResult {
+        self.submit(channel_id.into(), instructions, false).await
+    }
+
+    /// Like [`Self::settle`], but replies only once the batch transaction is
+    /// confirmed, and with an error when it fails on-chain or is not confirmed
+    /// within the worker's confirmation window.
+    pub async fn settle_confirmed(
+        &self,
+        channel_id: impl Into<String>,
+        instructions: Vec<Instruction>,
+    ) -> SettlementResult {
+        self.submit(channel_id.into(), instructions, true).await
+    }
+
+    async fn submit(
+        &self,
+        channel_id: String,
+        instructions: Vec<Instruction>,
+        await_confirmation: bool,
+    ) -> SettlementResult {
         let (reply, rx) = oneshot::channel();
         let unit = SettlementUnit {
-            channel_id: channel_id.into(),
+            channel_id,
             instructions,
             parent: tracing::Span::current(),
             reply,
+            await_confirmation,
         };
         self.tx
             .send(unit)
@@ -372,8 +396,12 @@ async fn settle_group(
             }
         }
 
-        // Reply to every channel in the group with the (shared) tx signature.
-        for u in group {
+        // Reply to every channel in the group with the (shared) tx signature;
+        // units awaiting confirmation get the confirmation outcome instead.
+        let (confirming, immediate): (Vec<_>, Vec<_>) = group
+            .into_iter()
+            .partition(|u| u.await_confirmation && result.is_ok());
+        for u in immediate {
             let _ = u.reply.send(result.clone());
         }
 
@@ -381,51 +409,63 @@ async fn settle_group(
         if let Ok(sig) = result {
             let attempts = cfg.confirm_attempts;
             tokio::spawn(async move {
-                for _ in 0..attempts {
-                    match broadcaster.confirm(&sig).await {
-                        Ok(ConfirmOutcome::Confirmed) => {
-                            tracing::debug!(
-                                tx = %sig,
-                                broadcast_policy = send_policy.name,
-                                skip_preflight = send_policy.skip_preflight,
-                                "settlement confirmed"
-                            );
-                            return;
-                        }
-                        Ok(ConfirmOutcome::Pending) => {
-                            tokio::time::sleep(Duration::from_millis(400)).await
-                        }
-                        // Permanent on-chain failure: don't spin the full retry
-                        // window — log and let the store reconcile.
-                        Ok(ConfirmOutcome::Failed(err)) => {
-                            tracing::warn!(
-                                monotonic_counter.pay_settlement_failed_total = 1_u64,
-                                tx = %sig,
-                                broadcast_policy = send_policy.name,
-                                skip_preflight = send_policy.skip_preflight,
-                                error = %err,
-                                "settlement failed on-chain (store will reconcile)",
-                            );
-                            return;
-                        }
-                        Err(e) => {
-                            tracing::debug!(tx = %sig, error = %e, "confirm poll error");
-                            tokio::time::sleep(Duration::from_millis(400)).await;
-                        }
-                    }
+                let outcome = confirm_settlement(broadcaster.as_ref(), &sig, attempts).await;
+                for u in confirming {
+                    let _ = u.reply.send(outcome.clone());
                 }
-                tracing::warn!(
-                    monotonic_counter.pay_settlement_unconfirmed_total = 1_u64,
-                    tx = %sig,
-                    broadcast_policy = send_policy.name,
-                    skip_preflight = send_policy.skip_preflight,
-                    "settlement not confirmed in window",
-                );
             });
         }
     }
     .instrument(span)
     .await
+}
+
+/// Poll `sig` until it is confirmed, fails on-chain, or `attempts` run out.
+async fn confirm_settlement(
+    broadcaster: &dyn Broadcaster,
+    sig: &str,
+    attempts: u32,
+) -> SettlementResult {
+    let send_policy = SKIP_PREFLIGHT_SEND;
+    for _ in 0..attempts {
+        match broadcaster.confirm(sig).await {
+            Ok(ConfirmOutcome::Confirmed) => {
+                tracing::debug!(
+                    tx = %sig,
+                    broadcast_policy = send_policy.name,
+                    skip_preflight = send_policy.skip_preflight,
+                    "settlement confirmed"
+                );
+                return Ok(sig.to_string());
+            }
+            Ok(ConfirmOutcome::Pending) => tokio::time::sleep(Duration::from_millis(400)).await,
+            // Permanent on-chain failure: don't spin the full retry
+            // window — log and let the store reconcile.
+            Ok(ConfirmOutcome::Failed(err)) => {
+                tracing::warn!(
+                    monotonic_counter.pay_settlement_failed_total = 1_u64,
+                    tx = %sig,
+                    broadcast_policy = send_policy.name,
+                    skip_preflight = send_policy.skip_preflight,
+                    error = %err,
+                    "settlement failed on-chain (store will reconcile)",
+                );
+                return Err(format!("settlement {sig} failed on-chain: {err}"));
+            }
+            Err(e) => {
+                tracing::debug!(tx = %sig, error = %e, "confirm poll error");
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        }
+    }
+    tracing::warn!(
+        monotonic_counter.pay_settlement_unconfirmed_total = 1_u64,
+        tx = %sig,
+        broadcast_policy = send_policy.name,
+        skip_preflight = send_policy.skip_preflight,
+        "settlement not confirmed in window",
+    );
+    Err(format!("settlement {sig} was not confirmed in its window"))
 }
 
 /// Production broadcaster backed by the shared asynchronous RPC pipeline.
@@ -521,6 +561,8 @@ mod tests {
     struct MockBroadcaster {
         sent: Mutex<Vec<usize>>, // instruction count per tx
         seq: Mutex<u64>,
+        /// When set, every confirmation reports this on-chain failure.
+        confirm_failure: Mutex<Option<String>>,
     }
     #[async_trait]
     impl Broadcaster for MockBroadcaster {
@@ -537,7 +579,10 @@ mod tests {
             Ok(format!("sig{seq}"))
         }
         async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
-            Ok(ConfirmOutcome::Confirmed)
+            Ok(match self.confirm_failure.lock().unwrap().clone() {
+                Some(error) => ConfirmOutcome::Failed(error),
+                None => ConfirmOutcome::Confirmed,
+            })
         }
     }
 
@@ -583,6 +628,31 @@ mod tests {
         // One tx carrying all 3 channels' instructions.
         let sent = bc.sent.lock().unwrap().clone();
         assert_eq!(sent, vec![3], "expected one 3-channel tx, got {sent:?}");
+    }
+
+    /// A confirmation-awaiting submitter learns about an on-chain failure
+    /// instead of being told its broadcast succeeded.
+    #[tokio::test]
+    async fn settle_confirmed_reports_the_onchain_outcome() {
+        let (h, bc) = handle(10, 10);
+        assert_eq!(
+            h.settle_confirmed("c0", unit_instructions(0)).await,
+            Ok("sig1".to_string())
+        );
+
+        *bc.confirm_failure.lock().unwrap() = Some("InstructionError(5)".to_string());
+        let failed = h.settle_confirmed("c1", unit_instructions(1)).await;
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|e| e.contains("failed on-chain")),
+            "{failed:?}"
+        );
+        // A broadcast-only submitter still gets the signature on send.
+        assert_eq!(
+            h.settle("c2", unit_instructions(2)).await,
+            Ok("sig3".to_string())
+        );
     }
 
     #[tokio::test]
