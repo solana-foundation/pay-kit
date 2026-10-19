@@ -8,6 +8,7 @@
 //! let mpp = Mpp::new(crate::mpp::server::Config {
 //!     realm: Some("test-realm".to_string()),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+//!     store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
 //!     ..Default::default()
 //! })?;
 //!
@@ -49,9 +50,7 @@ use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
     default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
 };
-use crate::mpp::store::{
-    ChargeReplayStore, ChargeReservation, MemoryStore, Store, CHARGE_RESERVATION_LEASE,
-};
+use crate::mpp::store::{ChargeReplayStore, ChargeReservation, Store, CHARGE_RESERVATION_LEASE};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
@@ -229,7 +228,10 @@ pub struct Config {
     /// only that a transfer to the recipient landed, not its amount; the
     /// recipient must reconcile out of band. Off by default.
     pub accept_unverified_confidential_amount: bool,
-    /// Replay protection store (defaults to in-memory).
+    /// Replay protection store. REQUIRED: the challenge ledger must be one
+    /// long-lived instance shared by every `Mpp` that verifies the same
+    /// challenges (requests, replicas, restarts); a per-instance store lets a
+    /// credential settle once per instance.
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
     pub html: bool,
@@ -390,7 +392,11 @@ impl Mpp {
                 ));
             }
         };
-        let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
+        let store: Arc<dyn Store> = config.store.ok_or_else(|| {
+            Error::InvalidConfig(
+                "Config.store is required: pass the replay store shared by every verifier".into(),
+            )
+        })?;
         #[cfg(feature = "confidential")]
         let confidential_auditor = config
             .confidential_auditor
@@ -3951,6 +3957,7 @@ impl std::error::Error for VerificationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mpp::store::MemoryStore;
 
     // Confidential bundle verification + orphan-guard moved to `server::confidential`;
     // the unit tests below stay here (they reuse this module's `dummy_tx` helper).
@@ -4792,6 +4799,7 @@ mod tests {
             rpc_url: Some("http://127.0.0.1:1".to_string()),
             challenge_binding_secret: Some("x".repeat(32)),
             realm: Some("test".to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -4828,6 +4836,7 @@ mod tests {
             rpc_url: Some("http://127.0.0.1:1".to_string()),
             challenge_binding_secret: Some("x".repeat(32)),
             realm: Some("test".to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -5813,6 +5822,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap()
@@ -5826,6 +5836,7 @@ mod tests {
             currency: "SOL".to_string(),
             decimals: 9,
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap()
@@ -5941,6 +5952,7 @@ mod tests {
             network: "devnet".to_string(),
             fee_payer: true,
             fee_payer_signer: Some(Arc::clone(&signer)),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -5984,6 +5996,7 @@ mod tests {
             network: "devnet".to_string(),
             fee_payer: true,
             fee_payer_signer: Some(Arc::clone(&signer)),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -6031,6 +6044,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: String::new(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6047,6 +6061,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: "not-a-valid-pubkey!!!".to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6068,6 +6083,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6095,6 +6111,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         });
 
@@ -6115,6 +6132,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(String::new()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6133,6 +6151,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(short),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6150,6 +6169,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(exact),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         });
         assert!(result.is_ok());
@@ -6166,6 +6186,7 @@ mod tests {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         });
 
@@ -6197,6 +6218,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             realm: Some("Custom Realm".to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -6206,11 +6228,78 @@ mod tests {
     // ── Realm is required: no shared default namespace ──
 
     #[test]
+    fn new_requires_a_replay_store() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            realm: Some("test-realm".to_string()),
+            ..Default::default()
+        })
+        .err()
+        .expect("missing store must fail");
+        assert!(err.to_string().contains("store is required"), "{err}");
+    }
+
+    // Per-request `Mpp` instances (the cancel-endpoint shape) must share one
+    // ledger: a second presentation of the challenge, built on a fresh
+    // instance, is recognised instead of settling again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn per_request_instances_sharing_a_store_settle_a_challenge_once() {
+        let instance = |store: Arc<dyn Store>| {
+            Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                currency: "SOL".to_string(),
+                decimals: 9,
+                network: "devnet".to_string(),
+                rpc_url: Some("http://127.0.0.1:1".to_string()),
+                realm: Some("test-realm".to_string()),
+                store: Some(store),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let shared: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let issuer = instance(shared.clone());
+        let challenge = issuer.charge("0.000001").unwrap();
+        let expected: ChargeRequest = challenge.request.decode().unwrap();
+        let first = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        );
+        let mut second = first.clone();
+        second.payload = serde_json::json!({ "type": "transaction", "transaction": "AQ==" });
+
+        instance(shared.clone())
+            .verify_credential_with_expected(&first, &expected)
+            .await
+            .unwrap_err();
+        let err = instance(shared)
+            .verify_credential_with_expected(&second, &expected)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("already presented"), "{}", err.message);
+
+        // Control: isolated stores are what let a replay through.
+        let err = instance(Arc::new(MemoryStore::new()))
+            .verify_credential_with_expected(&second, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            !err.message.contains("already presented"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn new_requires_a_realm() {
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6231,6 +6320,7 @@ mod tests {
                 network: "devnet".to_string(),
                 rpc_url: Some("http://127.0.0.1:1".to_string()),
                 realm: Some(realm.to_string()),
+                store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
                 ..Default::default()
             })
             .unwrap()
@@ -6270,6 +6360,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             realm: Some(String::new()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6287,6 +6378,7 @@ mod tests {
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: net.to_string(),
+                store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
                 ..Default::default()
             })
             .unwrap_or_else(|e| panic!("{net} should be accepted: {e}"));
@@ -6300,6 +6392,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "testnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6314,6 +6407,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: String::new(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6333,6 +6427,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "mainnet-beta".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6348,6 +6443,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         });
         assert!(mpp.is_ok());
@@ -6376,6 +6472,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -6399,6 +6496,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "PYUSD".to_string(),
             network: "mainnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -6414,6 +6512,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "not-a-symbol-or-mint!!".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6435,6 +6534,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: None,
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .err()
@@ -6471,6 +6571,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .expect("default fee_payer=false should be accepted");
@@ -6488,6 +6589,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -6517,6 +6619,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -7353,6 +7456,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some("another-server-secret-at-least-32-bytes".to_string()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -7829,6 +7933,7 @@ mod tests {
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
             network: "devnet".to_string(),
             accept_push_mode: true,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -7875,6 +7980,7 @@ mod tests {
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
             accept_push_mode: true,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -7914,6 +8020,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -7967,6 +8074,7 @@ mod tests {
                 decimals: 9,
                 network: "devnet".to_string(),
                 rpc_url: Some("http://127.0.0.1:1".to_string()),
+                store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
                 ..Default::default()
             })
             .unwrap();
@@ -8243,6 +8351,7 @@ mod tests {
             decimals: 9,
             network: "devnet".to_string(),
             rpc_url: Some("http://127.0.0.1:1".to_string()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap()
@@ -10036,6 +10145,7 @@ mod tests {
             // Audit #16: signer is now required alongside fee_payer = true.
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -10057,6 +10167,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -10086,6 +10197,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -10130,6 +10242,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -10163,6 +10276,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();

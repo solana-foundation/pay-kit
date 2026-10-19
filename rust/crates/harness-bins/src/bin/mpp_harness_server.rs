@@ -169,7 +169,9 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             recipient_signer: None,
             confidential_auditor: None,
             accept_unverified_confidential_amount: false,
-            store: None,
+            store: Some(std::sync::Arc::new(
+                solana_pay_kit::mpp::store::MemoryStore::new(),
+            )),
             html: false,
             // Interop tests exercise push mode end-to-end; the gate is
             // opt-in (audit #5) so we set it explicitly here.

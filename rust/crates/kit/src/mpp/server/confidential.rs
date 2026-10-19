@@ -1541,6 +1541,7 @@ pub(crate) mod tests {
                 .then_some(recipient_signer as Arc<dyn solana_keychain::SolanaSigner>),
             confidential_auditor: auditor.map(|keypair| <[u8; 64]>::from(keypair.as_ref())),
             accept_unverified_confidential_amount: accept_unverified,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();
@@ -1894,6 +1895,7 @@ pub(crate) mod tests {
             rpc_url: Some("http://127.0.0.1:1".to_string()),
             challenge_binding_secret: Some("x".repeat(32)),
             confidential_auditor: Some([0xff; 64]),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         });
         assert!(result.is_err());

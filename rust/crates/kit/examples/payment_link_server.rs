@@ -166,6 +166,9 @@ async fn main() {
             currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
             decimals: 6,
             html: true,
+            store: Some(std::sync::Arc::new(
+                solana_pay_kit::mpp::store::MemoryStore::new(),
+            )),
             ..Default::default()
         })
         .expect("valid config"),

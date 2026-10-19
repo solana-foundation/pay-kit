@@ -36,7 +36,9 @@ demo recipient and the hosted Surfpool sandbox at `https://402.surfnet.dev:8899`
 
 ```rust
 use axum::Router;
+use solana_pay_kit::mpp::store::MemoryStore;
 use solana_pay_kit::{paid_get, PayKit, PayKitConfig, Payment};
+use std::sync::Arc;
 
 async fn report(payment: Payment) -> String {
     format!("premium content (paid {} via {})", payment.amount, payment.protocol)
@@ -47,6 +49,7 @@ async fn main() {
     let pay = PayKit::new(PayKitConfig {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
         realm: Some("my-service".to_string()),
+        store: Some(Arc::new(MemoryStore::new())),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
         ..Default::default()
@@ -105,6 +108,7 @@ and — if you sponsor the network fee — a signer. The route handlers are
 unchanged; only `PayKitConfig` grows.
 
 ```rust
+use solana_pay_kit::mpp::store::MemoryStore;
 use solana_pay_kit::{PayKit, PayKitConfig};
 use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use std::sync::Arc;
@@ -112,6 +116,7 @@ use std::sync::Arc;
 let pay = PayKit::new(PayKitConfig {
     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
     realm: Some("my-service".to_string()),
+    store: Some(Arc::new(MemoryStore::new())),
     network: "mainnet".to_string(),
     rpc_url: Some("https://mainnet.helius-rpc.com/?api-key=YOUR_KEY".to_string()),
     challenge_binding_secret: Some(std::env::var("MPP_SECRET_KEY")?),

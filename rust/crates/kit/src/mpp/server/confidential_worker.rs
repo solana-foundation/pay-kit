@@ -304,6 +304,7 @@ mod tests {
             rpc_url: Some("http://127.0.0.1:1".into()),
             challenge_binding_secret: Some(SECRET.into()),
             realm: Some(REALM.into()),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();

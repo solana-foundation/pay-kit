@@ -259,6 +259,7 @@ mod tests {
             ),
             network: "localnet".to_string(),
             html: true,
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
         .unwrap();

@@ -331,6 +331,7 @@ fn channel_charge_server_opt_in_and_direct_transfer_wire() {
         realm: Some("channel-test".into()),
         fee_payer: true,
         fee_payer_signer: Some(signer(4)),
+        store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
         ..Default::default()
     };
     let request = request(v2::ChannelHooks::default(), true);
@@ -338,6 +339,7 @@ fn channel_charge_server_opt_in_and_direct_transfer_wire() {
     assert!(!disabled.channel_charge_enabled());
     assert!(disabled.charge_challenge(&request).is_err());
     let enabled = Mpp::new(Config {
+        store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
         realm: Some("test-realm".to_string()),
         channel_charge: Some(ChannelChargeConfig {
             payee_signer: signer(4),
@@ -425,10 +427,12 @@ fn channel_charge_mainnet_configuration_fails_without_changing_direct_charge() {
         network: "mainnet".into(),
         challenge_binding_secret: Some(SECRET.into()),
         rpc_url: Some("http://127.0.0.1:1".into()),
+        store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
         ..Default::default()
     };
     assert!(Mpp::new(config()).is_ok());
     let error = match Mpp::new(Config {
+        store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
         realm: Some("test-realm".to_string()),
         channel_charge: Some(ChannelChargeConfig {
             payee_signer: signer(3),
@@ -625,6 +629,7 @@ fn workflow_server(state: Arc<std::sync::Mutex<WorkflowState>>) -> Mpp {
             payee_signer: signer(4),
             hooks: v2::ChannelHooks::default(),
         }),
+        store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
         ..Default::default()
     })
     .unwrap();

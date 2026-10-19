@@ -8,8 +8,10 @@
 //! `PAYMENT-SIGNATURE` / `X-PAYMENT` header as x402.
 //!
 //! ```no_run
+//! use solana_pay_kit::mpp::store::MemoryStore;
 //! use solana_pay_kit::{paid_get, PayKit, PayKitConfig, Payment};
 //! use axum::Router;
+//! use std::sync::Arc;
 //!
 //! async fn report(payment: Payment) -> String {
 //!     format!("paid {} via {}: {}", payment.amount, payment.protocol, payment.reference)
@@ -17,6 +19,7 @@
 //!
 //! let pay = PayKit::new(PayKitConfig {
 //!     realm: Some("my-service".to_string()),
+//!     store: Some(Arc::new(MemoryStore::new())),
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
 //!     ..Default::default()
 //! })
@@ -108,6 +111,9 @@ pub struct PayKitConfig {
     pub challenge_binding_secret: Option<String>,
     /// MPP realm (credential namespace). REQUIRED and unique per service.
     pub realm: Option<String>,
+    /// MPP replay store. REQUIRED and shared by every verifier of the same
+    /// challenges.
+    pub store: Option<Arc<dyn crate::mpp::store::Store>>,
     /// When set, the server sponsors the network fee: drives MPP fee-sponsored
     /// mode and is used as the x402 fee-payer address.
     pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
@@ -143,6 +149,7 @@ impl Default for PayKitConfig {
             rpc_url: None,
             challenge_binding_secret: None,
             realm: None,
+            store: None,
             fee_payer_signer: None,
             accept_push_mode: false,
             store: None,
@@ -1727,6 +1734,7 @@ mod tests {
         for disabled in [false, true] {
             let pay = PayKit::new(PayKitConfig {
                 realm: Some("test-realm".to_string()),
+                store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),
@@ -1893,6 +1901,7 @@ mod tests {
                 // before protocol configuration, environment access or RPC.
                 let result = PayKit::new(PayKitConfig {
                     realm: Some("test-realm".to_string()),
+                    store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
                     currency: currency.to_string(),
                     network: network.to_string(),
                     credit_providers: vec![CreditProvider::Coinflow],
@@ -1943,6 +1952,7 @@ mod tests {
     fn test_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
             realm: Some("test-realm".to_string()),
+            store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
@@ -2031,6 +2041,7 @@ mod tests {
         for disabled in [false, true] {
             let pay = PayKit::new(PayKitConfig {
                 realm: Some("test-realm".to_string()),
+                store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),
@@ -2123,6 +2134,7 @@ mod tests {
     fn upto_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
             realm: Some("test-realm".to_string()),
+            store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),

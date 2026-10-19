@@ -402,6 +402,9 @@ fn gateway_mpp(s: &Setup) -> Mpp {
         fee_payer: true,
         fee_payer_signer: Some(s.gateway_signer.clone()),
         recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
+        store: Some(std::sync::Arc::new(
+            solana_pay_kit::mpp::store::MemoryStore::new(),
+        )),
         ..Default::default()
     })
     .unwrap()

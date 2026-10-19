@@ -34,6 +34,9 @@ async fn main() {
     // MPP_SECRET_KEY to a >= 32-byte secret (`openssl rand -base64 32`).
     let pay = PayKit::new(PayKitConfig {
         realm: Some("axum-quickstart".to_string()),
+        store: Some(std::sync::Arc::new(
+            solana_pay_kit::mpp::store::MemoryStore::new(),
+        )),
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
