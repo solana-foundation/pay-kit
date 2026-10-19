@@ -503,6 +503,53 @@ pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
     ix
 }
 
+/// Account index of the channel PDA in the `open` instruction.
+const OPEN_CHANNEL_ACCOUNT_INDEX: usize = 5;
+
+/// Decode the top-level `open` instruction in `message` that creates
+/// `channel` under `program_id`, if there is one.
+///
+/// A transaction merely mentioning the channel address (anyone can reference
+/// a PDA before it exists) is not its open: the instruction must target
+/// `program_id` with the open discriminator, decode canonically, name
+/// `channel` in its channel slot, and its arguments and accounts must derive
+/// that PDA. History scans use this to skip such transactions.
+pub fn decode_open_for_channel(
+    message: &solana_message::VersionedMessage,
+    channel: &Pubkey,
+    program_id: &Pubkey,
+) -> Option<OpenArgs> {
+    use crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR;
+    use borsh::BorshDeserialize;
+    let keys = message.static_account_keys();
+    let key = |index: u8| keys.get(usize::from(index)).copied();
+    message.instructions().iter().find_map(|ix| {
+        if key(ix.program_id_index)? != *program_id || ix.data.first() != Some(&OPEN_DISCRIMINATOR)
+        {
+            return None;
+        }
+        let account = |slot: usize| ix.accounts.get(slot).copied().and_then(key);
+        if account(OPEN_CHANNEL_ACCOUNT_INDEX)? != *channel {
+            return None;
+        }
+        let mut data = &ix.data[1..];
+        let args = OpenArgs::deserialize(&mut data).ok()?;
+        if !data.is_empty() {
+            return None;
+        }
+        let (derived, _) = find_channel_pda(
+            &account(0)?,
+            &account(2)?,
+            &account(3)?,
+            &account(4)?,
+            args.salt,
+            args.open_slot,
+            program_id,
+        );
+        (derived == *channel).then_some(args)
+    })
+}
+
 pub fn build_top_up_instruction(
     payer: &Pubkey,
     channel: &Pubkey,
@@ -1088,6 +1135,85 @@ mod tests {
 
     fn pk(byte: u8) -> Pubkey {
         Pubkey::from([byte; 32])
+    }
+
+    #[test]
+    fn open_decoding_skips_transactions_that_only_mention_the_channel() {
+        use solana_message::{v0, VersionedMessage};
+        let params = OpenChannelParams {
+            payer: pk(11),
+            rent_payer: pk(12),
+            payee: pk(13),
+            mint: pk(14),
+            authorized_signer: pk(15),
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: DEFAULT_GRACE_PERIOD_SECONDS,
+            recipients: vec![Distribution {
+                recipient: pk(16),
+                bps: 10_000,
+            }],
+            token_program: pk(17),
+            program_id: default_program_id(),
+        };
+        let channel = derive_channel_addresses(&params).channel;
+        let compile = |ixs: &[Instruction]| {
+            VersionedMessage::V0(
+                v0::Message::try_compile(&params.payer, ixs, &[], Hash::default()).unwrap(),
+            )
+        };
+
+        // A pre-open transaction referencing the future PDA read-only.
+        let mut marker = solana_system_interface::instruction::transfer(&params.payer, &pk(13), 0);
+        marker
+            .accounts
+            .push(AccountMeta::new_readonly(channel, false));
+        assert!(
+            decode_open_for_channel(&compile(&[marker]), &channel, &params.program_id).is_none()
+        );
+
+        // A memo or unrelated program carrying the open discriminator.
+        let mut spoof = build_open_instruction(&params);
+        spoof.program_id = memo_program_id();
+        assert!(
+            decode_open_for_channel(&compile(&[spoof]), &channel, &params.program_id).is_none()
+        );
+
+        // An open for a different channel, and one whose args do not derive it.
+        let mut other = params.clone();
+        other.salt = 8;
+        let other_open = build_open_instruction(&other);
+        assert!(decode_open_for_channel(
+            &compile(std::slice::from_ref(&other_open)),
+            &channel,
+            &params.program_id
+        )
+        .is_none());
+        let mut forged = other_open;
+        forged.accounts[OPEN_CHANNEL_ACCOUNT_INDEX].pubkey = channel;
+        assert!(
+            decode_open_for_channel(&compile(&[forged]), &channel, &params.program_id).is_none()
+        );
+
+        // Trailing bytes are not a canonical open.
+        let mut padded = build_open_instruction(&params);
+        padded.data.push(0);
+        assert!(
+            decode_open_for_channel(&compile(&[padded]), &channel, &params.program_id).is_none()
+        );
+
+        // The real open decodes with its committed distribution.
+        let args = decode_open_for_channel(
+            &compile(&[build_open_instruction(&params)]),
+            &channel,
+            &params.program_id,
+        )
+        .unwrap();
+        assert_eq!(args.salt, 7);
+        assert_eq!(args.deposit, 1_000);
+        assert_eq!(args.recipients.len(), 1);
+        assert_eq!(args.recipients[0].bps, 10_000);
     }
 
     #[test]
