@@ -472,58 +472,45 @@ impl PriceCtx<'_> {
         self.uri.query()
     }
 
-    /// Look up a single query parameter by name, percent-decoded.
+    /// Look up a single query parameter by name.
     ///
-    /// The value is `application/x-www-form-urlencoded`-decoded (`%XX` escapes
-    /// and `+` as space) so a tier like `?tier=premi%75m` matches a literal
-    /// `"premium"` comparison instead of silently falling through to a cheaper
-    /// default price.
+    /// Names and values are `application/x-www-form-urlencoded`-decoded (`%XX`
+    /// escapes and `+` as space), as axum's `Query` extractor decodes them, so
+    /// `?%74ier=premi%75m` matches `"tier"` / `"premium"` instead of falling
+    /// through to a cheaper default price. Gated routes reject malformed
+    /// escapes before the price is resolved.
     pub fn query_param(&self, name: &str) -> Option<String> {
-        self.uri.query()?.split('&').find_map(|pair| {
-            let mut kv = pair.splitn(2, '=');
-            match kv.next() {
-                Some(key) if key == name => Some(percent_decode(kv.next().unwrap_or(""))),
-                _ => None,
-            }
-        })
+        url::form_urlencoded::parse(self.uri.query()?.as_bytes())
+            .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
     }
 }
 
-/// Decode an `application/x-www-form-urlencoded` query value: `%XX` escapes and
-/// `+` as space. Pricing closures compare decoded values, so a percent-encoded
-/// tier (e.g. `premi%75m`) can't bypass the match and land on a cheaper price.
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                match (
-                    (bytes[i + 1] as char).to_digit(16),
-                    (bytes[i + 2] as char).to_digit(16),
-                ) {
-                    (Some(hi), Some(lo)) => {
-                        out.push((hi * 16 + lo) as u8);
-                        i += 3;
-                    }
-                    _ => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
+/// Reject query strings a dynamic price could read differently from the handler.
+fn validate_price_query(query: Option<&str>) -> Result<(), &'static str> {
+    let Some(query) = query else {
+        return Ok(());
+    };
+    let bytes = query.as_bytes();
+    for (i, _) in bytes.iter().enumerate().filter(|(_, b)| **b == b'%') {
+        let escape = bytes.get(i + 1..i + 3);
+        if !escape.is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)) {
+            return Err("malformed percent-encoding in query string");
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(())
+}
+
+/// Resolve the route price, or why the request can't be priced.
+fn resolve_amount(price: &Price, req: &Request) -> Result<String, &'static str> {
+    if matches!(price, Price::Dynamic(_)) {
+        validate_price_query(req.uri().query())?;
+    }
+    let ctx = PriceCtx {
+        method: req.method(),
+        uri: req.uri(),
+        headers: req.headers(),
+    };
+    Ok(price.resolve(&ctx))
 }
 
 #[derive(Clone)]
@@ -705,13 +692,9 @@ fn attach_x402_response(resp: &mut Response, reference: &str) {
 async fn gate_middleware(State(state): State<GateState>, mut req: Request, next: Next) -> Response {
     // Resolve the price first — dynamic routes price off the request, and the
     // resolved amount is what each protocol pins the credential against.
-    let amount = {
-        let ctx = PriceCtx {
-            method: req.method(),
-            uri: req.uri(),
-            headers: req.headers(),
-        };
-        state.price.resolve(&ctx)
+    let amount = match resolve_amount(&state.price, &req) {
+        Ok(amount) => amount,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
 
     // Detect the protocol from disjoint headers.
@@ -857,13 +840,9 @@ async fn upto_gate_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let amount = {
-        let ctx = PriceCtx {
-            method: req.method(),
-            uri: req.uri(),
-            headers: req.headers(),
-        };
-        state.price.resolve(&ctx)
+    let amount = match resolve_amount(&state.price, &req) {
+        Ok(amount) => amount,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
 
     let Some(upto) = state.pay.x402_upto.clone() else {
@@ -1205,13 +1184,9 @@ async fn batch_gate_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let amount = {
-        let ctx = PriceCtx {
-            method: req.method(),
-            uri: req.uri(),
-            headers: req.headers(),
-        };
-        state.price.resolve(&ctx)
+    let amount = match resolve_amount(&state.price, &req) {
+        Ok(amount) => amount,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
 
     let Some(batch) = state.pay.x402_batch.clone() else {
@@ -2123,6 +2098,117 @@ mod tests {
         let headers = HeaderMap::new();
         let encoded: Uri = "/q?tier=premi%75m".parse().unwrap();
         assert_eq!(price.resolve(&ctx(&method, &encoded, &headers)), "5.00");
+    }
+
+    fn tier_price() -> Price {
+        Price::dynamic(|c| match c.query_param("tier").as_deref() {
+            Some("premium") => "5.00".to_string(),
+            _ => "0.10".to_string(),
+        })
+    }
+
+    /// Status and MPP challenge amount (base units) for an unpaid request.
+    async fn challenged_amount(app: Router, uri: &str) -> (StatusCode, Option<String>) {
+        let resp = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let amount = resp.headers().get(header::WWW_AUTHENTICATE).map(|value| {
+            let challenge = crate::mpp::parse_www_authenticate(value.to_str().unwrap()).unwrap();
+            let request: crate::mpp::ChargeRequest = challenge.request.decode().unwrap();
+            request.amount
+        });
+        (resp.status(), amount)
+    }
+
+    #[test]
+    fn query_param_decodes_names_and_values() {
+        let method = Method::GET;
+        let headers = HeaderMap::new();
+        for raw in [
+            "/q?tier=premium",
+            "/q?%74ier=premium",
+            "/q?%74%69%65%72=premi%75m",
+            "/q?other=1&ti%65r=premium",
+        ] {
+            let uri: Uri = raw.parse().unwrap();
+            assert_eq!(
+                ctx(&method, &uri, &headers).query_param("tier").as_deref(),
+                Some("premium"),
+                "{raw}"
+            );
+        }
+        let plus: Uri = "/q?a+b=c+d".parse().unwrap();
+        assert_eq!(
+            ctx(&method, &plus, &headers).query_param("a b").as_deref(),
+            Some("c d")
+        );
+        let empty: Uri = "/q?tier".parse().unwrap();
+        assert_eq!(
+            ctx(&method, &empty, &headers)
+                .query_param("tier")
+                .as_deref(),
+            Some("")
+        );
+        let none: Uri = "/q?tiers=premium".parse().unwrap();
+        assert_eq!(ctx(&method, &none, &headers).query_param("tier"), None);
+    }
+
+    #[test]
+    fn price_query_validation_rejects_malformed_escapes() {
+        for ok in [
+            None,
+            Some(""),
+            Some("tier=premium"),
+            Some("t=%41%7a"),
+            Some("a=%2B"),
+        ] {
+            assert!(validate_price_query(ok).is_ok(), "{ok:?}");
+        }
+        for bad in [
+            "tier=%",
+            "tier=%7",
+            "%7gier=premium",
+            "tier=premium%",
+            "t=%%41",
+        ] {
+            assert!(validate_price_query(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn encoded_query_name_gets_the_premium_challenge() {
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/quote", paid_get(report, tier_price(), &pay));
+        for uri in [
+            "/quote?tier=premium",
+            "/quote?%74ier=premium",
+            "/quote?%74ier=premi%75m",
+        ] {
+            assert_eq!(
+                challenged_amount(app.clone(), uri).await,
+                (StatusCode::PAYMENT_REQUIRED, Some("5000000".to_string())),
+                "{uri}"
+            );
+        }
+        assert_eq!(
+            challenged_amount(app.clone(), "/quote?tier=basic").await,
+            (StatusCode::PAYMENT_REQUIRED, Some("100000".to_string()))
+        );
+        assert_eq!(
+            challenged_amount(app, "/quote?%7tier=premium").await,
+            (StatusCode::BAD_REQUEST, None)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fixed_price_ignores_query_encoding() {
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+        assert_eq!(
+            challenged_amount(app, "/r?x=%zz").await,
+            (StatusCode::PAYMENT_REQUIRED, Some("100000".to_string()))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
