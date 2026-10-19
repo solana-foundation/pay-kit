@@ -21,7 +21,7 @@ use crate::core::{Error, Result};
 /// - `now` is the current Unix time in seconds.
 /// - `settlement_window` is the channel's forced-close grace period (seconds).
 ///   A non-zero `expires_at` MUST outlast the settlement window — i.e. it must
-///   be at least `now + settlement_window` — so the operator can still redeem
+///   be strictly after `now + settlement_window` — so the operator can still redeem
 ///   the voucher on-chain after the asynchronous settlement delay. Pass `0` to
 ///   only require the voucher be unexpired (`expires_at > now`).
 ///
@@ -29,7 +29,8 @@ use crate::core::{Error, Result};
 /// expires_at` rejects): **`expires_at == 0` means the voucher never expires**
 /// and is always accepted regardless of `now` or `settlement_window`. A
 /// non-zero `expires_at` is rejected when it is at/before `now` (expired) or
-/// before `now + settlement_window` (would lapse before settlement).
+/// at/before `now + settlement_window` (would lapse by the time a close that
+/// starts now reaches its deadline).
 pub fn verify_voucher_signature(
     channel_id: &str,
     cumulative: u64,
@@ -91,10 +92,10 @@ pub fn voucher_verify_parts(
         // on-chain after the async settlement delay. `now + settlement_window`
         // is computed with saturating math to avoid i64 overflow.
         let settle_deadline = now.saturating_add(settlement_window.max(0));
-        if expires_at < settle_deadline {
+        if expires_at <= settle_deadline {
             return Err(Error::Other(format!(
                 "Voucher expiry {expires_at} does not outlast the settlement window \
-                 (must be >= {settle_deadline} = now {now} + window {settlement_window})"
+                 (must be > {settle_deadline} = now {now} + window {settlement_window})"
             )));
         }
     }
@@ -204,12 +205,26 @@ mod tests {
             "expected settlement-window error, got: {err}"
         );
 
-        // expires_at exactly at now + window → accepted.
-        let (sig_ok, _) = signed(&channel, 1_000, now + window, &sk);
+        // expires_at exactly at now + window → rejected: a close started now
+        // seals at that same second, when the voucher is already unusable.
+        let (sig_edge, _) = signed(&channel, 1_000, now + window, &sk);
         assert!(verify_voucher_signature(
             &channel_b58,
             1_000,
             now + window,
+            &sig_edge,
+            &signer,
+            now,
+            window,
+        )
+        .is_err());
+
+        // One second past the window → accepted.
+        let (sig_ok, _) = signed(&channel, 1_000, now + window + 1, &sk);
+        assert!(verify_voucher_signature(
+            &channel_b58,
+            1_000,
+            now + window + 1,
             &sig_ok,
             &signer,
             now,
