@@ -855,6 +855,12 @@ impl ChannelState {
     /// Only an authorization with no record at all is reservable. An existing
     /// reservation is never taken over, however long its lease has been
     /// dead — see [`BatchReservation::Abandoned`].
+    ///
+    /// One cumulative step is in flight per channel: while another
+    /// authorization holds a live or handler-succeeded reservation this one is
+    /// [`BatchReservation::InProgress`]. Both would step from the same
+    /// watermark, and whichever committed second could only charge what was
+    /// left above the first.
     pub fn reserve_authorization(
         &mut self,
         authorization_id: &str,
@@ -866,6 +872,12 @@ impl ChannelState {
         let outcome = self.classify_authorization(authorization_id, request_fingerprint, now);
         if outcome != BatchReservation::Reserved {
             return outcome;
+        }
+        if self.pending_deliveries.iter().any(|pending| {
+            pending.delivery_id != authorization_id
+                && (pending.handler_succeeded || pending.expires_at > now)
+        }) {
+            return BatchReservation::InProgress;
         }
         self.prune_authorizations(now);
         self.next_delivery_sequence = self.next_delivery_sequence.saturating_add(1);
@@ -987,6 +999,17 @@ impl ChannelState {
         if cumulative < self.cumulative {
             return Err(StoreError::Internal(format!(
                 "authorization {authorization_id} would lower the watermark from {} to {cumulative}",
+                self.cumulative
+            )));
+        }
+        // The reservation priced one step from the watermark it was taken at;
+        // if another commit moved it since, this voucher no longer pays for
+        // the step it reserved.
+        let reserved = self.pending_deliveries[index].amount;
+        if self.cumulative.checked_add(reserved) != Some(cumulative) {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} reserved {reserved} above the watermark, \
+                 which is now {} and does not step to {cumulative}",
                 self.cumulative
             )));
         }
@@ -2561,6 +2584,47 @@ mod tests {
         assert!(state
             .release_authorization("access:c1:1000", "other")
             .is_err());
+    }
+
+    /// Two different cumulative vouchers from the same watermark cannot both be
+    /// reserved, and a commit must still step from the watermark its
+    /// reservation priced.
+    #[test]
+    fn one_cumulative_step_is_reserved_at_a_time() {
+        let mut state = make_state("c1", 10_000);
+        assert_eq!(
+            state.reserve_authorization("access:c1:500", "low", 500, LEASE, 100),
+            BatchReservation::Reserved
+        );
+        assert_eq!(
+            state.reserve_authorization("access:c1:2000", "high", 2_000, LEASE, 100),
+            BatchReservation::InProgress,
+            "a second step from the same watermark must wait"
+        );
+        state
+            .commit_authorization("access:c1:500", "low", 500, "sig-low", 0, 100, |_| None)
+            .unwrap();
+        // Now the high voucher is a reservation again, but a commit for a
+        // cumulative that no longer steps from the watermark is refused.
+        assert_eq!(
+            state.reserve_authorization("access:c1:2000", "high", 2_000, LEASE, 100),
+            BatchReservation::Reserved
+        );
+        assert!(state
+            .commit_authorization("access:c1:2000", "high", 2_000, "sig-high", 0, 100, |_| {
+                None
+            })
+            .is_err());
+        assert_eq!(state.cumulative, 500);
+
+        // A dead lease does not block the channel forever.
+        let mut state = make_state("c2", 10_000);
+        state.reserve_authorization("access:c2:500", "a", 500, LEASE, 100);
+        let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        assert_eq!(
+            state.reserve_authorization("access:c2:700", "b", 700, LEASE, after_lease),
+            BatchReservation::Reserved
+        );
     }
 
     /// Committed records are retained for retries, not forever.

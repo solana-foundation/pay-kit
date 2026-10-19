@@ -4306,6 +4306,74 @@ mod tests {
         ));
     }
 
+    /// Concurrent vouchers for different cumulative steps from the same
+    /// watermark cannot both be served: the second waits, and once the first
+    /// commits it no longer steps from the watermark.
+    #[tokio::test]
+    async fn concurrent_cumulative_vouchers_are_served_one_at_a_time() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (low_handler, fee_payer) = handler(store.clone());
+        let (high_handler, _) = handler(store.clone());
+        let low_requirements = low_handler.requirements("0.0005").unwrap();
+        let high_requirements = high_handler.requirements("0.002").unwrap();
+        let (key, config, channel) = client(&fee_payer, &low_requirements);
+        store
+            .put_channel(
+                &pc::pubkey_string(&channel),
+                seeded(&channel, &config, 5_000, 0),
+            )
+            .await
+            .unwrap();
+        let low_header = header(
+            &low_requirements,
+            BatchPayload::Voucher {
+                channel_config: config.clone(),
+                voucher: voucher(&key, &channel, 500),
+            },
+        );
+        let high_header = header(
+            &high_requirements,
+            BatchPayload::Voucher {
+                channel_config: config,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let BatchAccess::Serve(low) = low_handler
+            .verify_and_reserve_payment(&low_header, "0.0005")
+            .await
+            .unwrap()
+        else {
+            panic!("the first voucher is served");
+        };
+        assert!(matches!(
+            high_handler
+                .verify_and_reserve_payment(&high_header, "0.002")
+                .await
+                .unwrap(),
+            BatchAccess::InProgress
+        ));
+        low_handler.mark_handler_succeeded(&low).await.unwrap();
+        low_handler.finish_commit(&low).await.unwrap();
+        drop(low);
+
+        let err = high_handler
+            .verify_and_reserve_payment(&high_header, "0.002")
+            .await
+            .expect_err("the high voucher no longer steps from the watermark");
+        assert!(
+            err.to_string()
+                .contains(codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH),
+            "{err}"
+        );
+        let state = store
+            .get_channel(&pc::pubkey_string(&channel))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 500);
+    }
+
     /// A voucher for a channel this store has no record of is refused, never
     /// rebuilt from the onchain `settled` watermark: vouchers accepted after
     /// the last claim lived only in the lost record and may have been served.
