@@ -2160,6 +2160,17 @@ impl<S: ChannelStore> SessionServer<S> {
                     if state.close_requested_at.is_some() {
                         return Err(StoreError::Internal("Close already requested".to_string()));
                     }
+                    // Unexpired reservations were (or are being) delivered and
+                    // can't be committed once close is pending, so the final
+                    // voucher must pay for them.
+                    let live_pending = state
+                        .pending_deliveries
+                        .iter()
+                        .filter(|delivery| delivery.expires_at > now as i64)
+                        .try_fold(0u64, |total, delivery| total.checked_add(delivery.amount))
+                        .ok_or_else(|| {
+                            StoreError::Internal("pending delivery total overflow".to_string())
+                        })?;
 
                     // A close that presents authentication against a record
                     // with no proof binding (and no operator marker) is an
@@ -2276,6 +2287,24 @@ impl<S: ChannelStore> SessionServer<S> {
                             state.highest_voucher_expires_at,
                         )
                     };
+
+                    let mut state = state;
+                    if live_pending > 0 {
+                        let required = state.cumulative.saturating_add(live_pending);
+                        if voucher_opt.is_none() || new_cumulative < required {
+                            return Err(StoreError::Internal(format!(
+                                "Channel has {live_pending} in uncommitted deliveries; \
+                                 the final voucher must reach cumulative {required}"
+                            )));
+                        }
+                        state.spent_amount =
+                            state.spent_amount.checked_add(live_pending).ok_or_else(|| {
+                                StoreError::Internal("session spent amount overflow".to_string())
+                            })?;
+                        state
+                            .pending_deliveries
+                            .retain(|delivery| delivery.expires_at <= now as i64);
+                    }
 
                     Ok(ChannelState {
                         cumulative: new_cumulative,
@@ -5198,6 +5227,77 @@ mod tests {
         session.record_voucher(&retry.voucher).unwrap();
         let state = stored(&server, &channel_id).await;
         assert_eq!((state.cumulative, state.spent_amount), (50, 50));
+    }
+
+    fn close_with(voucher: SignedVoucher) -> ClosePayload {
+        ClosePayload {
+            channel_id: voucher.data.channel_id.clone(),
+            authentication: None,
+            voucher: Some(voucher),
+        }
+    }
+
+    #[tokio::test]
+    async fn close_cannot_discard_a_live_metered_delivery() {
+        let (server, session, channel_id) = client_server().await;
+        let mut request = DeliveryRequest::new(channel_id.clone(), 100);
+        request.delivery_id = Some("delivery-100".to_string());
+        let directive = server.begin_delivery(request).await.unwrap();
+
+        for short in [1, 99] {
+            let error = server
+                .process_close(&close_with(session.prepare_increment(short).await.unwrap()))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("uncommitted"), "{error}");
+        }
+        let state = stored(&server, &channel_id).await;
+        assert!(state.close_requested_at.is_none());
+        assert_eq!(state.pending_deliveries.len(), 1);
+
+        // Committing the delivery first leaves an ordinary close.
+        server
+            .process_commit(&CommitPayload {
+                delivery_id: directive.delivery_id,
+                voucher: session.prepare_increment(100).await.unwrap(),
+            })
+            .await
+            .unwrap();
+        let seal = server
+            .process_close(&close_with(session.prepare_voucher(101).await.unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(seal.settled, 101);
+    }
+
+    #[tokio::test]
+    async fn close_voucher_covering_a_live_delivery_settles_it() {
+        let (server, session, channel_id) = client_server().await;
+        server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 100))
+            .await
+            .unwrap();
+        let seal = server
+            .process_close(&close_with(session.prepare_increment(100).await.unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(seal.settled, 100);
+        let state = stored(&server, &channel_id).await;
+        assert!(state.pending_deliveries.is_empty());
+        assert_eq!(state.spent_amount, 100);
+    }
+
+    #[tokio::test]
+    async fn expired_reservation_does_not_block_close() {
+        let (server, session, channel_id) = client_server().await;
+        let mut request = DeliveryRequest::new(channel_id.clone(), 100);
+        request.expires_at = Some(1);
+        server.begin_delivery(request).await.unwrap();
+        let seal = server
+            .process_close(&close_with(session.prepare_increment(1).await.unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(seal.settled, 1);
     }
 
     #[tokio::test]
