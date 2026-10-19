@@ -208,6 +208,7 @@ impl Mpp {
         // transfer destination is checked here — all before co-signing in pass 2.
         let mut decoded: Vec<VersionedTransaction> = Vec::with_capacity(transactions.len());
         let mut transfer_count = 0usize;
+        let mut transfer_tx = None;
         let max_b64 = max_bundle_tx_base64_len(&self.accepted_versions);
         for (idx, tx_b64) in transactions.iter().enumerate() {
             // Bound the per-tx string before decoding so a client can't force a
@@ -236,7 +237,7 @@ impl Mpp {
             // Allow-list every instruction, assert the gateway is fee payer and
             // the only rent funder, and validate any confidential-transfer
             // destination — all before any co-sign/broadcast in pass 2.
-            transfer_count += verify_confidential_bundle_tx(
+            let transfers = verify_confidential_bundle_tx(
                 &tx,
                 &gateway_pubkey,
                 &token_program,
@@ -244,6 +245,10 @@ impl Mpp {
                 &self.accepted_versions,
             )
             .map_err(|e| VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}")))?;
+            if transfers > 0 {
+                transfer_tx = Some(idx);
+            }
+            transfer_count += transfers;
             if transfer_count > 1 {
                 return Err(VerificationError::credential_mismatch(
                     "Confidential bundle contains more than one transfer",
@@ -260,6 +265,14 @@ impl Mpp {
             return Err(VerificationError::credential_mismatch(format!(
                 "Confidential bundle must contain exactly one transfer (found {transfer_count})"
             )));
+        }
+        // Bundle transactions land one by one and cannot roll back together.
+        // With the transfer (and every close) in the final transaction, a
+        // failure anywhere leaves the payer's funds untouched.
+        if transfer_tx != Some(decoded.len() - 1) {
+            return Err(VerificationError::credential_mismatch(
+                "The confidential transfer must be in the bundle's final transaction",
+            ));
         }
 
         verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
@@ -586,8 +599,9 @@ pub(crate) fn verify_confidential_account_lifecycle(
     let system_program = solana_system_interface::program::ID;
     let mut funded = HashMap::<Pubkey, FundedAccount>::new();
     let mut total_lamports = 0u64;
+    let final_tx = transactions.len().saturating_sub(1);
 
-    for tx in transactions {
+    for (tx_index, tx) in transactions.iter().enumerate() {
         let mut created_in_transaction = HashSet::new();
         let keys = tx.message.static_account_keys();
         for ix in tx.message.instructions() {
@@ -683,6 +697,11 @@ pub(crate) fn verify_confidential_account_lifecycle(
                     ));
                 }
                 if close {
+                    if tx_index != final_tx {
+                        return Err(VerificationError::credential_mismatch(
+                            "gateway-funded temporary accounts must be closed in the final transaction",
+                        ));
+                    }
                     if !state.initialized {
                         return Err(VerificationError::credential_mismatch(
                             "confidential bundle closes an uninitialized temporary account",
@@ -1837,6 +1856,138 @@ pub(crate) mod tests {
             None,
         );
         let message = settle_error(&server, full, charged).await;
+        assert!(message.contains("Simulation RPC error"), "{message}");
+    }
+
+    /// Gateway-funded spl-record lifecycle pieces plus a minimal confidential
+    /// transfer to `recipient_ata`, for layout tests.
+    pub(crate) struct LayoutPieces {
+        pub create: solana_instruction::Instruction,
+        pub initialize: solana_instruction::Instruction,
+        pub close: solana_instruction::Instruction,
+        pub transfer: solana_instruction::Instruction,
+    }
+
+    pub(crate) fn layout_pieces(gateway: &Pubkey, recipient_ata: &Pubkey) -> LayoutPieces {
+        use solana_instruction::{AccountMeta, Instruction};
+        let record = Pubkey::new_unique();
+        let record_program = spl_record::id();
+        LayoutPieces {
+            create: solana_system_interface::instruction::create_account(
+                gateway,
+                &record,
+                1_000,
+                100,
+                &record_program,
+            ),
+            initialize: Instruction {
+                program_id: record_program,
+                accounts: vec![
+                    AccountMeta::new(record, false),
+                    AccountMeta::new_readonly(*gateway, false),
+                ],
+                data: vec![0],
+            },
+            close: Instruction {
+                program_id: record_program,
+                accounts: vec![
+                    AccountMeta::new(record, false),
+                    AccountMeta::new_readonly(*gateway, true),
+                    AccountMeta::new(*gateway, false),
+                ],
+                data: vec![3],
+            },
+            transfer: Instruction {
+                program_id: Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap(),
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false),
+                    AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                    AccountMeta::new(*recipient_ata, false),
+                ],
+                data: vec![27, 7],
+            },
+        }
+    }
+
+    pub(crate) fn v0_tx(
+        gateway: &Pubkey,
+        ixs: &[solana_instruction::Instruction],
+    ) -> VersionedTransaction {
+        crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            gateway,
+            ixs,
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn temporary_accounts_must_close_in_the_final_transaction() {
+        let gateway = Pubkey::new_unique();
+        let p = layout_pieces(&gateway, &Pubkey::new_unique());
+        let setup = v0_tx(&gateway, &[p.create.clone(), p.initialize.clone()]);
+        let early_close = v0_tx(
+            &gateway,
+            &[p.create.clone(), p.initialize.clone(), p.close.clone()],
+        );
+        let err = verify_confidential_account_lifecycle(
+            &[
+                early_close,
+                v0_tx(&gateway, std::slice::from_ref(&p.transfer)),
+            ],
+            &gateway,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("final transaction"), "{}", err.message);
+
+        verify_confidential_account_lifecycle(
+            &[setup, v0_tx(&gateway, &[p.transfer, p.close])],
+            &gateway,
+        )
+        .unwrap();
+    }
+
+    // A transfer that confirms before a later cleanup transaction fails would
+    // leave the payer charged without a receipt; it must ride the final one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn version_zero_transfer_must_be_in_the_final_transaction() {
+        let mut server = confidential_server(false, None, true).await;
+        server.mpp.accepted_versions = vec![TxVersion::V0];
+        let p = layout_pieces(&server.gateway, &server.recipient_ata);
+        let settle = |txs: Vec<VersionedTransaction>| {
+            let bundle = encode_bundle(&txs);
+            let server = &server;
+            async move {
+                server
+                    .mpp
+                    .settle_confidential_bundle(
+                        &bundle,
+                        &request(1_000, &server.mint, server.mpp.recipient()),
+                        &server.method_details,
+                    )
+                    .await
+                    .unwrap_err()
+                    .message
+            }
+        };
+
+        let transfer_first = vec![
+            v0_tx(
+                &server.gateway,
+                &[p.create.clone(), p.initialize.clone(), p.transfer.clone()],
+            ),
+            v0_tx(&server.gateway, std::slice::from_ref(&p.close)),
+        ];
+        let message = settle(transfer_first).await;
+        assert!(message.contains("final transaction"), "{message}");
+
+        let builder_layout = vec![
+            v0_tx(&server.gateway, &[p.create, p.initialize]),
+            v0_tx(&server.gateway, &[p.transfer, p.close]),
+        ];
+        let message = settle(builder_layout).await;
         assert!(message.contains("Simulation RPC error"), "{message}");
     }
 }
