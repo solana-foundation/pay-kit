@@ -2258,6 +2258,37 @@ mod tests {
             .is_ok());
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_transfer_at_another_precision_is_rejected() {
+        let requirements = X402::new(config())
+            .unwrap()
+            .exact_requirements("1.00", ExactOptions::default())
+            .unwrap();
+        assert_eq!(requirements.amount, "1000000");
+        let payer = Pubkey::new_unique();
+        // 1_000_000 raw units of a nine-decimal mint is 0.001 tokens, not 1.00.
+        let nine = confirmed_transfer(&requirements, &payer, 1_000_000, 9, Some(now_unix()));
+        let six = confirmed_transfer(&requirements, &payer, 1_000_000, 6, Some(now_unix()));
+        let x402 = with_rpc(
+            X402::new(config()).unwrap(),
+            mock_rpc_with_transactions(&[nine, six]),
+        );
+        let header = signature_header(
+            &requirements,
+            &solana_signature::Signature::from([6u8; 64]).to_string(),
+        );
+
+        assert!(x402
+            .process_payment(&header, "1.00", ExactOptions::default())
+            .await
+            .is_err());
+        assert!(matches!(
+            x402.process_payment(&header, "1.00", ExactOptions::default())
+                .await,
+            Ok(VerifiedExactPayment::Signature(_))
+        ));
+    }
+
     // ── is_loopback_rpc ────────────────────────────────────────────────────
 
     #[test]

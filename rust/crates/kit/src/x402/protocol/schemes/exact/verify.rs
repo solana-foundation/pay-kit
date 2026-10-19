@@ -82,6 +82,7 @@ fn verify_on_chain_transfer(
         get_associated_token_address(&expected_recipient, &expected_mint_pubkey, &token_program)
             .to_string();
     let expected_amount_str = expected_amount.to_string();
+    let expected_decimals = expected_decimals(requirements)?;
 
     let ui_tx = match &tx.transaction.transaction {
         EncodedTransaction::Json(ui_tx) => ui_tx,
@@ -95,6 +96,7 @@ fn verify_on_chain_transfer(
                 &expected_destination,
                 &expected_mint,
                 &expected_amount_str,
+                expected_decimals,
             )
         }),
         UiMessage::Raw(message) => message.instructions.iter().any(|instruction| {
@@ -104,6 +106,7 @@ fn verify_on_chain_transfer(
                 &expected_destination,
                 &expected_mint,
                 expected_amount,
+                expected_decimals,
             )
         }),
     };
@@ -120,6 +123,7 @@ fn matches_parsed_transfer(
     expected_destination: &str,
     expected_mint: &str,
     expected_amount: &str,
+    expected_decimals: u8,
 ) -> bool {
     let parsed = match instruction {
         UiInstruction::Parsed(UiParsedInstruction::Parsed(parsed)) => parsed,
@@ -146,13 +150,18 @@ fn matches_parsed_transfer(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let mint = info.get("mint").and_then(|v| v.as_str()).unwrap_or("");
-    let amount = info
-        .get("tokenAmount")
-        .and_then(|v| v.as_object())
+    let token_amount = info.get("tokenAmount").and_then(|v| v.as_object());
+    let amount = token_amount
         .and_then(|o| o.get("amount"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    destination == expected_destination && mint == expected_mint && amount == expected_amount
+    let decimals = token_amount
+        .and_then(|o| o.get("decimals"))
+        .and_then(|v| v.as_u64());
+    destination == expected_destination
+        && mint == expected_mint
+        && amount == expected_amount
+        && decimals == Some(u64::from(expected_decimals))
 }
 
 fn matches_raw_transfer(
@@ -161,6 +170,7 @@ fn matches_raw_transfer(
     expected_destination: &str,
     expected_mint: &str,
     expected_amount: u64,
+    expected_decimals: u8,
 ) -> bool {
     let program = match account_keys.get(instruction.program_id_index as usize) {
         Some(s) => s.as_str(),
@@ -181,7 +191,7 @@ fn matches_raw_transfer(
         Ok(b) => b,
         Err(_) => return false,
     };
-    if u64::from_le_bytes(amount_bytes) != expected_amount {
+    if u64::from_le_bytes(amount_bytes) != expected_amount || bytes[9] != expected_decimals {
         return false;
     }
     if instruction.accounts.len() < 4 {
@@ -487,8 +497,20 @@ fn verify_transfer_instruction(
     if amount != expected_amount {
         return invalid("invalid_exact_svm_payload_amount_mismatch");
     }
+    // `transferChecked` fails unless this equals the mint's decimals, so it
+    // proves the advertised precision.
+    if instruction.data[9] != expected_decimals(requirements)? {
+        return invalid("invalid_exact_svm_payload_decimals_mismatch");
+    }
 
     Ok(())
+}
+
+/// The precision the route priced the transfer at; SPL payments require it.
+fn expected_decimals(requirements: &PaymentRequirements) -> Result<u8, Error> {
+    requirements
+        .decimals
+        .ok_or_else(|| Error::Other("invalid_exact_svm_payload_decimals_missing".into()))
 }
 
 fn key_for_account_index(index: u8, account_keys: &[Pubkey]) -> Result<&Pubkey, Error> {
@@ -1518,5 +1540,83 @@ mod tests {
         let tx = build_exact_transaction(&requirements, &owner, &owner, vec![], 1000, None, None);
         assert_eq!(tx.message.header().num_required_signatures, 1);
         assert!(verify_exact_versioned_transaction(&tx, &requirements, &[]).is_ok());
+    }
+
+    /// A confirmed raw (non-parsed) `transferChecked` carrying `decimals`.
+    fn tx_with_raw_transfer(
+        requirements: &PaymentRequirements,
+        decimals: u8,
+    ) -> EncodedConfirmedTransactionWithStatusMeta {
+        let owner = Pubkey::new_unique();
+        let mut with_decimals = requirements.clone();
+        with_decimals.decimals = Some(decimals);
+        let ix = transfer_checked_ix(&owner, &with_decimals, 1000, None, None);
+        let mut keys: Vec<String> = ix.accounts.iter().map(|a| a.pubkey.to_string()).collect();
+        keys.push(ix.program_id.to_string());
+        let mut tx = tx_with_meta(None);
+        tx.transaction.transaction = EncodedTransaction::Json(UiTransaction {
+            signatures: vec!["sig".to_string()],
+            message: UiMessage::Raw(UiRawMessage {
+                header: MessageHeader {
+                    num_required_signatures: 1,
+                    num_readonly_signed_accounts: 0,
+                    num_readonly_unsigned_accounts: 1,
+                },
+                account_keys: keys,
+                recent_blockhash: "blockhash".to_string(),
+                instructions: vec![
+                    solana_transaction_status_client_types::UiCompiledInstruction {
+                        program_id_index: 4,
+                        accounts: vec![0, 1, 2, 3],
+                        data: bs58::encode(&ix.data).into_string(),
+                        stack_height: None,
+                    },
+                ],
+                address_table_lookups: None,
+                transaction_config: None,
+            }),
+        });
+        tx
+    }
+
+    #[test]
+    fn verify_transaction_details_binds_transfer_decimals() {
+        let route = requirements("1000");
+
+        // Same raw amount at a different precision moves a different value.
+        let mut nine = route.clone();
+        nine.decimals = Some(9);
+        let parsed = tx_with_parsed_transfer_and_memos(&nine, &[]);
+        assert!(verify_transaction_details(&parsed, &route).is_err());
+        assert!(verify_transaction_details(&tx_with_raw_transfer(&route, 9), &route).is_err());
+        assert!(verify_transaction_details(&tx_with_raw_transfer(&route, 5), &route).is_err());
+
+        let parsed = tx_with_parsed_transfer_and_memos(&route, &[]);
+        assert!(verify_transaction_details(&parsed, &route).is_ok());
+        assert!(verify_transaction_details(&tx_with_raw_transfer(&route, 6), &route).is_ok());
+
+        let mut unpriced = route.clone();
+        unpriced.decimals = None;
+        let err = verify_transaction_details(&parsed, &unpriced).unwrap_err();
+        assert!(err.to_string().contains("decimals_missing"), "{err}");
+    }
+
+    #[test]
+    fn verify_exact_transaction_binds_transfer_decimals() {
+        let route = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        for decimals in [0u8, 5, 9] {
+            let mut built = route.clone();
+            built.decimals = Some(decimals);
+            let tx = build_exact_transaction(&built, &fee_payer, &owner, vec![], 1000, None, None);
+            let err = verify_exact_transaction(&tx, &route, &[fee_payer]).unwrap_err();
+            assert!(
+                matches!(err, Error::Other(ref reason) if reason == "invalid_exact_svm_payload_decimals_mismatch"),
+                "{decimals}: {err:?}"
+            );
+        }
+        let tx = build_exact_transaction(&route, &fee_payer, &owner, vec![], 1000, None, None);
+        assert!(verify_exact_transaction(&tx, &route, &[fee_payer]).is_ok());
     }
 }
