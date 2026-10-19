@@ -923,4 +923,26 @@ mod tests {
             select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance).unwrap();
         assert!(matches!(selected, SelectedPayment::X402Exact { .. }));
     }
+
+    #[test]
+    fn native_sol_offers_are_not_payment_candidates() {
+        let headers = vec![mpp_charge("SOL", 1_000_000_000)];
+        let body = serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "exact",
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": "1000000000",
+                "asset": "SOL",
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+            }],
+        })
+        .to_string();
+        // Even a wallet that lists a "SOL" token cannot be matched to these.
+        let funded = vec![token("SOL", u64::MAX), token(mints::USDC_MAINNET, u64::MAX)];
+        let err = select_payment(&headers, Some(&body), &funded, &OrderingStrategy::MppFirst)
+            .expect_err("native SOL must not be selected");
+        assert!(err.offered.is_empty(), "{err}");
+    }
 }

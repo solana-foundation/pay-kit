@@ -1533,4 +1533,81 @@ mod tests {
         assert!(captured.payment_signature);
         assert_eq!(captured.body, b"private");
     }
+
+    #[tokio::test]
+    async fn native_sol_offers_are_never_signed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let recipient = Pubkey::new_unique();
+        let mpp_request = ChargeRequest {
+            amount: "1000000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(recipient.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    network: Some("mainnet".to_string()),
+                    recent_blockhash: Some(Hash::new_unique().to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let mpp = PaymentChallenge::new(
+            "native-sol",
+            "127.0.0.1",
+            "solana",
+            "charge",
+            Base64UrlJson::from_typed(&mpp_request).unwrap(),
+        )
+        .to_header()
+        .unwrap();
+        let x402 = base64::engine::general_purpose::STANDARD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "x402Version": 2,
+                "accepts": [{
+                    "scheme": "exact",
+                    "network": SOLANA_MAINNET,
+                    "amount": "1000000000",
+                    "asset": "SOL",
+                    "payTo": recipient.to_string(),
+                    "maxTimeoutSeconds": 300,
+                    "extra": { "recentBlockhash": Hash::new_unique().to_string() }
+                }]
+            }))
+            .unwrap(),
+        );
+        let saw_x402_payment = Arc::new(AtomicBool::new(false));
+        let url = serve(
+            Router::new()
+                .route("/report", get(dual_paid_resource))
+                .with_state(DualChallengeState {
+                    mpp,
+                    x402,
+                    saw_x402_payment: saw_x402_payment.clone(),
+                }),
+        )
+        .await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .permissions(ClientPermissions::unrestricted())
+            .build()
+            .unwrap();
+
+        let error = client
+            .get(format!("{url}/report"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::NoSupportedChallenge),
+            "{error}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!saw_x402_payment.load(Ordering::SeqCst));
+    }
 }
