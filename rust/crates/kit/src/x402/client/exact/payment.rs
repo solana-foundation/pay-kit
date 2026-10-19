@@ -63,6 +63,7 @@ pub async fn build_payment(
     let mint = try_resolve_mint(&requirements.currency, Some(cluster))?;
 
     if let Some(mint_str) = mint {
+        let decimals = payment_decimals(rpc, requirements)?;
         build_spl_instructions(
             &mut instructions,
             &signer_pubkey,
@@ -70,6 +71,7 @@ pub async fn build_payment(
             mint_str,
             requirements,
             amount,
+            decimals,
         )?;
     } else {
         build_sol_instructions(&mut instructions, &signer_pubkey, &recipient, amount)?;
@@ -400,6 +402,35 @@ fn memo_instruction(requirements: &PaymentRequirements) -> Result<Instruction, E
     })
 }
 
+/// Token decimals an SPL exact payment is signed at: the challenge's
+/// `decimals`, or the mint's on-chain decimals when the challenge omits them.
+/// Never assumed. Callers that value the payment before signing (e.g. a
+/// spending policy) must use this, not a fixed scale.
+pub fn payment_decimals(rpc: &RpcClient, requirements: &PaymentRequirements) -> Result<u8, Error> {
+    if let Some(decimals) = requirements.decimals {
+        return Ok(decimals);
+    }
+    let cluster = signing_cluster(requirements)?;
+    let mint = try_resolve_mint(&requirements.currency, Some(cluster))?
+        .ok_or_else(|| Error::Other("native SOL has no token decimals".into()))?;
+    let mint = Pubkey::from_str(mint).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
+    let account = rpc
+        .get_account(&mint)
+        .map_err(|e| Error::Rpc(format!("failed to read mint {mint}: {e}")))?;
+    let owner = account.owner.to_string();
+    if owner != programs::TOKEN_PROGRAM && owner != programs::TOKEN_2022_PROGRAM {
+        return Err(Error::Other(format!("{mint} is not an SPL token mint")));
+    }
+    // SPL Token and Token-2022 mints store decimals at byte 44.
+    account
+        .data
+        .get(MINT_DECIMALS_OFFSET)
+        .copied()
+        .ok_or_else(|| Error::Other(format!("{mint} is not an SPL token mint")))
+}
+
+const MINT_DECIMALS_OFFSET: usize = 44;
+
 /// The cluster the payment is signed for. The network must be a recognized
 /// Solana network, and an explicit cluster must agree with it.
 fn signing_cluster(requirements: &PaymentRequirements) -> Result<&'static str, Error> {
@@ -456,6 +487,7 @@ fn build_spl_instructions(
     spl: &str,
     requirements: &PaymentRequirements,
     amount: u64,
+    decimals: u8,
 ) -> Result<(), Error> {
     let mint = Pubkey::from_str(spl).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
     let token_program =
@@ -466,8 +498,6 @@ fn build_spl_instructions(
             )
         }))
         .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?;
-    let decimals = requirements.decimals.unwrap_or(6);
-
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
     let dest_ata = get_associated_token_address(recipient, &mint, &token_program);
 
@@ -1299,6 +1329,7 @@ mod tests {
             resolve_mint("USDC", Some("devnet")).unwrap(),
             &requirements,
             100,
+            6,
         )
         .unwrap();
         assert_eq!(instructions.len(), 1);
@@ -1414,5 +1445,90 @@ mod tests {
             envelope_payment_identifier(&retry).as_deref(),
             Some(id.as_str())
         );
+    }
+
+    /// A mock RPC whose `getAccountInfo` returns a mint owned by `owner`
+    /// with the given decimals.
+    fn mint_rpc(owner: &str, decimals: u8) -> RpcClient {
+        let mut data = vec![0u8; 82];
+        data[MINT_DECIMALS_OFFSET] = decimals;
+        data[45] = 1; // is_initialized
+        let account = serde_json::json!({
+            "context": { "slot": 1 },
+            "value": {
+                "data": [base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data), "base64"],
+                "executable": false,
+                "lamports": 1_461_600,
+                "owner": owner,
+                "rentEpoch": 0,
+                "space": 82
+            }
+        });
+        RpcClient::new_mock_with_mocks(
+            "succeeds".to_string(),
+            [(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                account,
+            )]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    fn transfer_decimals(payload: PaymentPayload) -> u8 {
+        let PaymentProof::Transaction { transaction } = payload.proof else {
+            panic!("expected transaction payload");
+        };
+        let tx = decode_tx(&transaction);
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let transfer = tx
+            .message
+            .instructions()
+            .iter()
+            .find(|ix| {
+                tx.message.static_account_keys()[ix.program_id_index as usize] == token_program
+            })
+            .expect("transferChecked");
+        transfer.data[9]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spl_payment_decimals_are_never_assumed() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let mut requirements = test_requirements("USDC");
+
+        // Declared decimals are signed as-is, without an RPC read.
+        requirements.decimals = Some(2);
+        let unreachable = RpcClient::new("http://127.0.0.1:1".to_string());
+        assert_eq!(payment_decimals(&unreachable, &requirements).unwrap(), 2);
+        let payload = build_payment(&signer, &unreachable, &requirements, None)
+            .await
+            .unwrap();
+        assert_eq!(transfer_decimals(payload), 2);
+
+        // Omitted decimals come from the mint, not a six-decimal default.
+        requirements.decimals = None;
+        let rpc = mint_rpc(programs::TOKEN_PROGRAM, 9);
+        assert_eq!(payment_decimals(&rpc, &requirements).unwrap(), 9);
+        let payload = build_payment(
+            &signer,
+            &mint_rpc(programs::TOKEN_PROGRAM, 9),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(transfer_decimals(payload), 9);
+
+        // Unknowable decimals fail closed.
+        assert!(payment_decimals(&unreachable, &requirements).is_err());
+        assert!(build_payment(&signer, &unreachable, &requirements, None)
+            .await
+            .is_err());
+        let not_a_mint = mint_rpc(programs::SYSTEM_PROGRAM, 6);
+        assert!(payment_decimals(&not_a_mint, &requirements).is_err());
     }
 }
