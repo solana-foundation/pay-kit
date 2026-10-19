@@ -975,6 +975,44 @@ impl X402Upto {
     }
 }
 
+#[cfg(test)]
+impl X402Upto {
+    /// A verified open for `channel_id` that holds its in-flight slot, without
+    /// the RPC round-trips `verify_open` needs.
+    pub(crate) fn test_open(&self, channel_id: Pubkey, max_amount: u64) -> VerifiedUptoOpen {
+        assert!(self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(channel_id));
+        VerifiedUptoOpen {
+            channel_id,
+            payer: Pubkey::new_unique(),
+            rent_payer: self.fee_payer,
+            mint: Pubkey::new_unique(),
+            token_program: Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap(),
+            program_id: pc::default_program_id(),
+            deposit: max_amount,
+            max_amount,
+            expires_at: now_unix() + 300,
+            network: caip2_network_for_cluster(&self.config.cluster).to_string(),
+            payee: self.fee_payer,
+            distribution: self.distribution().expect("configured distribution"),
+            _in_flight: InFlightGuard {
+                set: self.in_flight.clone(),
+                channel_id,
+            },
+        }
+    }
+
+    pub(crate) fn is_in_flight(&self, channel_id: &Pubkey) -> bool {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(channel_id)
+    }
+}
+
 /// Co-sign the operator's (fee-payer) slot of a partially-signed transaction.
 /// Shared by the `upto` and `batch-settlement` servers — the implementation
 /// lives in `solana-pay-core` so the MPP session opener reuses it too.

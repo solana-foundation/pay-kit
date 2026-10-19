@@ -932,8 +932,8 @@ async fn upto_gate_middleware(
     let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
 
     // Settle the actual amount and refund the remainder.
-    match upto.settle_actual(&open, actual).await {
-        Ok(settlement) => match upto.settlement_header(&settlement) {
+    match settle_served_upto(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await {
+        Some(settlement) => match upto.settlement_header(&settlement) {
             Ok((name, value)) => {
                 if let (Ok(n), Ok(v)) = (
                     HeaderName::from_bytes(name.as_bytes()),
@@ -948,13 +948,105 @@ async fn upto_gate_middleware(
                 resp
             }
         },
-        Err(e) => {
-            tracing::error!(actual, error = %e, "upto settlement failed after handler ran");
-            (
-                StatusCode::BAD_GATEWAY,
-                "payment settlement failed; the channel can be reclaimed after its grace period",
-            )
-                .into_response()
+        None => (
+            StatusCode::BAD_GATEWAY,
+            "payment settlement is pending; it is being retried in the background",
+        )
+            .into_response(),
+    }
+}
+
+/// How hard a served `upto` request's settlement is retried: inline before
+/// answering, then in the background holding the channel's in-flight guard.
+#[derive(Clone, Copy)]
+struct UptoSettlementRetry {
+    inline_attempts: u32,
+    background_attempts: u32,
+    base_delay: std::time::Duration,
+}
+
+const UPTO_SETTLEMENT_RETRY: UptoSettlementRetry = UptoSettlementRetry {
+    inline_attempts: 3,
+    background_attempts: 8,
+    base_delay: std::time::Duration::from_millis(250),
+};
+
+/// Run `settle` up to `attempts` times with exponential backoff.
+async fn retry_upto_settlement<F, Fut>(
+    attempts: u32,
+    base_delay: std::time::Duration,
+    mut settle: F,
+) -> Result<crate::x402::upto::UptoSettlementResponse, crate::x402::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<
+        Output = Result<crate::x402::upto::UptoSettlementResponse, crate::x402::Error>,
+    >,
+{
+    let mut last = None;
+    for attempt in 0..attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(base_delay.saturating_mul(1 << (attempt - 1).min(16))).await;
+        }
+        match settle().await {
+            Ok(settlement) => return Ok(settlement),
+            Err(error) => {
+                tracing::warn!(attempt, error = %error, "upto settlement attempt failed");
+                last = Some(error);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| crate::x402::Error::Other("settlement did not run".into())))
+}
+
+/// Settle a request whose handler already ran. The handler's effects cannot be
+/// undone, so a failed settlement is never dropped: after the inline attempts
+/// the verified open moves into a background task that keeps retrying while
+/// holding the channel's in-flight guard, so the authorization cannot be
+/// presented again in the meantime. Returns the receipt when settled inline.
+async fn settle_served_upto(
+    upto: &Arc<X402Upto>,
+    open: crate::x402::server::VerifiedUptoOpen,
+    actual: u64,
+    retry: UptoSettlementRetry,
+) -> Option<crate::x402::upto::UptoSettlementResponse> {
+    match retry_upto_settlement(retry.inline_attempts, retry.base_delay, || {
+        upto.settle_actual(&open, actual)
+    })
+    .await
+    {
+        Ok(settlement) => Some(settlement),
+        Err(error) => {
+            tracing::error!(
+                channel = %open.channel_id,
+                actual,
+                error = %error,
+                "upto settlement failed after the handler ran; retrying in the background"
+            );
+            let upto = Arc::clone(upto);
+            tokio::spawn(async move {
+                let delay = retry
+                    .base_delay
+                    .saturating_mul(1 << retry.inline_attempts.min(16));
+                match retry_upto_settlement(retry.background_attempts, delay, || {
+                    upto.settle_actual(&open, actual)
+                })
+                .await
+                {
+                    Ok(settlement) => tracing::info!(
+                        channel = %open.channel_id,
+                        tx = %settlement.transaction,
+                        "upto settlement recovered in the background"
+                    ),
+                    Err(error) => tracing::error!(
+                        channel = %open.channel_id,
+                        actual,
+                        error = %error,
+                        "upto settlement abandoned; the served request is unpaid"
+                    ),
+                }
+            });
+            None
         }
     }
 }
@@ -1964,6 +2056,76 @@ mod tests {
             ..Default::default()
         })
         .expect("valid paykit config")
+    }
+
+    #[tokio::test]
+    async fn upto_settlement_retries_until_it_lands() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&calls);
+        let settled = retry_upto_settlement(3, std::time::Duration::ZERO, || {
+            let attempt = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if attempt < 2 {
+                    Err(crate::x402::Error::Rpc("blockhash fetch failed".into()))
+                } else {
+                    Ok(crate::x402::upto::UptoSettlementResponse {
+                        success: true,
+                        error_reason: None,
+                        payer: None,
+                        transaction: "sig".into(),
+                        network: "solana:devnet".into(),
+                        amount: "7".into(),
+                    })
+                }
+            }
+        })
+        .await
+        .expect("the third attempt settles");
+        assert_eq!(settled.transaction, "sig");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&calls);
+        let failed = retry_upto_settlement(4, std::time::Duration::ZERO, || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(crate::x402::Error::Rpc("down".into())) }
+        })
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    /// A served request whose settlement fails is not dropped: the open moves
+    /// into a background retry that keeps the channel reserved, so the same
+    /// authorization cannot run the handler again while it is unpaid.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_upto_settlement_keeps_the_channel_reserved_while_it_retries() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let open = upto.test_open(channel, 1_000);
+        let retry = UptoSettlementRetry {
+            inline_attempts: 1,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(200),
+        };
+
+        assert!(settle_served_upto(&upto, open, 500, retry).await.is_none());
+        assert!(
+            upto.is_in_flight(&channel),
+            "the background retry must hold the channel"
+        );
+
+        for _ in 0..50 {
+            if !upto.is_in_flight(&channel) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !upto.is_in_flight(&channel),
+            "the slot is released once the retries are exhausted"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
