@@ -8,6 +8,7 @@
 
 use std::str::FromStr;
 
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_transaction::versioned::VersionedTransaction;
 
@@ -93,12 +94,10 @@ pub struct ConfidentialSweepReport {
 impl Mpp {
     /// Settle a confidential-transfer bundle (recipient-key verification).
     ///
-    /// The gateway is the payee: it confirms it was paid by decrypting its OWN
-    /// received amount with its OWN recipient ElGamal key — no auditor key is
-    /// involved. The bundle's transactions are fully client-signed (the client
-    /// is the fee payer in the bundle builder), so the server just submits
-    /// them in order and reads its confidential account's pending balance
-    /// before and after to recover the delta.
+    /// The gateway is the payee: it confirms the amount by decrypting the
+    /// recipient handle of the transfer's own validity proof with its recipient
+    /// ElGamal key, before co-signing. The amount is the gross transfer amount,
+    /// matching cleartext `transferChecked` semantics on fee-bearing mints.
     ///
     /// Returns the final (transfer) transaction signature.
     #[cfg(feature = "confidential")]
@@ -110,13 +109,6 @@ impl Mpp {
     ) -> Result<String, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use spl_associated_token_account::get_associated_token_address_with_program_id;
-        use spl_token_2022::{
-            extension::{
-                confidential_transfer::ConfidentialTransferAccount, BaseStateWithExtensions,
-                StateWithExtensions,
-            },
-            state::Account as TokenAccount,
-        };
 
         // Only accept a bundle when the challenge was actually issued in
         // confidential mode. Without this, a client could present a Bundle
@@ -168,7 +160,7 @@ impl Mpp {
         // Two settlement modes:
         //   * recipient_signer SET (the gateway controls the payee) ⇒ derive the
         //     recipient ElGamal key and ENFORCE the exact amount by decrypting
-        //     the recipient's own pending-balance delta.
+        //     the transfer's recipient ciphertext.
         //   * recipient_signer ABSENT (facilitator settling to an arbitrary
         //     recipient) ⇒ trust-proofs: the gateway cannot decrypt the amount,
         //     so it only verifies the transfer targets the recipient and that
@@ -188,30 +180,6 @@ impl Mpp {
                 })?,
             ),
             None => None,
-        };
-
-        // Decrypt the recipient's pending balance from raw account data with the
-        // recipient key (used only in amount-enforcing mode).
-        let read_pending = |data: &[u8],
-                            keys: &crate::mpp::protocol::confidential::ConfidentialKeys|
-         -> Result<Option<u64>, VerificationError> {
-            let state = StateWithExtensions::<TokenAccount>::unpack(data).map_err(|e| {
-                VerificationError::invalid_payload(format!(
-                    "Failed to unpack recipient token account: {e}"
-                ))
-            })?;
-            let ext = state
-                .get_extension::<ConfidentialTransferAccount>()
-                .map_err(|e| {
-                    VerificationError::invalid_payload(format!(
-                        "Recipient account has no ConfidentialTransfer extension: {e}"
-                    ))
-                })?;
-            Ok(crate::mpp::protocol::confidential::recover_split_amount(
-                &keys.elgamal,
-                bytemuck::bytes_of(&ext.pending_balance_lo),
-                bytemuck::bytes_of(&ext.pending_balance_hi),
-            ))
         };
 
         // Bound the bundle size so a client can't make the operator spin on a
@@ -289,31 +257,26 @@ impl Mpp {
 
         verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
 
-        // In amount-enforcing mode, snapshot the recipient's pending balance
-        // BEFORE the bundle. A not-yet-existing account, or a freshly-configured
-        // one whose pending ciphertext is still the uninitialized/zero default
-        // (so it doesn't decrypt), is treated as zero — only the *after* read
-        // must decrypt, since the bundle's transfer credits it.
-        let before: u64 = match &recipient_keys {
-            // Use get_account_with_commitment so a genuinely-missing account
-            // (Ok(None)) reads as zero, while a transient RPC/network error
-            // propagates instead of silently disabling amount enforcement.
-            Some(keys) => match self
-                .rpc
-                .get_account_with_commitment(&recipient_ata, CommitmentConfig::confirmed())
-            {
-                Ok(resp) => match resp.value {
-                    Some(account) => read_pending(&account.data, keys)?.unwrap_or(0),
-                    None => 0,
-                },
-                Err(e) => {
-                    return Err(VerificationError::network_error(format!(
-                        "Failed to read recipient account (before): {e}"
-                    )))
-                }
-            },
-            None => 0,
-        };
+        // In amount-enforcing mode, recover the amount from the validity proof
+        // the transfer itself consumes — before the gateway signs or pays for
+        // anything. An account-wide balance delta cannot attribute a credit to
+        // this transfer (fees, concurrent settlements, external deposits).
+        if let Some(keys) = &recipient_keys {
+            let expected: u64 = request.amount.parse().map_err(|_| {
+                VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
+            })?;
+            let recovered = recover_bundle_transfer_amount(
+                &decoded,
+                &token_program,
+                &keys.elgamal,
+                AmountHandle::Destination,
+            )?;
+            if recovered != expected {
+                return Err(VerificationError::invalid_amount(format!(
+                    "Confidential amount mismatch: recovered {recovered}, expected {expected}"
+                )));
+            }
+        }
 
         // PASS 2 — co-sign the empty gateway fee-payer slot, simulate, broadcast,
         // and confirm each (already-validated) tx IN ORDER. The final tx carries
@@ -403,44 +366,6 @@ impl Mpp {
             }
 
             final_sig = signature_str;
-        }
-
-        // Amount enforcement (only when the gateway controls the recipient):
-        // read the recipient's pending balance AFTER and require the delta to
-        // equal the charged amount. In facilitator (trust-proofs) mode the
-        // gateway can't decrypt the amount, so it relies on the on-chain proofs
-        // and the recipient reconciling out of band.
-        if let Some(keys) = &recipient_keys {
-            // Read at `confirmed` — the same commitment used to confirm the
-            // bundle and to snapshot the `before` balance. Using the default
-            // `finalized` here would fail valid payments during the ~6-12s gap
-            // between a transfer being confirmed and finalized.
-            let after_account = self
-                .rpc
-                .get_account_with_commitment(&recipient_ata, CommitmentConfig::confirmed())
-                .map_err(|e| {
-                    VerificationError::network_error(format!(
-                        "Failed to read recipient account after settlement: {e}"
-                    ))
-                })?
-                .value
-                .ok_or_else(|| {
-                    VerificationError::new("Recipient token account missing after settlement")
-                })?;
-            let after = read_pending(&after_account.data, keys)?.ok_or_else(|| {
-                VerificationError::new(
-                    "Failed to decrypt recipient pending balance (after) with recipient key",
-                )
-            })?;
-            let delta = after.saturating_sub(before);
-            let expected: u64 = request.amount.parse().map_err(|_| {
-                VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
-            })?;
-            if delta != expected {
-                return Err(VerificationError::invalid_amount(format!(
-                    "Confidential amount mismatch: recovered {delta}, expected {expected}"
-                )));
-            }
         }
 
         self.consume_signature(&final_sig).await?;
@@ -1152,4 +1077,596 @@ pub(crate) fn verify_confidential_bundle_tx(
     }
 
     Ok(transfer_count)
+}
+
+/// Decrypt handle opened to recover a confidential transfer amount.
+#[cfg(feature = "confidential")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AmountHandle {
+    /// The recipient's handle (the validity proof's second pubkey).
+    Destination,
+}
+
+/// Token-2022 confidential `Transfer` / `TransferWithFee` instruction data:
+/// two discriminant bytes, then a 36-byte decryptable balance and two 64-byte
+/// auditor ciphertexts, then one `i8` proof offset per proof.
+#[cfg(feature = "confidential")]
+const CT_TRANSFER_OFFSETS_START: usize = 2 + 36 + 64 + 64;
+
+/// Proof offsets of a confidential transfer, in the order Token-2022 consumes
+/// their accounts: equality, transfer-amount validity, [fee sigma, fee
+/// validity,] range.
+#[cfg(feature = "confidential")]
+fn ct_transfer_proof_offsets(data: &[u8]) -> Option<&[u8]> {
+    let proofs = match data.get(..2)? {
+        [27, 7] => 3,
+        [27, 13] => 5,
+        _ => return None,
+    };
+    let offsets = data.get(CT_TRANSFER_OFFSETS_START..)?;
+    (offsets.len() == proofs).then_some(offsets)
+}
+
+/// Recover the amount carried by the bundle's sole confidential transfer by
+/// opening `handle` of the 3-handle validity proof that transfer consumes,
+/// located exactly as Token-2022 locates it (instruction offset or context
+/// state account). The proof is verified on chain, so the opened ciphertext is
+/// the one the program credits.
+#[cfg(feature = "confidential")]
+pub(crate) fn recover_bundle_transfer_amount(
+    transactions: &[VersionedTransaction],
+    token_program: &Pubkey,
+    key: &solana_zk_sdk::encryption::elgamal::ElGamalKeypair,
+    handle: AmountHandle,
+) -> Result<u64, VerificationError> {
+    use solana_zk_elgamal_proof_interface::instruction::ProofInstruction;
+    use solana_zk_elgamal_proof_interface::proof_data::{
+        BatchedGroupedCiphertext3HandlesValidityProofContext as ValidityContext,
+        BatchedGroupedCiphertext3HandlesValidityProofData as ValidityData,
+    };
+
+    let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
+    let program_of = |tx: &VersionedTransaction, ix: &CompiledInstruction| {
+        tx.message
+            .static_account_keys()
+            .get(ix.program_id_index as usize)
+            .copied()
+    };
+    let is_validity = |data: &[u8]| {
+        ProofInstruction::instruction_type(data)
+            == Some(ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity)
+    };
+    let decode = |data: &[u8]| -> Result<ValidityContext, VerificationError> {
+        ProofInstruction::proof_data::<ValidityData, ValidityContext>(data)
+            .map(|proof| proof.context)
+            .ok_or_else(|| {
+                VerificationError::credential_mismatch(
+                    "confidential transfer validity proof must be carried inline in the bundle",
+                )
+            })
+    };
+
+    let mut transfer = None;
+    for (tx_idx, tx) in transactions.iter().enumerate() {
+        for (ix_idx, ix) in tx.message.instructions().iter().enumerate() {
+            if program_of(tx, ix) == Some(*token_program)
+                && ct_transfer_proof_offsets(&ix.data).is_some()
+            {
+                if transfer.is_some() {
+                    return Err(VerificationError::credential_mismatch(
+                        "Confidential bundle contains more than one transfer",
+                    ));
+                }
+                transfer = Some((tx_idx, ix_idx));
+            }
+        }
+    }
+    let (tx_idx, ix_idx) = transfer.ok_or_else(|| {
+        VerificationError::credential_mismatch("Confidential bundle contains no transfer")
+    })?;
+    let tx = &transactions[tx_idx];
+    let ix = &tx.message.instructions()[ix_idx];
+    let offsets = ct_transfer_proof_offsets(&ix.data).expect("matched above");
+    let validity_offset = offsets[1] as i8;
+
+    let context = if validity_offset != 0 {
+        let proof_ix = i64::try_from(ix_idx)
+            .ok()
+            .and_then(|idx| idx.checked_add(i64::from(validity_offset)))
+            .and_then(|idx| usize::try_from(idx).ok())
+            .and_then(|idx| tx.message.instructions().get(idx))
+            .filter(|proof_ix| {
+                program_of(tx, proof_ix) == Some(zk_program) && is_validity(&proof_ix.data)
+            })
+            .ok_or_else(|| {
+                VerificationError::credential_mismatch(
+                    "confidential transfer validity proof instruction not found",
+                )
+            })?;
+        decode(&proof_ix.data)?
+    } else {
+        // Accounts: [source, mint, destination, (instructions sysvar),
+        // (equality context), validity context, ...].
+        let position = 3
+            + usize::from(offsets.iter().any(|offset| *offset != 0))
+            + usize::from(offsets[0] == 0);
+        let context_account = ix
+            .accounts
+            .get(position)
+            .and_then(|index| tx.message.static_account_keys().get(*index as usize))
+            .copied()
+            .ok_or_else(|| {
+                VerificationError::credential_mismatch(
+                    "confidential transfer is missing its validity context account",
+                )
+            })?;
+        let mut found = None;
+        for tx in transactions {
+            let keys = tx.message.static_account_keys();
+            for proof_ix in tx.message.instructions() {
+                if program_of(tx, proof_ix) != Some(zk_program) || !is_validity(&proof_ix.data) {
+                    continue;
+                }
+                // Verify-from-account carries a 5-byte locator and names the
+                // context second; the inline form names it first.
+                let index = if proof_ix.data.len() == 5 { 1 } else { 0 };
+                let account = proof_ix
+                    .accounts
+                    .get(index)
+                    .and_then(|index| keys.get(*index as usize));
+                if account != Some(&context_account) {
+                    continue;
+                }
+                if found.is_some() {
+                    return Err(VerificationError::credential_mismatch(
+                        "confidential validity context is verified more than once",
+                    ));
+                }
+                found = Some(decode(&proof_ix.data)?);
+            }
+        }
+        found.ok_or_else(|| {
+            VerificationError::credential_mismatch(
+                "confidential validity context is not verified in this bundle",
+            )
+        })?
+    };
+
+    let (pubkey, slot) = match handle {
+        AmountHandle::Destination => (&context.second_pubkey, 1),
+    };
+    if pubkey.0 != <[u8; 32]>::from(key.pubkey()) {
+        return Err(VerificationError::credential_mismatch(
+            "confidential transfer is not encrypted to this server's key",
+        ));
+    }
+    // Grouped ciphertext: commitment || handle_0 || handle_1 || handle_2.
+    let open = |grouped: &[u8]| -> Option<Vec<u8>> {
+        let commitment = grouped.get(..32)?;
+        let handle = grouped.get(32 * (slot + 1)..32 * (slot + 2))?;
+        Some([commitment, handle].concat())
+    };
+    let lo = open(&context.grouped_ciphertext_lo.0);
+    let hi = open(&context.grouped_ciphertext_hi.0);
+    lo.zip(hi)
+        .and_then(|(lo, hi)| {
+            crate::mpp::protocol::confidential::recover_split_amount(key, &lo, &hi)
+        })
+        .ok_or_else(|| {
+            VerificationError::invalid_amount("Failed to decrypt the confidential transfer amount")
+        })
+}
+
+#[cfg(all(test, feature = "client"))]
+pub(crate) mod tests {
+    use super::*;
+    use crate::core::tx::{ComputeBudget, TxVersion};
+    use crate::mpp::client::confidential::{
+        cast_ae_ciphertext_v7_to_legacy, inline_transfer_instructions,
+        inline_transfer_with_fee_instructions,
+    };
+    use crate::mpp::protocol::confidential::{derive_confidential_keys, ConfidentialKeys};
+    use solana_zk_sdk::encryption::{
+        auth_encryption::AeKey,
+        elgamal::{ElGamalKeypair, ElGamalPubkey},
+    };
+    use spl_associated_token_account::get_associated_token_address_with_program_id;
+    use spl_token_confidential_transfer_proof_generation::{
+        transfer::transfer_split_proof_data, transfer_with_fee::transfer_with_fee_split_proof_data,
+    };
+    use std::sync::Arc;
+
+    const SENDER_BALANCE: u64 = 10_000_000;
+
+    /// One version-1 transaction moving `amount` confidentially to
+    /// `recipient_ata`, with every proof verified inline. `fee` selects the
+    /// fee-bearing `TransferWithFee` variant (basis points, maximum fee).
+    pub(crate) fn inline_transfer_tx(
+        gateway: &Pubkey,
+        mint: &Pubkey,
+        recipient_ata: &Pubkey,
+        recipient: &ElGamalPubkey,
+        auditor: Option<&ElGamalPubkey>,
+        amount: u64,
+        fee: Option<(u16, u64)>,
+    ) -> VersionedTransaction {
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let sender_elgamal = ElGamalKeypair::new_rand();
+        let sender_ae = AeKey::new_rand();
+        let sender = Pubkey::new_unique();
+        let sender_ata = Pubkey::new_unique();
+        let available = sender_elgamal.pubkey().encrypt(SENDER_BALANCE);
+        let decryptable = sender_ae.encrypt(SENDER_BALANCE);
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(SENDER_BALANCE - amount));
+        let ixs = match fee {
+            None => {
+                let proof = transfer_split_proof_data(
+                    &available,
+                    &decryptable,
+                    amount,
+                    &sender_elgamal,
+                    &sender_ae,
+                    recipient,
+                    auditor,
+                )
+                .unwrap();
+                inline_transfer_instructions(
+                    &token_program,
+                    &sender_ata,
+                    mint,
+                    recipient_ata,
+                    &sender,
+                    &proof,
+                    &new_decryptable,
+                )
+                .unwrap()
+            }
+            Some((basis_points, maximum_fee)) => {
+                let withheld = ElGamalKeypair::new_rand();
+                let proof = transfer_with_fee_split_proof_data(
+                    &available,
+                    &decryptable,
+                    amount,
+                    &sender_elgamal,
+                    &sender_ae,
+                    recipient,
+                    auditor,
+                    withheld.pubkey(),
+                    basis_points,
+                    maximum_fee,
+                )
+                .unwrap();
+                inline_transfer_with_fee_instructions(
+                    &token_program,
+                    &sender_ata,
+                    mint,
+                    recipient_ata,
+                    &sender,
+                    &proof,
+                    &new_decryptable,
+                )
+                .unwrap()
+            }
+        };
+        crate::core::tx::build_unsigned(
+            TxVersion::V1,
+            gateway,
+            &ixs,
+            solana_hash::Hash::new_unique(),
+            Some(&ComputeBudget::new(700_000, 0)),
+        )
+        .unwrap()
+    }
+
+    fn signer(seed: u8) -> Arc<solana_keychain::MemorySigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Arc::new(solana_keychain::MemorySigner::from_bytes(&kp).unwrap())
+    }
+
+    /// A recipient-key settlement server plus everything a client needs to
+    /// build a bundle against it. No RPC is reachable.
+    pub(crate) struct RecipientKeyServer {
+        pub mpp: Mpp,
+        pub gateway: Pubkey,
+        pub mint: Pubkey,
+        pub recipient_ata: Pubkey,
+        pub recipient_keys: ConfidentialKeys,
+        pub method_details: MethodDetails,
+    }
+
+    pub(crate) async fn recipient_key_server() -> RecipientKeyServer {
+        use solana_keychain::SolanaSigner;
+        let gateway_signer = signer(11);
+        let recipient_signer = signer(12);
+        let gateway = gateway_signer.pubkey();
+        let recipient = recipient_signer.pubkey();
+        let mint = Pubkey::new_unique();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let recipient_ata =
+            get_associated_token_address_with_program_id(&recipient, &mint, &token_program);
+        let recipient_keys = derive_confidential_keys(recipient_signer.as_ref(), &recipient_ata)
+            .await
+            .unwrap();
+        let mut mpp = Mpp::new(super::super::charge::Config {
+            recipient: recipient.to_string(),
+            currency: "SOL".to_string(),
+            decimals: 6,
+            network: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some("x".repeat(32)),
+            realm: Some("test".to_string()),
+            fee_payer: true,
+            fee_payer_signer: Some(gateway_signer),
+            recipient_signer: Some(recipient_signer),
+            ..Default::default()
+        })
+        .unwrap();
+        mpp.accepted_versions = vec![TxVersion::V1];
+        RecipientKeyServer {
+            mpp,
+            gateway,
+            mint,
+            recipient_ata,
+            recipient_keys,
+            method_details: MethodDetails {
+                token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+                confidential: Some(true),
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(crate) fn encode_bundle(txs: &[VersionedTransaction]) -> Vec<String> {
+        txs.iter()
+            .map(|tx| crate::core::tx::encode(tx).unwrap())
+            .collect()
+    }
+
+    pub(crate) fn request(amount: u64, mint: &Pubkey, recipient: &str) -> ChargeRequest {
+        ChargeRequest {
+            amount: amount.to_string(),
+            currency: mint.to_string(),
+            recipient: Some(recipient.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn transfer_offsets_layout_matches_token_2022() {
+        use spl_token_2022::extension::confidential_transfer::instruction::{
+            TransferInstructionData, TransferWithFeeInstructionData,
+        };
+        assert_eq!(
+            CT_TRANSFER_OFFSETS_START + 3,
+            2 + std::mem::size_of::<TransferInstructionData>()
+        );
+        assert_eq!(
+            CT_TRANSFER_OFFSETS_START + 5,
+            2 + std::mem::size_of::<TransferWithFeeInstructionData>()
+        );
+    }
+
+    #[test]
+    fn recovers_inline_transfer_amount_with_recipient_key() {
+        let recipient = ElGamalKeypair::new_rand();
+        let (gateway, mint, ata) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        for amount in [1u64, 65_535, 65_536, 1_000_000] {
+            let tx = inline_transfer_tx(
+                &gateway,
+                &mint,
+                &ata,
+                recipient.pubkey(),
+                None,
+                amount,
+                None,
+            );
+            assert_eq!(
+                recover_bundle_transfer_amount(
+                    &[tx],
+                    &token_program,
+                    &recipient,
+                    AmountHandle::Destination
+                )
+                .unwrap(),
+                amount
+            );
+        }
+    }
+
+    // A 1% fee credits the recipient 990 of a 1_000 transfer; the verifier
+    // checks the gross amount the payer authorized, like `transferChecked`.
+    #[test]
+    fn fee_bearing_transfer_recovers_gross_amount() {
+        let recipient = ElGamalKeypair::new_rand();
+        let (gateway, mint, ata) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let tx = inline_transfer_tx(
+            &gateway,
+            &mint,
+            &ata,
+            recipient.pubkey(),
+            None,
+            1_000,
+            Some((100, 1_000_000)),
+        );
+        assert_eq!(
+            recover_bundle_transfer_amount(
+                &[tx],
+                &token_program,
+                &recipient,
+                AmountHandle::Destination
+            )
+            .unwrap(),
+            1_000
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_a_transfer_encrypted_to_another_key() {
+        let recipient = ElGamalKeypair::new_rand();
+        let other = ElGamalKeypair::new_rand();
+        let (gateway, mint, ata) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let tx = inline_transfer_tx(&gateway, &mint, &ata, other.pubkey(), None, 500, None);
+        let err = recover_bundle_transfer_amount(
+            &[tx],
+            &token_program,
+            &recipient,
+            AmountHandle::Destination,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("not encrypted"), "{}", err.message);
+    }
+
+    // Version-0 layout: the validity proof is verified into a context account
+    // in an earlier transaction and the transfer names that account.
+    #[test]
+    fn recovers_amount_from_context_state_account() {
+        use solana_address::Address;
+        use solana_zk_elgamal_proof_interface::instruction::{ContextStateInfo, ProofInstruction};
+        use spl_token_2022::extension::confidential_transfer::instruction::inner_transfer;
+        use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
+
+        let recipient = ElGamalKeypair::new_rand();
+        let gateway = Pubkey::new_unique();
+        let (mint, ata) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let sender_elgamal = ElGamalKeypair::new_rand();
+        let sender_ae = AeKey::new_rand();
+        let amount = 70_000;
+        let proof = transfer_split_proof_data(
+            &sender_elgamal.pubkey().encrypt(SENDER_BALANCE),
+            &sender_ae.encrypt(SENDER_BALANCE),
+            amount,
+            &sender_elgamal,
+            &sender_ae,
+            recipient.pubkey(),
+            None,
+        )
+        .unwrap();
+        let (equality_ctx, validity_ctx, range_ctx) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let gateway_addr = Address::from(gateway.to_bytes());
+        let validity_addr = Address::from(validity_ctx.to_bytes());
+        let verify = |context: &Address, amount_proof: &_| {
+            ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: context,
+                    context_state_authority: &gateway_addr,
+                }),
+                amount_proof,
+            )
+        };
+        let validity_tx = crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            &gateway,
+            &[verify(
+                &validity_addr,
+                &proof
+                    .ciphertext_validity_proof_data_with_ciphertext
+                    .proof_data,
+            )],
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        let validity = &proof.ciphertext_validity_proof_data_with_ciphertext;
+        let transfer = inner_transfer(
+            &token_program,
+            &Pubkey::new_unique(),
+            &mint,
+            &ata,
+            &cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(SENDER_BALANCE - amount)),
+            &crate::mpp::client::confidential::cast_elgamal_ciphertext_v7_to_legacy(
+                &validity.ciphertext_lo,
+            ),
+            &crate::mpp::client::confidential::cast_elgamal_ciphertext_v7_to_legacy(
+                &validity.ciphertext_hi,
+            ),
+            &Pubkey::new_unique(),
+            &[],
+            ProofLocation::ContextStateAccount(&equality_ctx),
+            ProofLocation::ContextStateAccount(&validity_ctx),
+            ProofLocation::ContextStateAccount(&range_ctx),
+        )
+        .unwrap();
+        let transfer_tx = crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            &gateway,
+            &[transfer],
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        let bundle = [validity_tx.clone(), transfer_tx.clone()];
+        assert_eq!(
+            recover_bundle_transfer_amount(
+                &bundle,
+                &token_program,
+                &recipient,
+                AmountHandle::Destination
+            )
+            .unwrap(),
+            amount
+        );
+
+        // A context the bundle never verifies cannot be attributed.
+        let err = recover_bundle_transfer_amount(
+            std::slice::from_ref(&transfer_tx),
+            &token_program,
+            &recipient,
+            AmountHandle::Destination,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("not verified"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recipient_key_settlement_accepts_gross_amount_of_fee_bearing_transfer() {
+        let server = recipient_key_server().await;
+        let tx = inline_transfer_tx(
+            &server.gateway,
+            &server.mint,
+            &server.recipient_ata,
+            server.recipient_keys.elgamal.pubkey(),
+            None,
+            1_000,
+            Some((100, 1_000_000)),
+        );
+        let err = server
+            .mpp
+            .settle_confidential_bundle(
+                &encode_bundle(&[tx]),
+                &request(1_000, &server.mint, server.mpp.recipient()),
+                &server.method_details,
+            )
+            .await
+            .unwrap_err();
+        // Past the amount check: the next step is the (unreachable) RPC.
+        assert!(
+            err.message.contains("Simulation RPC error"),
+            "{}",
+            err.message
+        );
+    }
 }

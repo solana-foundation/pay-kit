@@ -1302,6 +1302,19 @@ mod tests {
             .unwrap(),
             1
         );
+        // The gateway verifies the gross amount the payer authorized, even
+        // though the recipient is credited amount - fee below.
+        #[cfg(feature = "server")]
+        assert_eq!(
+            crate::mpp::server::confidential::recover_bundle_transfer_amount(
+                std::slice::from_ref(&v1),
+                &token_program,
+                &recipient_elgamal,
+                crate::mpp::server::confidential::AmountHandle::Destination,
+            )
+            .unwrap(),
+            amount
+        );
 
         let meta = svm.send_transaction(v1).unwrap_or_else(|e| {
             panic!(

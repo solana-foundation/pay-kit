@@ -228,7 +228,7 @@ pub struct Config {
     /// key for confidential-transfer settlement. Two settlement modes:
     ///   * `Some` (recipient-key verification): the gateway controls the payee,
     ///     so it derives the recipient key and ENFORCES the exact amount by
-    ///     decrypting the recipient's own pending-balance delta (NOT auditor).
+    ///     decrypting the transfer's recipient ciphertext (NOT auditor).
     ///   * `None` (facilitator trust-proofs): the gateway settles to an
     ///     arbitrary recipient it cannot decrypt, so confidential bundles are
     ///     ACCEPTED without amount enforcement — it only verifies the transfer
@@ -319,7 +319,7 @@ pub struct Mpp {
     pub(crate) channel_charge: Option<ChannelChargeConfig>,
     /// Payee wallet signer for confidential-transfer recipient-key
     /// verification (derives the recipient ElGamal key). `Some` ⇒ enforce the
-    /// exact amount via the recipient's pending-balance delta; `None` ⇒
+    /// exact amount via the transfer's recipient ciphertext; `None` ⇒
     /// facilitator trust-proofs mode, where bundles are accepted WITHOUT amount
     /// enforcement (the recipient reconciles out of band). See [`Config`].
     // Only read by the confidential bundle-settlement path.

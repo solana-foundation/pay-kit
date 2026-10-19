@@ -43,8 +43,8 @@ pub struct ConfidentialWorkerConfig {
     /// Gateway fee-payer pubkey — the sweep `Mpp`'s nominal recipient.
     pub fee_payer_pubkey: String,
     /// Payee wallet signer, when the gateway controls the recipient. `Some`
-    /// enables recipient-key settlement (the worker decrypts the recipient's
-    /// pending-balance delta and enforces the exact amount); `None` is
+    /// enables recipient-key settlement (the worker decrypts the transfer's
+    /// recipient ciphertext and enforces the exact amount); `None` is
     /// facilitator/trust-proofs mode (no amount enforcement — only valid when
     /// the gateway is not the payee, e.g. relaying to an arbitrary recipient).
     pub recipient_signer: Option<Arc<dyn SolanaSigner>>,

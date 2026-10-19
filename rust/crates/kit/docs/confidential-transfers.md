@@ -420,6 +420,9 @@ sequenceDiagram
     Note over Client: derive sender keys, generate 3 proofs + 3-handle ciphertext
     Note over Client: partially sign (transfer authority + ephemeral keys), gateway slot left empty
     Client-->>GW: CredentialPayload::Bundle { transactions }
+    opt recipient-key mode (gateway is the payee)
+        Note over GW: decrypt the transfer's validity-proof recipient handle, require amount == charge
+    end
     loop each tx in order
         Note over GW: verify (allow-list, fee payer == gateway, transfer dest == recipient)
         GW->>RPC: co-sign gateway slot, simulate, send_transaction
@@ -428,9 +431,7 @@ sequenceDiagram
         GW->>RPC: confirm (commitment=confirmed)
     end
     Note over GW: require exactly one confidential transfer in the bundle
-    alt recipient-key mode (gateway is the payee)
-        GW->>RPC: read recipient pending balance, recover delta, require delta == amount
-    else facilitator trust-proofs mode
+    opt facilitator trust-proofs mode
         Note over GW: cannot decrypt, trust on-chain proofs, recipient reconciles out of band
     end
     GW-->>CLI: Receipt::success (final signature)
@@ -470,25 +471,22 @@ flowchart TD
     Q -->|No: facilitator for an arbitrary payee| FP["FACILITATOR TRUST-PROOFS MODE"]
 
     RK --> RK1["derive recipient ElGamal key from payee wallet"]
-    RK1 --> RK2["snapshot recipient pending balance BEFORE"]
+    RK1 --> RK2["decrypt the transfer's validity-proof<br/>recipient handle, require == charged amount"]
     RK2 --> Sub["submit bundle txs in order, confirm each"]
-    FP --> Sub
-
-    Sub --> Struct["structural check:<br/>final tx's transfer targets recipient ATA"]
-
-    Struct --> Q2{recipient key<br/>available?}
-    Q2 -->|Yes| RK3["read pending AFTER,<br/>recover delta with recipient key,<br/>require delta == charged amount"]
-    Q2 -->|No| FP2["trust on-chain proofs;<br/>recipient reconciles out of band"]
-    RK3 --> Done["Receipt::success"]
-    FP2 --> Done
+    FP --> FP2["trust on-chain proofs;<br/>recipient reconciles out of band"]
+    FP2 --> Sub
+    Sub --> Done["Receipt::success"]
 ```
 
 **Recipient-key mode** (`recipient_signer` is `Some`): the gateway *is* the payee.
-It derives the recipient ElGamal key from the payee wallet, reads the recipient's
-confidential **pending** balance before and after the bundle, and decrypts the
-delta with `recover_split_amount`. It then **enforces** that the delta equals the
-charged amount — a hard cryptographic check that the right amount actually
-arrived.
+It derives the recipient ElGamal key from the payee wallet and, before co-signing
+anything, decrypts the recipient handle of the 3-handle validity proof the
+transfer consumes (located exactly as Token-2022 locates it). It **enforces**
+that this amount equals the charged amount. The check is bound to this transfer,
+not to an account-wide balance delta, so concurrent settlements and external
+credits cannot be attributed to it. On fee-bearing mints the checked amount is
+the gross amount the payer authorized (the recipient is credited amount − fee),
+matching cleartext `transferChecked` semantics.
 
 **Facilitator trust-proofs mode** (`recipient_signer` is `None`): the gateway is
 settling on behalf of some *other* recipient and therefore cannot decrypt that
