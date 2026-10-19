@@ -1678,6 +1678,27 @@ fn validate_activation_scope(
             "Activation transaction memo does not match challenge externalId",
         ));
     }
+    // Required signers are exactly the fee payer, the subscriber and the
+    // puller; extra slots would be paid for by a sponsor.
+    let fee_payer = keys.first().copied().ok_or_else(|| {
+        VerificationError::invalid_payload("VersionedTransaction has no account keys")
+    })?;
+    if !config.fee_payer && fee_payer != subscriber {
+        return Err(VerificationError::invalid_payload(
+            "Activation transaction fee payer must be the subscriber",
+        ));
+    }
+    let mut expected_signers = vec![fee_payer, subscriber, puller];
+    expected_signers.sort();
+    expected_signers.dedup();
+    let required_signers = tx.message.header().num_required_signatures as usize;
+    let mut signers = keys.get(..required_signers).unwrap_or(keys).to_vec();
+    signers.sort();
+    if signers != expected_signers || tx.signatures.len() != required_signers {
+        return Err(VerificationError::invalid_payload(
+            "Activation transaction signers must be exactly the fee payer, subscriber and puller",
+        ));
+    }
     Ok(())
 }
 

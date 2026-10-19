@@ -853,3 +853,67 @@ async fn unpaid_or_revoked_delegations_are_not_active() {
         .unwrap_err();
     assert!(err.message.contains("invalidated"), "{}", err.message);
 }
+
+// ── SOLA1-159: the required signer set is exactly the canonical one ────────
+
+fn compute_price_ix_with_signers(signers: &[Pubkey]) -> solana_instruction::Instruction {
+    let mut data = vec![3];
+    data.extend_from_slice(&1u64.to_le_bytes());
+    solana_instruction::Instruction {
+        program_id: Pubkey::from_str_const(COMPUTE_BUDGET_PROGRAM_ID),
+        accounts: signers
+            .iter()
+            .map(|signer| solana_instruction::AccountMeta::new_readonly(*signer, true))
+            .collect(),
+        data,
+    }
+}
+
+#[test]
+fn sponsored_activation_rejects_extra_signer_slots() {
+    let fixture = ScopeFixture::new(Some(Pubkey::new_unique()));
+    let extra = compute_price_ix_with_signers(&[Pubkey::new_unique(), Pubkey::new_unique()]);
+    let tx = fixture.tx(&[extra, fixture.subscribe(), fixture.transfer()]);
+    assert_eq!(tx.message.header().num_required_signatures, 5);
+
+    let err = fixture.validate(&tx).unwrap_err();
+    assert!(err.message.contains("signers"), "{}", err.message);
+}
+
+#[test]
+fn single_extra_signer_is_rejected_in_both_modes() {
+    for fee_payer in [Some(Pubkey::new_unique()), None] {
+        let fixture = ScopeFixture::new(fee_payer);
+        let extra = compute_price_ix_with_signers(&[Pubkey::new_unique()]);
+        let tx = fixture.tx(&[extra, fixture.subscribe(), fixture.transfer()]);
+        assert!(fixture.validate(&tx).is_err());
+    }
+}
+
+#[test]
+fn canonical_signers_may_be_named_by_other_instructions() {
+    let fixture = ScopeFixture::new(Some(Pubkey::new_unique()));
+    let named = compute_price_ix_with_signers(&[fixture.scenario.subscriber]);
+    let tx = fixture.tx(&[named, fixture.subscribe(), fixture.transfer()]);
+    fixture.validate(&tx).unwrap();
+}
+
+#[test]
+fn sponsored_puller_may_share_the_fee_payer_key() {
+    let mut fixture = ScopeFixture::new(None);
+    let puller = fixture.scenario.puller;
+    fixture.fee_payer = Some(puller);
+    fixture.config.fee_payer = true;
+    fixture.config.fee_payer_pubkey = Some(puller.to_string());
+    let tx = fixture.tx(&[fixture.subscribe(), fixture.transfer()]);
+    assert_eq!(tx.message.header().num_required_signatures, 2);
+    fixture.validate(&tx).unwrap();
+}
+
+#[test]
+fn signature_vector_must_match_the_required_signer_count() {
+    let fixture = ScopeFixture::new(Some(Pubkey::new_unique()));
+    let mut tx = fixture.tx(&[fixture.subscribe(), fixture.transfer()]);
+    tx.signatures.push(Signature::default());
+    assert!(fixture.validate(&tx).is_err());
+}
