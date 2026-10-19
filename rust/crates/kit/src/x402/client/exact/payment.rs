@@ -59,11 +59,8 @@ pub async fn build_payment(
     // 0 they are the first two instructions, on version 1 the header config.
     let budget = crate::core::tx::ComputeBudget::new(20_000, 1);
 
-    let cluster = requirements
-        .cluster
-        .as_deref()
-        .or_else(|| cluster_for_caip2_network(&requirements.network));
-    let mint = try_resolve_mint(&requirements.currency, cluster)?;
+    let cluster = signing_cluster(requirements)?;
+    let mint = try_resolve_mint(&requirements.currency, Some(cluster))?;
 
     if let Some(mint_str) = mint {
         build_spl_instructions(
@@ -401,6 +398,26 @@ fn memo_instruction(requirements: &PaymentRequirements) -> Result<Instruction, E
         accounts: vec![],
         data,
     })
+}
+
+/// The cluster the payment is signed for. The network must be a recognized
+/// Solana network, and an explicit cluster must agree with it.
+fn signing_cluster(requirements: &PaymentRequirements) -> Result<&'static str, Error> {
+    let network = cluster_for_caip2_network(&requirements.network).ok_or_else(|| {
+        Error::Other(format!(
+            "Unsupported x402 network: {}",
+            requirements.network
+        ))
+    })?;
+    if let Some(cluster) = requirements.cluster.as_deref() {
+        if cluster_for_caip2_network(cluster) != Some(network) {
+            return Err(Error::Other(format!(
+                "x402 cluster `{cluster}` does not match network {}",
+                requirements.network
+            )));
+        }
+    }
+    Ok(network)
 }
 
 fn v1_network_for_requirements(requirements: &PaymentRequirements) -> &'static str {
@@ -1314,6 +1331,36 @@ mod tests {
 
         let mut requirements = test_requirements("USDC");
         requirements.accepted = Some(serde_json::json!({ "scheme": EXACT_SCHEME }));
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn build_payment_refuses_an_unknown_or_conflicting_network() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        for (network, cluster) in [
+            ("solana:custom-cluster-id", None),
+            ("solana:custom-cluster-id", Some("mainnet-beta")),
+            (SOLANA_MAINNET, Some("devnet")),
+            (SOLANA_DEVNET, Some("bogus")),
+        ] {
+            let mut requirements = test_requirements("USDC");
+            requirements.network = network.to_string();
+            requirements.cluster = cluster.map(str::to_string);
+            let err = build_payment(&signer, &rpc, &requirements, None)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("network"), "{network}: {err}");
+        }
+
+        let mut requirements = test_requirements("USDC");
+        requirements.network = SOLANA_DEVNET.to_string();
+        requirements.cluster = Some(SOLANA_DEVNET.to_string());
         assert!(build_payment(&signer, &rpc, &requirements, None)
             .await
             .is_ok());

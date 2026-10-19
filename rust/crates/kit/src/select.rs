@@ -482,17 +482,15 @@ fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Can
     if requirement.currency.eq_ignore_ascii_case("SOL") || !requirement.is_exact_scheme() {
         return None;
     }
-    // Resolve the canonical CAIP-2 `network` (e.g. "solana:EtWT…" for devnet)
-    // — or an explicit `cluster` — to a cluster slug. A plain substring scan
-    // would miss CAIP-2 genesis-hash ids and mislabel them mainnet, so go
-    // through `cluster_for_caip2_network`, which also handles the short forms.
-    // `None` means the offer isn't on a recognized Solana network → skip it.
-    let cluster = cluster_for_caip2_network(&requirement.network).or_else(|| {
-        requirement
-            .cluster
-            .as_deref()
-            .and_then(cluster_for_caip2_network)
-    })?;
+    // Resolve the CAIP-2 `network` (e.g. "solana:EtWT…" for devnet) to a
+    // cluster slug; an unrecognized network, or an explicit `cluster` that
+    // disagrees with it, means the offer is skipped.
+    let cluster = cluster_for_caip2_network(&requirement.network)?;
+    if let Some(explicit) = requirement.cluster.as_deref() {
+        if cluster_for_caip2_network(explicit) != Some(cluster) {
+            return None;
+        }
+    }
     let network = normalize_network(cluster);
     let mint = resolve_mint(&requirement.currency, &network)?;
     let amount = requirement.amount.parse::<u64>().ok()?;
@@ -944,5 +942,40 @@ mod tests {
         let err = select_payment(&headers, Some(&body), &funded, &OrderingStrategy::MppFirst)
             .expect_err("native SOL must not be selected");
         assert!(err.offered.is_empty(), "{err}");
+    }
+
+    #[test]
+    fn unknown_x402_network_is_not_a_mainnet_candidate() {
+        let offer = |network: &str, cluster: Option<&str>| {
+            let mut accept = serde_json::json!({
+                "scheme": "exact",
+                "network": network,
+                "amount": "1000",
+                "asset": mints::USDC_MAINNET,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+            });
+            if let Some(cluster) = cluster {
+                accept["cluster"] = serde_json::json!(cluster);
+            }
+            serde_json::json!({ "x402Version": 2, "accepts": [accept] }).to_string()
+        };
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+        for body in [
+            offer("solana:custom-cluster-id", None),
+            offer("solana:custom-cluster-id", Some("mainnet-beta")),
+            offer("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", Some("devnet")),
+        ] {
+            let err = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+                .expect_err("unknown or conflicting network must not be fundable");
+            assert!(err.offered.is_empty(), "{body}: {err}");
+        }
+        assert!(select_payment(
+            &[],
+            Some(&offer("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", None)),
+            &funded,
+            &OrderingStrategy::HighestBalance
+        )
+        .is_ok());
     }
 }

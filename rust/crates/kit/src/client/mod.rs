@@ -1610,4 +1610,51 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(!saw_x402_payment.load(Ordering::SeqCst));
     }
+
+    #[tokio::test]
+    async fn unknown_solana_network_is_denied_before_signing() {
+        for network in [
+            "solana:custom-cluster-id",
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvd",
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let signer = CountingSigner {
+                calls: calls.clone(),
+                pubkey: Pubkey::new_unique(),
+            };
+            let (url, saw_payment, task) = x402_offer_server(serde_json::json!({
+                "scheme": "exact",
+                "network": network,
+                "amount": "500000",
+                "asset": USDC_MAINNET,
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
+            }))
+            .await;
+            let client = PayKitClient::builder()
+                .signer(signer)
+                .rpc_url("http://127.0.0.1:1")
+                .network(SolanaNetwork::Mainnet)
+                .accept([ClientProtocol::X402])
+                .build()
+                .unwrap();
+
+            let error = client.get(url).send().await.unwrap_err();
+            let ClientError::PermissionDenied(denial) = error else {
+                panic!("{network}: expected permission denial");
+            };
+            assert_eq!(
+                denial.rejections[0].code,
+                PermissionDeniedCode::InvalidChallengeTerms
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "{network}");
+            assert!(!saw_payment.load(Ordering::SeqCst));
+            task.abort();
+        }
+    }
 }

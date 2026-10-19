@@ -39,15 +39,17 @@ pub fn caip2_network_for_cluster(cluster: &str) -> &'static str {
 }
 
 /// Map a CAIP-2 network identifier back to a Solana cluster name.
+///
+/// Only the canonical genesis-hash identifiers and the listed aliases are
+/// recognized; any other `solana:*` identifier is an unknown network.
 pub fn cluster_for_caip2_network(network: &str) -> Option<&'static str> {
     match network {
-        SOLANA_NETWORK | "mainnet" | "mainnet-beta" => Some("mainnet-beta"),
-        "solana-devnet" | "devnet" | "localnet" => Some("devnet"),
-        "solana-testnet" | "testnet" => Some("testnet"),
+        SOLANA_NETWORK | "mainnet" | "mainnet-beta" | "solana:mainnet" => Some("mainnet-beta"),
+        "solana-devnet" | "devnet" | "localnet" | "solana:devnet" => Some("devnet"),
+        "solana-testnet" | "testnet" | "solana:testnet" => Some("testnet"),
         SOLANA_MAINNET => Some("mainnet-beta"),
         SOLANA_DEVNET => Some("devnet"),
         SOLANA_TESTNET => Some("testnet"),
-        _ if network.starts_with("solana:") => Some("mainnet-beta"),
         _ => None,
     }
 }
@@ -776,10 +778,18 @@ mod tests {
         );
         assert_eq!(cluster_for_caip2_network(SOLANA_DEVNET), Some("devnet"));
         assert_eq!(
-            cluster_for_caip2_network("solana:custom-cluster-id"),
+            cluster_for_caip2_network("solana:mainnet"),
             Some("mainnet-beta")
         );
-        assert_eq!(cluster_for_caip2_network("foo:bar"), None);
+        for unknown in [
+            "solana:custom-cluster-id",
+            "solana:",
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvd",
+            "solana:5EYKT4USFV8P8NJDTREPY1VZQKQZKVDP",
+            "foo:bar",
+        ] {
+            assert_eq!(cluster_for_caip2_network(unknown), None, "{unknown}");
+        }
     }
 
     #[test]
