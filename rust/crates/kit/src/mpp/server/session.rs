@@ -2835,11 +2835,18 @@ async fn verify_submit_and_fetch_topup(
         .submit_verified(&tx)
         .await
         .map_err(|error| Error::Rpc(format!("top-up submission failed: {error}")))?;
+    // A confirmed signature can still be forked out, and the aggregate
+    // deposit read below can be met by another top-up on the surviving fork.
+    // Credit only a signature that finalized, against finalized state.
+    let finalized = pipeline
+        .confirm_finalized(confirmed.signature)
+        .await
+        .map_err(|error| Error::Rpc(format!("top-up finalization failed: {error}")))?;
     let account_data = pipeline
-        .read_owned_account_data(channel, Some(confirmed.slot), program_id)
+        .read_finalized_owned_account_data(channel, finalized.slot, program_id)
         .await
         .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
-        .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()))?;
+        .ok_or_else(|| Error::Rpc("finalized topped-up channel account not found".to_string()))?;
     let decoded = deployment.decode_channel(&account_data)?;
     if decoded.guard != 0 || decoded.hooks != config.channel_hooks.clone().unwrap_or_default() {
         return Err(Error::Other(
@@ -3266,7 +3273,7 @@ mod tests {
         tokio::task::JoinHandle<()>,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) {
-        rpc_for_channel_with_options(channel, current_slot, false).await
+        rpc_for_channel_with_options(channel, current_slot, LandedStatus::Finalized).await
     }
 
     /// Like [`rpc_for_channel`], but `landed_with_error` makes
@@ -3277,10 +3284,18 @@ mod tests {
     /// (`getAccountInfo`/`getMultipleAccounts`) still return the fixed
     /// `channel` state regardless, matching a real cluster where the account
     /// reflects whatever *other* transaction landed.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum LandedStatus {
+        Finalized,
+        Failed,
+        /// Confirmed but never finalized (e.g. on a fork that is abandoned).
+        ConfirmedOnly,
+    }
+
     async fn rpc_for_channel_with_options(
         channel: payment_channels::generated::generated::accounts::Channel,
         current_slot: u64,
-        landed_with_error: bool,
+        landed_status: LandedStatus,
     ) -> (
         String,
         tokio::task::JoinHandle<()>,
@@ -3380,7 +3395,7 @@ mod tests {
                                 .map(|signature| {
                                     if landed.lock().unwrap().contains(signature.as_str().unwrap())
                                     {
-                                        if landed_with_error {
+                                        if landed_status == LandedStatus::Failed {
                                             // A signature the RPC saw land, but
                                             // whose execution failed on-chain
                                             // (e.g. insufficient fee-payer
@@ -3393,6 +3408,14 @@ mod tests {
                                                 "err": "AlreadyProcessed",
                                                 "confirmationStatus": "finalized",
                                                 "status": { "Err": "AlreadyProcessed" }
+                                            })
+                                        } else if landed_status == LandedStatus::ConfirmedOnly {
+                                            json!({
+                                                "slot": 43,
+                                                "confirmations": 1,
+                                                "err": null,
+                                                "confirmationStatus": "confirmed",
+                                                "status": { "Ok": null }
                                             })
                                         } else {
                                             json!({
@@ -5046,7 +5069,7 @@ mod tests {
             open_slot: 42,
         };
         let (url, rpc, _send_tx_count) =
-            rpc_for_channel_with_options(account, 43, /* landed_with_error */ true).await;
+            rpc_for_channel_with_options(account, 43, LandedStatus::Failed).await;
         server.config.rpc_url = Some(url);
         let payload = TopUpPayload {
             channel_id: channel_id.clone(),
@@ -5520,6 +5543,123 @@ mod tests {
             .await
             .is_err());
         assert_eq!(stored(&server, &channel_id).await.cumulative, 0);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_but_unfinalized_topup_is_not_credited() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        let (mut server, _session, channel_id) = client_server().await;
+        let payer = signer(5);
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new({
+                    let payer = payer.pubkey().to_string();
+                    let rent_payer = sponsor.pubkey().to_string();
+                    move |state| {
+                        let mut state = state.unwrap();
+                        state.payer = payer;
+                        state.rent_payer = rent_payer;
+                        Ok(state)
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        let channel = Pubkey::from_str(&channel_id).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let program_id = payment_channels::default_program_id();
+        let ix = payment_channels::build_top_up_instruction(
+            &payer.pubkey(),
+            &channel,
+            &mint,
+            100,
+            &token_program,
+            &program_id,
+        );
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
+            &[ix],
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
+            .await
+            .unwrap();
+        let transaction = crate::core::tx::encode(&tx).unwrap();
+        // The confirmed account already reflects deposit=1_100.
+        let account = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: 7,
+            deposit: 1_100,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: server.config.grace_period_seconds,
+            distribution_hash: [0; 32],
+            payer: payment_channels::to_address(&payer.pubkey()),
+            payee: payment_channels::to_address(
+                &Pubkey::from_str(&server.config.recipient).unwrap(),
+            ),
+            authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
+            mint: payment_channels::to_address(&mint),
+            rent_payer: payment_channels::to_address(&sponsor.pubkey()),
+            open_slot: 42,
+        };
+        let (url, rpc, _send_tx_count) =
+            rpc_for_channel_with_options(account, 43, LandedStatus::ConfirmedOnly).await;
+        server.config.rpc_url = Some(url.clone());
+        let server = server.with_tx_pipeline(crate::core::tx_pipeline::TxPipeline::new(
+            url,
+            crate::core::tx_pipeline::TxPipelineConfig {
+                confirmation_poll_interval: std::time::Duration::from_millis(20),
+                confirmation_timeout: std::time::Duration::from_millis(300),
+                ..Default::default()
+            },
+        ));
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction,
+        };
+
+        // The signature confirmed and the aggregate deposit already shows
+        // +100, but the signature never finalizes: it may sit on a fork that
+        // is abandoned while another top-up lands on the surviving one.
+        let result = server.process_topup_with_outcome(&payload).await;
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("finalization")),
+            "a top-up must not be credited before its own signature finalizes"
+        );
+
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.deposit, 1_000,
+            "no credit may be applied for a transaction that never confirmed"
+        );
+        assert!(stored.processed_topup_signatures.is_empty());
+        rpc.abort();
     }
 
     #[tokio::test]

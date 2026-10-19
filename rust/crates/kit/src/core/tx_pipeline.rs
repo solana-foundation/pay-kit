@@ -95,6 +95,8 @@ pub enum TxPipelineError {
     },
     #[error("transaction {signature} did not reach confirmed commitment before timeout")]
     ConfirmationTimeout { signature: Signature },
+    #[error("transaction {signature} did not reach finalized commitment before timeout")]
+    FinalizationTimeout { signature: Signature },
     #[error("RPC submission and confirmation failed for transaction {signature}")]
     SubmissionFailed { signature: Signature },
     #[error("transaction submission guard rejected the attempt")]
@@ -332,6 +334,78 @@ impl TxPipeline {
             })
             .map_err(|_| TxPipelineError::Stopped)?;
         response_rx.await.map_err(|_| TxPipelineError::Stopped)?
+    }
+
+    /// Await finalized commitment for a signature, polling its status directly.
+    /// A transaction that fails on-chain or never finalizes is an error.
+    pub async fn confirm_finalized(
+        &self,
+        signature: Signature,
+    ) -> PipelineResult<ConfirmedTransaction> {
+        let deadline = Instant::now() + self.inner.config.confirmation_timeout;
+        loop {
+            if let Ok(statuses) = self.inner.rpc.get_signature_statuses(&[signature]).await {
+                if let Some(Some(status)) = statuses.value.into_iter().next() {
+                    if let Some(error) = status.err {
+                        return Err(TxPipelineError::TransactionFailed {
+                            signature,
+                            reason: format!("{error:?}"),
+                        });
+                    }
+                    if status.satisfies_commitment(CommitmentConfig::finalized()) {
+                        return Ok(ConfirmedTransaction {
+                            signature,
+                            slot: status.slot,
+                        });
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(TxPipelineError::FinalizationTimeout { signature });
+            }
+            tokio::time::sleep(self.inner.config.confirmation_poll_interval).await;
+        }
+    }
+
+    /// Read program state at finalized commitment from a bank at or after
+    /// `min_context_slot`. Ownership is checked on the same observation; a
+    /// missing account returns `None`.
+    pub async fn read_finalized_owned_account_data(
+        &self,
+        address: Pubkey,
+        min_context_slot: u64,
+        expected_owner: Pubkey,
+    ) -> PipelineResult<Option<Vec<u8>>> {
+        let response: solana_rpc_client_api::response::Response<
+            Option<solana_account_decoder_client_types::UiAccount>,
+        > = self
+            .inner
+            .rpc
+            .send(
+                RpcRequest::GetAccountInfo,
+                serde_json::json!([
+                    address.to_string(), {
+                        "commitment": "finalized",
+                        "minContextSlot": min_context_slot,
+                        "encoding": "base64",
+                    }
+                ]),
+            )
+            .await
+            .map_err(|_| TxPipelineError::AccountReadFailed)?;
+        if response.context.slot < min_context_slot {
+            return Err(TxPipelineError::AccountReadFailed);
+        }
+        let Some(account) = response.value else {
+            return Ok(None);
+        };
+        let account = account
+            .to_account()
+            .ok_or(TxPipelineError::AccountDecodeFailed { address })?;
+        if account.owner.to_bytes() != expected_owner.to_bytes() {
+            return Err(TxPipelineError::AccountOwnerMismatch { address });
+        }
+        Ok(Some(account.data))
     }
 
     /// Read one account at confirmed commitment, optionally requiring the RPC
