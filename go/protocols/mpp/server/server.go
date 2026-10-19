@@ -958,7 +958,7 @@ type expectedMemo struct {
 }
 
 func buildExpectedMemos(externalID string, splits []paycore.Split) []expectedMemo {
-	expected := make([]expectedMemo, 0, 1+len(splits))
+	var expected []expectedMemo
 	if externalID != "" {
 		expected = append(expected, expectedMemo{label: "externalId", value: externalID})
 	}
