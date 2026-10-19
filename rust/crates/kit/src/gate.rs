@@ -374,9 +374,10 @@ impl<S: Send + Sync> FromRequestParts<S> for Payment {
 /// Usage meter for [`paid_upto_get`] / [`paid_upto_post`] routes.
 ///
 /// The route handler reports the actual amount consumed (in base units) by
-/// calling [`Charge::charge`]. The gate settles that amount — never more than
-/// the authorized ceiling — after the handler returns, refunding the remainder.
-/// If the handler never calls `charge`, the settled amount is `0`.
+/// calling [`Charge::charge`], either before returning or while its response
+/// body is produced. The gate buffers the body (up to 16 MiB), then settles
+/// that amount — never more than the authorized ceiling — and refunds the
+/// remainder. If the handler never calls `charge`, the settled amount is `0`.
 #[derive(Clone)]
 pub struct Charge {
     cell: Arc<Mutex<Option<u64>>>,
@@ -951,12 +952,29 @@ async fn upto_gate_middleware(
         reference: open.channel_id.to_string(),
     });
     req.extensions_mut().insert(charge);
-    let mut resp = next.run(req).await;
-    prevent_shared_caching(&mut resp);
+    // A lazy body may meter while it is polled, after the handler future has
+    // returned, so the charge is read only once the body is complete.
+    let metered = buffer_metered_response(next.run(req).await).await;
 
     // Recover from poisoning so a handler that panicked *after* recording a
     // charge still settles the amount it consumed (not a silent zero refund).
     let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
+    let mut resp = match metered {
+        Ok(mut resp) => {
+            prevent_shared_caching(&mut resp);
+            resp
+        }
+        Err(error) => {
+            // Nothing is delivered; still settle what was metered so far.
+            tracing::warn!(error = %error, "upto response body did not complete");
+            let _ = settle_served_upto(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                "resource response body failed or exceeded the metered size limit",
+            )
+                .into_response();
+        }
+    };
 
     // Settle the actual amount and refund the remainder.
     match settle_served_upto(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await {
@@ -981,6 +999,18 @@ async fn upto_gate_middleware(
         )
             .into_response(),
     }
+}
+
+/// Largest `upto` response body the gate buffers to observe its metering.
+const MAX_UPTO_METERED_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Drive `response`'s body to completion so a charge recorded while it is
+/// produced is seen before settlement. Bodies over
+/// [`MAX_UPTO_METERED_BODY_BYTES`] are refused rather than settled early.
+async fn buffer_metered_response(response: Response) -> Result<Response, axum::Error> {
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, MAX_UPTO_METERED_BODY_BYTES).await?;
+    Ok(Response::from_parts(parts, Body::from(bytes)))
 }
 
 /// How hard a served `upto` request's settlement is retried: inline before
@@ -2382,6 +2412,60 @@ mod tests {
         })
         .unwrap();
         assert!(Arc::ptr_eq(pay.x402_batch().unwrap().store(), &store));
+    }
+
+    /// A body that records its usage only when it is polled.
+    struct MeteredBody {
+        charge: Charge,
+        done: bool,
+    }
+
+    impl HttpBody for MeteredBody {
+        type Data = axum::body::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            if self.done {
+                return std::task::Poll::Ready(None);
+            }
+            self.done = true;
+            self.charge.charge(250);
+            std::task::Poll::Ready(Some(Ok(http_body::Frame::data(
+                axum::body::Bytes::from_static(b"streamed"),
+            ))))
+        }
+    }
+
+    /// Usage metered while a lazy body streams is observed before settlement
+    /// instead of settling the request at zero.
+    #[tokio::test]
+    async fn upto_metering_waits_for_a_lazy_body() {
+        let cell = Arc::new(Mutex::new(None));
+        let charge = Charge {
+            cell: cell.clone(),
+            max_base_units: 1_000,
+        };
+        let lazy = Response::new(Body::new(MeteredBody {
+            charge,
+            done: false,
+        }));
+        assert_eq!(*cell.lock().unwrap(), None, "nothing is metered yet");
+
+        let buffered = buffer_metered_response(lazy).await.unwrap();
+        assert_eq!(*cell.lock().unwrap(), Some(250));
+        assert_eq!(
+            to_bytes(buffered.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"streamed"
+        );
+
+        let oversized = Response::new(Body::from(vec![0u8; MAX_UPTO_METERED_BODY_BYTES + 1]));
+        assert!(buffer_metered_response(oversized).await.is_err());
     }
 
     #[test]
