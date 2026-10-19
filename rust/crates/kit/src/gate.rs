@@ -620,9 +620,10 @@ fn challenge_response(pay: &PayKit, amount: &str, req: &Request) -> Response {
     }
 
     // x402: PAYMENT-REQUIRED.
+    let resource = exact_resource(req);
     match pay
         .x402
-        .payment_required_header(amount, ExactOptions::default())
+        .payment_required_header(amount, exact_options(&resource))
     {
         Ok((name, value)) => match (
             HeaderName::from_bytes(name.as_bytes()),
@@ -727,10 +728,11 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
 
     // x402 path.
     if let Some(header_value) = x402_header {
+        let resource = exact_resource(&req);
         return match state
             .pay
             .x402
-            .process_payment(&header_value, &amount, ExactOptions::default())
+            .process_payment(&header_value, &amount, exact_options(&resource))
             .await
         {
             Ok(verified) => match x402_reference(&verified) {
@@ -1036,6 +1038,25 @@ fn resource_url(req: &Request) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("https");
     Some(format!("{scheme}://{host}{}", uri.path_and_query()?))
+}
+
+/// The x402 `exact` resource a request is challenged and verified against, so
+/// a credential paid for one route cannot be presented on another.
+fn exact_resource(req: &Request) -> String {
+    resource_url(req).unwrap_or_else(|| {
+        req.extensions()
+            .get::<axum::extract::OriginalUri>()
+            .map_or(req.uri(), |original| &original.0)
+            .path_and_query()
+            .map_or_else(|| "/".to_string(), ToString::to_string)
+    })
+}
+
+fn exact_options(resource: &str) -> ExactOptions<'_> {
+    ExactOptions {
+        resource: Some(resource),
+        ..ExactOptions::default()
+    }
 }
 
 /// Answer a request whose authorization was already charged and served.
@@ -2050,6 +2071,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+
+    /// Decode the x402 `PAYMENT-REQUIRED` challenge from a 402 response.
+    fn x402_challenge(resp: &Response) -> crate::x402::exact::PaymentRequiredEnvelope {
+        let value = resp.headers().get("payment-required").unwrap();
+        let decoded = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            value.to_str().unwrap(),
+        )
+        .unwrap();
+        serde_json::from_slice::<crate::x402::exact::PaymentRequiredEnvelope>(&decoded)
+            .unwrap()
+            .with_resource_on_accepts()
+    }
+
+    fn get_with_host(uri: &str, payment: Option<&str>) -> Request {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header(header::HOST, "api.example.test");
+        if let Some(payment) = payment {
+            request = request.header("PAYMENT-SIGNATURE", payment);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn x402_credential_for_one_route_is_rejected_on_another() {
+        use crate::x402::server::exact::test_support::{exact_transaction, transaction_header};
+
+        let pay = test_paykit();
+        let app: Router = Router::new()
+            .route("/route-a", paid_get(report, "0.01", &pay))
+            .route("/route-b", paid_get(report, "0.01", &pay));
+
+        let challenge_a = x402_challenge(
+            &app.clone()
+                .oneshot(get_with_host("/route-a", None))
+                .await
+                .unwrap(),
+        );
+        let challenge_b = x402_challenge(
+            &app.clone()
+                .oneshot(get_with_host("/route-b", None))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            challenge_a.resource.as_ref().map(|r| r.url.as_str()),
+            Some("https://api.example.test/route-a")
+        );
+        assert_eq!(
+            challenge_b.resource.as_ref().map(|r| r.url.as_str()),
+            Some("https://api.example.test/route-b")
+        );
+
+        let requirement = &challenge_a.accepts[0];
+        let payer = solana_pubkey::Pubkey::new_unique();
+        let tx = exact_transaction(requirement, &payer, &payer);
+        let header = transaction_header(requirement, requirement.resource_info(), &tx);
+
+        let replay = app
+            .clone()
+            .oneshot(get_with_host("/route-b", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(!replay.headers().contains_key(PAYMENT_RESPONSE_HEADER));
     }
 
     #[tokio::test]

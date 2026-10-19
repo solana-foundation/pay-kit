@@ -15,7 +15,7 @@ use crate::x402::{
         caip2_network_for_cluster, cluster_for_caip2_network, default_rpc_url, fetch_transaction,
         verify_exact_versioned_transaction, verify_transaction_details, PaymentConfig,
         PaymentProof, PaymentRequiredEnvelope, PaymentRequirements, PaymentSignatureEnvelope,
-        EXACT_SCHEME,
+        ResourceInfo, EXACT_SCHEME,
     },
     PAYMENT_REQUIRED_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V1, X402_VERSION_V2,
 };
@@ -759,6 +759,12 @@ impl X402 {
             }
         }
 
+        // The canonical `accepted` object carries no resource, so a v2
+        // credential is bound to its route only through `resource`.
+        if envelope.x402_version == X402_VERSION_V2 {
+            verify_resource_binding(envelope.resource.as_ref(), requirements)?;
+        }
+
         match envelope.payload {
             PaymentProof::Transaction { transaction } => {
                 let decoded =
@@ -927,6 +933,31 @@ fn strip_blockhash_hints(value: &mut serde_json::Value) {
     }
 }
 
+/// Require a v2 credential to name the route's resource. Routes without a
+/// resource are unscoped.
+fn verify_resource_binding(
+    presented: Option<&ResourceInfo>,
+    requirements: &PaymentRequirements,
+) -> Result<(), Error> {
+    let Some(expected) = requirements
+        .resource_info()
+        .filter(|resource| !resource.url.is_empty())
+    else {
+        return Ok(());
+    };
+    match presented {
+        Some(resource) if resource.url == expected.url => Ok(()),
+        Some(resource) => Err(Error::Other(format!(
+            "Resource mismatch: expected {}, got {}",
+            expected.url, resource.url
+        ))),
+        None => Err(Error::Other(format!(
+            "Credential is missing the resource {}",
+            expected.url
+        ))),
+    }
+}
+
 fn managed_signers_for_requirements(
     requirements: &PaymentRequirements,
 ) -> Result<Vec<Pubkey>, Error> {
@@ -950,8 +981,114 @@ pub(crate) fn parse_units(amount: &str, decimals: u8) -> Result<String, Error> {
     crate::core::parse_units(amount, decimals).map_err(Into::into)
 }
 
+/// Fixtures shared by the exact server and gate tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::x402::protocol::schemes::exact::{programs, resolve_stablecoin_mint};
+    use solana_hash::Hash;
+    use solana_instruction::{AccountMeta, Instruction};
+
+    pub(crate) fn ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+            &Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap(),
+        )
+        .0
+    }
+
+    /// The `transferChecked` an honest client builds for `requirements`.
+    pub(crate) fn transfer_checked(
+        requirements: &PaymentRequirements,
+        owner: &Pubkey,
+        amount: u64,
+        decimals: u8,
+    ) -> Instruction {
+        let mint = Pubkey::from_str(
+            resolve_stablecoin_mint(&requirements.currency, requirements.cluster.as_deref())
+                .unwrap(),
+        )
+        .unwrap();
+        let token_program = Pubkey::from_str(
+            requirements
+                .token_program
+                .as_deref()
+                .unwrap_or(programs::TOKEN_PROGRAM),
+        )
+        .unwrap();
+        let recipient = Pubkey::from_str(&requirements.recipient).unwrap();
+        let mut data = vec![12u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.push(decimals);
+        Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(ata(owner, &mint, &token_program), false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new(ata(&recipient, &mint, &token_program), false),
+                AccountMeta::new_readonly(*owner, true),
+            ],
+            data,
+        }
+    }
+
+    /// A canonical, unsigned exact transaction paying `requirements` from `owner`.
+    pub(crate) fn exact_transaction(
+        requirements: &PaymentRequirements,
+        owner: &Pubkey,
+        fee_payer: &Pubkey,
+    ) -> VersionedTransaction {
+        let amount = requirements.amount.parse().unwrap();
+        let decimals = requirements.decimals.unwrap_or(6);
+        crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            fee_payer,
+            &[transfer_checked(requirements, owner, amount, decimals)],
+            Hash::new_unique(),
+            Some(&crate::core::tx::ComputeBudget::new(20_000, 1)),
+        )
+        .unwrap()
+    }
+
+    /// Wrap a transaction proof in a v2 `PAYMENT-SIGNATURE` header.
+    pub(crate) fn transaction_header(
+        requirements: &PaymentRequirements,
+        resource: Option<ResourceInfo>,
+        tx: &VersionedTransaction,
+    ) -> String {
+        envelope_header(
+            requirements,
+            resource,
+            PaymentProof::Transaction {
+                transaction: crate::core::tx::encode(tx).unwrap(),
+            },
+        )
+    }
+
+    pub(crate) fn envelope_header(
+        requirements: &PaymentRequirements,
+        resource: Option<ResourceInfo>,
+        payload: PaymentProof,
+    ) -> String {
+        let envelope = PaymentSignatureEnvelope {
+            scheme: None,
+            network: None,
+            x402_version: X402_VERSION_V2,
+            accepted: Some(requirements.to_accepted_value()),
+            resource,
+            payload,
+            extensions: None,
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use crate::x402::{
         protocol::schemes::exact::{
@@ -1753,6 +1890,78 @@ mod tests {
             err.to_string().to_lowercase().contains("network"),
             "got: {err:?}"
         );
+    }
+
+    fn resource_options(resource: &str) -> ExactOptions<'_> {
+        ExactOptions {
+            resource: Some(resource),
+            ..ExactOptions::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_credential_is_bound_to_the_challenged_resource() {
+        let x402 = X402::new(config()).unwrap();
+        let route_a = x402
+            .exact_requirements("0.01", resource_options("/route-a"))
+            .unwrap();
+        let route_b = x402
+            .exact_requirements("0.01", resource_options("/route-b"))
+            .unwrap();
+        // The canonical accepted objects are identical; only the resource differs.
+        assert_eq!(route_a.to_accepted_value(), route_b.to_accepted_value());
+
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(&route_a, &payer, &payer);
+        let header = transaction_header(&route_a, route_a.resource_info(), &tx);
+
+        let own = x402
+            .process_payment(&header, "0.01", resource_options("/route-a"))
+            .await;
+        assert!(
+            matches!(own, Ok(VerifiedExactPayment::Transaction(_))),
+            "{own:?}"
+        );
+
+        let replay = x402
+            .process_payment(&header, "0.01", resource_options("/route-b"))
+            .await
+            .unwrap_err();
+        assert!(replay.to_string().contains("Resource mismatch"), "{replay}");
+
+        // Trailing-slash and case variants are different resources.
+        for variant in ["/route-a/", "/Route-a"] {
+            let err = x402
+                .process_payment(&header, "0.01", resource_options(variant))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("Resource mismatch"), "{err}");
+        }
+
+        let unbound = transaction_header(&route_a, None, &tx);
+        let err = x402
+            .process_payment(&unbound, "0.01", resource_options("/route-a"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("missing the resource"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn unscoped_route_accepts_v2_credential_without_resource() {
+        let mut cfg = config();
+        cfg.resource = String::new();
+        let x402 = X402::new(cfg).unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(&requirements, &payer, &payer);
+        let header = transaction_header(&requirements, None, &tx);
+        assert!(matches!(
+            x402.process_payment(&header, "0.01", ExactOptions::default())
+                .await,
+            Ok(VerifiedExactPayment::Transaction(_))
+        ));
     }
 
     // ── is_loopback_rpc ────────────────────────────────────────────────────
