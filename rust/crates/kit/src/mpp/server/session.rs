@@ -4999,6 +4999,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unit_priced_config_cannot_settle_a_route_challenged_higher() {
+        let (mut server, mut session, channel_id) = client_server().await;
+        server.config.amount = 1;
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.deposit = 1_000_000;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let route_price = 500_000;
+
+        let plus_one = voucher_payload(session.prepare_increment(1).await.unwrap());
+        assert!(server
+            .verify_voucher_for_amount(&plus_one, route_price)
+            .await
+            .is_err());
+        assert_eq!(server.seal_params(&channel_id).await.unwrap().settled, 0);
+
+        let paid = voucher_payload(session.sign_increment(route_price).await.unwrap());
+        server
+            .verify_voucher_for_amount(&paid, route_price)
+            .await
+            .unwrap();
+        let state = stored(&server, &channel_id).await;
+        assert_eq!(state.spent_amount, route_price);
+        assert_eq!(
+            server.seal_params(&channel_id).await.unwrap().settled,
+            route_price
+        );
+    }
+
+    #[tokio::test]
     async fn priced_voucher_rejects_a_zero_amount() {
         let (server, session, channel_id) = client_server().await;
         let voucher = session.prepare_increment(25).await.unwrap();
