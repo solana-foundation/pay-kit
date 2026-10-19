@@ -705,6 +705,8 @@ impl SubscriptionServer {
             request.subscription_expires.as_deref(),
             now_unix_secs(),
         )?;
+        self.ensure_current_authority(&subscriber, &delegation)
+            .await?;
 
         let authentication = activate.authentication.as_ref().ok_or_else(|| {
             VerificationError::invalid_payload(
@@ -942,17 +944,8 @@ impl SubscriptionServer {
                 "SubscriptionDelegation does not match the bound plan and payer",
             ));
         }
-        let mint = parse_pubkey(&self.config.mint, "mint")
-            .map_err(|error| VerificationError::new(error.to_string()))?;
-        let authority_pda = find_subscription_authority_pda(subscriber, &mint, &program_id).0;
-        let authority_init_id = self
-            .fetch_subscription_authority_init_id(&authority_pda)
+        self.ensure_current_authority(subscriber, &delegation)
             .await?;
-        if authority_init_id != delegation.authority_init_id {
-            return Err(VerificationError::credential_mismatch(
-                "Subscription authority has been invalidated",
-            ));
-        }
         if now < delegation.current_period_start_ts {
             return Err(VerificationError::transaction_failed(
                 "Subscription is not paid for the current billing period",
@@ -966,6 +959,29 @@ impl SubscriptionServer {
             now,
         )?;
         Ok((delegation, period_end))
+    }
+
+    /// Require the subscriber's `SubscriptionAuthority` to exist and be the
+    /// generation `delegation` was created under.
+    async fn ensure_current_authority(
+        &self,
+        subscriber: &Pubkey,
+        delegation: &SubscriptionDelegationView,
+    ) -> Result<(), VerificationError> {
+        let program_id = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let mint = parse_pubkey(&self.config.mint, "mint")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let authority_pda = find_subscription_authority_pda(subscriber, &mint, &program_id).0;
+        let authority_init_id = self
+            .fetch_subscription_authority_init_id(&authority_pda)
+            .await?;
+        if authority_init_id != delegation.authority_init_id {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription authority has been invalidated",
+            ));
+        }
+        Ok(())
     }
 
     /// Broadcast a signed transaction and wait for `confirmed` (NOT

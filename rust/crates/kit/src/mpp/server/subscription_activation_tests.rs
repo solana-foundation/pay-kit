@@ -982,3 +982,40 @@ async fn challenge_without_a_network_is_rejected() {
     let err = server.verify_credential(&credential).await.unwrap_err();
     assert!(err.message.contains("network"), "{}", err.message);
 }
+
+// ── SOLA1-211: activation retries require the current authority ────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_retry_after_authority_revocation_is_rejected() {
+    let scenario = Scenario::new();
+    let mut state = existing_delegation_state(&scenario, DelegationState::default());
+    state.accounts.remove(&scenario.authority.to_string());
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let server = scenario.server(&rpc.url);
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(
+        err.message.contains("SubscriptionAuthority"),
+        "{}",
+        err.message
+    );
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_retry_after_authority_reinitialization_is_rejected() {
+    let scenario = Scenario::new();
+    let mut state = existing_delegation_state(&scenario, DelegationState::default());
+    state
+        .accounts
+        .insert(scenario.authority.to_string(), authority_bytes(INIT_ID + 1));
+    let rpc = RpcFixture::start(program_owner(), state).await;
+    let server = scenario.server(&rpc.url);
+    let (credential, signature) = scenario.activation(&server).await;
+    rpc.set_status(&signature, success_status());
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("invalidated"), "{}", err.message);
+}
