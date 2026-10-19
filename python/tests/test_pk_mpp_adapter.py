@@ -8,6 +8,8 @@ HMAC so the pin actually fires.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
@@ -293,6 +295,24 @@ def test_secret_resolver_generates_and_persists(monkeypatch, tmp_path):
     # New file is mode 0600 and contains the key.
     assert env_file.exists()
     assert "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET=" in env_file.read_text()
+    assert (env_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_secret_resolver_creates_dotenv_private_without_chmod(monkeypatch, tmp_path):
+    """The file is created 0600, never world-readable while the secret lands."""
+    monkeypatch.delenv("PAY_KIT_MPP_CHALLENGE_BINDING_SECRET", raising=False)
+
+    def refuse_chmod(*_args, **_kwargs):
+        raise OSError("chmod refused")
+
+    monkeypatch.setattr(os, "chmod", refuse_chmod)
+    old_umask = os.umask(0o022)
+    try:
+        env_file = tmp_path / ".env"
+        _, source, _ = SecretResolver.resolve_mpp_secret(dotenv_path=str(env_file))
+    finally:
+        os.umask(old_umask)
+    assert source == "generated+persisted"
     assert (env_file.stat().st_mode & 0o777) == 0o600
 
 

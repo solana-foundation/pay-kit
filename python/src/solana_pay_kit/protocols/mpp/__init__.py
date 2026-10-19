@@ -11,7 +11,6 @@ builds the 402 challenge, and runs cross-route-safe verification through
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import secrets
@@ -161,12 +160,9 @@ class SecretResolver:
     @staticmethod
     def _append_to_dotenv(path: str, key: str, value: str) -> bool:
         """Append ``KEY=value``; create at 0600 if absent. Returns success."""
-        existed = os.path.isfile(path)
         try:
-            with open(path, "a", encoding="utf-8") as handle:
-                if not existed:
-                    with contextlib.suppress(OSError):
-                        os.chmod(path, 0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
                 handle.write(f"{key}={value}\n")
             return True
         except OSError:
