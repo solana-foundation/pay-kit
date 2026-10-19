@@ -168,6 +168,12 @@ fn has_active_pending_open(state: &ChannelState, now: u64) -> bool {
 /// Broadcasting and confirmation use the shared asynchronous transaction
 /// pipeline, which globally paces submissions and coalesces signature-status
 /// polling across concurrent lifecycle chunks.
+/// How long a reservation is held for a request: the route's completion
+/// window, with the charge lease as the floor.
+fn reservation_lease(max_timeout_seconds: u64) -> std::time::Duration {
+    CHARGE_RESERVATION_LEASE.max(std::time::Duration::from_secs(max_timeout_seconds))
+}
+
 /// A record left behind by a released opening deposit: no escrow, no accepted
 /// voucher and no work in flight. It authorizes nothing.
 fn is_empty_tombstone(state: &ChannelState) -> bool {
@@ -332,9 +338,11 @@ pub struct BatchConfig {
     ///
     /// The scheme requires the channel to be confirmed `Open` before a voucher
     /// is accepted, and allows a fresh snapshot to stand in for a per-request
-    /// fetch. `0` re-fetches on every request. The window is safe well past the
-    /// default because a forced close cannot seal until its grace period —
-    /// at least 900 seconds — has run.
+    /// fetch. `0` re-fetches on every request. A payer may have started a
+    /// forced close right after the snapshot, so the window plus the request's
+    /// reservation lease must fit inside the grace period; construction
+    /// refuses a configuration where it does not. When a refresh is due and
+    /// the RPC fails, new vouchers are refused.
     pub channel_snapshot_max_age_seconds: u64,
 }
 
@@ -554,6 +562,20 @@ impl X402BatchSettlement {
         crate::x402::exact::try_resolve_stablecoin_mint(&config.currency, Some(&config.cluster))?;
         check_withdraw_delay(config.withdraw_delay, config.max_timeout_seconds)
             .map_err(|e| Error::Other(e.to_string()))?;
+        // A voucher admitted on a snapshot that predates a payer's close must
+        // still commit and be sealed before that close's grace period ends.
+        let admission_window = config
+            .channel_snapshot_max_age_seconds
+            .saturating_add(reservation_lease(config.max_timeout_seconds).as_secs());
+        if admission_window >= u64::from(config.withdraw_delay) {
+            return Err(Error::Other(format!(
+                "channel_snapshot_max_age_seconds {} plus the {}s reservation lease must be \
+                 shorter than withdraw_delay {}",
+                config.channel_snapshot_max_age_seconds,
+                reservation_lease(config.max_timeout_seconds).as_secs(),
+                config.withdraw_delay
+            )));
+        }
         let fee_payer = config.fee_payer_signer.pubkey();
         if pc::pubkey_string(&fee_payer) == config.pay_to {
             // Not fatal onchain, but it collapses the cold-wallet separation the
@@ -1503,9 +1525,7 @@ impl X402BatchSettlement {
         // while a slow handler is still running would let a retry run that
         // handler alongside it. The route's advertised completion window is
         // that bound, with the charge lease as the floor.
-        let lease = CHARGE_RESERVATION_LEASE.max(std::time::Duration::from_secs(
-            self.config.max_timeout_seconds,
-        ));
+        let lease = reservation_lease(self.config.max_timeout_seconds);
         let setup = outcome.deposit_signature.clone().map(|payer_signature| {
             let (deposit, opens_channel) = match &outcome.payload {
                 BatchPayload::Deposit { deposit, .. } => {
@@ -1844,21 +1864,9 @@ impl X402BatchSettlement {
         let fetched = tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id))
             .await
             .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
-        let onchain = match fetched {
-            Ok(onchain) => onchain,
-            Err(e) => {
-                // A degraded RPC must not reject every paid request, but it also
-                // must not let the snapshot rot: past half the forced-close
-                // grace period, a close started right after the last check
-                // would leave too little time to claim.
-                let stale_limit = u64::from(self.config.withdraw_delay) / 2;
-                if onchain_checked_at > 0 && age < stale_limit {
-                    tracing::warn!(channel = %channel_b58, error = %e, age, "serving on a stale channel snapshot");
-                    return Ok(());
-                }
-                return Err(e);
-            }
-        };
+        // A snapshot past its window cannot rule out a payer's close, so a
+        // failed refresh refuses the voucher rather than serving on it.
+        let onchain = fetched?;
         let closed_at = match onchain {
             // Confirmed absent: reclaimed, or never opened. Either way no
             // voucher against it can ever be redeemed.
@@ -4372,6 +4380,58 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(state.cumulative, 500);
+    }
+
+    /// A snapshot past its freshness window cannot rule out a payer's forced
+    /// close, so a failed refresh refuses the voucher instead of serving on it.
+    #[tokio::test]
+    async fn a_stale_snapshot_with_a_failed_refresh_refuses_the_voucher() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let signer = TestSigner::new(21);
+        let fee_payer = signer.pubkey();
+        let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(signer));
+        config.withdraw_delay = 3600;
+        config.rpc_url = Some("http://127.0.0.1:1".to_string());
+        let handler = X402BatchSettlement::with_store(config, store.clone()).unwrap();
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, _, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        // Checked a minute ago: past the 30s window, well inside the old
+        // half-grace allowance.
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(|current| {
+                    let mut state = current.unwrap();
+                    state.onchain_checked_at = now_unix() - 60;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .is_err());
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.pending_deliveries.is_empty(), "nothing was reserved");
+    }
+
+    #[test]
+    fn the_snapshot_window_must_fit_inside_the_grace_period() {
+        let config = |snapshot_age: u64| {
+            let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(TestSigner::new(21)));
+            config.withdraw_delay = 900;
+            config.channel_snapshot_max_age_seconds = snapshot_age;
+            config
+        };
+        let store = || Arc::new(MemoryChannelStore::new()) as Arc<dyn ChannelStore>;
+        // 30s snapshot + 300s lease < 900s grace.
+        assert!(X402BatchSettlement::with_store(config(30), store()).is_ok());
+        assert!(X402BatchSettlement::with_store(config(599), store()).is_ok());
+        assert!(X402BatchSettlement::with_store(config(600), store()).is_err());
     }
 
     /// A voucher for a channel this store has no record of is refused, never
