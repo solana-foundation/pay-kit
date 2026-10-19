@@ -1009,8 +1009,9 @@ fn unix_now() -> i64 {
         })
 }
 
-/// Require a v2 credential to name the route's resource. Routes without a
-/// resource are unscoped.
+/// Reject a v2 credential that names a resource other than the route's.
+/// `resource` is optional on the v2 payload and unsigned, so an absent one
+/// is accepted; replay across routes is stopped by signature consumption.
 fn verify_resource_binding(
     presented: Option<&ResourceInfo>,
     requirements: &PaymentRequirements,
@@ -1027,10 +1028,7 @@ fn verify_resource_binding(
             "Resource mismatch: expected {}, got {}",
             expected.url, resource.url
         ))),
-        None => Err(Error::Other(format!(
-            "Credential is missing the resource {}",
-            expected.url
-        ))),
+        None => Ok(()),
     }
 }
 
@@ -2104,12 +2102,15 @@ mod tests {
             assert!(err.to_string().contains("Resource mismatch"), "{err}");
         }
 
+        // Clients that omit the optional resource are not rejected.
         let unbound = transaction_header(&route_a, None, &tx);
-        let err = x402
+        let omitted = x402
             .process_payment(&unbound, "0.01", resource_options("/route-a"))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("missing the resource"), "{err}");
+            .await;
+        assert!(
+            matches!(omitted, Ok(VerifiedExactPayment::Transaction(_))),
+            "{omitted:?}"
+        );
     }
 
     #[tokio::test]
