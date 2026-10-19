@@ -2055,11 +2055,14 @@ impl<S: ChannelStore> SessionServer<S> {
                                 "Channel is already sealed".to_string(),
                             ));
                         }
-                        if state.close_requested_at.is_some() {
-                            return Err(StoreError::Internal(
-                                "Channel close is pending — no further commits accepted"
-                                    .to_string(),
-                            ));
+                        // A delivery reserved before close was requested may
+                        // still commit until the finalizer fixes the sealed
+                        // amount (`freeze_watermark_at`); refusing it earlier
+                        // would strand a charge that was already served.
+                        if let Some(fence) = state.final_cumulative {
+                            return Err(StoreError::Internal(format!(
+                                "Channel close is pending — final watermark is fixed at {fence}"
+                            )));
                         }
                         if let Some(committed) = state
                             .committed_deliveries
@@ -2352,11 +2355,13 @@ impl<S: ChannelStore> SessionServer<S> {
                             .retain(|delivery| delivery.expires_at <= now as i64);
                     }
 
+                    // The client's final voucher is the sealed amount.
                     Ok(ChannelState {
                         cumulative: new_cumulative,
                         highest_voucher_signature: new_sig,
                         highest_voucher_expires_at: new_expires_at,
                         close_requested_at: Some(now),
+                        final_cumulative: Some(new_cumulative),
                         ..state
                     })
                 }),
@@ -5640,6 +5645,124 @@ mod tests {
             .begin_delivery(DeliveryRequest::new(channel_id, 1_000))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn reserved_delivery_commits_after_close_request_until_watermark_is_frozen() {
+        let (server, mut session, channel_id) = client_server().await;
+        let first = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 100))
+            .await
+            .unwrap();
+        let second = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 50))
+            .await
+            .unwrap();
+        // An idle-close worker claims the close while both deliveries are live.
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    assert!(state.has_blocking_authorization(unix_now_i64()));
+                    state.close_requested_at = Some(1);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 1))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("close is pending"));
+
+        // The served delivery's charge still lands in the watermark.
+        let receipt = server
+            .process_commit(&CommitPayload {
+                delivery_id: first.delivery_id,
+                voucher: session.sign_increment(100).await.unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipt.status, CommitStatus::Committed);
+        assert_eq!(receipt.cumulative, "100");
+
+        // Once the finalizer fixes the sealed amount, later commits are refused.
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    let cumulative = state.cumulative;
+                    state.freeze_watermark_at(cumulative);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let fenced = server
+            .process_commit(&CommitPayload {
+                delivery_id: second.delivery_id,
+                voucher: session.sign_increment(50).await.unwrap(),
+            })
+            .await
+            .unwrap_err();
+        assert!(fenced
+            .to_string()
+            .contains("final watermark is fixed at 100"));
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.cumulative, 100);
+    }
+
+    #[tokio::test]
+    async fn client_close_fences_commits_at_the_final_voucher() {
+        let (server, mut session, channel_id) = client_server().await;
+        let pending = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 50))
+            .await
+            .unwrap();
+        let params = server
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
+                authentication: None,
+                voucher: Some(session.sign_increment(100).await.unwrap()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(params.settled, 100);
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.final_cumulative, Some(100));
+        // The final voucher already paid for the live delivery, so it cannot
+        // commit on top of the sealed amount.
+        assert!(stored.pending_deliveries.is_empty());
+        assert!(server
+            .process_commit(&CommitPayload {
+                delivery_id: pending.delivery_id,
+                voucher: session.sign_increment(50).await.unwrap(),
+            })
+            .await
+            .is_err());
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.cumulative, 100);
     }
 
     #[tokio::test]
