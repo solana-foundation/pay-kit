@@ -1845,12 +1845,14 @@ impl<S: ChannelStore> SessionServer<S> {
                                     .to_string(),
                             ));
                         }
-                        let pending_total = state
+                        let reserved = state
                             .pending_deliveries
                             .iter()
-                            .map(|delivery| delivery.amount)
-                            .sum::<u64>();
-                        if state.cumulative + pending_total + amount > state.deposit {
+                            .try_fold(state.cumulative, |total, delivery| {
+                                total.checked_add(delivery.amount)
+                            })
+                            .and_then(|total| total.checked_add(amount));
+                        if reserved.is_none_or(|reserved| reserved > state.deposit) {
                             return Err(StoreError::Internal(format!(
                                 "Delivery amount {amount} exceeds available deposit"
                             )));
@@ -1976,6 +1978,12 @@ impl<S: ChannelStore> SessionServer<S> {
                 state.cumulative
             )));
         }
+        if new_cumulative > state.deposit {
+            return Err(Error::Other(format!(
+                "Commit cumulative {new_cumulative} exceeds deposit {}",
+                state.deposit
+            )));
+        }
         verify_signature(
             &payload.voucher,
             &state.authorized_signer,
@@ -2045,6 +2053,12 @@ impl<S: ChannelStore> SessionServer<S> {
                             return Err(StoreError::Internal(format!(
                                 "Commit cumulative {new_cumulative} must exceed watermark {}",
                                 state.cumulative
+                            )));
+                        }
+                        if new_cumulative > state.deposit {
+                            return Err(StoreError::Internal(format!(
+                                "Commit cumulative {new_cumulative} exceeds deposit {}",
+                                state.deposit
                             )));
                         }
                         let actual_amount = new_cumulative - state.cumulative;
@@ -2286,6 +2300,13 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?
             .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
+        // The program rejects a voucher above the escrow; never hand one out.
+        if state.cumulative > state.deposit {
+            return Err(Error::Other(format!(
+                "Channel {channel_id} cumulative {} exceeds deposit {}",
+                state.cumulative, state.deposit
+            )));
+        }
 
         let channel_pubkey = parse_pubkey(channel_id)?;
         let recipient_pubkey = parse_pubkey(&self.config.recipient)?;
@@ -5034,6 +5055,96 @@ mod tests {
             server.seal_params(&channel_id).await.unwrap().settled,
             route_price
         );
+    }
+
+    #[tokio::test]
+    async fn metered_commit_above_deposit_is_rejected() {
+        let (server, mut session, channel_id) = client_server().await;
+        server
+            .verify_voucher(&voucher_payload(session.sign_voucher(100).await.unwrap()))
+            .await
+            .unwrap();
+        let directive = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 900))
+            .await
+            .unwrap();
+        server
+            .verify_voucher(&voucher_payload(session.sign_voucher(200).await.unwrap()))
+            .await
+            .unwrap();
+
+        for over in [1_001, 1_100] {
+            let error = server
+                .process_commit(&CommitPayload {
+                    delivery_id: directive.delivery_id.clone(),
+                    voucher: session.prepare_voucher(over).await.unwrap(),
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("exceeds deposit"), "{error}");
+        }
+        let state = stored(&server, &channel_id).await;
+        assert_eq!(state.cumulative, 200);
+        assert_eq!(state.pending_deliveries.len(), 1);
+        assert_eq!(server.seal_params(&channel_id).await.unwrap().settled, 200);
+
+        // Committing up to the escrow cap still works.
+        let receipt = server
+            .process_commit(&CommitPayload {
+                delivery_id: directive.delivery_id,
+                voucher: session.prepare_voucher(1_000).await.unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (receipt.amount.as_str(), receipt.cumulative.as_str()),
+            ("800", "1000")
+        );
+        assert_eq!(
+            server.seal_params(&channel_id).await.unwrap().settled,
+            1_000
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_reservation_overflow_is_rejected() {
+        let (server, _session, channel_id) = client_server().await;
+        server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 600))
+            .await
+            .unwrap();
+        for amount in [u64::MAX, u64::MAX - 599, 401] {
+            assert!(server
+                .begin_delivery(DeliveryRequest::new(channel_id.clone(), amount))
+                .await
+                .is_err());
+        }
+        server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 400))
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(&server, &channel_id).await.pending_deliveries.len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn seal_params_refuses_a_watermark_above_deposit() {
+        let (server, _session, channel_id) = client_server().await;
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.cumulative = state.deposit + 1;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(server.seal_params(&channel_id).await.is_err());
     }
 
     #[tokio::test]
