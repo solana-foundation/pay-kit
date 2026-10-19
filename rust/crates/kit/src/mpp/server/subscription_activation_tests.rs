@@ -928,3 +928,57 @@ fn issued_challenge_passes_client_method_details_validation() {
     let request: SubscriptionRequest = challenge.request.decode().unwrap();
     request.validated_method_details().unwrap();
 }
+
+// ── SOLA1-199: challenges are bound to the server's network ────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn challenge_from_another_network_is_rejected() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(program_owner(), fresh_activation_state(&scenario)).await;
+    let devnet = SubscriptionServer::new(SubscriptionConfig {
+        network: "devnet".into(),
+        ..scenario.config(&rpc.url)
+    })
+    .unwrap();
+    let mainnet = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&devnet).await;
+
+    let err = mainnet.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("network"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+
+    devnet
+        .verify_credential(&credential)
+        .await
+        .expect("the issuing network accepts its own challenge");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn challenge_without_a_network_is_rejected() {
+    let scenario = Scenario::new();
+    let server = scenario.server("http://127.0.0.1:1");
+    let issued = server.subscription_challenge(&AMOUNT.to_string()).unwrap();
+    let mut request: SubscriptionRequest = issued.request.decode().unwrap();
+    request
+        .method_details
+        .as_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("network");
+    let challenge = PaymentChallenge::with_challenge_binding_secret_full(
+        "test-secret",
+        "test-realm",
+        "solana",
+        "subscription",
+        crate::mpp::protocol::core::Base64UrlJson::from_typed(&request).unwrap(),
+        issued.expires.as_deref(),
+        None,
+        None,
+        None,
+    );
+    let credential = PaymentCredential::new(challenge.to_echo(), serde_json::json!({}));
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("network"), "{}", err.message);
+}

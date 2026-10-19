@@ -478,6 +478,12 @@ impl SubscriptionServer {
                 "methodDetails.planAddress does not match this server",
             ));
         }
+        if method_details.network.as_deref() != Some(self.config.network.as_str()) {
+            return Err(VerificationError::wrong_network(format!(
+                "methodDetails.network does not match this server (expected `{}`)",
+                self.config.network
+            )));
+        }
 
         if credential
             .payload
@@ -542,6 +548,10 @@ impl SubscriptionServer {
                     )
                 })?;
                 let mut tx = decode_base64_transaction(tx_b64)?;
+                crate::mpp::server::charge::check_network_blockhash(
+                    &self.config.network,
+                    &tx.message.recent_blockhash().to_string(),
+                )?;
                 // Envelope: accepted version, no lookup tables, size within the
                 // version's limit; then the version-1 header config against the
                 // activation compute caps.
