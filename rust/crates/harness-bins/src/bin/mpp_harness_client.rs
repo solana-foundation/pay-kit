@@ -21,7 +21,9 @@ fn write_stdout_line(line: &str) {
         Err(err) => panic!("failed printing to stdout: {err}"),
     }
 }
-use solana_pay_kit::mpp::client::build_credential_header;
+use solana_pay_kit::mpp::client::{
+    build_credential_header_with_options, BuildChargeTransactionOptions,
+};
 use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 use solana_pay_kit::mpp::{
     parse_www_authenticate_all, AUTHORIZATION_HEADER, WWW_AUTHENTICATE_HEADER,
@@ -54,7 +56,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or_else(|| "server did not return a supported Payment challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
-    let authorization = build_credential_header(&signer, &rpc, &challenge).await?;
+    // The harness funds split ATA rent from the client wallet on servers
+    // without a fee payer.
+    let authorization = build_credential_header_with_options(
+        &signer,
+        &rpc,
+        &challenge,
+        BuildChargeTransactionOptions {
+            allow_payer_funded_ata_creation: true,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     let paid_response = http
         .get(&target_url)
