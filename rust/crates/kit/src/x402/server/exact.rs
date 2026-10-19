@@ -866,6 +866,11 @@ impl X402 {
                 )
                 .map_err(|e| Error::Other(format!("Invalid transaction: {e}")))?;
                 verify_transaction_details(&tx, requirements)?;
+                crate::x402::protocol::schemes::exact::verify_transaction_age(
+                    &tx,
+                    requirements,
+                    unix_now(),
+                )?;
                 Ok(VerifiedExactPayment::Signature(signature))
             }
         }
@@ -994,6 +999,14 @@ fn strip_blockhash_hints(value: &mut serde_json::Value) {
         extra.remove("recentBlockhash");
         extra.remove("lastValidBlockHeight");
     }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Require a v2 credential to name the route's resource. Routes without a
@@ -2287,6 +2300,46 @@ mod tests {
                 .await,
             Ok(VerifiedExactPayment::Signature(_))
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_signature_older_than_max_age_is_rejected() {
+        // `config()` advertises `maxTimeoutSeconds: 60`.
+        let requirements = X402::new(config())
+            .unwrap()
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        assert_eq!(requirements.to_accepted_value()["maxTimeoutSeconds"], 60);
+        let payer = Pubkey::new_unique();
+        let now = now_unix();
+        let cases = [
+            (Some(now - 3_600), false),
+            (Some(now - 70), false),
+            (None, false),
+            (Some(now - 50), true),
+            (Some(now), true),
+        ];
+        let confirmed: Vec<_> = cases
+            .iter()
+            .map(|(block_time, _)| {
+                confirmed_transfer(&requirements, &payer, 10_000, 6, *block_time)
+            })
+            .collect();
+        let x402 = with_rpc(
+            X402::new(config()).unwrap(),
+            mock_rpc_with_transactions(&confirmed),
+        );
+        let header = signature_header(
+            &requirements,
+            &solana_signature::Signature::from([8u8; 64]).to_string(),
+        );
+
+        for (block_time, fresh) in cases {
+            let result = x402
+                .process_payment(&header, "0.01", ExactOptions::default())
+                .await;
+            assert_eq!(result.is_ok(), fresh, "{block_time:?}: {result:?}");
+        }
     }
 
     // ── is_loopback_rpc ────────────────────────────────────────────────────

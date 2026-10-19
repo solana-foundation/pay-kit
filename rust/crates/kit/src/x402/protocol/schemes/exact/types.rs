@@ -5,6 +5,9 @@ use crate::x402::SOLANA_NETWORK;
 /// Exact payment scheme identifier.
 pub const EXACT_SCHEME: &str = "exact";
 
+/// `maxTimeoutSeconds` advertised when a requirement sets no `max_age`.
+pub(crate) const DEFAULT_MAX_TIMEOUT_SECONDS: u64 = 300;
+
 /// Maximum memo bytes accepted by the canonical SVM exact scheme.
 pub const MAX_MEMO_BYTES: usize = 256;
 
@@ -287,7 +290,7 @@ impl PaymentRequirements {
             "amount": self.amount.clone(),
             "asset": self.currency.clone(),
             "payTo": self.recipient.clone(),
-            "maxTimeoutSeconds": self.max_age.unwrap_or(300),
+            "maxTimeoutSeconds": self.max_age.unwrap_or(DEFAULT_MAX_TIMEOUT_SECONDS),
             "extra": self.canonical_extra_value(),
         })
     }

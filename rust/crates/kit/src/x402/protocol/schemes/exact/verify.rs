@@ -56,6 +56,29 @@ pub fn verify_transaction_details(
     Ok(())
 }
 
+/// Reject a confirmed payment older than the requirement's advertised
+/// validity window (`maxTimeoutSeconds`). A transaction without a block time
+/// cannot be shown to be fresh.
+pub(crate) fn verify_transaction_age(
+    tx: &EncodedConfirmedTransactionWithStatusMeta,
+    requirements: &PaymentRequirements,
+    now_unix: i64,
+) -> Result<(), Error> {
+    let max_age = requirements
+        .max_age
+        .unwrap_or(super::DEFAULT_MAX_TIMEOUT_SECONDS);
+    let block_time = tx
+        .block_time
+        .ok_or_else(|| Error::Other("invalid_exact_svm_payload_missing_block_time".into()))?;
+    let age = now_unix.saturating_sub(block_time);
+    if age > i64::try_from(max_age).unwrap_or(i64::MAX) {
+        return Err(Error::Other(format!(
+            "invalid_exact_svm_payload_expired: confirmed {age}s ago, accepted for {max_age}s"
+        )));
+    }
+    Ok(())
+}
+
 /// Find a `transferChecked` instruction matching the route's requirements in
 /// the encoded transaction's instruction list.
 ///
