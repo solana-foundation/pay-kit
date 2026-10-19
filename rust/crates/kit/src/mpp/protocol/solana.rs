@@ -53,6 +53,18 @@ pub fn validate_network(network: &str) -> Result<(), crate::mpp::error::Error> {
     }
 }
 
+/// Canonical slug of a challenge's `methodDetails.network`, `None` for an
+/// unsupported value. An omitted network is the spec's mainnet default;
+/// `mainnet-beta` is accepted from servers as the legacy mainnet spelling.
+pub(crate) fn canonical_network(network: Option<&str>) -> Option<&'static str> {
+    match network {
+        None | Some(NETWORK_MAINNET) | Some("mainnet-beta") => Some(NETWORK_MAINNET),
+        Some(NETWORK_DEVNET) => Some(NETWORK_DEVNET),
+        Some(NETWORK_LOCALNET) => Some(NETWORK_LOCALNET),
+        Some(_) => None,
+    }
+}
+
 /// Default RPC URLs per network. Inputs are expected to be canonical
 /// slugs (see `validate_network`); unknown slugs fall through to the
 /// mainnet RPC for backwards compatibility, but `validate_network` at
