@@ -1014,6 +1014,26 @@ impl Mpp {
             ));
         }
 
+        // Settlement derives the mint and accounts from this network, so a
+        // challenge for another network must not settle here. An omitted
+        // network is the protocol default.
+        let network = request
+            .method_details
+            .as_ref()
+            .and_then(|md| md.get("network"))
+            .map(|network| network.as_str().ok_or(()))
+            .transpose()
+            .map_err(|()| {
+                VerificationError::invalid_payload("methodDetails.network must be a string")
+            })?
+            .unwrap_or("mainnet");
+        if network != self.network {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Credential network '{network}' does not match this server (expected '{}')",
+                self.network
+            )));
+        }
+
         Ok(())
     }
 
@@ -4881,7 +4901,7 @@ mod tests {
             amount: "100000".to_string(),
             currency: "USDC".to_string(),
             recipient: Some(TEST_RECIPIENT.to_string()),
-            method_details: Some(serde_json::json!({ "confidential": true })),
+            method_details: Some(serde_json::json!({ "network": "devnet", "confidential": true })),
             ..Default::default()
         };
 
@@ -7285,6 +7305,7 @@ mod tests {
             amount: "100000".to_string(),
             currency: "USDC".to_string(),
             recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::json!({ "network": "devnet" })),
             ..Default::default()
         };
         // Payload missing the "type" tag needed for CredentialPayload deserialization.
@@ -8438,6 +8459,78 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    // A worker on network B handed a challenge authenticated for network A
+    // (same secret, realm, recipient) with that challenge's own request must
+    // not settle it on B.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_for_another_network_is_rejected() {
+        let server = |network: &str| {
+            Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                currency: "SOL".to_string(),
+                decimals: 9,
+                network: network.to_string(),
+                rpc_url: Some("http://127.0.0.1:1".to_string()),
+                realm: Some("test-realm".to_string()),
+                store: Some(Arc::new(MemoryStore::new())),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let issued = |network: Option<&str>| {
+            let mut details = serde_json::json!({ "decimals": 9 });
+            if let Some(network) = network {
+                details["network"] = serde_json::json!(network);
+            }
+            ChargeRequest {
+                amount: "1000".into(),
+                currency: "SOL".into(),
+                recipient: Some(TEST_RECIPIENT.into()),
+                method_details: Some(details),
+                ..Default::default()
+            }
+        };
+        let devnet = server("devnet");
+        let request = issued(Some("devnet"));
+        let credential = build_credential(
+            &devnet,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        );
+        let err = server("localnet")
+            .verify(&credential, &request)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("network 'devnet'"), "{}", err.message);
+        let err = devnet.verify(&credential, &request).await.unwrap_err();
+        assert!(!err.message.contains("network"), "{}", err.message);
+
+        // An omitted network means mainnet.
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
+            TEST_SECRET,
+            "test-realm",
+            METHOD_NAME,
+            "charge",
+            Base64UrlJson::from_typed(&issued(None)).unwrap(),
+            Some(&crate::mpp::expires::minutes(5)),
+            None,
+            None,
+            None,
+        );
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        );
+        let err = devnet.verify(&credential, &issued(None)).await.unwrap_err();
+        assert!(err.message.contains("network 'mainnet'"), "{}", err.message);
+        let err = server("mainnet")
+            .verify(&credential, &issued(None))
+            .await
+            .unwrap_err();
+        assert!(!err.message.contains("network"), "{}", err.message);
     }
 
     // ── Replay protection tests ──
