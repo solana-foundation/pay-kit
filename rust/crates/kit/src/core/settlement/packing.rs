@@ -12,7 +12,7 @@
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
-use crate::core::tx::{measure, ComputeBudget, TxVersion};
+use crate::core::tx::{build_unsigned_unchecked, check_limits, measure, ComputeBudget, TxVersion};
 use crate::core::Result;
 
 /// One channel operation's instructions, tagged with its id for tracing,
@@ -39,9 +39,10 @@ pub fn tx_size(
 /// The shared batch-boundary rule for greedy packing: whether appending a
 /// group whose flattened instructions are `next` to a current batch holding
 /// `cur_group_count` groups (flattened to `cur`) would overflow the caller's
-/// operation-specific cap or the version's size limit. A group that cannot be
-/// measured counts as overflowing, so it is sealed into its own batch and
-/// surfaces as an error at build time rather than being dropped.
+/// operation-specific cap or any of the version's wire limits (size, static
+/// accounts, instructions, signatures). A group that cannot be compiled counts
+/// as overflowing, so it is sealed into its own batch and surfaces as an error
+/// at build time rather than being dropped.
 ///
 /// Used by both [`pack`] and the worker's `regroup` so the packing rule lives
 /// in one place. Note: it rebuilds and serializes the candidate message on each
@@ -61,10 +62,26 @@ pub fn would_overflow_tx(
     }
     let mut probe: Vec<Instruction> = cur.to_vec();
     probe.extend_from_slice(next);
-    match tx_size(version, &probe, payer, budget) {
-        Ok(size) => size > version.limits().max_bytes,
-        Err(_) => true,
-    }
+    !fits_tx(version, &probe, payer, budget)
+}
+
+/// Whether `instructions` compile into a `version` transaction within every
+/// one of the version's wire limits.
+pub fn fits_tx(
+    version: TxVersion,
+    instructions: &[Instruction],
+    payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
+) -> bool {
+    build_unsigned_unchecked(
+        version,
+        payer,
+        instructions,
+        solana_hash::Hash::default(),
+        budget,
+    )
+    .and_then(|tx| check_limits(&tx, version))
+    .is_ok()
 }
 
 /// Greedily group channel operations into `version`-sized batches. Each
@@ -211,6 +228,56 @@ mod tests {
                 max_reclaims_per_tx(version),
                 "version {version} reclaim cap must match the calibrated wire limits"
             );
+        }
+    }
+
+    /// Groups that fit the byte limit can still exceed the static-account
+    /// limit; packing must split there instead of handing the worker a
+    /// transaction that fails its checked build.
+    #[test]
+    fn pack_splits_at_the_static_account_limit() {
+        let operator = pk(0xAA, 0);
+        let program = pk(0xBB, 0);
+        let group = |i: u64| ChannelInstructionGroup {
+            channel_id: format!("c{i}"),
+            instructions: vec![Instruction::new_with_bytes(
+                program,
+                &[0u8; 4],
+                (0..11)
+                    .map(|j| {
+                        solana_instruction::AccountMeta::new_readonly(pk(0x05, i * 100 + j), false)
+                    })
+                    .collect(),
+            )],
+        };
+        let version = TxVersion::V1;
+        let channels: Vec<_> = (0..6).map(group).collect();
+        let flat: Vec<Instruction> = channels
+            .iter()
+            .flat_map(|c| c.instructions.iter().cloned())
+            .collect();
+        assert!(
+            tx_size(version, &flat, &operator, None).unwrap() <= version.limits().max_bytes,
+            "the shape fits by bytes alone"
+        );
+        assert!(!fits_tx(version, &flat, &operator, None));
+
+        let batches = pack(version, channels, &operator, None, 1_000);
+        assert!(batches.len() > 1);
+        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), 6);
+        for batch in &batches {
+            let flat: Vec<Instruction> = batch
+                .iter()
+                .flat_map(|c| c.instructions.iter().cloned())
+                .collect();
+            crate::core::tx::build_unsigned(
+                version,
+                &operator,
+                &flat,
+                solana_hash::Hash::default(),
+                None,
+            )
+            .expect("every packed batch passes the checked build");
         }
     }
 

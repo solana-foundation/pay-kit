@@ -110,32 +110,18 @@ pub fn check_limits(tx: &VersionedTransaction, version: TxVersion) -> Result<usi
 /// Serialized size the transaction would have once built and signed. The
 /// blockhash does not affect size, so this is exact for packing decisions.
 /// Errors only when the instructions cannot be compiled into `version` at all;
-/// an over-limit size is returned, not rejected, so packers can probe.
+/// an over-limit size is returned, not rejected, so packers can probe. Size is
+/// only one of the version's limits: use [`check_limits`] on the built
+/// transaction to decide whether it is buildable.
 pub fn measure(
     version: TxVersion,
     fee_payer: &Pubkey,
     instructions: &[Instruction],
     budget: Option<&ComputeBudget>,
 ) -> Result<usize> {
-    match build_unsigned(version, fee_payer, instructions, Hash::default(), budget) {
-        Ok(tx) => serialized_size(&tx),
-        Err(e) => {
-            // Over-limit is a measurement result, not a compile failure.
-            let text = e.to_string();
-            if text.contains("over the") {
-                let probe = build_unsigned_unchecked(
-                    version,
-                    fee_payer,
-                    instructions,
-                    Hash::default(),
-                    budget,
-                )?;
-                serialized_size(&probe)
-            } else {
-                Err(e)
-            }
-        }
-    }
+    let probe =
+        build_unsigned_unchecked(version, fee_payer, instructions, Hash::default(), budget)?;
+    serialized_size(&probe)
 }
 
 /// [`build_unsigned`] without the limit checks: for callers that measure and
