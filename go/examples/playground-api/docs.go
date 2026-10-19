@@ -88,17 +88,16 @@ func registerDocs(mux *http.ServeMux, a *app) {
 		if rel == "" {
 			rel = "README.md"
 		}
-		langRoot := filepath.Join(root, lang)
-		abs, ok := safeJoin(langRoot, rel)
-		if !ok {
+		rel = filepath.FromSlash(rel)
+		if !filepath.IsLocal(rel) {
 			writeJSONError(w, http.StatusBadRequest, "unsafe_path")
 			return
 		}
-		if !strings.HasSuffix(abs, ".md") {
+		if !strings.HasSuffix(rel, ".md") {
 			writeJSONError(w, http.StatusBadRequest, "not_markdown")
 			return
 		}
-		content, err := os.ReadFile(abs)
+		content, err := readInRoot(filepath.Join(root, lang), rel)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{
 				"error":  "not_found",
@@ -157,14 +156,15 @@ func buildDocsTree(absDir, relDir string) ([]docsTreeNode, error) {
 	return nodes, nil
 }
 
-// safeJoin joins rel onto root and rejects any path escaping the root.
-func safeJoin(root, rel string) (string, bool) {
-	joined := filepath.Join(root, filepath.FromSlash(rel))
-	relBack, err := filepath.Rel(root, joined)
-	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) {
-		return "", false
+// readInRoot reads rel from dir, refusing any path (or symlink) that
+// escapes dir.
+func readInRoot(dir, rel string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
 	}
-	return joined, true
+	defer root.Close()
+	return root.ReadFile(rel)
 }
 
 // docsRecipeSlug maps a docs language to its justfile recipe suffix.

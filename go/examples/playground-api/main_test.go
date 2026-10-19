@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -574,5 +576,60 @@ func TestSummarizeUsageClampsBilling(t *testing.T) {
 	billed, tokens = summarizeUsage(10_000_000, 100_000)
 	if billed != 100_000 || tokens <= 1 {
 		t.Fatalf("large usage = %d/%d, want clamped billed units", billed, tokens)
+	}
+}
+
+func TestStaticFilesStayInsideTheirRoot(t *testing.T) {
+	repoRoot := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(target, rel string) {
+		t.Helper()
+		if err := os.Symlink(filepath.Join(repoRoot, target), filepath.Join(repoRoot, filepath.FromSlash(rel))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("secret.md", "secret")
+	write("docs/api/go/README.md", "readme")
+	link("secret.md", "docs/api/go/leak.md")
+	write("playground/app/dist/index.html", "index")
+	write("playground/app/dist/app.js", "app")
+	link("secret.md", "playground/app/dist/leak.js")
+
+	t.Setenv("DOCS_ROOT", "")
+	mux := http.NewServeMux()
+	registerDocs(mux, &app{repoRoot: repoRoot})
+	registerSPA(mux, repoRoot)
+	get := func(target string) (int, string) {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		return recorder.Code, recorder.Body.String()
+	}
+
+	if code, body := get("/api/v1/docs/go/file?path=README.md"); code != http.StatusOK || body != "readme" {
+		t.Fatalf("docs readme: %d %q", code, body)
+	}
+	if code, body := get("/api/v1/docs/go/file?path=leak.md"); code != http.StatusNotFound || body == "secret" {
+		t.Fatalf("docs symlink escape: %d %q", code, body)
+	}
+	if code, body := get("/api/v1/docs/go/file?path=..%2F..%2F..%2Fsecret.md"); code != http.StatusBadRequest {
+		t.Fatalf("docs traversal: %d %q", code, body)
+	}
+	if code, body := get("/app.js"); code != http.StatusOK || body != "app" {
+		t.Fatalf("spa asset: %d %q", code, body)
+	}
+	if code, body := get("/leak.js"); code != http.StatusOK || body != "index" {
+		t.Fatalf("spa symlink escape: %d %q", code, body)
+	}
+	if code, body := get("/missing/route"); code != http.StatusOK || body != "index" {
+		t.Fatalf("spa fallback: %d %q", code, body)
 	}
 }

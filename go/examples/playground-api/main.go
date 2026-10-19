@@ -19,8 +19,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -396,15 +398,16 @@ func registerSPA(mux *http.ServeMux, repoRoot string) {
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if dist != "" {
-			candidate := filepath.Join(dist, filepath.FromSlash(r.URL.Path))
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				http.ServeFile(w, r, candidate)
-				return
-			}
-			index := filepath.Join(dist, "index.html")
-			if _, err := os.Stat(index); err == nil {
-				http.ServeFile(w, r, index)
-				return
+			if root, err := os.OpenRoot(dist); err == nil {
+				defer root.Close()
+				name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+				if info, err := root.Stat(name); err != nil || info.IsDir() {
+					name = "index.html"
+				}
+				if _, err := root.Stat(name); err == nil {
+					http.ServeFileFS(w, r, root.FS(), name)
+					return
+				}
 			}
 		}
 		writeJSONError(w, http.StatusNotFound,
