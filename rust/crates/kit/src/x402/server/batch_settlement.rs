@@ -2127,6 +2127,22 @@ impl X402BatchSettlement {
             .authorization
             .as_ref()
             .and_then(|authorization| state.committed_authorization(&authorization.id));
+        // `accepted` is unsigned, so the voucher alone does not pin the price
+        // it paid. Replay only for the request that committed it: a repeat
+        // presented to a differently priced route must not inherit its result.
+        if let (Some(committed), Some(authorization)) = (committed, outcome.authorization.as_ref())
+        {
+            if committed.request_fingerprint.as_deref() != Some(authorization.fingerprint.as_str())
+            {
+                return Err(batch_err(
+                    codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                    format!(
+                        "authorization {} was committed for different payment requirements",
+                        authorization.id
+                    ),
+                ));
+            }
+        }
         let cached = committed.and_then(|committed| committed.cached_response.clone());
         let stored = committed
             .and_then(|committed| committed.settlement_response.clone())
@@ -3918,6 +3934,80 @@ mod tests {
             panic!("a committed authorization must replay");
         };
         assert_eq!(replayed_cached, Some(cached));
+    }
+
+    /// A repeat of a committed voucher presented to a higher-priced route,
+    /// with `accepted.amount` rewritten to match it, is refused rather than
+    /// replayed: the original settlement and cached body belong to the route
+    /// that was paid for.
+    #[tokio::test]
+    async fn a_replay_is_bound_to_the_route_that_committed_it() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let low = handler.requirements("0.001").unwrap();
+        let high = handler.requirements("0.002").unwrap();
+        let (key, config, channel) = client(&fee_payer, &low);
+        store
+            .put_channel(
+                &pc::pubkey_string(&channel),
+                seeded(&channel, &config, 5_000, 0),
+            )
+            .await
+            .unwrap();
+        let repeated = voucher(&key, &channel, 1_000);
+        let payload = || BatchPayload::Voucher {
+            channel_config: config.clone(),
+            voucher: repeated.clone(),
+        };
+        let low_request = header(&low, payload());
+
+        let BatchAccess::Serve(first) = handler
+            .verify_and_reserve_payment(&low_request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("the low-priced request is served");
+        };
+        handler.mark_handler_succeeded(&first).await.unwrap();
+        handler.finish_commit(&first).await.unwrap();
+        handler
+            .cache_response(
+                &first,
+                crate::core::store::CachedUpstreamResponse {
+                    status: 200,
+                    content_type: None,
+                    headers: vec![],
+                    body: b"low-route body".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        drop(first);
+
+        let err = handler
+            .verify_and_reserve_payment(&header(&high, payload()), "0.002")
+            .await
+            .expect_err("a cross-price replay must be refused");
+        assert!(
+            err.to_string()
+                .contains(codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH),
+            "{err}"
+        );
+        let state = store
+            .get_channel(&pc::pubkey_string(&channel))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 1_000);
+
+        // The route that committed it still replays its own result.
+        assert!(matches!(
+            handler
+                .verify_and_reserve_payment(&low_request, "0.001")
+                .await
+                .unwrap(),
+            BatchAccess::Replay(_, Some(_))
+        ));
     }
 
     /// A served request is still charged when the success marker could not be
