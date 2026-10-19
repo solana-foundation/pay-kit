@@ -796,10 +796,43 @@ impl X402Upto {
     /// voucher authorization rides inside the `settle_and_seal` instruction
     /// data, not as a transaction signature — so the worker can sign the
     /// envelope on the caller's behalf.
+    ///
+    /// When the payer has closed its token account since the open, the
+    /// `distribute` that refunds it would fail and take the charge down with
+    /// it, so only `settle_and_seal` is emitted: the charge is locked onchain
+    /// and the permissionless `distribute` pays both sides once the payer
+    /// recreates the account to collect its refund. The account is never
+    /// recreated at the fee payer's expense, which the payer could farm.
     pub async fn settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
+    ) -> Result<Vec<Instruction>, Error> {
+        let (payer_token, _) =
+            pc::find_associated_token_address(&open.payer, &open.mint, &open.token_program);
+        // Only a confirmed absence drops `distribute`; on an RPC error the
+        // atomic transaction itself is the safeguard.
+        let distribute = !matches!(
+            self.rpc
+                .get_account_with_commitment(&payer_token, self.rpc.commitment())
+                .map(|response| response.value),
+            Ok(None)
+        );
+        if !distribute {
+            tracing::warn!(
+                channel = %open.channel_id,
+                "upto payer token account is gone; sealing the charge without distributing"
+            );
+        }
+        self.build_settlement_instructions(open, actual, distribute)
+            .await
+    }
+
+    async fn build_settlement_instructions(
+        &self,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+        distribute: bool,
     ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
         // The voucher is signed by this server, so its deadline is chosen here
@@ -840,6 +873,9 @@ impl X402Upto {
             )?
         };
 
+        if !distribute {
+            return Ok(instructions);
+        }
         let payee = open.payee;
         instructions.push(pc::build_create_associated_token_account_instruction(
             &self.fee_payer,
@@ -2227,7 +2263,10 @@ mod tests {
         let now = now_unix();
         open.expires_at = now + 1;
 
-        let instructions = engine.settlement_instructions(&open, 400).await.unwrap();
+        let instructions = engine
+            .build_settlement_instructions(&open, 400, true)
+            .await
+            .unwrap();
         let expiry = settled_voucher_expiry(&instructions, &open, 400);
         assert!(
             expiry >= now + 300,
@@ -2235,7 +2274,10 @@ mod tests {
         );
 
         open.expires_at = now - 10;
-        let instructions = engine.settlement_instructions(&open, 400).await.unwrap();
+        let instructions = engine
+            .build_settlement_instructions(&open, 400, true)
+            .await
+            .unwrap();
         assert!(settled_voucher_expiry(&instructions, &open, 400) > now);
     }
 
@@ -2302,6 +2344,38 @@ mod tests {
         let accepted_a = serde_json::to_value(&a).unwrap();
         assert!(match_offered_requirement(std::slice::from_ref(&b), &accepted_a).is_err());
         assert!(match_offered_requirement(std::slice::from_ref(&a), &accepted_a).is_ok());
+    }
+
+    /// A payer that closed its token account after the open cannot make the
+    /// settlement fail as a whole: the charge is sealed without the refund.
+    #[tokio::test]
+    async fn settlement_without_a_payer_account_still_seals_the_charge() {
+        let engine = multi_currency_engine(&["USDC"]);
+        let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        let program_id = pc::default_program_id();
+        let is_distribute = |ix: &Instruction| {
+            ix.program_id == program_id && ix.accounts.iter().any(|meta| meta.pubkey == open.payer)
+        };
+
+        let full = engine
+            .build_settlement_instructions(&open, 400, true)
+            .await
+            .unwrap();
+        assert!(full.last().is_some_and(is_distribute));
+
+        let sealed_only = engine
+            .build_settlement_instructions(&open, 400, false)
+            .await
+            .unwrap();
+        assert!(!sealed_only.iter().any(is_distribute));
+        assert!(
+            sealed_only
+                .iter()
+                .all(|ix| ix.program_id != pc::associated_token_program_id()),
+            "no account is created at the fee payer's expense"
+        );
+        assert!(sealed_only.iter().any(|ix| ix.program_id == program_id));
+        assert!(settled_voucher_expiry(&sealed_only, &open, 400) > now_unix());
     }
 
     fn multi_currency_engine(symbols: &[&str]) -> X402Upto {
