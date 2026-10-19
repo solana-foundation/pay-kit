@@ -1125,7 +1125,7 @@ impl Mpp {
                 "Expired channel challenge has no submitted payment to reconcile",
             ));
         }
-        match charge_store
+        let generation = match charge_store
             .reserve(&challenge_id, &digest, CHARGE_RESERVATION_LEASE)
             .await
             .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
@@ -1155,8 +1155,8 @@ impl Mpp {
                     "This challenge was already presented with a different request or credential",
                 ));
             }
-            ChargeReservation::Reserved => {}
-        }
+            ChargeReservation::Reserved { generation } => generation,
+        };
 
         // Settle, with the consume_signature reservation sitting between
         // broadcast and confirmation polling. If the server crashes or the
@@ -1187,12 +1187,20 @@ impl Mpp {
             }
             Err(err) => {
                 if method_details.channel_charge.is_none() {
-                    if let Err(e) = charge_store.mark_failed(&challenge_id, &err.message).await {
-                        tracing::warn!(
+                    match charge_store
+                        .mark_failed(&challenge_id, generation, &err.message)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => tracing::warn!(
+                            challenge_id = %challenge_id,
+                            "charge reservation was superseded; failure not recorded"
+                        ),
+                        Err(e) => tracing::warn!(
                             error = %e,
                             challenge_id = %challenge_id,
                             "failed to persist failed charge record"
-                        );
+                        ),
                     }
                 }
                 Err(err)

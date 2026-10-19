@@ -202,10 +202,10 @@ pub struct ChargeRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChargeReservation {
     /// First presentation of this challenge id + digest (or a prior
-    /// reservation's lease expired). The caller now owns this record and
-    /// MUST eventually call `mark_confirmed` or `mark_failed` — no other
-    /// concurrent caller can also receive `Reserved` for the same key.
-    Reserved,
+    /// reservation's lease expired). The caller now owns `generation` of this
+    /// record and MUST eventually call `mark_confirmed` or `mark_failed` — no
+    /// other caller can receive `Reserved` for the same generation.
+    Reserved { generation: u64 },
     /// An earlier presentation with the same digest already confirmed.
     /// Return `final_signature` to the caller instead of re-settling.
     AlreadyConfirmed { final_signature: String },
@@ -221,8 +221,19 @@ pub enum ChargeReservation {
     Conflict,
 }
 
-fn charge_record_key(challenge_id: &str) -> String {
-    format!("solana-charge:record:{challenge_id}")
+/// Bound on a record's generation chain. Each generation past the first is
+/// an expired-lease takeover or a terminal outcome, so this is never reached
+/// by a live challenge.
+const MAX_CHARGE_RECORD_GENERATIONS: u64 = 64;
+
+/// Key of `generation` of a charge record. Generation 0 keeps the original
+/// key, so records written before generations existed read as generation 0.
+fn charge_record_key(challenge_id: &str, generation: u64) -> String {
+    if generation == 0 {
+        format!("solana-charge:record:{challenge_id}")
+    } else {
+        format!("solana-charge:record:{challenge_id}:{generation}")
+    }
 }
 
 fn now_unix() -> i64 {
@@ -231,14 +242,11 @@ fn now_unix() -> i64 {
 
 /// Idempotent charge-settlement ledger built on top of a plain [`Store`].
 ///
-/// Only the caller that receives [`ChargeReservation::Reserved`] from
-/// [`Self::reserve`] may call [`Self::mark_confirmed`] or
-/// [`Self::mark_failed`] for that challenge id — every other concurrent
-/// caller is turned away with `InProgress` or `Conflict` before doing any
-/// settlement work. That invariant is what lets `mark_confirmed`/
-/// `mark_failed` use a plain read-then-write instead of a compare-and-swap:
-/// there is never more than one writer per key between a `Reserved` outcome
-/// and its matching `mark_*` call.
+/// A record is an append-only chain of generations. Every transition out of
+/// generation `g` — an expired-lease takeover or a terminal outcome — is a
+/// `put_if_absent` of generation `g + 1`, so exactly one of them wins and a
+/// stale owner whose lease was taken over can never overwrite the newer
+/// owner's state. The latest generation is the record's state.
 #[derive(Clone)]
 pub struct ChargeReplayStore {
     store: Arc<dyn Store>,
@@ -249,6 +257,52 @@ impl ChargeReplayStore {
         Self { store }
     }
 
+    async fn read(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+    ) -> Result<Option<ChargeRecord>, StoreError> {
+        self.store
+            .get(&charge_record_key(challenge_id, generation))
+            .await?
+            .map(|value| {
+                serde_json::from_value(value).map_err(|e| StoreError::Serialization(e.to_string()))
+            })
+            .transpose()
+    }
+
+    /// The latest generation of `challenge_id` and its record.
+    async fn tip(&self, challenge_id: &str) -> Result<Option<(u64, ChargeRecord)>, StoreError> {
+        let Some(mut record) = self.read(challenge_id, 0).await? else {
+            return Ok(None);
+        };
+        let mut generation = 0;
+        while let Some(next) = self.read(challenge_id, generation + 1).await? {
+            generation += 1;
+            if generation >= MAX_CHARGE_RECORD_GENERATIONS {
+                return Err(StoreError::Internal(format!(
+                    "charge record `{challenge_id}` exceeds {MAX_CHARGE_RECORD_GENERATIONS} generations"
+                )));
+            }
+            record = next;
+        }
+        Ok(Some((generation, record)))
+    }
+
+    /// Append `record` as `generation`; `false` when another writer won it.
+    async fn append(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+        record: &ChargeRecord,
+    ) -> Result<bool, StoreError> {
+        let value =
+            serde_json::to_value(record).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        self.store
+            .put_if_absent(&charge_record_key(challenge_id, generation), value)
+            .await
+    }
+
     /// Reserve `challenge_id` for settlement, or classify an existing
     /// record. See [`ChargeReservation`] for the possible outcomes.
     pub async fn reserve(
@@ -257,7 +311,6 @@ impl ChargeReplayStore {
         normalized_request_digest: &str,
         lease: Duration,
     ) -> Result<ChargeReservation, StoreError> {
-        let key = charge_record_key(challenge_id);
         let now = now_unix();
         let fresh = ChargeRecord {
             challenge_id: challenge_id.to_string(),
@@ -268,96 +321,124 @@ impl ChargeReplayStore {
             updated_at: now,
             expires_at: now + lease.as_secs() as i64,
         };
-        let fresh_value =
-            serde_json::to_value(&fresh).map_err(|e| StoreError::Serialization(e.to_string()))?;
-
-        if self.store.put_if_absent(&key, fresh_value.clone()).await? {
-            return Ok(ChargeReservation::Reserved);
+        if self.append(challenge_id, 0, &fresh).await? {
+            return Ok(ChargeReservation::Reserved { generation: 0 });
         }
-
-        let existing = self.store.get(&key).await?.ok_or_else(|| {
-            StoreError::Internal("charge record vanished after put_if_absent conflict".into())
-        })?;
-        let existing: ChargeRecord = serde_json::from_value(existing)
-            .map_err(|e| StoreError::Serialization(e.to_string()))?;
-
-        if existing.normalized_request_digest != normalized_request_digest {
-            return Ok(ChargeReservation::Conflict);
-        }
-
-        match existing.state {
-            ChargeRecordState::Confirmed => Ok(ChargeReservation::AlreadyConfirmed {
-                final_signature: existing.final_signature.unwrap_or_default(),
-            }),
-            ChargeRecordState::Failed => Ok(ChargeReservation::AlreadyFailed {
-                reason: existing.failure_reason.unwrap_or_default(),
-            }),
-            ChargeRecordState::Reserved if existing.expires_at <= now => {
-                // The prior reservation's lease expired — presumed abandoned
-                // (e.g. the process that reserved it crashed before
-                // confirming or failing). Reclaim it via `put` (not
-                // `put_if_absent`, which would fail since the key exists).
-                self.store.put(&key, fresh_value).await?;
-                Ok(ChargeReservation::Reserved)
+        for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
+            let (generation, existing) = self.tip(challenge_id).await?.ok_or_else(|| {
+                StoreError::Internal("charge record vanished after put_if_absent conflict".into())
+            })?;
+            if existing.normalized_request_digest != normalized_request_digest {
+                return Ok(ChargeReservation::Conflict);
             }
-            ChargeRecordState::Reserved => Ok(ChargeReservation::InProgress),
+            match existing.state {
+                ChargeRecordState::Confirmed => {
+                    return Ok(ChargeReservation::AlreadyConfirmed {
+                        final_signature: existing.final_signature.unwrap_or_default(),
+                    })
+                }
+                ChargeRecordState::Failed => {
+                    return Ok(ChargeReservation::AlreadyFailed {
+                        reason: existing.failure_reason.unwrap_or_default(),
+                    })
+                }
+                ChargeRecordState::Reserved if existing.expires_at > now => {
+                    return Ok(ChargeReservation::InProgress)
+                }
+                // The prior owner's lease expired — presumed crashed. Taking
+                // over appends the next generation, which fences that owner.
+                ChargeRecordState::Reserved => {
+                    if self.append(challenge_id, generation + 1, &fresh).await? {
+                        return Ok(ChargeReservation::Reserved {
+                            generation: generation + 1,
+                        });
+                    }
+                }
+            }
         }
+        Err(StoreError::Internal(format!(
+            "charge record `{challenge_id}` is contended"
+        )))
     }
 
-    /// Transition a reserved record to `Confirmed`. Only the caller that
-    /// received `Reserved` from `reserve` for this `challenge_id` may call
-    /// this — see struct docs.
+    /// Record the confirmed settlement signature.
+    ///
+    /// A confirmed signature is an on-chain fact, so it supersedes any
+    /// non-confirmed state whichever owner reports it, and is never replaced.
+    /// Fails when the challenge was never reserved.
     pub async fn mark_confirmed(
         &self,
         challenge_id: &str,
         final_signature: &str,
     ) -> Result<(), StoreError> {
-        self.settle(
-            challenge_id,
-            ChargeRecordState::Confirmed,
-            Some(final_signature.to_string()),
-            None,
-        )
-        .await
+        for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
+            let (generation, record) = self.tip(challenge_id).await?.ok_or_else(|| {
+                StoreError::Internal(format!(
+                    "cannot settle charge record `{challenge_id}`: no reservation found"
+                ))
+            })?;
+            if record.state == ChargeRecordState::Confirmed {
+                return Ok(());
+            }
+            let confirmed = terminal(
+                record,
+                ChargeRecordState::Confirmed,
+                Some(final_signature.to_string()),
+                None,
+            );
+            if self
+                .append(challenge_id, generation + 1, &confirmed)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        Err(StoreError::Internal(format!(
+            "charge record `{challenge_id}` is contended"
+        )))
     }
 
-    /// Transition a reserved record to `Failed`. Only the caller that
-    /// received `Reserved` from `reserve` for this `challenge_id` may call
-    /// this — see struct docs.
-    pub async fn mark_failed(&self, challenge_id: &str, reason: &str) -> Result<(), StoreError> {
-        self.settle(
-            challenge_id,
-            ChargeRecordState::Failed,
-            None,
-            Some(reason.to_string()),
-        )
-        .await
-    }
-
-    async fn settle(
+    /// Record a terminal settlement failure for the reservation `generation`
+    /// returned by [`Self::reserve`].
+    ///
+    /// Returns `false`, writing nothing, when that reservation is no longer
+    /// current: its lease was taken over or another outcome was recorded.
+    pub async fn mark_failed(
         &self,
         challenge_id: &str,
-        state: ChargeRecordState,
-        final_signature: Option<String>,
-        failure_reason: Option<String>,
-    ) -> Result<(), StoreError> {
-        let key = charge_record_key(challenge_id);
-        let existing = self.store.get(&key).await?.ok_or_else(|| {
+        generation: u64,
+        reason: &str,
+    ) -> Result<bool, StoreError> {
+        let (tip, record) = self.tip(challenge_id).await?.ok_or_else(|| {
             StoreError::Internal(format!(
                 "cannot settle charge record `{challenge_id}`: no reservation found"
             ))
         })?;
-        let mut record: ChargeRecord = serde_json::from_value(existing)
-            .map_err(|e| StoreError::Serialization(e.to_string()))?;
-        record.state = state;
-        record.final_signature = final_signature;
-        record.failure_reason = failure_reason;
-        record.updated_at = now_unix();
-        record.expires_at = record.updated_at + DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64;
-        let value =
-            serde_json::to_value(&record).map_err(|e| StoreError::Serialization(e.to_string()))?;
-        self.store.put(&key, value).await
+        if tip != generation || record.state != ChargeRecordState::Reserved {
+            return Ok(false);
+        }
+        let failed = terminal(
+            record,
+            ChargeRecordState::Failed,
+            None,
+            Some(reason.to_string()),
+        );
+        self.append(challenge_id, generation + 1, &failed).await
     }
+}
+
+fn terminal(
+    mut record: ChargeRecord,
+    state: ChargeRecordState,
+    final_signature: Option<String>,
+    failure_reason: Option<String>,
+) -> ChargeRecord {
+    record.state = state;
+    record.final_signature = final_signature;
+    record.failure_reason = failure_reason;
+    record.updated_at = now_unix();
+    record.expires_at = record.updated_at + DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64;
+    record
 }
 
 // ── Channel store ──
@@ -2300,7 +2381,7 @@ mod tests {
             .reserve("chal-1", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
-        assert_eq!(outcome, ChargeReservation::Reserved);
+        assert_eq!(outcome, ChargeReservation::Reserved { generation: 0 });
     }
 
     #[tokio::test]
@@ -2351,10 +2432,10 @@ mod tests {
             .reserve("chal-4", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
-        store
-            .mark_failed("chal-4", "simulation failed")
+        assert!(store
+            .mark_failed("chal-4", 0, "simulation failed")
             .await
-            .unwrap();
+            .unwrap());
 
         let outcome = store
             .reserve("chal-4", "digest-a", CHARGE_RESERVATION_LEASE)
@@ -2408,7 +2489,7 @@ mod tests {
             .reserve("chal-6", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
-        assert_eq!(outcome, ChargeReservation::Reserved);
+        assert_eq!(outcome, ChargeReservation::Reserved { generation: 1 });
     }
 
     #[tokio::test]
@@ -2419,6 +2500,123 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn charge_replay_stale_owner_cannot_overwrite_a_takeover() {
+        let store = replay_store();
+        // Owner A's lease has expired while it is still settling.
+        let stale = store
+            .reserve("chal-stale", "digest-a", Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(stale, ChargeReservation::Reserved { generation: 0 });
+        let takeover = store
+            .reserve("chal-stale", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(takeover, ChargeReservation::Reserved { generation: 1 });
+
+        // While B holds the takeover, A's late failure is fenced out.
+        assert!(!store
+            .mark_failed("chal-stale", 0, "stale-worker-rpc-timeout")
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-stale", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::InProgress
+        );
+
+        store
+            .mark_confirmed("chal-stale", "newer-worker-signature")
+            .await
+            .unwrap();
+        // Neither the stale owner nor the confirmed owner can fail it now.
+        assert!(!store
+            .mark_failed("chal-stale", 0, "stale-worker-rpc-timeout")
+            .await
+            .unwrap());
+        assert!(!store.mark_failed("chal-stale", 1, "late").await.unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-stale", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "newer-worker-signature".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_late_confirmation_supersedes_a_failure() {
+        let store = replay_store();
+        store
+            .reserve("chal-late", "digest-a", Duration::ZERO)
+            .await
+            .unwrap();
+        // B takes over and fails (e.g. A's signature was already consumed).
+        assert_eq!(
+            store
+                .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 1 }
+        );
+        assert!(store
+            .mark_failed("chal-late", 1, "signature already consumed")
+            .await
+            .unwrap());
+        // A's settlement did land: the on-chain fact wins.
+        store.mark_confirmed("chal-late", "sig-a").await.unwrap();
+        store
+            .mark_confirmed("chal-late", "sig-other")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "sig-a".to_string()
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn charge_replay_concurrent_takeover_of_expired_lease_wins_exactly_once() {
+        const TASKS: usize = 16;
+        let store = Arc::new(replay_store());
+        store
+            .reserve("chal-takeover", "digest-a", Duration::ZERO)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(TASKS));
+        let mut handles = Vec::with_capacity(TASKS);
+        for _ in 0..TASKS {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .reserve("chal-takeover", "digest-a", CHARGE_RESERVATION_LEASE)
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut winners = Vec::new();
+        for handle in handles {
+            match handle.await.unwrap() {
+                ChargeReservation::Reserved { generation } => winners.push(generation),
+                ChargeReservation::InProgress => {}
+                other => panic!("unexpected outcome: {other:?}"),
+            }
+        }
+        assert_eq!(winners, vec![1]);
     }
 
     // Concurrency regression: race N tasks reserving the SAME challenge
@@ -2449,7 +2647,7 @@ mod tests {
         let mut in_progress = 0usize;
         for handle in handles {
             match handle.await.expect("task panicked") {
-                ChargeReservation::Reserved => reserved += 1,
+                ChargeReservation::Reserved { .. } => reserved += 1,
                 ChargeReservation::InProgress => in_progress += 1,
                 other => panic!("unexpected outcome: {other:?}"),
             }
