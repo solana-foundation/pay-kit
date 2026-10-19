@@ -15,6 +15,9 @@ use crate::x402::error::Error;
 
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 
+/// Highest compute-unit limit a sponsored fee payer co-signs.
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+
 /// Verify a confirmed transaction matches the expected payment requirements.
 ///
 /// Looks at the on-chain transaction returned for a signature-mode credential
@@ -218,9 +221,19 @@ pub fn verify_exact_versioned_transaction(
     // has no ComputeBudget prefix; the price cap is applied to the header.
     let budgeted = version == crate::core::tx::TxVersion::V1;
     if budgeted {
+        let declared = crate::core::tx::DeclaredBudget::of(&tx.message)
+            .map_err(|e| Error::Other(format!("invalid_exact_svm_payload_transaction: {e}")))?;
+        if declared
+            .unit_limit
+            .is_some_and(|limit| limit > MAX_COMPUTE_UNIT_LIMIT)
+        {
+            return invalid(
+                "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high",
+            );
+        }
         crate::core::tx::check_v1_budget_caps(
             &tx.message,
-            u32::MAX,
+            MAX_COMPUTE_UNIT_LIMIT,
             MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
         )
         .map_err(|_| {
@@ -347,6 +360,16 @@ fn verify_compute_limit_instruction(
     {
         return invalid(
             "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
+        );
+    }
+    let units = u32::from_le_bytes(instruction.data[1..5].try_into().map_err(|_| {
+        Error::Other(
+            "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction".into(),
+        )
+    })?);
+    if units > MAX_COMPUTE_UNIT_LIMIT {
+        return invalid(
+            "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high",
         );
     }
     Ok(())
@@ -1328,5 +1351,69 @@ mod tests {
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_unknown_fourth_instruction")
         );
+    }
+
+    #[test]
+    fn verify_exact_transaction_caps_v0_compute_unit_limit() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let with_limit = |units: u32| {
+            let mut tx = build_exact_transaction(
+                &requirements,
+                &fee_payer,
+                &owner,
+                vec![],
+                1000,
+                None,
+                None,
+            );
+            ix_mut(&mut tx, 0).data = [vec![2], units.to_le_bytes().to_vec()].concat();
+            tx
+        };
+
+        assert!(verify_exact_transaction(
+            &with_limit(MAX_COMPUTE_UNIT_LIMIT),
+            &requirements,
+            &[fee_payer]
+        )
+        .is_ok());
+        for units in [MAX_COMPUTE_UNIT_LIMIT + 1, 1_400_000, u32::MAX] {
+            let err = verify_exact_transaction(&with_limit(units), &requirements, &[fee_payer])
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::Other(ref reason) if reason == "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high"),
+                "{units}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_exact_transaction_caps_v1_compute_unit_limit() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let with_limit = |units: u32| {
+            build_exact_v1_transaction(
+                &requirements,
+                &fee_payer,
+                &owner,
+                vec![],
+                crate::core::tx::ComputeBudget::new(units, 1),
+            )
+        };
+
+        assert!(verify_exact_versioned_transaction(
+            &with_limit(MAX_COMPUTE_UNIT_LIMIT),
+            &requirements,
+            &[fee_payer]
+        )
+        .is_ok());
+        for units in [MAX_COMPUTE_UNIT_LIMIT + 1, u32::MAX] {
+            let err =
+                verify_exact_versioned_transaction(&with_limit(units), &requirements, &[fee_payer])
+                    .unwrap_err();
+            assert!(err.to_string().contains("compute_limit"), "{units}: {err}");
+        }
     }
 }
