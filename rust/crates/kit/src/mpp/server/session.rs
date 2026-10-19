@@ -1286,7 +1286,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?;
 
-        let transaction_signature =
+        let (transaction_signature, onchain_settled) =
             submit_and_fetch_open(prepared.0, &params, &pipeline, fresh_open, &self.config).await?;
         let expected_binding = self.store.binding.clone();
         let state = self
@@ -1316,6 +1316,11 @@ impl<S: ChannelStore> SessionServer<S> {
                         state.deposit = deposit;
                         state.pending_setup = None;
                     }
+                    // An open adopted from chain may already carry settled
+                    // vouchers; never accept one at or below that watermark.
+                    state.cumulative = state.cumulative.max(onchain_settled);
+                    state.spent_amount = state.spent_amount.max(onchain_settled);
+                    state.settled_on_chain = state.settled_on_chain.max(onchain_settled);
                     Ok(state)
                 }),
             )
@@ -2573,25 +2578,23 @@ async fn submit_and_fetch_open(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     fresh_open: bool,
     config: &SessionConfig,
-) -> Result<String> {
+) -> Result<(String, u64)> {
     let transaction_signature = tx
         .signatures
         .first()
         .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
         .to_string();
 
-    if !fresh_open
-        && fetch_and_match_open_channel(pipeline, params, None, config)
-            .await
-            .is_ok()
-    {
-        // This open already exists in the store (a resubmit — e.g. the
-        // client never saw the first response), and the channel account
-        // confirmed on-chain already matches this exact open. Return the
-        // already-landed signature instead of resubmitting: co-signing and
-        // rebroadcasting an open that has nothing left to do would burn a
-        // sponsor fee on every duplicate open request, not just the first.
-        return Ok(transaction_signature);
+    if !fresh_open {
+        if let Ok(settled) = fetch_and_match_open_channel(pipeline, params, None, config).await {
+            // This open already exists in the store (a resubmit — e.g. the
+            // client never saw the first response), and the channel account
+            // confirmed on-chain already matches this exact open. Return the
+            // already-landed signature instead of resubmitting: co-signing and
+            // rebroadcasting an open that has nothing left to do would burn a
+            // sponsor fee on every duplicate open request, not just the first.
+            return Ok((transaction_signature, settled));
+        }
     }
     // A broadcast rejection is not authoritative: a retry of an open whose
     // first submission landed (response lost, or the store write after it
@@ -2602,12 +2605,12 @@ async fn submit_and_fetch_open(
     let submission = pipeline.submit_verified(&tx).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
     let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot, config).await;
-    match (submission, confirmed) {
+    let settled = match (submission, confirmed) {
         (Ok(_), confirmed) => confirmed,
-        (Err(_), Ok(())) => Ok(()),
+        (Err(_), Ok(settled)) => Ok(settled),
         (Err(error), Err(_)) => Err(Error::Rpc(format!("open submission failed: {error}"))),
     }?;
-    Ok(transaction_signature)
+    Ok((transaction_signature, settled))
 }
 
 #[cfg(feature = "server")]
@@ -2639,7 +2642,7 @@ async fn fetch_and_match_open_channel(
     params: &payment_channels::OpenChannelParams,
     min_context_slot: Option<u64>,
     config: &SessionConfig,
-) -> Result<()> {
+) -> Result<u64> {
     let channel_address = payment_channels::derive_channel_addresses(params).channel;
     let account_data = pipeline
         .read_owned_account_data(channel_address, min_context_slot, params.program_id)
@@ -2669,7 +2672,7 @@ async fn fetch_and_match_open_channel(
             "confirmed channel state does not match the verified open transaction".to_string(),
         ));
     }
-    Ok(())
+    Ok(channel.settlement.settled)
 }
 
 #[cfg(feature = "server")]
@@ -2890,7 +2893,7 @@ async fn submit_and_fetch_open(
     _pipeline: &(),
     _fresh_open: bool,
     _config: &SessionConfig,
-) -> Result<String> {
+) -> Result<(String, u64)> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
     ))
@@ -4757,6 +4760,74 @@ mod tests {
         assert!(!retried.replay);
         assert_eq!(retried.state.deposit, 1_000);
         assert_eq!(retried.state.opening_challenge_id, "opening");
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn readopted_open_seeds_the_watermark_from_onchain_settlement() {
+        let mut server =
+            SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let (open, params) = signed_open(&server, 6).await;
+        let mut channel = channel_for_params(&params);
+        let (url, rpc, _) = rpc_for_channel(channel.clone(), 43).await;
+        server.config.rpc_url = Some(url);
+        let challenged_blockhash = test_blockhash().to_string();
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &challenged_blockhash,
+            recent_slot: CHALLENGED_SLOT,
+        };
+        let first = server
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert_eq!(first.state.cumulative, 0);
+        let channel_pubkey = Pubkey::from_str(&open.channel_id).unwrap();
+        let mut session = ActiveSession::new(channel_pubkey, signer(1));
+        let settled_voucher = session.sign_increment(300).await.unwrap();
+        server
+            .verify_voucher(&VoucherPayload {
+                channel_id: open.channel_id.clone(),
+                voucher: settled_voucher.clone(),
+            })
+            .await
+            .unwrap();
+        rpc.abort();
+
+        // The ledger is lost after 300 was settled on-chain; the same signed
+        // open is retried against an empty store.
+        channel.settlement.settled = 300;
+        let (url, rpc, _) = rpc_for_channel(channel, 43).await;
+        let mut cfg = server.config.clone();
+        cfg.rpc_url = Some(url);
+        let fresh = SessionServer::new(cfg, MemoryChannelStore::new());
+        let readopted = fresh
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert_eq!(readopted.state.cumulative, 300);
+        assert_eq!(readopted.state.settled_on_chain, 300);
+        assert_eq!(readopted.state.spent_amount, 300);
+
+        // The already-settled voucher cannot authorize service again.
+        assert!(fresh
+            .verify_voucher(&VoucherPayload {
+                channel_id: open.channel_id.clone(),
+                voucher: settled_voucher,
+            })
+            .await
+            .is_err());
+        let next = session.sign_increment(50).await.unwrap();
+        let accepted = fresh
+            .verify_voucher(&VoucherPayload {
+                channel_id: open.channel_id.clone(),
+                voucher: next,
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.charged, 50);
         rpc.abort();
     }
 
