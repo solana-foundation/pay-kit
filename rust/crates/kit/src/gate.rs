@@ -42,6 +42,7 @@ use crate::core::credit_provider::{
 use crate::core::tx::TxV1Mode;
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::TransactionSigner;
+use crate::mpp::store::Store;
 use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
 use crate::x402::server::{
     BatchAccess, BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig,
@@ -108,7 +109,12 @@ pub struct PayKitConfig {
     /// mode and is used as the x402 fee-payer address.
     pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
     /// Accept push-mode MPP credentials (off by default; see audit §13.5).
+    /// Requires [`store`](Self::store).
     pub accept_push_mode: bool,
+    /// MPP replay-protection store. Must be shared by every replica that
+    /// accepts the same challenge secret; required when `accept_push_mode`
+    /// is set. Defaults to a process-local store when `None`.
+    pub store: Option<Arc<dyn Store>>,
     /// Currencies the server is willing to accept (x402 multi-currency).
     pub accepted_currencies: Option<Vec<String>>,
     /// Whether version-1 transactions (SIMD-0385) are accepted, advertised
@@ -130,6 +136,7 @@ impl Default for PayKitConfig {
             challenge_binding_secret: None,
             fee_payer_signer: None,
             accept_push_mode: false,
+            store: None,
             accepted_currencies: None,
             tx_v1: TxV1Mode::Auto,
             disable_hint: false,
@@ -166,6 +173,14 @@ impl PayKit {
     /// Build both protocol handlers from one config.
     pub fn new(config: PayKitConfig) -> Result<Self, PayKitError> {
         validate_credit_providers(&config.credit_providers).map_err(PayKitError::CreditProvider)?;
+
+        // A consumed push signature is only remembered by the store; a
+        // process-local default would let another replica accept it again.
+        if config.accept_push_mode && config.store.is_none() {
+            return Err(PayKitError::Mpp(
+                "accept_push_mode requires an explicit replay store (PayKitConfig.store) shared across replicas".into(),
+            ));
+        }
 
         // x402's fee payer is an address; derive it from the shared signer so a
         // single config configures fee sponsorship for both protocols.
@@ -205,6 +220,7 @@ impl PayKit {
             fee_payer: config.fee_payer_signer.is_some(),
             fee_payer_signer: config.fee_payer_signer.clone(),
             accept_push_mode: config.accept_push_mode,
+            store: config.store.clone(),
             ..Default::default()
         })
         .map_err(|e| PayKitError::Mpp(e.to_string()))?
@@ -1761,6 +1777,55 @@ mod tests {
 
     async fn report(_payment: Payment) -> &'static str {
         "ok"
+    }
+
+    fn push_config(store: Option<Arc<dyn Store>>) -> PayKitConfig {
+        PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            store,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn push_mode_without_shared_store_is_rejected() {
+        let err = PayKit::new(push_config(None))
+            .err()
+            .expect("must fail closed");
+        assert!(
+            matches!(err, PayKitError::Mpp(ref m) if m.contains("store")),
+            "{err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_signature_consumed_on_one_replica_is_rejected_on_another() {
+        let shared: Arc<dyn Store> = Arc::new(crate::mpp::store::MemoryStore::new());
+        let replica_a = PayKit::new(push_config(Some(shared.clone()))).unwrap();
+        let replica_b = PayKit::new(push_config(Some(shared))).unwrap();
+        let signature = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+
+        replica_a.mpp().consume_signature(signature).await.unwrap();
+        assert!(replica_b.mpp().consume_signature(signature).await.is_err());
+        // A different signature is still accepted.
+        replica_b
+            .mpp()
+            .consume_signature("other-signature")
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn store_is_optional_when_push_mode_is_off() {
+        assert!(PayKit::new(PayKitConfig {
+            accept_push_mode: false,
+            store: None,
+            ..push_config(None)
+        })
+        .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]
