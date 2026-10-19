@@ -834,6 +834,52 @@ mod tests {
     }
 
     #[test]
+    fn transfer_subscription_names_the_subscriber_as_delegator_not_signer() {
+        // Receipt consumers must take the subscriber from the delegator (data
+        // and delegation header), never from the transfer's signing authority.
+        let program = default_program_id();
+        let subscriber = Pubkey::new_unique();
+        let puller = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let plan_pda = Pubkey::new_unique();
+        let ix = build_transfer_subscription_ix(
+            program,
+            TransferSubscriptionAccounts {
+                subscription_pda: find_subscription_pda(&plan_pda, &subscriber, &program).0,
+                plan_pda,
+                subscription_authority: find_subscription_authority_pda(
+                    &subscriber,
+                    &mint,
+                    &program,
+                )
+                .0,
+                delegator_ata: Pubkey::new_unique(),
+                receiver_ata: Pubkey::new_unique(),
+                caller: puller,
+                token_mint: mint,
+                token_program: Pubkey::from_str(
+                    crate::mpp::protocol::solana::programs::TOKEN_PROGRAM,
+                )
+                .unwrap(),
+                event_authority: find_event_authority_pda(&program).0,
+            },
+            &TransferData {
+                amount: 1,
+                delegator: subscriber,
+                mint,
+            },
+        );
+        let signer = ix.accounts.iter().find(|meta| meta.is_signer).unwrap();
+        assert_eq!(signer.pubkey, puller);
+        assert_ne!(signer.pubkey, subscriber);
+        assert_eq!(&ix.data[9..41], subscriber.as_ref());
+        assert_eq!(
+            ix.accounts[0].pubkey,
+            find_subscription_pda(&plan_pda, &subscriber, &program).0
+        );
+    }
+
+    #[test]
     fn build_cancel_subscription_ix_uses_subscriber_signer_only() {
         let program = default_program_id();
         let subscriber = Pubkey::new_unique();
