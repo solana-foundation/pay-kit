@@ -2541,6 +2541,18 @@ async fn prepare_open_transaction(
             crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
         },
     )?;
+    let price_cap = if fee_payer_signer.is_some() {
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+    } else {
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+    };
+    if let Some(declared) = crate::core::tx::check_v0_budget_caps(
+        &tx.message,
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        price_cap,
+    )? {
+        crate::core::tx::require_budget_prefix(&tx.message, &declared)?;
+    }
     // The compiled message must use the challenged `recentBlockhash`: it
     // proves the transaction was built for this challenge, not replayed from
     // an older one the server never authorized.
@@ -2569,12 +2581,8 @@ async fn prepare_open_transaction(
         let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
             Error::Other("open instruction program index out of range".to_string())
         })?;
+        // Validated as a whole by `check_v0_budget_caps` above.
         if *program == compute_budget {
-            crate::mpp::server::charge::validate_compute_budget_instruction(
-                ix,
-                fee_payer_signer.is_some(),
-            )
-            .map_err(|error| Error::Other(error.to_string()))?;
             continue;
         }
         if found_open || *program != expected.program_id || ix.data != expected.data {
@@ -2834,18 +2842,25 @@ async fn verify_submit_and_fetch_topup(
             "top-up transaction fee payer does not match the challenge policy".to_string(),
         ));
     }
+    if let Some(declared) = crate::core::tx::check_v0_budget_caps(
+        &tx.message,
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        if fee_payer_signer.is_some() {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        } else {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        },
+    )? {
+        crate::core::tx::require_budget_prefix(&tx.message, &declared)?;
+    }
     let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
     let mut found = false;
     for ix in tx.message.instructions() {
         let program = keys
             .get(ix.program_id_index as usize)
             .ok_or_else(|| Error::Other("top-up program index out of range".to_string()))?;
+        // Validated as a whole by `check_v0_budget_caps` above.
         if *program == compute_budget {
-            crate::mpp::server::charge::validate_compute_budget_instruction(
-                ix,
-                fee_payer_signer.is_some(),
-            )
-            .map_err(|error| Error::Other(error.to_string()))?;
             continue;
         }
         let accounts = ix
@@ -3868,6 +3883,93 @@ mod tests {
             .to_string()
             .contains("invalid client transaction signature"));
         rpc.abort();
+    }
+
+    /// Re-sign `open` as a sponsored V0 transaction carrying `instructions`.
+    #[cfg(feature = "server")]
+    async fn sponsored_open_with(
+        mut open: OpenPayload,
+        params: &payment_channels::OpenChannelParams,
+        instructions: &[solana_instruction::Instruction],
+    ) -> OpenPayload {
+        use solana_message::{v0, VersionedMessage};
+        let message =
+            v0::Message::try_compile(&params.rent_payer, instructions, &[], test_blockhash())
+                .unwrap();
+        let mut tx = solana_transaction::versioned::VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                usize::from(message.header.num_required_signatures)
+            ],
+            message: VersionedMessage::V0(message),
+        };
+        crate::core::signing::sign_versioned_transaction_slot(signer(6).as_ref(), &mut tx)
+            .await
+            .unwrap();
+        open.transaction = crate::core::tx::encode(&tx).unwrap();
+        open
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_requires_a_canonical_compute_budget_prefix() {
+        use crate::core::tx::{unit_limit_instruction, unit_price_instruction};
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(shared_signer(8));
+        let server = SessionServer::new(cfg, MemoryChannelStore::new());
+        let (open, params) = signed_open(&server, 6).await;
+        let ix = payment_channels::build_open_instruction(&params);
+        let prepare = |open: OpenPayload| {
+            let server = &server;
+            let params = &params;
+            async move {
+                prepare_open_transaction(
+                    &open,
+                    params,
+                    &test_blockhash().to_string(),
+                    server.config.fee_payer_signer.as_deref(),
+                    &server.accepted_versions,
+                    &server.config,
+                )
+                .await
+            }
+        };
+
+        let canonical = sponsored_open_with(
+            open.clone(),
+            &params,
+            &[
+                unit_limit_instruction(200_000),
+                unit_price_instruction(10),
+                ix.clone(),
+            ],
+        )
+        .await;
+        assert!(prepare(canonical).await.is_ok());
+
+        for (layout, expected) in [
+            (
+                vec![
+                    unit_limit_instruction(100_000),
+                    unit_limit_instruction(200_000),
+                    ix.clone(),
+                ],
+                "duplicate",
+            ),
+            (vec![ix.clone(), unit_price_instruction(10)], "lead"),
+            (
+                vec![
+                    unit_price_instruction(10),
+                    unit_limit_instruction(200_000),
+                    ix.clone(),
+                ],
+                "precede",
+            ),
+        ] {
+            let malformed = sponsored_open_with(open.clone(), &params, &layout).await;
+            let error = prepare(malformed).await.unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
     }
 
     #[cfg(feature = "server")]

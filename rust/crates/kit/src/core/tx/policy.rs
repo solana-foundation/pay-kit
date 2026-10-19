@@ -125,6 +125,82 @@ pub fn check_v1_budget_caps(
     Ok(Some(declared))
 }
 
+/// Version-0 (and legacy) counterpart of [`check_v1_budget_caps`] for a
+/// message a server co-signs: every ComputeBudget instruction carries no
+/// accounts, no opcode is duplicated or unsupported (a loaded-data limit
+/// included), and the declared unit limit and price are within the caps.
+/// Version-1 messages return `None`.
+pub fn check_v0_budget_caps(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+) -> Result<Option<DeclaredBudget>> {
+    if TxVersion::of(message)? != TxVersion::V0 {
+        return Ok(None);
+    }
+    let declared = DeclaredBudget::of(message)?;
+    let instructions = message.instructions();
+    if declared
+        .instruction_indexes
+        .iter()
+        .any(|&index| !instructions[index].accounts.is_empty())
+    {
+        return Err(Error::Other(
+            "ComputeBudget instructions must not have accounts".into(),
+        ));
+    }
+    if declared.loaded_accounts_data_size_limit.is_some() {
+        return Err(Error::Other(
+            "SetLoadedAccountsDataSizeLimit is not supported".into(),
+        ));
+    }
+    if let Some(limit) = declared.unit_limit {
+        if limit > max_unit_limit {
+            return Err(Error::Other(format!(
+                "compute unit limit {limit} exceeds maximum {max_unit_limit}"
+            )));
+        }
+    }
+    if let Some(price) = declared.unit_price_micro_lamports {
+        if price > max_unit_price_micro_lamports {
+            return Err(Error::Other(format!(
+                "compute unit price {price} exceeds maximum {max_unit_price_micro_lamports}"
+            )));
+        }
+    }
+    Ok(Some(declared))
+}
+
+/// Require a version-0 budget's ComputeBudget instructions to be the leading
+/// prefix of the message, `SetComputeUnitLimit` before `SetComputeUnitPrice`.
+pub fn require_budget_prefix(message: &VersionedMessage, declared: &DeclaredBudget) -> Result<()> {
+    if declared
+        .instruction_indexes
+        .iter()
+        .enumerate()
+        .any(|(position, &index)| position != index)
+    {
+        return Err(Error::Other(
+            "ComputeBudget instructions must lead the transaction".into(),
+        ));
+    }
+    if declared.unit_limit.is_some()
+        && declared.unit_price_micro_lamports.is_some()
+        && !matches!(
+            message
+                .instructions()
+                .first()
+                .and_then(super::budget::decode_compute_budget_op),
+            Some(super::budget::ComputeBudgetOp::UnitLimit(_))
+        )
+    {
+        return Err(Error::Other(
+            "SetComputeUnitLimit must precede SetComputeUnitPrice".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// What a server advertises: `None` when only the default version is
 /// accepted, so the wire shape is unchanged for version-0-only servers.
 pub fn advertised(accepted: &[TxVersion]) -> Option<Vec<TxVersion>> {
@@ -331,6 +407,72 @@ mod tests {
         let v0 =
             build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), Some(&budget)).unwrap();
         assert!(check_v1_budget_caps(&v0.message, 1, 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn v0_budget_policy_rejects_duplicates_and_misplaced_instructions() {
+        use crate::core::tx::budget::{unit_limit_instruction, unit_price_instruction};
+        let payer = Pubkey::new_unique();
+        let transfer = system_instruction::transfer(&payer, &Pubkey::new_unique(), 1);
+        let message = |ixs: &[solana_instruction::Instruction]| {
+            VersionedMessage::V0(
+                v0::Message::try_compile(&payer, ixs, &[], Hash::default()).unwrap(),
+            )
+        };
+        let check = |msg: &VersionedMessage| {
+            check_v0_budget_caps(msg, 200_000, 10_000)
+                .and_then(|declared| require_budget_prefix(msg, declared.as_ref().unwrap()))
+        };
+
+        // Canonical prefix, and no budget at all.
+        let canonical = message(&[
+            unit_limit_instruction(200_000),
+            unit_price_instruction(10_000),
+            transfer.clone(),
+        ]);
+        assert!(check(&canonical).is_ok());
+        assert!(check(&message(std::slice::from_ref(&transfer))).is_ok());
+
+        let duplicate = message(&[
+            unit_limit_instruction(1_000),
+            unit_limit_instruction(2_000),
+            transfer.clone(),
+        ]);
+        assert!(check(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
+        let trailing = message(&[transfer.clone(), unit_price_instruction(10)]);
+        assert!(check(&trailing).unwrap_err().to_string().contains("lead"));
+        let reversed = message(&[
+            unit_price_instruction(10),
+            unit_limit_instruction(1_000),
+            transfer.clone(),
+        ]);
+        assert!(check(&reversed)
+            .unwrap_err()
+            .to_string()
+            .contains("precede"));
+        let mut with_account = unit_limit_instruction(1_000);
+        with_account
+            .accounts
+            .push(solana_instruction::AccountMeta::new_readonly(payer, false));
+        assert!(check(&message(&[with_account, transfer.clone()]))
+            .unwrap_err()
+            .to_string()
+            .contains("accounts"));
+        let mut loaded = unit_limit_instruction(1_000);
+        loaded.data[0] = crate::core::tx::budget::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT_TAG;
+        assert!(check(&message(&[loaded, transfer.clone()]))
+            .unwrap_err()
+            .to_string()
+            .contains("LoadedAccountsDataSizeLimit"));
+        assert!(check(&message(&[
+            unit_limit_instruction(200_001),
+            transfer.clone()
+        ]))
+        .is_err());
+        assert!(check(&message(&[unit_price_instruction(10_001), transfer])).is_err());
     }
 
     #[test]
