@@ -249,7 +249,38 @@ pub fn verify_exact_versioned_transaction(
         requirements,
         managed_signers,
         budgeted,
-    )
+    )?;
+    verify_required_signers(&tx.message, budgeted)
+}
+
+/// Only the fee payer and the transfer authority may sign: every extra
+/// required signature is a base fee the sponsor pays.
+fn verify_required_signers(
+    message: &solana_message::VersionedMessage,
+    header_budget: bool,
+) -> Result<(), Error> {
+    let keys = message.static_account_keys();
+    let prefix = if header_budget { 0 } else { 2 };
+    let authority = message
+        .instructions()
+        .get(prefix)
+        .and_then(|transfer| transfer.accounts.get(3))
+        .and_then(|index| keys.get(*index as usize))
+        .ok_or_else(|| Error::Other("invalid_exact_svm_payload_no_transfer_instruction".into()))?;
+    let fee_payer = keys
+        .first()
+        .ok_or_else(|| Error::Other("invalid_exact_svm_payload_transaction".into()))?;
+    let required = message.header().num_required_signatures as usize;
+    let signers = keys
+        .get(..required)
+        .ok_or_else(|| Error::Other("invalid_exact_svm_payload_transaction".into()))?;
+    if signers
+        .iter()
+        .any(|signer| signer != fee_payer && signer != authority)
+    {
+        return invalid("invalid_exact_svm_payload_transaction_unexpected_signer");
+    }
+    Ok(())
 }
 
 fn verify_exact_instructions(
@@ -1415,5 +1446,77 @@ mod tests {
                     .unwrap_err();
             assert!(err.to_string().contains("compute_limit"), "{units}: {err}");
         }
+    }
+
+    fn memo_with_signers(signers: &[Pubkey]) -> Instruction {
+        Instruction {
+            program_id: Pubkey::from_str(programs::MEMO_PROGRAM).unwrap(),
+            accounts: signers
+                .iter()
+                .map(|signer| AccountMeta::new_readonly(*signer, true))
+                .collect(),
+            data: b"deadbeef".to_vec(),
+        }
+    }
+
+    #[test]
+    fn verify_exact_transaction_rejects_extra_required_signers() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let extra = [Pubkey::new_unique(), Pubkey::new_unique()];
+
+        for memo in [memo_with_signers(&extra[..1]), memo_with_signers(&extra)] {
+            for tx in [
+                build_exact_transaction(
+                    &requirements,
+                    &fee_payer,
+                    &owner,
+                    vec![memo.clone()],
+                    1000,
+                    None,
+                    None,
+                ),
+                build_exact_v1_transaction(
+                    &requirements,
+                    &fee_payer,
+                    &owner,
+                    vec![memo.clone()],
+                    crate::core::tx::ComputeBudget::new(20_000, 1),
+                ),
+            ] {
+                assert!(tx.message.header().num_required_signatures > 2);
+                let err = verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer])
+                    .unwrap_err();
+                assert!(
+                    matches!(err, Error::Other(ref reason) if reason == "invalid_exact_svm_payload_transaction_unexpected_signer"),
+                    "{err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verify_exact_transaction_accepts_fee_payer_and_authority_signers() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        // A memo signed by an existing signer adds no signature.
+        let tx = build_exact_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![memo_with_signers(&[owner, fee_payer])],
+            1000,
+            None,
+            None,
+        );
+        assert_eq!(tx.message.header().num_required_signatures, 2);
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).is_ok());
+
+        // Unsponsored: the authority pays its own fee.
+        let tx = build_exact_transaction(&requirements, &owner, &owner, vec![], 1000, None, None);
+        assert_eq!(tx.message.header().num_required_signatures, 1);
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[]).is_ok());
     }
 }
