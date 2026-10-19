@@ -331,6 +331,10 @@ pub struct SealParams {
     /// Original channel payer.
     pub payer: Option<Pubkey>,
 
+    /// Rent payer recorded at open; the program refunds rent to exactly this
+    /// account at distribution.
+    pub rent_payer: Option<Pubkey>,
+
     /// SPL mint locked by the channel.
     pub mint: Option<Pubkey>,
 
@@ -410,10 +414,10 @@ impl SealParams {
     }
 
     /// Build distribution with the original mandatory callbacks, including
-    /// terminal distributions whose actual payer refund is zero.
+    /// terminal distributions whose actual payer refund is zero. The rent
+    /// payer is the one recorded at open, never inferred from a signer.
     pub fn distribute_instruction(
         &self,
-        rent_payer: &Pubkey,
         treasury: &Pubkey,
         token_program: &Pubkey,
     ) -> Result<solana_instruction::Instruction> {
@@ -428,6 +432,9 @@ impl SealParams {
         let mint = self
             .mint
             .ok_or_else(|| Error::Other("distribution missing mint".into()))?;
+        let rent_payer = &self
+            .rent_payer
+            .ok_or_else(|| Error::Other("distribution missing rent payer".into()))?;
         let recipients = self
             .splits
             .iter()
@@ -2447,6 +2454,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let recipient_pubkey = parse_pubkey(&self.config.recipient)?;
         let authorized_signer = parse_pubkey(&state.authorized_signer).ok();
         let payer = parse_pubkey(&state.payer).ok();
+        let rent_payer = parse_pubkey(&state.rent_payer).ok();
         let mint = expected_payment_channel_mint(&self.config).ok();
         let program_id = self
             .config
@@ -2469,6 +2477,7 @@ impl<S: ChannelStore> SessionServer<S> {
             channel_id: channel_pubkey,
             authorized_signer,
             payer,
+            rent_payer,
             mint,
             program_id,
             channel_version: self.config.channel_version,
@@ -6323,6 +6332,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_distributes_rent_to_the_rent_payer_recorded_at_open() {
+        let (server, mut session, channel_id) = client_server().await;
+        let operator = Pubkey::from_str(&server.config.operator).unwrap();
+        let client_payer = Pubkey::new_unique();
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state.unwrap();
+                    // Client-funded open: the payer funded the channel rent.
+                    state.payer = client_payer.to_string();
+                    state.rent_payer = client_payer.to_string();
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let params = server
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
+                authentication: None,
+                voucher: Some(session.sign_increment(100).await.unwrap()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(params.rent_payer, Some(client_payer));
+        let treasury = Pubkey::new_unique();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let ix = params
+            .distribute_instruction(&treasury, &token_program)
+            .unwrap();
+        // Accounts: channel, payer, rent_payer, …
+        assert_eq!(ix.accounts[2].pubkey, client_payer);
+        assert!(ix.accounts.iter().all(|meta| meta.pubkey != operator));
+
+        let mut missing = params;
+        missing.rent_payer = None;
+        assert!(missing
+            .distribute_instruction(&treasury, &token_program)
+            .unwrap_err()
+            .to_string()
+            .contains("rent payer"));
+    }
+
+    #[tokio::test]
     async fn client_close_seal_and_store_lifecycle_are_consistent() {
         let (server, mut session, channel_id) = client_server().await;
         let voucher = session.sign_increment(100).await.unwrap();
@@ -6738,6 +6793,7 @@ mod tests {
             channel_id: Pubkey::new_unique(),
             authorized_signer: None,
             payer: None,
+            rent_payer: None,
             mint: None,
             program_id: payment_channels::default_program_id(),
             channel_version: None,
