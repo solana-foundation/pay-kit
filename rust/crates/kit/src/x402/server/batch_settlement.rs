@@ -69,6 +69,9 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
 
+/// `ChannelStatus::Sealed` discriminant.
+const CHANNEL_STATUS_SEALED: u8 = 1;
+
 /// `ChannelStatus::Closing` discriminant.
 const CHANNEL_STATUS_CLOSING: u8 = 2;
 
@@ -2722,14 +2725,13 @@ impl X402BatchSettlement {
         let mut groups = Vec::new();
         // Channels finalized with a final voucher, and the watermark it set.
         let mut applied_watermarks: Vec<(String, u64)> = Vec::new();
+        // Channels another crank already distributed: only the record is due.
+        let mut already_distributed: Vec<String> = Vec::new();
         for channel_id in channel_ids {
             let channel = pc::parse_pubkey(channel_id)?;
             let Some(onchain) = self.lookup_for_lifecycle(channel_id, &channel).await? else {
                 continue;
             };
-            if onchain.status != CHANNEL_STATUS_CLOSING {
-                continue;
-            }
             let distribute = pc::build_distribute_instruction(
                 &channel,
                 &pc::from_address(&onchain.payer),
@@ -2741,6 +2743,24 @@ impl X402BatchSettlement {
                 &token_program,
                 &program_id,
             );
+            // A permissionless `seal` may have landed after an earlier pass read
+            // `Closing`, failing its `[seal, distribute]`. Each pass plans from
+            // the status it reads now, so that channel still gets distributed.
+            let distribute = match terminal_step(onchain.status, distribute) {
+                TerminalStep::PlanClose(distribute) => distribute,
+                TerminalStep::Submit(instructions) => {
+                    groups.push(ChannelInstructionGroup {
+                        channel_id: channel_id.clone(),
+                        instructions,
+                    });
+                    continue;
+                }
+                TerminalStep::RecordDistributed => {
+                    already_distributed.push(channel_id.clone());
+                    continue;
+                }
+                TerminalStep::Skip => continue,
+            };
             let due = onchain
                 .closure_started_at
                 .saturating_add(i64::from(onchain.grace_period));
@@ -2832,7 +2852,7 @@ impl X402BatchSettlement {
             .map(|group| group.channel_id.clone())
             .collect();
         let signatures = self.submit_groups(groups, 1).await?;
-        for channel_id in finalized {
+        for channel_id in finalized.into_iter().chain(already_distributed) {
             let applied = applied_watermarks
                 .iter()
                 .find(|(id, _)| *id == channel_id)
@@ -3053,6 +3073,29 @@ fn grace_seal_plan(
         expires_at: state
             .highest_voucher_expires_at
             .unwrap_or(VOUCHER_EXPIRES_AT),
+    }
+}
+
+/// What [`X402BatchSettlement::finalize_close`] does for a channel in onchain
+/// `status`.
+#[derive(Debug)]
+enum TerminalStep {
+    /// Still `Closing`: choose a seal plan; carries the `distribute` to pair.
+    PlanClose(Instruction),
+    /// Already sealed by another crank: only the payout is left.
+    Submit(Vec<Instruction>),
+    /// Already distributed: nothing to send, only the record to finish.
+    RecordDistributed,
+    /// Not closing at all.
+    Skip,
+}
+
+fn terminal_step(status: u8, distribute: Instruction) -> TerminalStep {
+    match status {
+        CHANNEL_STATUS_CLOSING => TerminalStep::PlanClose(distribute),
+        CHANNEL_STATUS_SEALED => TerminalStep::Submit(vec![distribute]),
+        CHANNEL_STATUS_DISTRIBUTED => TerminalStep::RecordDistributed,
+        _ => TerminalStep::Skip,
     }
 }
 
@@ -4225,6 +4268,42 @@ mod tests {
             .reconcile_channel(&channel_b58)
             .await
             .expect("no RPC is needed for a record that holds nothing");
+    }
+
+    /// A channel sealed by someone else between a finalizer's read and its
+    /// `[seal, distribute]` is not stranded: the next pass sends only the
+    /// payout, and a distributed one only finishes its record.
+    #[test]
+    fn a_sealed_channel_is_distributed_rather_than_skipped() {
+        let distribute = pc::build_distribute_instruction(
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &pc::sole_recipient(&Pubkey::new_unique()),
+            &Pubkey::new_unique(),
+            &pc::default_program_id(),
+        );
+        match terminal_step(CHANNEL_STATUS_SEALED, distribute.clone()) {
+            TerminalStep::Submit(instructions) => {
+                assert_eq!(instructions, vec![distribute.clone()])
+            }
+            other => panic!("a sealed channel must be distributed, got {other:?}"),
+        }
+        assert!(matches!(
+            terminal_step(CHANNEL_STATUS_CLOSING, distribute.clone()),
+            TerminalStep::PlanClose(_)
+        ));
+        assert!(matches!(
+            terminal_step(CHANNEL_STATUS_DISTRIBUTED, distribute.clone()),
+            TerminalStep::RecordDistributed
+        ));
+        assert!(matches!(
+            terminal_step(CHANNEL_STATUS_OPEN, distribute),
+            TerminalStep::Skip
+        ));
     }
 
     /// A voucher for a channel this store has no record of is refused, never
