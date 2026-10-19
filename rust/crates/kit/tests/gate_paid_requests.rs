@@ -92,6 +92,8 @@ fn paykit() -> PayKit {
         rpc_url: Some(mock_rpc_url().to_string()),
         fee_payer_signer: Some(fee_payer),
         challenge_binding_secret: Some(SECRET.to_string()),
+        realm: Some("gate-paid-requests".to_string()),
+        store: Some(Arc::new(solana_pay_kit::mpp::store::MemoryStore::new())),
         tx_v1: TxV1Mode::Off,
         disable_hint: true,
         ..Default::default()

@@ -113,17 +113,13 @@ pub struct PayKitConfig {
     pub realm: Option<String>,
     /// MPP replay store. REQUIRED and shared by every verifier of the same
     /// challenges.
-    pub store: Option<Arc<dyn crate::mpp::store::Store>>,
+    pub store: Option<Arc<dyn Store>>,
     /// When set, the server sponsors the network fee: drives MPP fee-sponsored
     /// mode and is used as the x402 fee-payer address.
     pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
     /// Accept push-mode MPP credentials (off by default; see audit §13.5).
     /// Requires [`store`](Self::store).
     pub accept_push_mode: bool,
-    /// MPP replay-protection store. Must be shared by every replica that
-    /// accepts the same challenge secret; required when `accept_push_mode`
-    /// is set. Defaults to a process-local store when `None`.
-    pub store: Option<Arc<dyn Store>>,
     /// Currencies the server is willing to accept (x402 multi-currency).
     pub accepted_currencies: Option<Vec<String>>,
     /// Whether version-1 transactions (SIMD-0385) are accepted, advertised
@@ -152,7 +148,6 @@ impl Default for PayKitConfig {
             store: None,
             fee_payer_signer: None,
             accept_push_mode: false,
-            store: None,
             accepted_currencies: None,
             tx_v1: TxV1Mode::Auto,
             disable_hint: false,
@@ -1970,6 +1965,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
+            realm: Some("test-realm".to_string()),
             accept_push_mode: true,
             store,
             ..Default::default()
@@ -2005,11 +2001,21 @@ mod tests {
     }
 
     #[test]
-    fn store_is_optional_when_push_mode_is_off() {
-        assert!(PayKit::new(PayKitConfig {
+    fn store_is_required_even_when_push_mode_is_off() {
+        let err = PayKit::new(PayKitConfig {
             accept_push_mode: false,
             store: None,
             ..push_config(None)
+        })
+        .err()
+        .expect("must fail closed");
+        assert!(
+            matches!(err, PayKitError::Mpp(ref m) if m.contains("store")),
+            "{err}"
+        );
+        assert!(PayKit::new(PayKitConfig {
+            accept_push_mode: false,
+            ..push_config(Some(Arc::new(crate::mpp::store::MemoryStore::new())))
         })
         .is_ok());
     }
@@ -2428,6 +2434,8 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
             rpc_url: Some("http://127.0.0.1:1".to_string()),
+            realm: Some("test-realm".to_string()),
+            store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             fee_payer_signer: Some(test_signer()),
             batch_channel_store: Some(Arc::clone(&store)),
             ..Default::default()
@@ -2957,6 +2965,8 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
             rpc_url: Some(rpc_url),
+            realm: Some("test-realm".to_string()),
+            store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             fee_payer_signer: fee_payer,
             tx_v1: TxV1Mode::Off,
             ..Default::default()
