@@ -29,6 +29,8 @@ pub(super) struct ChainState {
     pub hidden_landed_reads: usize,
     /// JSON-RPC error object returned by `sendTransaction`.
     pub send_error: Option<serde_json::Value>,
+    /// `getSignaturesForAddress` result, newest first.
+    pub history: Vec<serde_json::Value>,
     /// Signature statuses keyed by signature.
     pub statuses: HashMap<String, serde_json::Value>,
     pub sends: usize,
@@ -120,6 +122,7 @@ impl RpcFixture {
                                 .collect();
                             serde_json::json!({"context": {"slot": 1}, "value": value})
                         }
+                        "getSignaturesForAddress" => serde_json::json!(state.history),
                         "sendTransaction" => {
                             state.sends += 1;
                             if let Some(error) = state.send_error.clone() {
@@ -375,4 +378,117 @@ async fn activation_fails_when_the_delegation_never_appears() {
     let err = server.verify_credential(&credential).await.unwrap_err();
     assert!(err.message.contains("not found"), "{}", err.message);
     assert_eq!(rpc.state.lock().unwrap().sends, 1);
+}
+
+// ── SOLA1-80: stale delegations are not prior activations ──────────────────
+
+/// Chain state where the delegation PDA already exists with `delegation`.
+pub(super) fn existing_delegation_state(
+    scenario: &Scenario,
+    delegation: DelegationState,
+) -> ChainState {
+    let mut state = ChainState::default();
+    state
+        .accounts
+        .insert(scenario.authority.to_string(), authority_bytes(INIT_ID));
+    state.accounts.insert(
+        scenario.delegation.to_string(),
+        scenario.delegation_bytes(delegation),
+    );
+    state.history = vec![serde_json::json!({
+        "signature": Signature::from([7u8; 64]).to_string(), "slot": 1,
+        "err": null, "memo": null, "blockTime": now_unix_secs() - 60
+    })];
+    state
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expired_cancelled_delegation_is_not_accepted_as_activation() {
+    let scenario = Scenario::new();
+    let now = now_unix_secs();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(
+            &scenario,
+            DelegationState {
+                current_period_start_ts: now - 60,
+                expires_at_ts: now - 1,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&server).await;
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("cancellation"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delegation_cancelled_at_this_second_is_not_accepted() {
+    let scenario = Scenario::new();
+    let now = now_unix_secs();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(
+            &scenario,
+            DelegationState {
+                expires_at_ts: now,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&server).await;
+
+    assert!(server.verify_credential(&credential).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delegation_from_an_ended_billing_period_is_not_accepted() {
+    let scenario = Scenario::new();
+    let period = PERIOD_HOURS as i64 * 3600;
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(
+            &scenario,
+            DelegationState {
+                current_period_start_ts: now_unix_secs() - period,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&server).await;
+
+    let err = server.verify_credential(&credential).await.unwrap_err();
+    assert!(err.message.contains("not paid"), "{}", err.message);
+    assert_eq!(rpc.state.lock().unwrap().sends, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_delegation_inside_its_paid_period_is_still_live() {
+    let scenario = Scenario::new();
+    let rpc = RpcFixture::start(
+        program_owner(),
+        existing_delegation_state(
+            &scenario,
+            DelegationState {
+                expires_at_ts: now_unix_secs() + 3600,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    let server = scenario.server(&rpc.url);
+    let (credential, _) = scenario.activation(&server).await;
+
+    server
+        .verify_credential(&credential)
+        .await
+        .expect("a cancellation that has not taken effect keeps the paid period");
 }

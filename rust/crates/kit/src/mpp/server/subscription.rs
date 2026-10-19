@@ -700,6 +700,15 @@ impl SubscriptionServer {
                 "Activation transaction did not execute the first-period charge",
             ));
         }
+        // An existing delegation is only a retry of a paid activation while it
+        // is still live; a stale PDA must never stand in for a new charge.
+        ensure_live_delegation(
+            &delegation,
+            expected_amount,
+            expected_period_hours,
+            request.subscription_expires.as_deref(),
+            now_unix_secs(),
+        )?;
 
         let authentication = activate.authentication.as_ref().ok_or_else(|| {
             VerificationError::invalid_payload(
@@ -843,38 +852,18 @@ impl SubscriptionServer {
             .period_hours()
             .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
         let now = now_unix_secs();
-        let period_end = delegation
-            .current_period_start_ts
-            .saturating_add(period_hours as i64 * 3600);
-        if delegation.amount_per_period != expected_amount
-            || delegation.period_hours != period_hours
-            || delegation.amount_pulled_in_period != expected_amount
-            || now < delegation.current_period_start_ts
-            || now >= period_end
-        {
+        if now < delegation.current_period_start_ts {
             return Err(VerificationError::transaction_failed(
                 "Subscription is not paid for the current billing period",
             ));
         }
-        if delegation.expires_at_ts != 0 && now >= delegation.expires_at_ts {
-            return Err(VerificationError::transaction_failed(
-                "Subscription cancellation has taken effect",
-            ));
-        }
-        if let Some(expires_at) = request.subscription_expires.as_deref() {
-            let expires_at = time::OffsetDateTime::parse(
-                expires_at,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .map_err(|error| {
-                VerificationError::invalid_payload(format!("Invalid subscriptionExpires: {error}"))
-            })?;
-            if expires_at.unix_timestamp() <= now {
-                return Err(VerificationError::transaction_failed(
-                    "Subscription has expired",
-                ));
-            }
-        }
+        let period_end = ensure_live_delegation(
+            &delegation,
+            expected_amount,
+            period_hours,
+            request.subscription_expires.as_deref(),
+            now,
+        )?;
 
         let anchor = binding
             .get("periodStartTs")
@@ -1149,6 +1138,49 @@ fn validate_activation_subscription_expiry(
         ));
     }
     Ok(())
+}
+
+/// Require `delegation` to be paid for the billing period containing `now`
+/// and not cancelled or expired. Returns the current period's end.
+fn ensure_live_delegation(
+    delegation: &SubscriptionDelegationView,
+    expected_amount: u64,
+    period_hours: u64,
+    subscription_expires: Option<&str>,
+    now: i64,
+) -> Result<i64, VerificationError> {
+    let period_end = delegation
+        .current_period_start_ts
+        .saturating_add(period_hours as i64 * 3600);
+    if delegation.amount_per_period != expected_amount
+        || delegation.period_hours != period_hours
+        || delegation.amount_pulled_in_period != expected_amount
+        || now >= period_end
+    {
+        return Err(VerificationError::transaction_failed(
+            "Subscription is not paid for the current billing period",
+        ));
+    }
+    if delegation.expires_at_ts != 0 && now >= delegation.expires_at_ts {
+        return Err(VerificationError::transaction_failed(
+            "Subscription cancellation has taken effect",
+        ));
+    }
+    if let Some(expires_at) = subscription_expires {
+        let expires_at =
+            time::OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339)
+                .map_err(|error| {
+                    VerificationError::invalid_payload(format!(
+                        "Invalid subscriptionExpires: {error}"
+                    ))
+                })?;
+        if expires_at.unix_timestamp() <= now {
+            return Err(VerificationError::transaction_failed(
+                "Subscription has expired",
+            ));
+        }
+    }
+    Ok(period_end)
 }
 
 async fn reserve_activation_signature(
