@@ -1796,4 +1796,47 @@ pub(crate) mod tests {
         let message = settle_error(&server, tx, 1_000_000).await;
         assert!(message.contains("Simulation RPC error"), "{message}");
     }
+
+    // Two concurrent half-amount settlements for the same recipient: the old
+    // before/after pending-balance snapshot could see both credits as one
+    // full payment each. The amount is bound to each bundle's own transfer, so
+    // both are rejected before the gateway signs, independent of timing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_half_amount_settlements_are_each_rejected() {
+        let server = recipient_key_server().await;
+        let charged = 1_000_000;
+        let half = || {
+            inline_transfer_tx(
+                &server.gateway,
+                &server.mint,
+                &server.recipient_ata,
+                server.recipient_keys.elgamal.pubkey(),
+                None,
+                charged / 2,
+                None,
+            )
+        };
+        let (first, second) = tokio::join!(
+            settle_error(&server, half(), charged),
+            settle_error(&server, half(), charged)
+        );
+        for message in [first, second] {
+            assert!(
+                message.contains("recovered 500000, expected 1000000"),
+                "{message}"
+            );
+        }
+
+        let full = inline_transfer_tx(
+            &server.gateway,
+            &server.mint,
+            &server.recipient_ata,
+            server.recipient_keys.elgamal.pubkey(),
+            None,
+            charged,
+            None,
+        );
+        let message = settle_error(&server, full, charged).await;
+        assert!(message.contains("Simulation RPC error"), "{message}");
+    }
 }
