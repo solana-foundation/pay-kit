@@ -252,3 +252,7 @@ required-features = ["mpp"]
 [[test]]
 name = "kotlin_golden_vector"
 required-features = ["x402"]
+
+[[test]]
+name = "gate_paid_requests"
+required-features = ["axum", "client"]

@@ -647,6 +647,27 @@ fn challenge_response(pay: &PayKit, amount: &str, req: &Request) -> Response {
     resp
 }
 
+/// Keep a paid response out of shared caches, which key on the URL and would
+/// serve it to later requests that carry no payment.
+fn prevent_shared_caching(resp: &mut Response) {
+    let restrictive = resp
+        .headers()
+        .get_all(header::CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|directive| {
+            let directive = directive.trim();
+            directive.eq_ignore_ascii_case("private") || directive.eq_ignore_ascii_case("no-store")
+        });
+    if !restrictive {
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+    }
+}
+
 fn attach_mpp_receipt(resp: &mut Response, receipt: &Receipt) {
     let kind = ReceiptKind::Charge(receipt.clone());
     if let Ok(value) = format_receipt(&kind) {
@@ -727,6 +748,7 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                     reference: receipt.reference.clone(),
                 });
                 let mut resp = next.run(req).await;
+                prevent_shared_caching(&mut resp);
                 attach_mpp_receipt(&mut resp, &receipt);
                 resp
             }
@@ -751,6 +773,7 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                         reference: reference.clone(),
                     });
                     let mut resp = next.run(req).await;
+                    prevent_shared_caching(&mut resp);
                     attach_x402_response(&mut resp, &reference);
                     resp
                 }
@@ -886,6 +909,7 @@ async fn upto_gate_middleware(
     });
     req.extensions_mut().insert(charge);
     let mut resp = next.run(req).await;
+    prevent_shared_caching(&mut resp);
 
     // Recover from poisoning so a handler that panicked *after* recording a
     // charge still settles the amount it consumed (not a silent zero refund).
@@ -1089,6 +1113,7 @@ fn replayed_response(
     } else {
         StatusCode::OK.into_response()
     };
+    prevent_shared_caching(&mut resp);
     resp.headers_mut()
         .insert(PAYMENT_REPLAY_HEADER, HeaderValue::from_static("true"));
     attach_settlement_header(batch, settlement, &mut resp);
@@ -1300,7 +1325,8 @@ async fn batch_gate_middleware(
         protocol: Protocol::X402,
         reference: channel_id.clone(),
     });
-    let resp = next.run(req).await;
+    let mut resp = next.run(req).await;
+    prevent_shared_caching(&mut resp);
 
     // A handler that failed charges nothing: release the authorization so the
     // same voucher can be presented again.
