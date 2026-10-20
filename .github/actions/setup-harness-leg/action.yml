@@ -1,7 +1,8 @@
 name: Setup PayKit harness leg
 description: >-
-  Install the harness against prebuilt @solana/mpp and optional native/JVM
-  adapters. This action never builds SDKs or adapters.
+  Install the harness against prebuilt @solana/mpp (and optionally
+  @solana/pay-kit) and optional native/JVM adapters. This action never builds
+  SDKs or adapters.
 
 inputs:
   native-artifact:
@@ -10,6 +11,13 @@ inputs:
       adapters, for builder jobs that only need the portable TypeScript output.
     required: false
     default: ""
+  pay-kit-dist:
+    description: >-
+      Also download the prebuilt @solana/pay-kit dist. pnpm copies file:
+      dependencies into its store at install time, so the dist must exist
+      before the harness is installed.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -19,6 +27,12 @@ runs:
       with:
         name: mpp-dist
         path: typescript/packages/mpp/dist
+    - name: Download prebuilt @solana/pay-kit dist
+      if: inputs.pay-kit-dist == 'true'
+      uses: actions/download-artifact@v7
+      with:
+        name: pay-kit-dist
+        path: typescript/packages/pay-kit/dist
     - uses: pnpm/action-setup@v5
       with:
         package_json_file: package.json

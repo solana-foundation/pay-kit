@@ -36,6 +36,12 @@ jobs:
           name: mpp-dist
           path: typescript/packages/mpp/dist
           if-no-files-found: error
+      - name: Upload @solana/pay-kit dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: pay-kit-dist
+          path: typescript/packages/pay-kit/dist
+          if-no-files-found: error
 
   build-native:
     name: Build native harness adapters (${{ matrix.runner }})
@@ -107,13 +113,12 @@ jobs:
         id: harness-setup
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      # The TypeScript x402 runner and the ts-x402 adapters drive the real
-      # @solana/pay-kit, which bundles the vendored @x402 packages.
-      - name: Build @solana/pay-kit against prebuilt MPP
+          pay-kit-dist: "true"
+      # The TypeScript x402 runner imports the vendored @x402 packages from
+      # the pay-kit workspace, so install it (the dist itself is prebuilt).
+      - name: Install the TypeScript workspace
         working-directory: typescript
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --filter @solana/pay-kit build
+        run: pnpm install --frozen-lockfile
       - name: Run typescript offline conformance (vectors + protocol + flows)
         working-directory: harness
         env:
