@@ -230,8 +230,8 @@ end
 -- (Adapter:verify_payment: version gate, offer binding, extensions gate,
 -- structural transaction verifier, client signatures). Nothing is signed or
 -- broadcast. The SDK prices in a gate (a human amount of a settlement coin)
--- and always scales by 10^6, so the route's atomic amount maps back onto that
--- fixed scale.
+-- and the adapter scales it by the coin's decimals (the built-in table for
+-- known coins), so the route's atomic amount maps back with the same table.
 
 local PAYMENT_IDENTIFIER_KEY = 'payment-identifier'
 local decode_envelope_shape
@@ -245,13 +245,14 @@ local function pay_kit_network(slug)
   return 'solana_devnet'
 end
 
--- "1000" atomic units at the SDK's fixed 6 decimals -> "0.001".
-local function units_to_decimal(units)
+-- "1000" atomic units of a 6-decimal coin -> "0.001".
+local function units_to_decimal(units, decimals)
   if type(units) ~= 'string' or not units:match('^%d+$') then
     error('x402ServerAmount must be an atomic-unit integer string')
   end
-  local padded = string.rep('0', math.max(0, 7 - #units)) .. units
-  local whole, fraction = padded:sub(1, #padded - 6), padded:sub(-6):gsub('0+$', '')
+  local padded = string.rep('0', math.max(0, decimals + 1 - #units)) .. units
+  local whole = padded:sub(1, #padded - decimals)
+  local fraction = (decimals > 0 and padded:sub(-decimals) or ''):gsub('0+$', '')
   if fraction == '' then return whole end
   return whole .. '.' .. fraction
 end
@@ -289,8 +290,10 @@ local function run_x402_verify(vector)
     mpp         = {challenge_binding_secret = 'unused-x402-conformance-secret-0123456789'},
   })
   if not ok then error(err) end
+  local decimals = assert(require('pay_kit.solana.mints').decimals_for(input.x402ServerCurrency),
+    'x402ServerCurrency is not a known coin')
   assert(pay_kit.gate('route', {
-    amount = assert(pay_kit.usd(units_to_decimal(input.x402ServerAmount), input.x402ServerCurrency)),
+    amount = assert(pay_kit.usd(units_to_decimal(input.x402ServerAmount, decimals), input.x402ServerCurrency)),
   }))
   local gate = assert(require('pay_kit.internal.registry').materialize('route'))
 

@@ -699,4 +699,62 @@ helper.test('verify accepts a legacy message under the v0 rules', function()
     default_offer(facilitator, mint, pay_to), {facilitator})
   helper.assert_true(ok, 'legacy wire must be accepted: ' .. tostring(err))
 end)
+
+-- scheme_exact_svm §1.4: the matching transfer is "at least" the required
+-- amount. 1001 pays a 1000 offer; 999 does not (the amount-mismatch case
+-- above); 1000 is the control.
+helper.test('section 1.4: overpayment accepted, underpayment rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = standard_keys(facilitator, source, mint, destination, authority)
+  local function tx_paying(amount)
+    return base64.encode(assemble(keys, 8, {
+      build_ix(5, {}, string.char(2) .. u32_le(200000)),
+      build_ix(5, {}, string.char(3) .. u64_le(1000)),
+      build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(amount) .. string.char(6)),
+      build_ix(7, {}, '/paid'),
+    }))
+  end
+  for _, amount in ipairs({1000, 1001}) do
+    local ok, transfer = pcall(x402_verify.verify, tx_paying(amount),
+      default_offer(facilitator, mint, pay_to), {facilitator})
+    helper.assert_true(ok, 'expected ' .. amount .. ' to pay a 1000 offer: ' .. tostring(transfer))
+  end
+  local ok, err = pcall(x402_verify.verify, tx_paying(999),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok)
+  helper.assert_true(tostring(err):find('amount_mismatch', 1, true), tostring(err))
+end)
+
+-- §1.4: exactly one matching transfer. A second TransferChecked, or none at
+-- ix[2], is rejected.
+helper.test('section 1.4: a second TransferChecked is rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = standard_keys(facilitator, source, mint, destination, authority)
+  local transfer = build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6))
+  local raw = assemble(keys, 8, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    transfer, transfer,
+    build_ix(7, {}, '/paid'),
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected a duplicate transfer to be rejected')
+  helper.assert_true(tostring(err):find('unknown_fourth_instruction', 1, true), tostring(err))
+end)
+
+helper.test('section 1.4: no TransferChecked is rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = standard_keys(facilitator, source, mint, destination, authority)
+  local raw = assemble(keys, 8, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 3, 4}, string.char(3) .. u64_le(1000)),  -- plain Transfer
+    build_ix(7, {}, '/paid'),
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected a transaction without TransferChecked to be rejected')
+  helper.assert_true(tostring(err):find('no_transfer_instruction', 1, true), tostring(err))
+end)
 end

@@ -172,11 +172,12 @@ helper.test('parity: high-range u64 amount above 2^53 matches exactly', function
 end)
 
 helper.test('parity: u64 amount off-by-one above 2^53 is rejected', function()
-  local raw, facilitator, mint, pay_to = make_tx({amount = '9007199254740993'})  -- 2^53+1
-  -- Offer expects 2^53 (the value a lossy float decode would collapse to).
+  local raw, facilitator, mint, pay_to = make_tx({amount = '9007199254740992'})  -- 2^53
+  -- Offer expects 2^53+1: a lossy float decode would collapse both to 2^53
+  -- and accept the underpayment.
   local ok, err = pcall(x402_verify.verify, base64.encode(raw),
     offer(facilitator, mint, pay_to,
-          {token_program = TOKEN_PROGRAM, amount = '9007199254740992'}), {facilitator})
+          {token_program = TOKEN_PROGRAM, amount = '9007199254740993'}), {facilitator})
   helper.assert_true(not ok)
   helper.assert_true(tostring(err):find('amount_mismatch', 1, true) ~= nil, tostring(err))
 end)

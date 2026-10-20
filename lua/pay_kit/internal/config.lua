@@ -38,6 +38,7 @@ to clear the cached state.
 
 local operator_mod = require('pay_kit.internal.operator')
 local errors       = require('pay_kit.errors')
+local mints_mod    = require('pay_kit.solana.mints')
 
 local M = {}
 
@@ -106,6 +107,27 @@ local function validate_stablecoins(list)
   return out
 end
 
+-- Validate `asset_decimals`: an optional {currency = decimals} map that
+-- prices a mint the built-in table does not know. Known stablecoins and SOL
+-- resolve from pay_kit.solana.mints.
+local function validate_asset_decimals(map)
+  if map == nil then return {} end
+  if type(map) ~= 'table' then
+    return nil, 'pay_kit: asset_decimals must be a table of currency -> decimals'
+  end
+  local out = {}
+  for currency, decimals in pairs(map) do
+    if type(currency) ~= 'string' or currency == '' then
+      return nil, 'pay_kit: asset_decimals keys must be non-empty strings'
+    end
+    if type(decimals) ~= 'number' or decimals % 1 ~= 0 or decimals < 0 or decimals > 18 then
+      return nil, 'pay_kit: asset_decimals[' .. currency .. '] must be an integer in 0..18'
+    end
+    out[currency] = decimals
+  end
+  return out
+end
+
 -- Resolve the operator table. Allows the caller to pass either a
 -- pre-built Operator (via `operator_mod.new`) or a plain options
 -- table; both ultimately funnel through `operator_mod.new`.
@@ -144,6 +166,18 @@ function M.configure(opts)
   -- Stablecoins.
   local stablecoins, sc_err = validate_stablecoins(opts.stablecoins)
   if not stablecoins then return nil, sc_err end
+
+  -- Every settlement coin must have known decimals: the wire amount is in
+  -- the asset's atomic units, so an unknown mint cannot be priced without
+  -- them (RULINGS C2/X2).
+  local asset_decimals, ad_err = validate_asset_decimals(opts.asset_decimals)
+  if not asset_decimals then return nil, ad_err end
+  for i = 1, #stablecoins do
+    if asset_decimals[stablecoins[i]] == nil and mints_mod.decimals_for(stablecoins[i]) == nil then
+      return nil, 'pay_kit: stablecoins[' .. i .. '] ' .. stablecoins[i] ..
+        ' is not a known stablecoin; set asset_decimals[' .. stablecoins[i] .. ']'
+    end
+  end
 
   -- Operator.
   local op, op_err = resolve_operator(opts.operator)
@@ -240,6 +274,7 @@ function M.configure(opts)
     network                  = network,
     accept                   = accept,
     stablecoins              = stablecoins,
+    asset_decimals           = asset_decimals,
     rpc_url                  = rpc_url,
     using_public_rpc_default = using_public_default,
     operator                 = op,
@@ -261,6 +296,16 @@ function M.configure(opts)
   end
   function current_config.effective_recipient(self)
     return self.operator:effective_recipient()
+  end
+  -- Decimals of a settlement coin: the configured override, else the
+  -- built-in table. Raises for an unknown coin rather than assuming 6.
+  function current_config.decimals_for(self, coin)
+    local decimals = self.asset_decimals[coin] or mints_mod.decimals_for(coin)
+    if decimals == nil then
+      error('pay_kit: no decimals for ' .. tostring(coin) .. '; set asset_decimals[' ..
+        tostring(coin) .. ']')
+    end
+    return decimals
   end
 
   -- Boot-time preflight. Mirrors Ruby PR #142: checks fee-payer SOL

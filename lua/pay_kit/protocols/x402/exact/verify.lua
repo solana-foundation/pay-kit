@@ -187,7 +187,8 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
     error('invalid_exact_svm_payload_recipient_mismatch')
   end
 
-  -- Rule 8: amount match. Compare as exact unsigned decimals so a
+  -- Rule 8: scheme_exact_svm §1.4, the matching transfer is "at least" the
+  -- required amount (overpayment tolerated, less rejected). Compare as exact unsigned decimals so a
   -- full-range u64 amount cannot collide with a different value through
   -- float rounding (mirrors Rust's u64 equality, verify.rs:414).
   local amount = read_u64_le(data, 2)
@@ -198,7 +199,7 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
   if type(expected_amount) ~= 'string' or expected_amount == '' then
     error('invalid_exact_svm_payload_amount_mismatch')
   end
-  if uint.compare(amount, expected_amount) ~= 0 then
+  if uint.compare(amount, expected_amount) < 0 then
     error('invalid_exact_svm_payload_amount_mismatch')
   end
 

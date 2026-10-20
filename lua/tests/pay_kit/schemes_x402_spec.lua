@@ -129,6 +129,41 @@ helper.test('exact_requirement resolves the settlement coin to its mint', functi
   helper.assert_equal(pyusd.extra.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 end)
 
+-- RULINGS X2 / C2: a 9-decimal mint is priced in its own atomic units on
+-- both protocols (0.001 -> 1000000), not as if it had 6 decimals.
+helper.test('offers price a 9-decimal mint in its own atomic units', function()
+  local mint = 'KTHzp63RATgvE5RoRRqVbY7hMWntARQ6dPQhMtfY9oA'
+  pay_kit._reset_for_tests()
+  assert(pay_kit.configure({
+    network = 'solana_devnet', operator = {recipient = SELLER}, preflight = false,
+    stablecoins = {mint}, asset_decimals = {[mint] = 9},
+    mpp = {challenge_binding_secret = 'x402-spec-secret-0123456789abcdef'},
+  }))
+  assert(pay_kit.gate('nine', {amount = assert(pay_kit.usd('0.001', mint))}))
+  local gate = assert(require('pay_kit.internal.registry').materialize('nine'))
+
+  local req = x402._private.exact_requirement(pay_kit.config(), gate, '/paid', mint)
+  helper.assert_equal(req.amount, '1000000')
+  helper.assert_equal(req.extra.decimals, 9)
+
+end)
+
+-- The MPP adapter takes decimals from the coin too: 0.001 SOL is 1000000
+-- lamports (it used to scale every coin by 10^6, giving 1000).
+helper.test('MPP adapter prices SOL in lamports', function()
+  pay_kit._reset_for_tests()
+  assert(pay_kit.configure({
+    network = 'solana_devnet', operator = {recipient = SELLER}, preflight = false,
+    accept = {'mpp'}, stablecoins = {'SOL'},
+    mpp = {challenge_binding_secret = 'x402-spec-secret-0123456789abcdef'},
+  }))
+  assert(pay_kit.gate('sol', {amount = assert(pay_kit.usd('0.001', 'SOL'))}))
+  local gate = assert(require('pay_kit.internal.registry').materialize('sol'))
+  local mpp = require('pay_kit.protocols.mpp')
+  local adapter = assert(mpp.new({config_resolver = pay_kit.config}))
+  helper.assert_equal(adapter:accepts_entry(gate, {path = '/paid'}).amount, '1000000')
+end)
+
 helper.test('exact_requirement binds no memo when there is no resource', function()
   setup()
   local gate = make_gate('0.001')

@@ -139,6 +139,15 @@ function M.default_token_program_for_currency(currency, network)
   return nil
 end
 
+-- Decimals of a currency the built-in table knows: 9 for native SOL, 6 for
+-- every stablecoin symbol or mint in KNOWN_MINTS. nil for anything else, so
+-- an arbitrary mint is never assumed to have 6 decimals.
+function M.decimals_for(currency)
+  if string.lower(currency or '') == 'sol' then return 9 end
+  if M.stablecoin_symbol(currency) then return 6 end
+  return nil
+end
+
 local base58 = require('pay_kit.solana.base58')
 
 -- True when `value` decodes as a 32-byte base58 string, i.e. a syntactically

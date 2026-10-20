@@ -86,3 +86,27 @@ helper.test('usd honours configured stablecoins when no coins passed', function(
   helper.assert_equal(p:primary_coin(), 'USDT')
   pay_kit._reset_for_tests()
 end)
+
+-- RULINGS C2/X2: wire amounts are in the asset's atomic units.
+helper.test('atomic_units scales 6-decimal units to the asset decimals', function()
+  local price = require('pay_kit.internal.price')
+  helper.assert_equal(price.atomic_units(1000, 6), '1000')          -- control
+  helper.assert_equal(price.atomic_units(1000, 9), '1000000')
+  helper.assert_equal(price.atomic_units(1230000, 2), '123')
+  helper.assert_error(function() price.atomic_units(1001, 2) end, 'precision')
+end)
+
+-- A settlement coin the built-in table does not know needs its decimals.
+helper.test('configure requires asset_decimals for an unknown settlement mint', function()
+  pay_kit._reset_for_tests()
+  local mint = 'KTHzp63RATgvE5RoRRqVbY7hMWntARQ6dPQhMtfY9oA'
+  local ok, err = pay_kit.configure({stablecoins = {mint}, preflight = false})
+  helper.assert_equal(ok, nil)
+  helper.assert_true(err:find('asset_decimals', 1, true), err)
+  pay_kit._reset_for_tests()
+  assert(pay_kit.configure({stablecoins = {mint}, asset_decimals = {[mint] = 9}, preflight = false,
+                            mpp = {challenge_binding_secret = 'price-spec-secret-0123456789abcdef'}}))
+  helper.assert_equal(pay_kit.config():decimals_for(mint), 9)
+  helper.assert_equal(pay_kit.config():decimals_for('USDC'), 6)
+  pay_kit._reset_for_tests()
+end)

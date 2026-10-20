@@ -138,6 +138,33 @@ function M.usd(amount_str, ...)
   }, Price)
 end
 
+-- Convert a price's 6-decimal unit count into the atomic units of an asset
+-- with `decimals` places, as an exact decimal string. The wire `amount` is
+-- "in atomic token units" (x402 RULINGS X2; MPP charge C2), so a 9-decimal
+-- mint is not priced as if it had 6. Errors when the price has more
+-- precision than the asset can represent (e.g. "0.0001" of a 2-decimal
+-- token) rather than rounding it.
+function M.atomic_units(units, decimals)
+  if type(decimals) ~= 'number' or decimals < 0 or decimals % 1 ~= 0 then
+    error('pay_kit: asset decimals must be a non-negative integer')
+  end
+  local text = string.format('%.0f', units)
+  if decimals >= DEFAULT_DECIMALS then
+    text = text .. string.rep('0', decimals - DEFAULT_DECIMALS)
+  else
+    local drop = DEFAULT_DECIMALS - decimals
+    local tail = text:sub(-drop)
+    if #text <= drop or tail ~= string.rep('0', drop) then
+      if tonumber(text) == 0 then return '0' end
+      error('pay_kit: price has more precision than a ' .. decimals .. '-decimal asset can carry')
+    end
+    text = text:sub(1, #text - drop)
+  end
+  return text
+end
+
+M.DEFAULT_DECIMALS = DEFAULT_DECIMALS
+
 -- Re-export the metatable so callers can `type-check` a price via
 -- `getmetatable(p) == pay_kit.price.metatable()`.
 function M.metatable()

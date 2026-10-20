@@ -140,6 +140,8 @@ helper.test('x402 verify_and_settle: cosigns + broadcasts + reserves signature',
       fee_payer = true,
     },
     x402 = {scheme = 'exact'},
+    -- The fixture mint is not a known stablecoin, so its decimals are stated.
+    asset_decimals = {[base58.encode(string.rep('\4', 32))] = 6},
     mpp  = {realm = 'unused', challenge_binding_secret = 'x-secret-key-long-enough-32bytes!!!'},
   })
 

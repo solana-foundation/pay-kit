@@ -33,6 +33,7 @@ local tx_mod     = require('pay_kit.solana.transaction')
 local network_check = require('pay_kit.solana.network_check')
 local json        = require('pay_kit.util.json')
 local mints       = require('pay_kit.solana.mints')
+local price_mod   = require('pay_kit.internal.price')
 
 local M = {}
 local Adapter = {}
@@ -64,7 +65,6 @@ local LEGACY_PAYMENT_RESPONSE_HEADER = 'x-payment-response'
 
 local DEFAULT_FIXTURE_SETTLEMENT_HEADER = 'x-payment-settlement-signature'
 local DEFAULT_MAX_TIMEOUT_SECONDS = 60
-local DEFAULT_DECIMALS = 6
 local DEFAULT_CONFIRMATION_ATTEMPTS = 40
 local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
 
@@ -250,13 +250,16 @@ local function exact_requirement(config, gate, resource_path, coin)
   local label = network_label(config.network)
   -- `asset` is the mint address, never the ticker.
   local mint = mints.resolve_mint(coin, label)
+  -- `amount` is in the asset's atomic units (RULINGS X2): scale the gate's
+  -- price by the coin's own decimals, never an assumed 6.
+  local decimals = config:decimals_for(coin)
   -- `decimals` and `tokenProgram` are non-spec hints (the scheme defines
   -- feePayer, memo, recentBlockhash and lastValidBlockHeight; RULINGS S1).
   -- The token program hint is only emitted when the table knows it, so a
   -- Token-2022 stablecoin is not advertised under the legacy program.
   local extra = {
     feePayer     = op_signer:pubkey(),
-    decimals     = DEFAULT_DECIMALS,
+    decimals     = decimals,
     tokenProgram = mints.default_token_program_for_currency(mint, label),
   }
   if resource_path ~= nil and resource_path ~= '' then
@@ -270,7 +273,7 @@ local function exact_requirement(config, gate, resource_path, coin)
     asset               = mint,
     -- v2 `amount` only; `maxAmountRequired` is the v1 spelling and does
     -- not belong in a v2 PaymentRequirements (RULINGS X1).
-    amount              = tostring(gate:total_units()),
+    amount              = price_mod.atomic_units(gate:total_units(), decimals),
     payTo               = gate:pay_to(),
     maxTimeoutSeconds   = DEFAULT_MAX_TIMEOUT_SECONDS,
     extra               = extra,
