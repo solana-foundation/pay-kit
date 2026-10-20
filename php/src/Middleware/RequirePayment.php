@@ -14,6 +14,7 @@ use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
 use PayKit\Protocols\X402\Adapter as X402Adapter;
+use PayKit\Store\MemoryStore;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
@@ -52,14 +53,29 @@ final class RequirePayment implements MiddlewareInterface
         ?MppAdapter $mpp = null,
         ?X402Adapter $x402 = null,
     ) {
-        $this->mpp  = $mpp ?? new MppAdapter($client->config);
+        // Default adapters share one replay store: the consumed-signature
+        // ledger is protocol-independent, so a payment settled through MPP
+        // cannot authorize a second request as an x402 payment (or the
+        // reverse). Separate stores would each see only their own claims.
+        $wantsX402 = $x402 === null && in_array(Protocol::X402, $client->config->accept, true);
+        $sharedStore = null;
+        if ($mpp === null && $wantsX402) {
+            if (function_exists('error_log')) {
+                error_log(
+                    'pay_kit: WARN: mpp and x402 adapters using one in-memory replay store; '
+                    . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+                );
+            }
+            $sharedStore = new MemoryStore();
+        }
+        $this->mpp  = $mpp ?? new MppAdapter($client->config, $sharedStore);
         // Auto-wire the X402 adapter when the client's accept list
         // includes Protocol::X402. Callers can still pass an explicit
         // adapter to override (e.g. with an offline blockhash provider).
         if ($x402 !== null) {
             $this->x402 = $x402;
-        } elseif (in_array(Protocol::X402, $client->config->accept, true)) {
-            $this->x402 = new X402Adapter($client->config);
+        } elseif ($wantsX402) {
+            $this->x402 = new X402Adapter($client->config, $sharedStore);
         } else {
             $this->x402 = null;
         }

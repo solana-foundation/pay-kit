@@ -15,7 +15,17 @@ use PayKit\Protocols\Mpp\Server\PaymentVerifier;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\Mpp\Server\TransactionPayloadVerifier;
 use PayKit\Protocols\Mpp\Server\VerificationResult;
+use PayKit\Config;
+use PayKit\Exception\InvalidProofException;
+use PayKit\Operator;
+use PayKit\PayCore\Network;
+use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
+use PayKit\Signer;
 use PayKit\Store\FileStore;
+use PayKit\Store\MemoryStore;
+use PayKit\Tests\PayCore\Rpc\FakeRpcGateway;
+use ReflectionMethod;
 use PayKit\Store\Store;
 use SolanaPhpSdk\Util\Base58;
 use SolanaPhpSdk\Keypair\Keypair;
@@ -593,6 +603,57 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertTrue($second->putIfAbsent('solana-charge:consumed:other', true));
     }
 
+    // One on-chain payment authorizes one request across protocols: a
+    // signature settled through MPP cannot be presented again as an x402
+    // payment on a gate sharing the store, nor the other way round.
+    public function testSignatureConsumedByOneProtocolIsRejectedByTheOther(): void
+    {
+        $store = new MemoryStore();
+        $x402 = new X402Adapter(
+            new Config(
+                network: Network::SolanaDevnet,
+                operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
+                preflight: false,
+            ),
+            replayStore: $store,
+            recentBlockhashProvider: fn () => null,
+        );
+        $x402Consume = new ReflectionMethod(X402Adapter::class, 'consumeSignature');
+
+        $settle = function (string $signature) use ($store): PaymentRequiredResponse|ChargeSettlement {
+            $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+            $request = $this->chargeRequest();
+            $credential = new Credential(
+                challenge: $challenges->createChallenge($request)->toEcho(),
+                payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+            );
+            $handler = $this->handler(
+                challenges: $challenges,
+                verifier: new AlwaysAcceptVerifier(),
+                replayStore: $store,
+                rpcGateway: new FakeRpcGateway(signature: $signature),
+            );
+            return $handler->handle($credential->toAuthorizationHeader(), $request);
+        };
+
+        self::assertInstanceOf(ChargeSettlement::class, $settle('MppSettledSignature'));
+        try {
+            $x402Consume->invoke($x402, 'MppSettledSignature');
+            self::fail('x402 accepted a signature already settled through MPP');
+        } catch (InvalidProofException $e) {
+            self::assertStringContainsString('signature_consumed', $e->getMessage());
+        }
+
+        $x402Consume->invoke($x402, 'X402SettledSignature');
+        $replayed = $settle('X402SettledSignature');
+        self::assertInstanceOf(PaymentRequiredResponse::class, $replayed);
+        self::assertStringContainsString('already consumed', $replayed->body['detail']);
+
+        // An unrelated payment is still accepted by either protocol.
+        self::assertInstanceOf(ChargeSettlement::class, $settle('ThirdSignature'));
+        $x402Consume->invoke($x402, 'FourthSignature');
+    }
+
     private function pushChargeRequest(): ChargeRequest
     {
         // Push-mode routes MUST NOT advertise feePayer=true (B34). This
@@ -621,13 +682,14 @@ final class SolanaChargeHandlerTest extends TestCase
         ?Store $replayStore = null,
         int $confirmationAttempts = 40,
         bool $acceptPushMode = true,
+        ?RpcGateway $rpcGateway = null,
     ): SolanaChargeHandler {
         // Default to acceptPushMode=true here so the push-mode tests below
         // exercise the settlement path; audit #5's default-off posture is
         // covered by testReturns402WhenPushModeNotOptedIn.
         return new SolanaChargeHandler(
             challenges: $challenges ?? new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
-            rpc: $rpc ?? new RpcClient('http://unused.invalid', new NullHttpClient()),
+            rpc: $rpcGateway ?? $rpc ?? new RpcClient('http://unused.invalid', new NullHttpClient()),
             feePayer: $feePayer,
             network: $network,
             verifier: $verifier,

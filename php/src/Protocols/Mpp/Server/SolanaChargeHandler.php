@@ -12,6 +12,7 @@ use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use PayKit\Store\ConsumedSignatures;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
 use SolanaPhpSdk\Keypair\Keypair;
@@ -32,11 +33,9 @@ use SolanaPhpSdk\Rpc\RpcClient;
  */
 final class SolanaChargeHandler
 {
-    private const REPLAY_KEY_PREFIX = 'solana-charge:consumed:';
-
     private readonly PaymentVerifier $verifier;
     private readonly TransactionPayloadVerifier $transactionVerifier;
-    private readonly Store $replayStore;
+    private readonly ConsumedSignatures $consumedSignatures;
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -91,7 +90,7 @@ final class SolanaChargeHandler
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode);
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode));
-        $this->replayStore = $replayStore ?? new MemoryStore();
+        $this->consumedSignatures = new ConsumedSignatures($replayStore ?? new MemoryStore());
     }
 
     /**
@@ -289,12 +288,13 @@ final class SolanaChargeHandler
     }
 
     /**
-     * Reserve the signature in the replay store. Throws on replay attempts.
+     * Reserve the signature in the ledger shared with x402, so a payment
+     * settled through either protocol authorizes one request. Throws on
+     * replay attempts.
      */
     private function consumeSignature(string $signature): void
     {
-        $key = self::REPLAY_KEY_PREFIX . $signature;
-        if (!$this->replayStore->putIfAbsent($key, true)) {
+        if (!$this->consumedSignatures->claim($signature)) {
             throw new RuntimeException("Transaction signature already consumed: $signature");
         }
     }

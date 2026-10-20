@@ -55,6 +55,33 @@ final class RequirePaymentTest extends TestCase
         };
     }
 
+    // The default MPP and x402 adapters claim payments in one store, so a
+    // signature settled through either protocol is consumed for both.
+    public function testDefaultAdaptersShareOneReplayStore(): void
+    {
+        $client = new PayKit(new Config(
+            network: Network::SolanaDevnet,
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
+            preflight: false,
+            accept: [Protocol::Mpp, Protocol::X402],
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
+        ));
+        $mw = new RequirePayment($client, new Gate(amount: Price::usd('0.01')));
+        $store = function (object $owner, string $property): object {
+            $adapter = (new \ReflectionProperty($owner, $property))->getValue($owner);
+            self::assertIsObject($adapter);
+            $class = new \ReflectionClass($adapter);
+            $field = $class->hasProperty('replayStore') ? 'replayStore' : 'consumedSignatures';
+            $value = $class->getProperty($field)->getValue($adapter);
+            self::assertIsObject($value);
+            return $value;
+        };
+        $mppStore = $store($mw, 'mpp');
+        $x402Ledger = $store($mw, 'x402');
+        $x402Store = (new \ReflectionProperty($x402Ledger, 'store'))->getValue($x402Ledger);
+        self::assertSame($mppStore, $x402Store);
+    }
+
     public function testEmits402WhenNoCredentialPresent(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
