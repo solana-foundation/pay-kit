@@ -665,6 +665,7 @@ impl X402 {
                         serde_json::to_value(requirement)
                             .map(|mut json| {
                                 strip_blockhash_hints(&mut json);
+                                drop_hints_not_echoed(&mut json, &accepted_json);
                                 json == accepted_json
                             })
                             .unwrap_or(false)
@@ -874,6 +875,7 @@ impl X402 {
             // is validated separately (`check_network_blockhash` + on-chain).
             strip_blockhash_hints(&mut accepted_json);
             strip_blockhash_hints(&mut route_json);
+            drop_hints_not_echoed(&mut route_json, &accepted_json);
             if accepted_json != route_json {
                 return Err(Error::Other(
                     "Credential's accepted requirements do not structurally match this route's expected requirements".into(),
@@ -1050,6 +1052,27 @@ fn is_loopback_rpc(rpc_url: &str) -> bool {
 /// canonical `Serialize` routes it into `extra`, but a credential whose raw
 /// `accepted` is passed through verbatim (see `PaymentRequirements::accepted`)
 /// can carry it at the top level, so both must be cleared for matching to hold.
+/// `extra` keys this server adds to its offers that are not exact-scheme
+/// fields: the spec's `extra` carries `feePayer`, `memo`, `recentBlockhash`
+/// and `lastValidBlockHeight`, and decimals come from the mint. A client that
+/// builds `accepted` from the spec fields alone may leave these out.
+const NON_SPEC_EXTRA_HINTS: &[&str] = &["decimals", "tokenProgram", "transactionVersions"];
+
+/// Remove from the route side every non-spec hint the credential's `accepted`
+/// does not carry, so a spec-shaped `accepted` still matches. Verification
+/// always uses the route's own values, and a hint the credential does echo
+/// must still equal the route's.
+fn drop_hints_not_echoed(route: &mut serde_json::Value, accepted: &serde_json::Value) {
+    let echoed = accepted.get("extra").and_then(|e| e.as_object());
+    if let Some(extra) = route.get_mut("extra").and_then(|e| e.as_object_mut()) {
+        for key in NON_SPEC_EXTRA_HINTS {
+            if !echoed.is_some_and(|echoed| echoed.contains_key(*key)) {
+                extra.remove(*key);
+            }
+        }
+    }
+}
+
 fn strip_blockhash_hints(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("recentBlockhash");
@@ -2651,5 +2674,112 @@ mod tests {
             .process_payment(&header, "0.01", ExactOptions::default())
             .await
             .is_ok());
+    }
+
+    // ── non-spec extra hints (RULINGS S1) ──
+
+    /// The canonical spec-shaped `accepted` for `requirements`: `extra` holds
+    /// only the spec's fields.
+    fn spec_accepted(requirements: &PaymentRequirements) -> serde_json::Value {
+        let mut accepted = requirements.to_accepted_value();
+        let extra = accepted["extra"].as_object_mut().unwrap();
+        for key in NON_SPEC_EXTRA_HINTS {
+            extra.remove(*key);
+        }
+        accepted
+    }
+
+    fn header_with_accepted(
+        requirements: &PaymentRequirements,
+        accepted: serde_json::Value,
+    ) -> String {
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(requirements, &payer, &payer);
+        let envelope = PaymentSignatureEnvelope {
+            scheme: None,
+            network: None,
+            x402_version: X402_VERSION_V2,
+            accepted: Some(accepted),
+            resource: requirements.resource_info(),
+            payload: PaymentProof::Transaction {
+                transaction: crate::core::tx::encode(&tx).unwrap(),
+            },
+            extensions: None,
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+
+    // Regression: an `accepted` without the server's non-spec hints was
+    // rejected as a structural mismatch.
+    #[tokio::test]
+    async fn spec_shaped_accepted_without_server_hints_matches() {
+        let x402 = X402::new(config()).unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        assert!(requirements.to_accepted_value()["extra"]
+            .get("decimals")
+            .is_some());
+        let accepted = spec_accepted(&requirements);
+        assert!(accepted["extra"].get("decimals").is_none());
+        let header = header_with_accepted(&requirements, accepted);
+
+        let direct = x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await;
+        assert!(
+            matches!(direct, Ok(VerifiedExactPayment::Transaction(_))),
+            "{direct:?}"
+        );
+        let matched = x402
+            .process_payment(&header, "0.01", ExactOptions::default())
+            .await;
+        assert!(
+            matches!(matched, Ok(VerifiedExactPayment::Transaction(_))),
+            "{matched:?}"
+        );
+    }
+
+    // Control: a hint the credential does echo must equal the route's.
+    #[tokio::test]
+    async fn echoed_server_hint_must_match() {
+        let x402 = X402::new(config()).unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let mut accepted = requirements.to_accepted_value();
+        accepted["extra"]["decimals"] = serde_json::json!(9);
+        let header = header_with_accepted(&requirements, accepted);
+        let err = x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("structurally match"), "{err}");
+    }
+
+    // Control: a spec field (feePayer) is never optional.
+    #[tokio::test]
+    async fn dropped_spec_extra_field_still_mismatches() {
+        let x402 = X402::new(Config {
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
+            ..config()
+        })
+        .unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let mut accepted = spec_accepted(&requirements);
+        accepted["extra"]
+            .as_object_mut()
+            .unwrap()
+            .remove("feePayer");
+        let header = header_with_accepted(&requirements, accepted);
+        assert!(x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .is_err());
     }
 }
