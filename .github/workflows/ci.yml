@@ -290,7 +290,9 @@ jobs:
 
       - name: Rust clippy
         working-directory: rust
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libudev-dev pkg-config
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Upload Rust coverage
         if: always()
