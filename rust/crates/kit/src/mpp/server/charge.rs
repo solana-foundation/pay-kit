@@ -5396,7 +5396,7 @@ mod tests {
         let VersionedMessage::V0(message) = &mut tx.message else {
             panic!("expected a version-0 message");
         };
-        message.account_keys.insert(1, extra);
+        message.account_keys.splice(1..1, [extra]);
         for ix in &mut message.instructions {
             if ix.program_id_index >= 1 {
                 ix.program_id_index += 1;
