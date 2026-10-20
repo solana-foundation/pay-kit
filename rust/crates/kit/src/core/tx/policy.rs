@@ -198,6 +198,39 @@ pub fn check_v0_budget_caps(
     Ok(Some(declared))
 }
 
+/// Highest total priority fee, in lamports, a fee sponsor pays for one
+/// co-signed transaction: 200,000 compute units at 10,000 micro-lamports per
+/// unit, the sponsored MPP charge policy.
+pub const MAX_SPONSORED_PRIORITY_FEE_LAMPORTS: u64 = 2_000;
+
+/// Bound the total priority fee a sponsor would pay for `message`, whatever
+/// mix of unit limit and price the client chose. Per-field caps alone let the
+/// largest limit pair with the largest price.
+///
+/// Version 1 is read from the header `priority_fee`. Version 0 multiplies the
+/// declared price by the declared limit, or by the runtime default the
+/// instruction count implies when no limit is declared. Returns the fee.
+pub fn check_priority_fee(message: &VersionedMessage, max_lamports: u64) -> Result<u64> {
+    let declared = DeclaredBudget::of(message)?;
+    let fee = match message {
+        VersionedMessage::V1(v1) => v1.config.priority_fee.unwrap_or(0),
+        _ => {
+            let price = declared.unit_price_micro_lamports.unwrap_or(0);
+            let limit = declared.unit_limit.unwrap_or_else(|| {
+                let budgeted = message.instructions().len() - declared.instruction_indexes.len();
+                super::budget::ComputeBudget::runtime_default(budgeted).unit_limit
+            });
+            super::budget::ComputeBudget::new(limit, price).priority_fee_lamports()
+        }
+    };
+    if fee > max_lamports {
+        return Err(Error::Other(format!(
+            "priority fee {fee} lamports exceeds the sponsored maximum {max_lamports}"
+        )));
+    }
+    Ok(fee)
+}
+
 /// Require a version-0 budget's ComputeBudget instructions to be the leading
 /// prefix of the message, `SetComputeUnitLimit` before `SetComputeUnitPrice`.
 pub fn require_budget_prefix(message: &VersionedMessage, declared: &DeclaredBudget) -> Result<()> {

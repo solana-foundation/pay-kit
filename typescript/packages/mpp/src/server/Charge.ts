@@ -336,6 +336,13 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
 // cap: ceil(10_000 × 200_000 / 1_000_000) = 2_000 lamports (~20% of base fee) —
 // enough headroom for honest clients to bump priority during congestion.
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000n;
+// Total priority fee a sponsor pays for one co-signed transaction:
+// 200_000 CU × 10_000 µL/CU. The per-field caps alone do not bound it when the
+// client omits SetComputeUnitLimit, since the runtime then budgets 200_000 CU
+// per instruction. Mirrors Rust `core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS`.
+const MAX_SPONSORED_PRIORITY_FEE_LAMPORTS = 2_000n;
+const RUNTIME_UNITS_PER_INSTRUCTION = 200_000n;
+const RUNTIME_MAX_UNITS = 1_400_000n;
 
 type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
@@ -599,12 +606,13 @@ async function validateInstructionAllowlist(
     }
     const expectedAtaPayer = options.feePayer ?? txFeePayer;
     const createdAtaOwners = new Set<string>();
+    const budget: ComputeBudgetSeen = { budgetInstructions: 0 };
 
     for (const [index, ix] of message.instructions.entries()) {
         const program = programAddress(message, ix);
 
         if (program === COMPUTE_BUDGET_PROGRAM) {
-            validateComputeBudgetInstruction(ix, options.feePayer !== undefined);
+            validateComputeBudgetInstruction(ix, options.feePayer !== undefined, budget);
             continue;
         }
 
@@ -644,9 +652,32 @@ async function validateInstructionAllowlist(
             throw new Error(`Missing required ATA creation instruction for split recipient ${owner}`);
         }
     }
+
+    if (options.feePayer !== undefined) {
+        validateSponsoredPriorityFee(budget, message.instructions.length);
+    }
 }
 
-function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored: boolean) {
+type ComputeBudgetSeen = { budgetInstructions: number; unitLimit?: bigint; unitPrice?: bigint };
+
+/**
+ * The server pays the priority fee it co-signs: bound limit × price, using the
+ * runtime's per-instruction default when no limit is declared.
+ */
+function validateSponsoredPriorityFee(budget: ComputeBudgetSeen, instructionCount: number) {
+    const price = budget.unitPrice ?? 0n;
+    if (price === 0n) return;
+    const implicit = RUNTIME_UNITS_PER_INSTRUCTION * BigInt(instructionCount - budget.budgetInstructions);
+    const limit = budget.unitLimit ?? (implicit < RUNTIME_MAX_UNITS ? implicit : RUNTIME_MAX_UNITS);
+    const fee = (limit * price + 999_999n) / 1_000_000n;
+    if (fee > MAX_SPONSORED_PRIORITY_FEE_LAMPORTS) {
+        throw new Error(
+            `Priority fee ${fee} lamports exceeds the sponsored maximum ${MAX_SPONSORED_PRIORITY_FEE_LAMPORTS}`,
+        );
+    }
+}
+
+function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored: boolean, budget: ComputeBudgetSeen) {
     if ((ix.accountIndices ?? []).length !== 0) {
         throw new Error('Compute budget instruction must not have accounts');
     }
@@ -656,6 +687,9 @@ function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored:
         if (units > MAX_COMPUTE_UNIT_LIMIT) {
             throw new Error(`Compute unit limit ${units} exceeds maximum ${MAX_COMPUTE_UNIT_LIMIT}`);
         }
+        if (budget.unitLimit !== undefined) throw new Error('Duplicate SetComputeUnitLimit instruction');
+        budget.unitLimit = BigInt(units);
+        budget.budgetInstructions += 1;
         return;
     }
 
@@ -669,6 +703,9 @@ function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored:
         if (price > cap) {
             throw new Error(`Compute unit price ${price} exceeds maximum ${cap}`);
         }
+        if (budget.unitPrice !== undefined) throw new Error('Duplicate SetComputeUnitPrice instruction');
+        budget.unitPrice = price;
+        budget.budgetInstructions += 1;
         return;
     }
 

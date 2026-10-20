@@ -26,9 +26,10 @@ pub use build::{
     build_unsigned, build_unsigned_fitting, build_unsigned_unchecked, check_limits, measure,
 };
 pub use policy::{
-    advertised, check_envelope, check_reported_version, check_v0_budget_caps, check_v1_budget_caps,
-    highest, negotiate, require_budget_prefix, require_presigned, require_static_accounts,
-    tx_v1_active, TxV1Mode, TX_V1_FEATURE_GATE,
+    advertised, check_envelope, check_priority_fee, check_reported_version, check_v0_budget_caps,
+    check_v1_budget_caps, highest, negotiate, require_budget_prefix, require_presigned,
+    require_static_accounts, tx_v1_active, TxV1Mode, MAX_SPONSORED_PRIORITY_FEE_LAMPORTS,
+    TX_V1_FEATURE_GATE,
 };
 pub use version::{accepted_versions, TxLimits, TxVersion, DEFAULT_ACCEPTED_VERSIONS};
 pub use wire::{decode, decode_bytes, encode, serialize, serialized_size};

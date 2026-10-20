@@ -7,7 +7,7 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from 'mppx/server';
-import { getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
+import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { getTransferSolInstruction } from '@solana-program/system';
 import { findAssociatedTokenPda, getTransferCheckedInstruction } from '@solana-program/token';
 import {
@@ -3523,6 +3523,57 @@ test('#25 fee-sponsored compute-unit price under the tight cap passes', async ()
             recipient: RECIPIENT,
         }),
     ).resolves.toBeUndefined();
+});
+
+async function buildSponsoredSplitTx(feePayerKey: string, budget: Instruction[]) {
+    const authority = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        ...budget,
+        getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 950_000n }),
+        getTransferSolInstruction({ source: authority, destination: address(PLATFORM), amount: 50_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayer(address(feePayerKey), msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+test('fee-sponsored priority fee is bounded across limit and price, including the implicit limit', async () => {
+    const signer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: {
+            feePayer: true,
+            feePayerKey: signer.address,
+            network: 'devnet',
+            splits: [{ amount: '50000', recipient: PLATFORM }],
+        },
+        recipient: RECIPIENT,
+    };
+    // No limit: two transfers are budgeted 400_000 CU, so 10_000 µL/CU is 4_000 lamports.
+    const implicit = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(implicit, request)).rejects.toThrow(
+        /Priority fee 4000 lamports exceeds the sponsored maximum 2000/,
+    );
+
+    const duplicate = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitLimitInstruction({ units: 1_000 }),
+        getSetComputeUnitPriceInstruction({ microLamports: 1n }),
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(duplicate, request)).rejects.toThrow(/Duplicate SetComputeUnitPrice/);
+
+    const declared = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitLimitInstruction({ units: 200_000 }),
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(declared, request)).resolves.toBeUndefined();
 });
 
 test('#25 client-paid compute-unit price above the tight cap still passes (general cap applies)', async () => {
