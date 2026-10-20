@@ -12,9 +12,6 @@ let X402ComputeUnitLimit: UInt32 = 20_000
 /// ComputeBudget SetComputeUnitPrice micro-lamports.
 let X402ComputeUnitPrice: UInt64 = 1
 
-/// Default SPL decimals when the offer omits `extra.decimals`.
-let X402DefaultDecimals: UInt8 = 6
-
 // MARK: - Challenge parsing
 
 /// A selected x402 offer together with the protocol version the server's
@@ -115,7 +112,9 @@ let X402MemoMaxBytes: Int = 256
 /// Transaction shape (v0, fee-payer from `extra.feePayer` or client):
 ///   1. `ComputeBudgetSetUnitLimit(20_000)`
 ///   2. `ComputeBudgetSetUnitPrice(1)`
-///   3. `splTransferChecked` (SPL) **or** `systemTransfer` (native SOL)
+///   3. `splTransferChecked` (SPL) **or** `systemTransfer` (native SOL).
+///      Decimals come from the offer's non-spec `decimals` hint when
+///      present, else from the mint account read through `rpc`.
 ///   4. Memo instruction: `extra.memo` when present, else a random 16-byte
 ///      hex-encoded nonce (always appended to guarantee transaction
 ///      uniqueness). Mirrors the Rust `build_payment_transaction` which
@@ -309,19 +308,37 @@ private func _buildPaymentPayload(
     let mintAddress = Mints.resolveMint(currency: assetStr, cluster: clusterLabel)
 
     if let mintStr = mintAddress {
-        // Default the token program from the currency (Token vs Token-2022)
-        // when the offer omits `extra.tokenProgram`, so Token-2022 mints
-        // (USDG / PYUSD / CASH) derive the correct ATA. Mirrors rust
-        // `default_token_program_for_currency`.
-        let tokenProgramStr = offer.effectiveTokenProgram
-            ?? Mints.defaultTokenProgram(currency: assetStr, cluster: clusterLabel)
-        let tokenProgram = try Pubkey(base58: tokenProgramStr)
         let mint = try Pubkey(base58: mintStr)
+        let tokenProgram: Pubkey
         let decimals: UInt8
-        if let d = offer.effectiveDecimals, d >= 0, d <= 255 {
-            decimals = UInt8(d)
+        if let hinted = offer.effectiveDecimals {
+            // A server-sent decimals value is a non-spec hint the client MAY
+            // use (RULINGS S1). Out of range is a malformed offer, not a
+            // reason to guess.
+            guard hinted >= 0, hinted <= 255 else {
+                throw PayKitError.invalidTransaction("x402 offer decimals out of range [0, 255]: \(hinted)")
+            }
+            decimals = UInt8(hinted)
+            // Default the token program from the currency (Token vs
+            // Token-2022) when the offer omits `extra.tokenProgram`, so
+            // Token-2022 mints (USDG / PYUSD / CASH) derive the correct ATA.
+            // Mirrors rust `default_token_program_for_currency`.
+            tokenProgram = try Pubkey(
+                base58: offer.effectiveTokenProgram
+                    ?? Mints.defaultTokenProgram(currency: assetStr, cluster: clusterLabel)
+            )
         } else {
-            decimals = X402DefaultDecimals
+            // scheme_exact_svm.md keeps decimals out of `extra`: read them
+            // from the mint account, together with its owning token program.
+            // No default: a mint that cannot be read is refused.
+            let account = try await rpc.getMintAccount(mintBase58: mintStr)
+            if let stated = offer.effectiveTokenProgram, stated != account.tokenProgram.base58 {
+                throw PayKitError.invalidTransaction(
+                    "x402 offer tokenProgram \(stated) does not own mint \(mintStr) (owner \(account.tokenProgram.base58))"
+                )
+            }
+            decimals = account.decimals
+            tokenProgram = account.tokenProgram
         }
         let sourceAta = try AssociatedTokenAccount.address(
             owner: signerPubkey, mint: mint, tokenProgram: tokenProgram

@@ -5,9 +5,10 @@ import Foundation
 /// always includes `recentBlockhash`, so this path is only exercised
 /// for ad-hoc callers that want the SDK to fetch one.
 ///
-/// URLSession-backed, no third-party dependency. Three methods:
-/// `getLatestBlockhash`, `getAccountOwner`, and `sendTransaction`. All
-/// speak the JSON-RPC shape Solana's RPC endpoint expects.
+/// URLSession-backed, no third-party dependency. Methods:
+/// `getLatestBlockhash`, `getAccountOwner`, `getMintAccount`, and
+/// `sendTransaction`. All speak the JSON-RPC shape Solana's RPC endpoint
+/// expects.
 public struct RpcClient: Sendable {
     public let endpoint: URL
     private let urlSession: URLSession
@@ -52,16 +53,50 @@ public struct RpcClient: Sendable {
             method: "getAccountInfo",
             params: [pubkeyBase58, ["encoding": "base64"]]
         )
-        guard
-            let outer = result as? [String: Any],
-            let value = outer["value"] as? [String: Any]
-        else {
+        guard let outer = result as? [String: Any] else {
             throw PayKitError.rpcFailure("getAccountInfo returned malformed body for \(pubkeyBase58)")
+        }
+        guard let value = outer["value"] as? [String: Any] else {
+            throw PayKitError.rpcFailure("account \(pubkeyBase58) does not exist")
         }
         guard let owner = value["owner"] as? String else {
             throw PayKitError.rpcFailure("account \(pubkeyBase58) has no owner field (does it exist?)")
         }
         return owner
+    }
+
+    /// Reads an SPL mint account and returns its owning token program and
+    /// decimals.
+    ///
+    /// Fails closed: a missing account, an owner other than the Token or
+    /// Token-2022 program, or data that is not an initialized mint all
+    /// throw `PayKitError.invalidTransaction`. The MPP charge client uses
+    /// this when the challenge omits `tokenProgram`, and the x402 exact
+    /// client uses it to learn the decimals for `TransferChecked` when the
+    /// offer does not carry them (scheme_exact_svm.md keeps decimals out of
+    /// `extra`).
+    public func getMintAccount(mintBase58: String) async throws -> MintAccount {
+        let result = try await rpcCall(
+            method: "getAccountInfo",
+            params: [mintBase58, ["encoding": "base64"]]
+        )
+        guard let outer = result as? [String: Any] else {
+            throw PayKitError.rpcFailure("getAccountInfo returned malformed body for \(mintBase58)")
+        }
+        guard let value = outer["value"] as? [String: Any] else {
+            throw PayKitError.invalidTransaction("mint account \(mintBase58) does not exist")
+        }
+        guard let ownerStr = value["owner"] as? String else {
+            throw PayKitError.invalidTransaction("mint account \(mintBase58) has no owner")
+        }
+        guard
+            let dataField = value["data"] as? [Any],
+            let encoded = dataField.first as? String,
+            let data = Data(base64Encoded: encoded)
+        else {
+            throw PayKitError.invalidTransaction("mint account \(mintBase58) has no base64 data")
+        }
+        return try MintAccount(mint: mintBase58, owner: ownerStr, data: data)
     }
 
     /// Submits a base64-encoded signed transaction. Returns the base58
@@ -110,5 +145,39 @@ public struct RpcClient: Sendable {
             throw PayKitError.rpcFailure("RPC body missing result field")
         }
         return result
+    }
+}
+
+/// An SPL mint account read from the chain. Only constructible from an
+/// account owned by the Token or Token-2022 program whose data is an
+/// initialized mint, so holding one proves the token program and decimals
+/// came from the mint itself.
+public struct MintAccount: Sendable, Equatable {
+    /// SPL mint layout size; Token-2022 mints with extensions are longer
+    /// but keep the same base layout.
+    static let baseLength = 82
+    /// Byte offsets in the base layout: `decimals` (u8) and
+    /// `is_initialized` (bool) follow `mint_authority` (36) and `supply` (8).
+    static let decimalsOffset = 44
+    static let initializedOffset = 45
+
+    /// Owning program: `Pubkey.tokenProgram` or `Pubkey.token2022Program`.
+    public let tokenProgram: Pubkey
+    public let decimals: UInt8
+
+    /// Parses a mint account from its owner and raw account data.
+    public init(mint: String, owner: String, data: Data) throws {
+        let ownerKey = try Pubkey(base58: owner)
+        guard ownerKey == .tokenProgram || ownerKey == .token2022Program else {
+            throw PayKitError.invalidTransaction(
+                "mint \(mint) is owned by unsupported program \(owner)"
+            )
+        }
+        let bytes = [UInt8](data)
+        guard bytes.count >= Self.baseLength, bytes[Self.initializedOffset] == 1 else {
+            throw PayKitError.invalidTransaction("account \(mint) is not an initialized SPL mint")
+        }
+        self.tokenProgram = ownerKey
+        self.decimals = bytes[Self.decimalsOffset]
     }
 }

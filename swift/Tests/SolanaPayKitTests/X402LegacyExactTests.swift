@@ -110,7 +110,9 @@ struct X402LegacyBuildVectorTests {
             // Emit the version the vector's challenge declared (nil -> default v2).
             let payment = try await buildX402PaymentForChallenge(
                 signer: try LegacyFixtures.makeSigner(),
-                rpc: LegacyFixtures.makeRpc(),
+                // Vector offers carry no decimals (scheme_exact_svm.md keeps
+                // them out of `extra`); the builder reads them from the mint.
+                rpc: MintFixtureURLProtocol.rpc(),
                 offer: offer,
                 declaredVersion: vector.input.x402Version,
                 nonceGenerator: { Data(repeating: 0xAB, count: 16) }
