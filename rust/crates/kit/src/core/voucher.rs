@@ -69,7 +69,7 @@ pub struct VoucherVerifyParts {
 
 /// Run the expiry checks and build the Ed25519 verification inputs for a voucher
 /// WITHOUT performing the signature curve operation. Splitting the cheap checks
-/// + parsing from the expensive verify lets the hot path either verify inline or
+/// and parsing from the expensive verify lets the hot path either verify inline or
 /// hand the parts to a batch verifier. Expiry semantics match
 /// [`verify_voucher_signature`].
 pub fn voucher_verify_parts(

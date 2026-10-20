@@ -1022,8 +1022,7 @@ impl X402BatchSettlement {
                 // borrowing the record under the read guard. The growing
                 // `committed_deliveries` deque and the `extra` map are never
                 // cloned here.
-                let fields: Arc<Mutex<Option<(bool, bool, u64, Option<String>, u64, String)>>> =
-                    Arc::new(Mutex::new(None));
+                let fields: Arc<Mutex<Option<VoucherCheckFields>>> = Arc::new(Mutex::new(None));
                 let out = Arc::clone(&fields);
                 let binding = self.binding();
                 self.store
@@ -1032,14 +1031,17 @@ impl X402BatchSettlement {
                         Box::new(move |state| {
                             if let Some(state) = state {
                                 state.check_binding(&binding)?;
-                                *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((
-                                    state.sealed,
-                                    state.close_requested_at.is_some(),
-                                    state.cumulative,
-                                    state.highest_voucher_signature.clone(),
-                                    state.deposit,
-                                    state.payer.clone(),
-                                ));
+                                *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some(VoucherCheckFields {
+                                        sealed: state.sealed,
+                                        close_requested: state.close_requested_at.is_some(),
+                                        cumulative: state.cumulative,
+                                        highest_voucher_signature: state
+                                            .highest_voucher_signature
+                                            .clone(),
+                                        deposit: state.deposit,
+                                        payer: state.payer.clone(),
+                                    });
                             }
                             Ok(())
                         }),
@@ -1048,14 +1050,14 @@ impl X402BatchSettlement {
                     .map_err(|e| {
                         batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}"))
                     })?;
-                let (
+                let VoucherCheckFields {
                     sealed,
                     close_requested,
                     cumulative,
                     highest_voucher_signature,
                     deposit,
                     payer,
-                ) = fields
+                } = fields
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
@@ -3396,6 +3398,16 @@ fn encode_json<T: serde::Serialize>(value: &T) -> Result<String, Error> {
         &base64::engine::general_purpose::STANDARD,
         json.as_bytes(),
     ))
+}
+
+/// Scalar channel fields the voucher hot path reads under the store's read guard.
+struct VoucherCheckFields {
+    sealed: bool,
+    close_requested: bool,
+    cumulative: u64,
+    highest_voucher_signature: Option<String>,
+    deposit: u64,
+    payer: String,
 }
 
 #[cfg(test)]

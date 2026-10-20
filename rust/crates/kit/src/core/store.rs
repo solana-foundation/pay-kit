@@ -1576,6 +1576,9 @@ impl ChannelState {
 /// An atomic in-place step on one channel record.
 pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
 
+/// Borrowing reader passed to [`ChannelStore::read_channel`].
+pub type ChannelReader = Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>;
+
 pub trait ChannelStore: Send + Sync {
     /// Return a weakly-consistent snapshot of every channel in this store's
     /// namespace.
@@ -1656,7 +1659,7 @@ pub trait ChannelStore: Send + Sync {
     fn read_channel(
         &self,
         channel_id: &str,
-        reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+        reader: ChannelReader,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 
     /// Atomically mutate channel state in place, without cloning the record.
@@ -1675,7 +1678,7 @@ pub trait ChannelStore: Send + Sync {
         &self,
         channel_id: &str,
         seed: Option<ChannelState>,
-        mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+        mutator: ChannelMutator,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 
     /// Atomically check and reserve one authorization on `channel_id`.

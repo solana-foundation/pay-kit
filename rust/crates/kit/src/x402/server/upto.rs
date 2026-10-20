@@ -658,16 +658,18 @@ impl X402Upto {
         // drains the operator). Validate before co-signing/broadcasting.
         self.validate_open_transaction(
             &tx,
-            &payer,
-            &expected_payee,
-            &expected_mint,
-            &token_program,
-            &channel_id,
-            max,
-            &payload.nonce,
-            &payload.open_slot,
-            requirements.extra.memo.as_deref(),
-            &expected_distribution,
+            &ExpectedOpen {
+                payer: &payer,
+                payee: &expected_payee,
+                mint: &expected_mint,
+                token_program: &token_program,
+                channel_id: &channel_id,
+                max_amount: max,
+                payload_nonce: &payload.nonce,
+                payload_open_slot: &payload.open_slot,
+                memo: requirements.extra.memo.as_deref(),
+                recipients: &expected_distribution,
+            },
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
@@ -992,17 +994,20 @@ impl X402Upto {
     fn validate_open_transaction(
         &self,
         tx: &VersionedTransaction,
-        payer: &Pubkey,
-        payee: &Pubkey,
-        mint: &Pubkey,
-        token_program: &Pubkey,
-        channel_id: &Pubkey,
-        max_amount: u64,
-        payload_nonce: &str,
-        payload_open_slot: &str,
-        expected_memo: Option<&str>,
-        expected_recipients: &[pc::Distribution],
+        expected: &ExpectedOpen<'_>,
     ) -> Result<(), Error> {
+        let ExpectedOpen {
+            payer,
+            payee,
+            mint,
+            token_program,
+            channel_id,
+            max_amount,
+            payload_nonce,
+            payload_open_slot,
+            memo: expected_memo,
+            recipients: expected_recipients,
+        } = *expected;
         let program_id = self.program_id()?;
         // The challenged recentSlot at verify time: freshly fetched (cache
         // first), so the transaction's openSlot — stamped from the earlier
@@ -1081,6 +1086,22 @@ impl X402Upto {
             .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
         Channel::from_bytes(&data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
     }
+}
+
+/// The open a client must have built for this challenge; see
+/// [`X402Upto::validate_open_transaction`].
+#[derive(Clone, Copy)]
+struct ExpectedOpen<'a> {
+    payer: &'a Pubkey,
+    payee: &'a Pubkey,
+    mint: &'a Pubkey,
+    token_program: &'a Pubkey,
+    channel_id: &'a Pubkey,
+    max_amount: u64,
+    payload_nonce: &'a str,
+    payload_open_slot: &'a str,
+    memo: Option<&'a str>,
+    recipients: &'a [pc::Distribution],
 }
 
 #[cfg(test)]
