@@ -59,6 +59,10 @@ func (c *Client) RequireFunc(resolve GateFunc) func(http.Handler) http.Handler {
 				if !errors.As(err, &perr) {
 					perr = &PaymentError{Code: "invalid_proof", Err: err}
 				}
+				if perr.Code == CodeSettlementInProgress {
+					c.writeSettlementInProgress(w, r, &gate, perr)
+					return
+				}
 				c.write402(w, r, &gate, perr)
 				return
 			}
@@ -128,6 +132,26 @@ type paymentRequiredBody struct {
 	Accepts  []AcceptsEntry `json:"accepts"`
 }
 
+// CodeSettlementInProgress is the [PaymentError] code for a credential
+// whose payment may already be broadcast and is not yet resolved.
+const CodeSettlementInProgress = "settlement_in_progress"
+
+// writeSettlementInProgress answers with 409 and no challenge: a client
+// handed a fresh challenge could pay it while the original transaction
+// lands and pay twice. The client retries the same credential instead.
+func (c *Client) writeSettlementInProgress(w http.ResponseWriter, r *http.Request, gate *Gate, perr *PaymentError) {
+	perr.Gate = gate
+	perr.status = http.StatusConflict
+	perr.resource = r.URL.Path
+	perr.accepts = []AcceptsEntry{}
+	perr.headers = map[string]string{"Retry-After": "1", "Cache-Control": "no-store"}
+	handler := c.errorHandler
+	if handler == nil {
+		handler = DefaultErrorHandler
+	}
+	handler(w, r, perr)
+}
+
 // write402 assembles the per-protocol accepts entries and challenge
 // headers, stamps them onto the [PaymentError], and dispatches to the
 // configured error handler (DefaultErrorHandler unless overridden via
@@ -192,8 +216,12 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusPaymentRequired
 	}
 	w.WriteHeader(status)
+	errorCode := "payment_required"
+	if perr.Code == CodeSettlementInProgress {
+		errorCode = CodeSettlementInProgress
+	}
 	_ = json.NewEncoder(w).Encode(paymentRequiredBody{
-		Error:    "payment_required",
+		Error:    errorCode,
 		Resource: perr.resource,
 		Accepts:  perr.accepts,
 	})

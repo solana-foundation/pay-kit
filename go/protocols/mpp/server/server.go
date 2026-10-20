@@ -661,7 +661,7 @@ func (m *Mpp) verifyTransaction(
 		return core.Receipt{}, err
 	}
 	if !inserted {
-		return core.Receipt{}, core.NewError(core.ErrCodeSignatureConsumed, "transaction signature already consumed")
+		return m.reconcilePending(ctx, credential, request, details, tx.Signatures[0])
 	}
 	cleanupConsumed := true
 	defer func() {
@@ -676,7 +676,17 @@ func (m *Mpp) verifyTransaction(
 	}
 	signature, err := solanatx.SendTransaction(ctx, m.rpc, tx)
 	if err != nil {
-		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
+		// Only a preflight rejection proves the node did not forward the
+		// transaction, so only then is the claim released for a retry.
+		if solanatx.IsPreflightRejection(err) {
+			return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "send transaction", err)
+		}
+		// Any other send error (a lost response, a timeout, a 5xx from a
+		// proxy that already forwarded it) leaves the outcome unknown:
+		// keep the claim and record the locally derived signature as
+		// pending, so a fresh challenge is not paid while it can still land.
+		cleanupConsumed = false
+		return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID, err)
 	}
 	// The RPC accepted the broadcast. From here the transaction may land
 	// on-chain even if confirmation polling or the on-chain re-verification
@@ -686,7 +696,15 @@ func (m *Mpp) verifyTransaction(
 	// double-pays. Mirrors the rust reference, which consumes the signature
 	// after broadcast and never deletes it on a confirmation timeout.
 	cleanupConsumed = false
+	if !signature.Equals(tx.Signatures[0]) {
+		return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID,
+			fmt.Errorf("RPC reported signature %s for transaction %s", signature, finalSignature))
+	}
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
+		if ctx.Err() != nil {
+			// Still unconfirmed when the request gave up: outcome unknown.
+			return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID, err)
+		}
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {

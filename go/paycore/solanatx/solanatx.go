@@ -24,6 +24,7 @@ import (
 	"github.com/gagliardetto/solana-go/programs/token"
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 )
@@ -362,6 +363,19 @@ func SendTransaction(ctx context.Context, rpcClient RPCClient, tx *solana.Transa
 		SkipPreflight:       false,
 		PreflightCommitment: rpc.CommitmentConfirmed,
 	})
+}
+
+// sendPreflightFailureCode is the JSON-RPC error code a node returns when
+// sendTransaction's preflight simulation rejects the transaction.
+const sendPreflightFailureCode = -32002
+
+// IsPreflightRejection reports whether a sendTransaction error is a
+// preflight rejection: the one send failure that proves the node did not
+// forward the transaction. Any other error (a lost response, a timeout, a
+// 5xx from a proxy that already forwarded it) leaves the outcome unknown.
+func IsPreflightRejection(err error) bool {
+	var rpcErr *jsonrpc.RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == sendPreflightFailureCode
 }
 
 // FetchTransaction reads a confirmed transaction back by signature and
