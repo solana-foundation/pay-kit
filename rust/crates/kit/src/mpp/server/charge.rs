@@ -1372,11 +1372,17 @@ impl Mpp {
             .map_err(|e| unresolved(format!(": {e}")))?;
         let failure = match status {
             Some(Ok(())) => {
-                if let Err(e) = charge_store
-                    .mark_confirmed(challenge_id, final_signature)
+                // One receipt per payment: only the caller that wins the
+                // pending -> confirmed transition is granted access.
+                let claimed = charge_store
+                    .confirm_pending(challenge_id, generation, final_signature)
                     .await
-                {
-                    tracing::warn!(error = %e, %challenge_id, "failed to persist reconciled charge record");
+                    .map_err(|e| unresolved(format!(": {e}")))?;
+                if !claimed {
+                    return Err(VerificationError::signature_consumed(format!(
+                        "Transaction signature already consumed — challenge {challenge_id} was \
+                         already settled (tx {final_signature})"
+                    )));
                 }
                 return Ok(Receipt::success(
                     METHOD_NAME,
@@ -8324,6 +8330,64 @@ mod tests {
             record.state,
             crate::mpp::store::ChargeRecordState::Confirmed
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_pending_retries_grant_one_receipt() {
+        use std::sync::atomic::Ordering;
+        let (charge, _) = ambiguous_charge().await;
+        let challenge_id = charge.credential.challenge.id.clone();
+        let record = charge_record(&charge.store, &challenge_id).await;
+        // A second retry that read the same pending generation before the
+        // first one confirmed it.
+        let replay = ChargeReplayStore::new(charge.store.clone());
+        let ChargeReservation::PendingConfirmation {
+            generation,
+            final_signature,
+        } = replay
+            .reserve(
+                &challenge_id,
+                &record.normalized_request_digest,
+                CHARGE_RESERVATION_LEASE,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a pending record");
+        };
+        charge.status.store(1, Ordering::SeqCst);
+        let receipt = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap();
+        assert_eq!(receipt.reference, charge.signature.to_string());
+
+        let payload: CredentialPayload =
+            serde_json::from_value(charge.credential.payload.clone()).unwrap();
+        let err = charge
+            .mpp
+            .reconcile_pending_charge(
+                &replay,
+                &challenge_id,
+                generation,
+                &final_signature,
+                &payload,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
+
+        // Racing retries: exactly one is granted.
+        let (charge, _) = ambiguous_charge().await;
+        charge.status.store(1, Ordering::SeqCst);
+        let outcomes = tokio::join!(
+            charge.mpp.verify(&charge.credential, &charge.expected),
+            charge.mpp.verify(&charge.credential, &charge.expected),
+            charge.mpp.verify(&charge.credential, &charge.expected),
+        );
+        let granted = [outcomes.0.is_ok(), outcomes.1.is_ok(), outcomes.2.is_ok()];
+        assert_eq!(granted.iter().filter(|ok| **ok).count(), 1, "{outcomes:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

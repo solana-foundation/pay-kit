@@ -218,7 +218,7 @@ pub enum ChargeReservation {
     AlreadyFailed { reason: String },
     /// An earlier presentation with the same digest was broadcast but its
     /// outcome is unknown. The caller reconciles `final_signature` and settles
-    /// it with `mark_confirmed`, or `mark_failed` for `generation`; it must
+    /// it with `confirm_pending`, or `mark_failed` for `generation`; it must
     /// NOT broadcast again.
     PendingConfirmation {
         generation: u64,
@@ -415,6 +415,37 @@ impl ChargeReplayStore {
         Err(StoreError::Internal(format!(
             "charge record `{challenge_id}` is contended"
         )))
+    }
+
+    /// Confirm the pending broadcast at `generation` (from
+    /// [`ChargeReservation::PendingConfirmation`]).
+    ///
+    /// Exactly one caller wins this claim; `false`, writing nothing, means the
+    /// pending generation was already resolved by another caller.
+    pub async fn confirm_pending(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
+        let (tip, record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        if tip != generation
+            || record.state != ChargeRecordState::Pending
+            || record.final_signature.as_deref() != Some(final_signature)
+        {
+            return Ok(false);
+        }
+        let confirmed = terminal(
+            record,
+            ChargeRecordState::Confirmed,
+            Some(final_signature.to_string()),
+            None,
+        );
+        self.append(challenge_id, generation + 1, &confirmed).await
     }
 
     /// Record that `final_signature` was broadcast but its outcome is unknown,
@@ -2547,6 +2578,50 @@ mod tests {
             .unwrap();
         assert_eq!(
             outcome,
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "sig-pending".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_pending_confirmation_has_one_winner() {
+        let store = replay_store();
+        let ChargeReservation::Reserved { generation } = store
+            .reserve("chal-pc", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a fresh reservation");
+        };
+        assert!(store
+            .mark_pending("chal-pc", generation, "sig-pending")
+            .await
+            .unwrap());
+        let pending = generation + 1;
+        // Only the recorded signature at the current generation confirms.
+        assert!(!store
+            .confirm_pending("chal-pc", generation, "sig-pending")
+            .await
+            .unwrap());
+        assert!(!store
+            .confirm_pending("chal-pc", pending, "sig-other")
+            .await
+            .unwrap());
+        assert!(store
+            .confirm_pending("chal-pc", pending, "sig-pending")
+            .await
+            .unwrap());
+        // A concurrent reconciler of the same pending generation loses.
+        assert!(!store
+            .confirm_pending("chal-pc", pending, "sig-pending")
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-pc", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
             ChargeReservation::AlreadyConfirmed {
                 final_signature: "sig-pending".to_string()
             }
