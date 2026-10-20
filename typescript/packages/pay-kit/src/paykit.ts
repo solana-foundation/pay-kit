@@ -1,3 +1,5 @@
+import type { SessionStore } from '@solana/mpp/server';
+
 import type { ProtocolAdapter } from './adapter.js';
 import { createMppAdapter } from './adapters/mpp.js';
 import { createSessionEngine, type SessionEngine } from './adapters/mpp-session.js';
@@ -248,14 +250,26 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
     // for one deposit. Acquired after verify, released when settle completes.
     const inFlightUptoChannels = new Set<string>();
     // One session engine per session gate (shared store across its routes).
-    const sessionEngines = new Map<string, SessionEngine>();
+    const sessionEngines = new Map<string, { engine: SessionEngine; gate: Gate }>();
+    const sessionStoreOwners = new WeakMap<SessionStore, string>();
 
     function sessionEngineFor(gate: Gate): SessionEngine {
-        let engine = sessionEngines.get(gate.name);
-        if (!engine) {
-            engine = createSessionEngine(config, gate);
-            sessionEngines.set(gate.name, engine);
+        const cached = sessionEngines.get(gate.name);
+        const store = gate.session?.store;
+        if (cached) {
+            if (cached.gate.session?.store !== store) {
+                throw new ConfigurationError(`Gate "${gate.name}": session store differs from its initialized engine.`);
+            }
+            return cached.engine;
         }
+
+        const owner = store === undefined ? undefined : sessionStoreOwners.get(store);
+        if (owner !== undefined && owner !== gate.name) {
+            throw new ConfigurationError(`Gate "${gate.name}": session store is already used by gate "${owner}".`);
+        }
+        const engine = createSessionEngine(config, gate);
+        sessionEngines.set(gate.name, { engine, gate });
+        if (store !== undefined) sessionStoreOwners.set(store, gate.name);
         return engine;
     }
 

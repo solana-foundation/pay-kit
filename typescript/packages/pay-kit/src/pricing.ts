@@ -99,19 +99,24 @@ export function subscription(
  * ```
  *
  * @param cap - The authorized channel ceiling
- * @param config - Per-delivery `unitPrice` plus optional `closeDelayMs` / description / payTo
+ * @param config - Per-delivery `unitPrice` plus optional store, close delay, description, or recipient
  * @returns A session gate definition
  */
 export function session(
     cap: Price,
-    config: Omit<SessionGateParams, 'amount' | 'kind' | 'session'> & { closeDelayMs?: number; unitPrice: Price },
+    config: Omit<SessionConfig, 'unitPrice'> &
+        Omit<SessionGateParams, 'amount' | 'kind' | 'session'> & { unitPrice: Price },
 ): SessionGateParams {
-    const { closeDelayMs, unitPrice, ...rest } = config;
+    const { closeDelayMs, store, unitPrice, ...rest } = config;
     return {
         ...rest,
         amount: cap,
         kind: 'session',
-        session: { unitPrice: unitPrice.baseUnits(), ...(closeDelayMs !== undefined ? { closeDelayMs } : {}) },
+        session: {
+            unitPrice: unitPrice.baseUnits(),
+            ...(closeDelayMs !== undefined ? { closeDelayMs } : {}),
+            ...(store !== undefined ? { store } : {}),
+        },
     };
 }
 

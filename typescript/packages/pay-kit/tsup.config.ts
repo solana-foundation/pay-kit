@@ -15,7 +15,13 @@ import { defineConfig } from 'tsup';
 // resolve from the consumer's install.
 export default defineConfig({
     clean: true,
-    dts: true,
+    // SessionStore is public, but @solana/mpp is embedded rather than a runtime
+    // dependency. Inline its declarations so consumers need only pay-kit.
+    dts: {
+        compilerOptions: {
+            paths: { '@solana/mpp/server': ['../mpp/src/server/index.ts'] },
+        },
+    },
     entry: {
         index: 'src/index.ts',
         'client/index': 'src/client/index.ts',

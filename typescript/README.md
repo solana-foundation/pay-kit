@@ -194,6 +194,32 @@ settlement signature. For `charge/push` the server fetches the
 transaction by signature, runs the same structural verifier, and
 consumes the signature through the replay store.
 
+### Session storage
+
+Session gates keep channel state in a private in-memory store by default.
+Supply a `SessionStore` to use your application's storage implementation:
+
+```ts
+import { session, usd, type SessionStore } from '@solana/pay-kit'
+
+function streamingPricing(store: SessionStore) {
+  return { stream: session(usd('1'), { unitPrice: usd('0.0001'), store }) }
+}
+```
+
+The gated payment handler, voucher handler, delivery reservations, commits,
+receipt polling and idle-close lifecycle all use that same instance. Implement
+atomic per-channel updates according to the `SessionStore` contract. Give each
+gate and deployment policy (including network, mint and recipient) a separate
+storage namespace: the lifecycle restores open channels listed by its store.
+Within one PayKit instance, reusing a store object for different gate names or
+changing the store of an initialized gate throws a configuration error. Separate
+namespaced wrappers can share a backend. These identity checks cannot detect
+overlapping namespaces across wrappers or PayKit instances.
+
+Store injection alone does not guarantee crash recovery or exactly-once
+settlement; those also depend on the backend and settlement lifecycle.
+
 ## x402
 
 [x402](https://x402.org) revives HTTP `402 Payment Required` as a

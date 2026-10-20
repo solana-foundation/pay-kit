@@ -8,7 +8,7 @@
  *
  * pay-kit does NOT auto-mount the side-channel routes (mppx-consistent): the
  * instance exposes `handler` / `deliveries` / `commit` / `receipt` and the app
- * mounts them. All four share one in-memory session store per gate.
+ * mounts them. All four share one session store per gate.
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
@@ -47,7 +47,7 @@ export type SessionEngine = {
 };
 
 /**
- * Build the session engine for a `session` gate. One in-memory store is shared
+ * Build the session engine for a `session` gate. One store is shared
  * across the gated handler and the side-channel routes so the receipt poll can
  * read whichever channel a request opened.
  */
@@ -65,7 +65,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
     const mint = requireMint(coin, resolveStablecoinMint(coin, network), config.network);
 
     const signer = config.operator.signer.signer;
-    const store = createMemorySessionStore();
+    const store = gate.session.store ?? createMemorySessionStore();
     // New-channel 402s carry methodDetails.recentBlockhash/recentSlot from one
     // getLatestBlockhash on `rpc` (the session method fetches them; wire a
     // `blockhashCache` into `params` to share a host-refreshed cache instead).

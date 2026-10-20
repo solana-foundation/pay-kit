@@ -10,6 +10,7 @@
  */
 
 export type { ProtocolAdapter } from './adapter.js';
+export type { SessionStore } from '@solana/mpp/server';
 export { Charge } from './adapters/x402-upto.js';
 export type { AcceptsEntry, Challenge } from './challenge.js';
 export {

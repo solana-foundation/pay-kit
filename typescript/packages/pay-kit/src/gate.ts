@@ -1,3 +1,5 @@
+import type { SessionStore } from '@solana/mpp/server';
+
 import { ConfigurationError, MixedCurrenciesError, ProtocolIncompatibleError } from './errors.js';
 import type { Fee } from './fee.js';
 import { Price } from './price.js';
@@ -33,6 +35,12 @@ export type GateKind = 'fixed' | 'session' | 'subscription' | 'usage';
 export type SessionConfig = {
     /** Idle-close delay in ms — settle the channel this long after the last delivery. */
     readonly closeDelayMs?: number;
+    /**
+     * Channel storage for this gate. Defaults to a gate-owned in-memory store.
+     * Use a separate namespace per gate and deployment policy, and implement
+     * atomic updates as required by SessionStore.
+     */
+    readonly store?: SessionStore;
     /** Per-delivery price in base units (the streamed unit cost). */
     readonly unitPrice: bigint;
 };
