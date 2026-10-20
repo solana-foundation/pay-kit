@@ -186,6 +186,8 @@ describe("file-level completeness", () => {
   });
 
   it("only enforces under HARNESS_REQUIRE=1", () => {
+    // CI runs this file with HARNESS_REQUIRE=1, so set the opposite explicitly.
+    vi.stubEnv("HARNESS_REQUIRE", "0");
     new CaseRecorder("vector", "filtered").expect(refs, claimed);
     expect(() => assertSuiteComplete("vector")).not.toThrow();
   });
