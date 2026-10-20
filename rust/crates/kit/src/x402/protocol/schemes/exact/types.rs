@@ -382,24 +382,29 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
         let extra = object.get("extra").cloned();
         let extra_object = extra.as_ref().and_then(|value| value.as_object());
 
-        let recipient = string_field(object, "recipient")
-            .or_else(|| string_field(object, "payTo"))
-            .unwrap_or_default();
-        let amount = string_field(object, "amount")
-            .or_else(|| string_field(object, "maxAmountRequired"))
-            .unwrap_or_default();
-        let currency = string_field(object, "currency")
-            .or_else(|| string_field(object, "asset"))
-            .unwrap_or_else(|| "SOL".to_string());
+        // Legacy v1 aliases and canonical v2 fields name the same term. When
+        // both are present they must agree: otherwise the signing path could
+        // pay the alias while the echoed `accepted` object names the canonical
+        // value. Canonical fields win when only one side is present.
+        let recipient = aliased(object, "payTo", object, "recipient")?.unwrap_or_default();
+        let amount = aliased(object, "amount", object, "maxAmountRequired")?.unwrap_or_default();
+        let currency =
+            aliased(object, "asset", object, "currency")?.unwrap_or_else(|| "SOL".to_string());
 
-        let decimals = u8_field(object, "decimals")
-            .or_else(|| extra_object.and_then(|extra| u8_field(extra, "decimals")));
-        let token_program = string_field(object, "tokenProgram")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "tokenProgram")));
-        let recent_blockhash = string_field(object, "recentBlockhash")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "recentBlockhash")));
-        let fee_payer_key = string_field(object, "feePayerKey")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "feePayer")));
+        let empty = serde_json::Map::new();
+        let extra_fields = extra_object.unwrap_or(&empty);
+        let decimals = match (
+            u8_field(extra_fields, "decimals"),
+            u8_field(object, "decimals"),
+        ) {
+            (Some(canonical), Some(legacy)) if canonical != legacy => {
+                return Err(conflicting_alias("extra.decimals", "decimals"));
+            }
+            (canonical, legacy) => canonical.or(legacy),
+        };
+        let token_program = aliased(extra_fields, "tokenProgram", object, "tokenProgram")?;
+        let recent_blockhash = aliased(extra_fields, "recentBlockhash", object, "recentBlockhash")?;
+        let fee_payer_key = aliased(extra_fields, "feePayer", object, "feePayerKey")?;
         let fee_payer =
             bool_field(object, "feePayer").or_else(|| fee_payer_key.as_ref().map(|_| true));
         let transaction_versions = extra_object
@@ -410,8 +415,15 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
                 )
             })
             .transpose()?;
-        let max_age =
-            u64_field(object, "maxAge").or_else(|| u64_field(object, "maxTimeoutSeconds"));
+        let max_age = match (
+            u64_field(object, "maxTimeoutSeconds"),
+            u64_field(object, "maxAge"),
+        ) {
+            (Some(canonical), Some(legacy)) if canonical != legacy => {
+                return Err(conflicting_alias("maxTimeoutSeconds", "maxAge"));
+            }
+            (canonical, legacy) => canonical.or(legacy),
+        };
 
         // Keep the wire object for canonical v2 offers, and for any offer that
         // declares another scheme so it is never re-serialized as `exact`.
@@ -465,6 +477,31 @@ fn string_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) 
         .get(key)
         .and_then(|value| value.as_str())
         .map(str::to_string)
+}
+
+/// Read a term carried under a canonical key and a legacy alias, failing when
+/// both are present with different values.
+fn aliased<E: serde::de::Error>(
+    canonical_object: &serde_json::Map<String, serde_json::Value>,
+    canonical: &str,
+    legacy_object: &serde_json::Map<String, serde_json::Value>,
+    legacy: &str,
+) -> Result<Option<String>, E> {
+    match (
+        string_field(canonical_object, canonical),
+        string_field(legacy_object, legacy),
+    ) {
+        (Some(canonical_value), Some(legacy_value)) if canonical_value != legacy_value => {
+            Err(conflicting_alias(canonical, legacy))
+        }
+        (canonical_value, legacy_value) => Ok(canonical_value.or(legacy_value)),
+    }
+}
+
+fn conflicting_alias<E: serde::de::Error>(canonical: &str, legacy: &str) -> E {
+    E::custom(format!(
+        "payment requirement has conflicting {canonical} and legacy {legacy} fields"
+    ))
 }
 
 fn u64_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<u64> {
@@ -1323,5 +1360,72 @@ mod tests {
             assert_eq!(requirement.amount, "1000");
             assert_eq!(requirement.to_accepted_value()["scheme"], EXACT_SCHEME);
         }
+    }
+
+    fn v2_offer() -> serde_json::Value {
+        serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "1000",
+            "asset": mints::USDC_MAINNET,
+            "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+                "decimals": 6,
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "recentBlockhash": "11111111111111111111111111111111",
+                "feePayer": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+            }
+        })
+    }
+
+    #[test]
+    fn conflicting_legacy_aliases_are_rejected() {
+        let other = "11111111111111111111111111111112";
+        for (key, value) in [
+            ("recipient", other),
+            ("currency", "USDT"),
+            ("maxAmountRequired", "999999"),
+            (
+                "tokenProgram",
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            ),
+            ("recentBlockhash", other),
+            ("feePayerKey", other),
+        ] {
+            let mut offer = v2_offer();
+            offer[key] = serde_json::json!(value);
+            let error = serde_json::from_value::<PaymentRequirements>(offer).unwrap_err();
+            assert!(error.to_string().contains("conflicting"), "{key}: {error}");
+        }
+        for (key, value) in [("decimals", 9), ("maxAge", 60)] {
+            let mut offer = v2_offer();
+            offer[key] = serde_json::json!(value);
+            let error = serde_json::from_value::<PaymentRequirements>(offer).unwrap_err();
+            assert!(error.to_string().contains("conflicting"), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn agreeing_legacy_aliases_parse_to_the_canonical_terms() {
+        let mut offer = v2_offer();
+        offer["recipient"] = offer["payTo"].clone();
+        offer["currency"] = offer["asset"].clone();
+        offer["maxAmountRequired"] = offer["amount"].clone();
+        offer["decimals"] = serde_json::json!(6);
+        offer["feePayerKey"] = offer["extra"]["feePayer"].clone();
+        let requirement: PaymentRequirements = serde_json::from_value(offer.clone()).unwrap();
+        assert_eq!(requirement.recipient, offer["payTo"]);
+        assert_eq!(requirement.currency, offer["asset"]);
+        assert_eq!(requirement.amount, "1000");
+        assert_eq!(requirement.decimals, Some(6));
+        assert_eq!(
+            requirement.fee_payer_key.as_deref(),
+            offer["extra"]["feePayer"].as_str()
+        );
+
+        let canonical: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
+        assert_eq!(canonical.recipient, offer["payTo"]);
+        assert_eq!(canonical.currency, offer["asset"]);
     }
 }
