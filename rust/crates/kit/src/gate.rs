@@ -383,6 +383,18 @@ impl<S: Send + Sync> FromRequestParts<S> for Payment {
     }
 }
 
+/// A [`paid_batch_get`] / [`paid_batch_post`] handler's declaration that an
+/// error response performed no paid effect, so its voucher is released for a
+/// retry instead of being charged.
+///
+/// Insert it as a response extension on a 4xx/5xx response, for example
+/// `(StatusCode::SERVICE_UNAVAILABLE, Extension(PaymentNotConsumed))`. The
+/// gate cannot tell a failure before any effect from one after it, so every
+/// other response, including an error without this marker, is charged and
+/// replayed for a retry of the same voucher rather than run again.
+#[derive(Clone, Copy, Debug)]
+pub struct PaymentNotConsumed;
+
 /// Usage meter for [`paid_upto_get`] / [`paid_upto_post`] routes.
 ///
 /// The route handler reports the actual amount consumed (in base units) by
@@ -1555,11 +1567,11 @@ async fn batch_gate_middleware(
     let mut resp = next.run(req).await;
     prevent_shared_caching(&mut resp);
 
-    // A handler that failed charges nothing: release the authorization so the
-    // same voucher can be presented again. Only an error status counts as a
-    // failure; a redirect is how a completed POST answers (POST/Redirect/GET),
-    // so its effect is paid for like any success.
-    if is_failed_handler_status(resp.status()) {
+    // A handler that declared it consumed nothing charges nothing: release the
+    // authorization so the same voucher can be presented again. Any other
+    // response, an error included, may follow a committed effect, so it is
+    // charged and replayed rather than letting the voucher run the handler twice.
+    if releases_batch_authorization(&resp) {
         if let Err(e) = batch.release_authorization(outcome).await {
             tracing::error!(
                 channel = %channel_id,
@@ -1636,10 +1648,13 @@ async fn batch_gate_middleware(
     }
 }
 
-/// Whether a batch handler's response means it failed before delivering the
-/// paid effect, so its authorization is released rather than charged.
-fn is_failed_handler_status(status: StatusCode) -> bool {
-    status.is_client_error() || status.is_server_error()
+/// Whether a batch handler's response proves it failed before delivering the
+/// paid effect, so its authorization is released rather than charged: an
+/// error status alone is not proof, it must carry [`PaymentNotConsumed`].
+fn releases_batch_authorization(resp: &Response) -> bool {
+    let status = resp.status();
+    (status.is_client_error() || status.is_server_error())
+        && resp.extensions().get::<PaymentNotConsumed>().is_some()
 }
 
 /// Attempts a served request's charge is willing to make before giving up.
@@ -1707,6 +1722,8 @@ fn attach_settlement_header(
 
 /// Gate a `GET` handler behind x402 `batch-settlement` at the per-request
 /// `price`. Requires a `fee_payer_signer`; settlement is batched out of band.
+/// Every response is charged, error statuses included, unless it carries
+/// [`PaymentNotConsumed`].
 pub fn paid_batch_get<H, T, S>(handler: H, price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
 where
     H: Handler<T, S>,
@@ -2578,9 +2595,10 @@ mod tests {
         assert_eq!(state.cumulative, 1_000, "the redirect was charged");
     }
 
-    /// An error response still releases the authorization for a retry.
+    /// An error response may follow a committed effect, so it is charged and
+    /// replayed: the same voucher cannot run the handler a second time.
     #[tokio::test(flavor = "multi_thread")]
-    async fn batch_error_response_releases_the_voucher() {
+    async fn batch_error_response_is_charged_and_not_reexecuted() {
         use crate::core::store::ChannelStore as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2593,6 +2611,47 @@ mod tests {
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
                 StatusCode::SERVICE_UNAVAILABLE
+            }
+        };
+        let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
+
+        let responses = post_twice(app, &header).await;
+        assert!(responses
+            .iter()
+            .all(|r| r.status() == StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(responses[1].headers()[PAYMENT_REPLAY_HEADER], "true");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let state = pay
+            .x402_batch()
+            .unwrap()
+            .store()
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.cumulative, 1_000);
+        assert!(state.pending_deliveries.is_empty());
+    }
+
+    /// An error response that declares [`PaymentNotConsumed`] releases the
+    /// authorization for a retry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_unconsumed_error_releases_the_voucher() {
+        use crate::core::store::ChannelStore as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let pay = upto_paykit();
+        let (channel_id, header) = batch_paid_request(&pay).await;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&executions);
+        let handler = move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Extension(PaymentNotConsumed),
+                )
             }
         };
         let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
@@ -2615,13 +2674,35 @@ mod tests {
     }
 
     #[test]
-    fn only_error_statuses_release_a_batch_authorization() {
-        assert!(!is_failed_handler_status(StatusCode::OK));
-        assert!(!is_failed_handler_status(StatusCode::NO_CONTENT));
-        assert!(!is_failed_handler_status(StatusCode::SEE_OTHER));
-        assert!(!is_failed_handler_status(StatusCode::NOT_MODIFIED));
-        assert!(is_failed_handler_status(StatusCode::BAD_REQUEST));
-        assert!(is_failed_handler_status(StatusCode::INTERNAL_SERVER_ERROR));
+    fn only_declared_unconsumed_errors_release_a_batch_authorization() {
+        fn resp(status: StatusCode, unconsumed: bool) -> Response {
+            let mut resp = status.into_response();
+            if unconsumed {
+                resp.extensions_mut().insert(PaymentNotConsumed);
+            }
+            resp
+        }
+        assert!(!releases_batch_authorization(&resp(StatusCode::OK, true)));
+        assert!(!releases_batch_authorization(&resp(
+            StatusCode::SEE_OTHER,
+            true
+        )));
+        assert!(!releases_batch_authorization(&resp(
+            StatusCode::BAD_REQUEST,
+            false
+        )));
+        assert!(!releases_batch_authorization(&resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            false
+        )));
+        assert!(releases_batch_authorization(&resp(
+            StatusCode::BAD_REQUEST,
+            true
+        )));
+        assert!(releases_batch_authorization(&resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            true
+        )));
     }
 
     #[test]
