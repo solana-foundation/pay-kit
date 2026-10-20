@@ -36,7 +36,12 @@ const (
 	ErrCodeChallengeRouteMismatch ErrorCode = "challenge-route-mismatch"
 	ErrCodeInvalidMethod          ErrorCode = "invalid-method"
 	ErrCodeWrongNetwork           ErrorCode = "wrong-network"
-	ErrCodeOther                  ErrorCode = "other"
+	// ErrCodeInvalidChallenge marks a challenge the client refuses because
+	// it violates the method spec (e.g. decimals missing for a mint, or an
+	// omitted tokenProgram whose mint lookup failed or returned an
+	// unexpected owner).
+	ErrCodeInvalidChallenge ErrorCode = "invalid-challenge"
+	ErrCodeOther            ErrorCode = "other"
 )
 
 // Error is the common error type returned by the SDK. It aliases the

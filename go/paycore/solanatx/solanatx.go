@@ -260,6 +260,52 @@ func ResolveTokenProgram(ctx context.Context, rpcClient RPCClient, mint solana.P
 	}
 }
 
+// MintInfo is the subset of an SPL mint account a payment builder or
+// verifier needs: the owning token program and the mint's decimals.
+type MintInfo struct {
+	TokenProgram solana.PublicKey
+	Decimals     uint8
+}
+
+// mintAccountSize is the base SPL mint layout length (Token-2022 mints may
+// carry extensions after it); decimals live at byte 44 and is_initialized
+// at byte 45.
+const mintAccountSize = 82
+
+// FetchMint reads a mint account and returns its token program and
+// decimals. It fails when the account does not exist, is owned by neither
+// the Token nor the Token-2022 program, or is not an initialized mint, so
+// callers never fall back to a guessed program or decimals.
+func FetchMint(ctx context.Context, rpcClient RPCClient, mint solana.PublicKey) (MintInfo, error) {
+	account, err := rpcClient.GetAccountInfoWithOpts(ctx, mint, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return MintInfo{}, err
+	}
+	if account == nil || account.Value == nil {
+		return MintInfo{}, fmt.Errorf("mint account not found")
+	}
+	var program solana.PublicKey
+	switch account.Value.Owner.String() {
+	case paycore.TokenProgram:
+		program = solana.TokenProgramID
+	case paycore.Token2022Program:
+		program = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	default:
+		return MintInfo{}, fmt.Errorf("unsupported mint owner %s", account.Value.Owner)
+	}
+	var data []byte
+	if account.Value.Data != nil {
+		data = account.Value.Data.GetBinary()
+	}
+	if len(data) < mintAccountSize || data[45] != 1 {
+		return MintInfo{}, fmt.Errorf("account %s is not an initialized mint", mint)
+	}
+	return MintInfo{TokenProgram: program, Decimals: data[44]}, nil
+}
+
 // ResolveRecentBlockhash returns the provided blockhash or fetches one from RPC.
 func ResolveRecentBlockhash(ctx context.Context, rpcClient RPCClient, provided string) (solana.Hash, error) {
 	if provided != "" {

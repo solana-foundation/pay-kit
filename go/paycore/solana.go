@@ -30,6 +30,10 @@ const (
 	CASHMainnetMint  = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
 )
 
+// StablecoinDecimals is the decimals of every stablecoin in the known-mint
+// table (USDC, USDT, USDG, PYUSD, CASH).
+const StablecoinDecimals uint8 = 6
+
 var knownMints = map[string]map[string]string{
 	"USDC": {
 		"devnet":       USDCDevnetMint,

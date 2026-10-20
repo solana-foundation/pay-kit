@@ -256,6 +256,7 @@ func TestVerifyCredentialTokenSignatureSuccess(t *testing.T) {
 	clientSigner := testutil.NewPrivateKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+	rpcClient.MintDecimals[mint.String()] = 6
 	handler, err := New(core.NewMemoryStore(), Config{
 		Recipient:      recipient.PublicKey().String(),
 		Currency:       mint.String(),
@@ -946,6 +947,7 @@ func TestVerifyCredentialTokenTransactionSuccess(t *testing.T) {
 	clientSigner := testutil.NewPrivateKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+	rpcClient.MintDecimals[mint.String()] = 6
 	handler, err := New(core.NewMemoryStore(), Config{
 		Recipient: recipient.PublicKey().String(),
 		Currency:  mint.String(),

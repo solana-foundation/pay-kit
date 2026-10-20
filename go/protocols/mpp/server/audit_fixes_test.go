@@ -152,6 +152,7 @@ func TestChargeRejectsPrimaryRecipientSplitWithATACreation(t *testing.T) {
 	// otherwise satisfiable; the primary-in-splits check must fire first.
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.TokenProgramID
+	cfg.RPC.(*testutil.FakeRPC).MintDecimals[mint.String()] = 6
 	cfg.Currency = mint.String()
 	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
@@ -241,6 +242,7 @@ func TestNewResolvesArbitraryMintFromChain(t *testing.T) {
 	cfg := validConfig(t)
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	cfg.RPC.(*testutil.FakeRPC).MintDecimals[mint.String()] = 6
 	cfg.Currency = mint.String()
 	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
@@ -266,6 +268,7 @@ func TestChargeEmitsTokenProgramForArbitraryMint(t *testing.T) {
 	cfg := validConfig(t)
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	cfg.RPC.(*testutil.FakeRPC).MintDecimals[mint.String()] = 6
 	cfg.Currency = mint.String()
 	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {

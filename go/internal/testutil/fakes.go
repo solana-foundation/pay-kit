@@ -34,8 +34,11 @@ type FakeRPC struct {
 
 	Blockhash  solana.Hash
 	MintOwners map[string]solana.PublicKey
-	Statuses   map[string]*rpc.SignatureStatusesResult
-	BySig      map[string]*solana.Transaction
+	// MintDecimals, when set for a mint in MintOwners, makes the account
+	// carry a real 82-byte initialized mint layout with these decimals.
+	MintDecimals map[string]uint8
+	Statuses     map[string]*rpc.SignatureStatusesResult
+	BySig        map[string]*solana.Transaction
 	// TxVersion is the raw JSON `version` field GetTransaction reports:
 	// `0` (the default, a v0 transaction), `"legacy"`, or "" to omit it.
 	TxVersion string
@@ -52,11 +55,12 @@ type FakeRPC struct {
 func NewFakeRPC() *FakeRPC {
 	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
 	return &FakeRPC{
-		Blockhash:  blockhash,
-		MintOwners: map[string]solana.PublicKey{},
-		Statuses:   map[string]*rpc.SignatureStatusesResult{},
-		BySig:      map[string]*solana.Transaction{},
-		TxVersion:  "0",
+		Blockhash:    blockhash,
+		MintOwners:   map[string]solana.PublicKey{},
+		MintDecimals: map[string]uint8{},
+		Statuses:     map[string]*rpc.SignatureStatusesResult{},
+		BySig:        map[string]*solana.Transaction{},
+		TxVersion:    "0",
 	}
 }
 
@@ -70,11 +74,14 @@ func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.Publi
 	if !ok {
 		return nil, rpc.ErrNotFound
 	}
-	return &rpc.GetAccountInfoResult{
-		Value: &rpc.Account{
-			Owner: owner,
-		},
-	}, nil
+	value := &rpc.Account{Owner: owner}
+	if decimals, ok := f.MintDecimals[account.String()]; ok {
+		data := make([]byte, 82)
+		data[44] = decimals
+		data[45] = 1
+		value.Data = rpc.DataBytesOrJSONFromBytes(data)
+	}
+	return &rpc.GetAccountInfoResult{Value: value}, nil
 }
 
 // GetLatestBlockhash returns the canned Blockhash on the fake RPC.

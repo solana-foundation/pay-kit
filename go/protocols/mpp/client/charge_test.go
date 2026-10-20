@@ -155,44 +155,54 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 	}
 }
 
-// TestBuildChargeTransactionTokenCreateRecipientATAFlag table-tests the
-// opt-in CreateRecipientATA flag. The default (false) leaves
-// primary-recipient ATA creation to the server, as the other SDK clients
-// do, while setting the flag prepends an idempotent
-// createAssociatedTokenAccount instruction for first-run wallets that
-// do not yet hold a token account for the selected mint.
-func TestBuildChargeTransactionTokenCreateRecipientATAFlag(t *testing.T) {
+// TestBuildChargeTransactionNeverCreatesPrimaryRecipientATA pins
+// draft-solana-charge-00: clients "MUST NOT include ATA creation
+// instructions for the top-level recipient". The positive control is the
+// split flagged ataCreationRequired, which MUST get exactly one.
+func TestBuildChargeTransactionNeverCreatesPrimaryRecipientATA(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
-	cases := []struct {
-		name             string
-		createRecipient  bool
-		wantInstructions int
-	}{
-		{name: "default_skips_primary_ata", createRecipient: false, wantInstructions: 3},
-		{name: "opt_in_adds_primary_ata", createRecipient: true, wantInstructions: 4},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rpcClient := testutil.NewFakeRPC()
-			rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
-			signer := testutil.NewPrivateKey()
-			recipient := testutil.NewPrivateKey().PublicKey().String()
-			decimals := uint8(6)
+	rpcClient := testutil.NewFakeRPC()
+	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	splitRecipient := testutil.NewPrivateKey().PublicKey()
+	decimals := uint8(6)
+	required := true
 
-			payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, paycore.MethodDetails{
-				Decimals: &decimals,
-			}, BuildOptions{CreateRecipientATA: tc.createRecipient})
-			if err != nil {
-				t.Fatalf("build failed: %v", err)
+	countATACreates := func(t *testing.T, details paycore.MethodDetails) map[string]int {
+		t.Helper()
+		payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient.String(), details, BuildOptions{})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+		tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
+		if err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		owners := map[string]int{}
+		keys := tx.Message.AccountKeys
+		for _, ix := range tx.Message.Instructions {
+			if keys[ix.ProgramIDIndex].String() != paycore.AssociatedTokenProgram {
+				continue
 			}
-			tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
-			if err != nil {
-				t.Fatalf("decode failed: %v", err)
-			}
-			if len(tx.Message.Instructions) != tc.wantInstructions {
-				t.Fatalf("instructions = %d, want %d", len(tx.Message.Instructions), tc.wantInstructions)
-			}
-		})
+			// createAssociatedTokenAccount accounts: payer, ata, owner, mint, ...
+			owners[keys[ix.Accounts[2]].String()]++
+		}
+		return owners
+	}
+
+	if owners := countATACreates(t, paycore.MethodDetails{Decimals: &decimals}); len(owners) != 0 {
+		t.Fatalf("no-split charge created ATAs for %v, want none", owners)
+	}
+	owners := countATACreates(t, paycore.MethodDetails{
+		Decimals: &decimals,
+		Splits:   []paycore.Split{{Recipient: splitRecipient.String(), Amount: "100", AtaCreationRequired: &required}},
+	})
+	if owners[recipient.String()] != 0 {
+		t.Fatalf("created an ATA for the top-level recipient: %v", owners)
+	}
+	if owners[splitRecipient.String()] != 1 || len(owners) != 1 {
+		t.Fatalf("ATA creates = %v, want exactly one for the ataCreationRequired split", owners)
 	}
 }
 

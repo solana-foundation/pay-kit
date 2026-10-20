@@ -21,14 +21,10 @@ type BuildOptions struct {
 	ComputeUnitLimit uint32
 	ComputeUnitPrice uint64
 	ExternalID       string
-	// CreateRecipientATA, when true, prepends an idempotent
-	// createAssociatedTokenAccount instruction for the primary recipient on
-	// SPL token charges. Default is false to match the canonical Rust/TS
-	// client behavior (the receiver server owns its destination ATA).
-	// Enable this only when paying a fresh recipient wallet that does not
-	// yet hold a token account for the selected mint; the instruction is
-	// idempotent so it is safe when the account already exists.
-	CreateRecipientATA bool
+	// There is deliberately no option to create the top-level recipient's
+	// ATA: draft-solana-charge-00 says clients "MUST NOT include ATA
+	// creation instructions for the top-level recipient or any other
+	// owner". Only splits flagged ataCreationRequired get one.
 
 	// MaxAmountBaseUnits, when non-zero, refuses to sign a challenge whose
 	// amount exceeds this cap (in token base units). Opt-in guard for
@@ -129,14 +125,26 @@ func BuildChargeTransaction(
 			}
 		}
 	} else {
+		// #42: decimals are required for SPL charges ("MUST be present when
+		// currency is a mint address"). Defaulting to 6 would silently build
+		// a transfer at the wrong divisor for a non-6-decimal mint, so the
+		// challenge is refused before any RPC work.
+		if methodDetails.Decimals == nil {
+			return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidChallenge,
+				"invalid challenge: methodDetails.decimals is required when currency is a mint")
+		}
+		decimals := *methodDetails.Decimals
 		resolvedMint := paycore.ResolveMint(currency, methodDetails.Network)
 		mint, err := solana.PublicKeyFromBase58(resolvedMint)
 		if err != nil {
-			return paycore.CredentialPayload{}, err
+			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeInvalidChallenge, "invalid challenge: currency is not a mint address", err)
 		}
+		// An omitted tokenProgram is resolved from the mint owner; a failed
+		// lookup or an unexpected owner refuses the challenge rather than
+		// falling back to the Token Program (draft-solana-charge-00).
 		tokenProgram, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, methodDetails.TokenProgram)
 		if err != nil {
-			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "resolve token program", err)
+			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeInvalidChallenge, "invalid challenge: resolve token program", err)
 		}
 		// #26: refuse to sign an unknown Token-2022 mint unless explicitly
 		// allowed. Token-2022 mints can carry transfer hooks that run arbitrary
@@ -148,14 +156,6 @@ func BuildChargeTransaction(
 			return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidConfig,
 				"refusing to sign an unknown Token-2022 mint (transfer-hook risk); set AllowUnknownToken2022 to override")
 		}
-		// #42: decimals are required for SPL charges (spec §7.2 marks them MUST
-		// be present for a mint). Defaulting to 6 would silently build a
-		// transfer at the wrong divisor for a non-6-decimal mint.
-		if methodDetails.Decimals == nil {
-			return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidConfig,
-				"methodDetails.decimals is required for SPL charges (spec §7.2)")
-		}
-		decimals := *methodDetails.Decimals
 		sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 		if err != nil {
 			return paycore.CredentialPayload{}, err
@@ -186,7 +186,7 @@ func BuildChargeTransaction(
 			instructions = append(instructions, transfer)
 			return nil
 		}
-		if err := addTransfer(recipientKey, primaryAmount, options.CreateRecipientATA); err != nil {
+		if err := addTransfer(recipientKey, primaryAmount, false); err != nil {
 			return paycore.CredentialPayload{}, err
 		}
 		if options.ExternalID != "" {

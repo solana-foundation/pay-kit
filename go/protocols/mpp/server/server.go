@@ -147,9 +147,6 @@ func New(store core.Store, config Config) (*Mpp, error) {
 	if config.Currency == "" {
 		config.Currency = "USDC"
 	}
-	if config.Decimals == 0 {
-		config.Decimals = 6
-	}
 	if config.Network == "" {
 		config.Network = string(paycore.NetworkMainnet)
 	}
@@ -177,9 +174,16 @@ func New(store core.Store, config Config) (*Mpp, error) {
 	// the static table; an arbitrary mint address is looked up on-chain and
 	// rejected if its owner is neither Token nor Token-2022. Native SOL has no
 	// token program. Mirrors the Rust reference resolve_server_token_program.
-	tokenProgram, err := resolveServerTokenProgram(context.Background(), config.RPC, config.Currency, config.Network)
+	tokenProgram, decimals, err := resolveServerAsset(context.Background(), config.RPC, config.Currency, config.Network)
 	if err != nil {
 		return nil, err
+	}
+	// Config.Decimals is optional and only cross-checked: the authoritative
+	// value comes from the asset itself, so a 0-decimal mint is
+	// representable and a mint is never silently assumed to have 6.
+	if config.Decimals != 0 && config.Decimals != decimals {
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("configured decimals %d do not match %s decimals %d", config.Decimals, config.Currency, decimals))
 	}
 	return &Mpp{
 		rpc:            config.RPC,
@@ -187,7 +191,7 @@ func New(store core.Store, config Config) (*Mpp, error) {
 		realm:          config.Realm,
 		recipient:      recipient,
 		currency:       config.Currency,
-		decimals:       config.Decimals,
+		decimals:       decimals,
 		network:        config.Network,
 		rpcURL:         rpcURL,
 		html:           config.HTML,
@@ -198,32 +202,38 @@ func New(store core.Store, config Config) (*Mpp, error) {
 	}, nil
 }
 
-// resolveServerTokenProgram pins the SPL token program for the server's
-// configured currency at boot. SOL has no token program (returns ""). A known
-// stablecoin symbol or mint answers from the static table. An arbitrary mint
-// address is resolved by fetching its on-chain owner; the owner MUST be the
-// Token or Token-2022 program or boot fails. This stops the SDK from silently
-// defaulting an arbitrary Token-2022 mint to legacy Token. Mirrors the Rust
-// reference's resolve_server_token_program in Mpp::new.
-func resolveServerTokenProgram(ctx context.Context, rpcClient solanatx.RPCClient, currency, network string) (string, error) {
+// nativeSOLDecimals is the lamports-per-SOL exponent used to convert a
+// human SOL price into lamports.
+const nativeSOLDecimals uint8 = 9
+
+// resolveServerAsset pins the SPL token program and decimals for the
+// server's configured currency at boot. SOL has no token program and 9
+// decimals (lamports). A known stablecoin symbol or mint answers from the
+// static table. An arbitrary mint address is resolved by fetching the mint
+// account: its owner MUST be the Token or Token-2022 program and its
+// decimals come from the account data, or boot fails. This stops the SDK
+// from silently defaulting an arbitrary Token-2022 mint to legacy Token or
+// an arbitrary mint to 6 decimals. Mirrors the Rust reference's
+// resolve_server_token_program in Mpp::new.
+func resolveServerAsset(ctx context.Context, rpcClient solanatx.RPCClient, currency, network string) (string, uint8, error) {
 	if isNativeSOL(currency) {
-		return "", nil
+		return "", nativeSOLDecimals, nil
 	}
 	if paycore.StablecoinSymbol(currency) != "" {
-		return paycore.DefaultTokenProgramForCurrency(currency, network), nil
+		return paycore.DefaultTokenProgramForCurrency(currency, network), paycore.StablecoinDecimals, nil
 	}
-	// Arbitrary mint address: parse it and fetch the on-chain owner.
+	// Arbitrary mint address: parse it and read the on-chain mint.
 	mint, err := solana.PublicKeyFromBase58(currency)
 	if err != nil {
-		return "", core.WrapError(core.ErrCodeInvalidConfig,
+		return "", 0, core.WrapError(core.ErrCodeInvalidConfig,
 			"currency must be a known stablecoin symbol or a valid SPL mint address", err)
 	}
-	program, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, "")
+	info, err := solanatx.FetchMint(ctx, rpcClient, mint)
 	if err != nil {
-		return "", core.WrapError(core.ErrCodeInvalidConfig,
-			"could not resolve token program for mint (owner must be Token or Token-2022)", err)
+		return "", 0, core.WrapError(core.ErrCodeInvalidConfig,
+			"could not resolve mint (owner must be Token or Token-2022)", err)
 	}
-	return program.String(), nil
+	return info.TokenProgram.String(), info.Decimals, nil
 }
 
 // Charge creates a charge challenge from a human-readable amount.
