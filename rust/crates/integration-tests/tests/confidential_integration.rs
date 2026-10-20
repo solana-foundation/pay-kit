@@ -566,7 +566,11 @@ async fn confidential_orphan_sweep() {
     // A second sighting inside the grace period (another replica, a restart)
     // must still defer.
     let early = mpp.sweep_confidential_orphans().await.unwrap();
-    assert_eq!(early.closed_contexts + early.closed_records, 0, "{early:?}");
+    assert_eq!(
+        early.closed_contexts + early.closed_records,
+        0,
+        "an orphan was closed inside the grace period"
+    );
     assert!(s.rpc.get_account(&record.pubkey()).is_ok());
     assert!(s.rpc.get_account(&ctx.pubkey()).is_ok());
 
