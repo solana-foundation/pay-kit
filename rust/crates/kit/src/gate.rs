@@ -982,8 +982,8 @@ async fn upto_gate_middleware(
 
 /// A served `upto` request whose settlement already runs on its own task, so
 /// dropping the request future (a client disconnect) cannot cancel it. The
-/// gate's response is built only by [`ServedUpto::respond`], which delivers
-/// the metered body whatever the settlement outcome.
+/// gate's response is built only by [`ServedUpto::respond`], which releases
+/// the metered body only against a confirmed settlement.
 struct ServedUpto {
     body: Result<Response, axum::Error>,
     settlement: tokio::task::JoinHandle<Option<crate::x402::upto::UptoSettlementResponse>>,
@@ -1004,39 +1004,68 @@ impl ServedUpto {
         Self { body, settlement }
     }
 
-    /// The body, with the receipt when settled inline. A settlement still
-    /// retrying in the background charges `actual`, so the body is served
-    /// without a receipt. Only a body that never completed answers 502.
+    /// Wait for the inline settlement, then release the response through
+    /// [`release_upto_response`].
     async fn respond(self, upto: &X402Upto) -> Response {
         let settlement = self.settlement.await.unwrap_or_else(|error| {
             tracing::error!(error = %error, "upto settlement task failed");
             None
         });
-        let mut resp = match self.body {
-            Ok(resp) => resp,
-            Err(error) => {
-                tracing::warn!(error = %error, "upto response body did not complete");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    "resource response body failed or exceeded the metered size limit",
-                )
-                    .into_response();
-            }
-        };
-        if let Some(settlement) = settlement {
-            match upto.settlement_header(&settlement) {
-                Ok((name, value)) => {
-                    if let (Ok(n), Ok(v)) = (
-                        HeaderName::from_bytes(name.as_bytes()),
-                        HeaderValue::from_str(&value),
-                    ) {
-                        resp.headers_mut().insert(n, v);
-                    }
-                }
-                Err(e) => tracing::error!(error = %e, "failed to encode upto settlement header"),
-            }
+        release_upto_response(upto, self.body, settlement)
+    }
+}
+
+/// The protected body leaves the gate only together with the receipt of a
+/// confirmed settlement. A settlement still retrying in the background has not
+/// landed, so its body is withheld (502) rather than served unpaid; the retry
+/// keeps the channel reserved and settles what the handler metered. A body that
+/// never completed also answers 502.
+fn release_upto_response(
+    upto: &X402Upto,
+    body: Result<Response, axum::Error>,
+    settlement: Option<crate::x402::upto::UptoSettlementResponse>,
+) -> Response {
+    let mut resp = match body {
+        Ok(resp) => resp,
+        Err(error) => {
+            tracing::warn!(error = %error, "upto response body did not complete");
+            return (
+                StatusCode::BAD_GATEWAY,
+                "resource response body failed or exceeded the metered size limit",
+            )
+                .into_response();
         }
-        resp
+    };
+    let receipt = settlement
+        .ok_or("settlement is not confirmed")
+        .and_then(|settlement| {
+            let (name, value) = upto
+                .settlement_header(&settlement)
+                .map_err(|_| "settlement header could not be encoded")?;
+            Ok((
+                HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| "settlement header name is invalid")?,
+                HeaderValue::from_str(&value).map_err(|_| "settlement header value is invalid")?,
+            ))
+        });
+    match receipt {
+        Ok((name, value)) => {
+            resp.headers_mut().insert(name, value);
+            resp
+        }
+        Err(reason) => {
+            tracing::error!(
+                reason,
+                "upto response withheld without a settlement receipt"
+            );
+            let mut withheld = (
+                StatusCode::BAD_GATEWAY,
+                "payment settlement could not be confirmed; the response is withheld",
+            )
+                .into_response();
+            prevent_shared_caching(&mut withheld);
+            withheld
+        }
     }
 }
 
@@ -2271,10 +2300,10 @@ mod tests {
         );
     }
 
-    /// A served response whose settlement is left to the background retry is
-    /// still delivered: the background task charges for it.
+    /// A response whose settlement is left to the background retry has not
+    /// been paid for, so its body is withheld while the retry still settles.
     #[tokio::test(flavor = "multi_thread")]
-    async fn pending_upto_settlement_still_serves_the_response() {
+    async fn pending_upto_settlement_withholds_the_response() {
         let pay = upto_paykit();
         let upto = pay.x402_upto().expect("signer enables upto").clone();
         let channel = solana_pubkey::Pubkey::new_unique();
@@ -2294,19 +2323,40 @@ mod tests {
         )
         .respond(&upto)
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
         assert!(
             upto.is_in_flight(&channel),
             "the background retry still settles the open"
         );
-        assert_eq!(
-            to_bytes(resp.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .as_ref(),
-            b"served"
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(!body.as_ref().windows(6).any(|w| w == b"served"));
+    }
+
+    /// Positive control: a confirmed settlement releases the body with its
+    /// receipt.
+    #[test]
+    fn confirmed_upto_settlement_releases_the_response() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let settlement = crate::x402::upto::UptoSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: None,
+            transaction: "sig".into(),
+            network: "solana:devnet".into(),
+            amount: "500".into(),
+        };
+        let resp = release_upto_response(
+            &upto,
+            Ok(Response::new(Body::from("served"))),
+            Some(settlement),
         );
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
+
+        let withheld = release_upto_response(&upto, Ok(Response::new(Body::from("served"))), None);
+        assert_eq!(withheld.status(), StatusCode::BAD_GATEWAY);
     }
 
     /// A body that never completed has nothing to deliver: 502, while what was
