@@ -10,12 +10,19 @@ flow = false
 [[unsupported]]
 reason = "php is server-only: build-transaction is not supported (no client build path)"
 ids = [
-  "vector/charge-asset-over-currency-precedence",
-  "vector/charge-payto-over-recipient-precedence",
   "vector/charge-sol-native-build",
-  "vector/charge-spl-field-omitted-defaults",
+  "vector/charge-spl-missing-decimals-reject",
+  "vector/charge-spl-token-program-from-mint-owner",
   "vector/charge-splits-consume-amount-reject",
-  "vector/charge-token2022-default-program-by-currency",
+  "vector/charge-token-program-lookup-missing-mint-reject",
+  "vector/charge-token-program-unexpected-owner-reject",
+  "vector/charge-token2022-program-from-mint-owner",
+]
+
+[[unsupported]]
+reason = "php is server-only: this verify vector pins no transaction, so it needs a client build first and php has no client build path"
+ids = [
+  "vector/charge-split-ata-memo-envelope-accept",
 ]
 
 [[unsupported]]

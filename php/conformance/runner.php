@@ -13,41 +13,25 @@ declare(strict_types=1);
  *
  * ROLE: PHP is a SERVER-only SDK. It ships the MPP charge pre-broadcast
  * verifier (SolanaChargeTransactionVerifier), the x402 exact server adapter
- * (PayKit\Protocols\X402\Adapter), and the canonical-JSON / base64url wire
- * encoders, but it has NO client-side transaction build path. Consequently:
+ * (PayKit\Protocols\X402\Adapter) and the canonical-JSON / base64url wire
+ * encoders, but NO client-side transaction builder. Consequently:
  *
- *   - canonical-bytes        -> supported (JCS + base64url + fixed-width bytes)
- *   - verify-transaction     -> supported ONLY when input.transaction is
- *                               present (a server verifies a wire tx it is
- *                               given). A verify vector that omits the
- *                               transaction expects the runner to BUILD one
- *                               first, which a server-only SDK cannot do.
- *   - build-transaction      -> unsupported (no client build path)
+ *   - canonical-bytes        -> JCS + base64url + challenge-id derivation.
+ *   - verify-transaction     -> the real charge verifier over the vector's
+ *                               pinned transaction, request passed verbatim.
+ *                               A vector with no pinned transaction needs a
+ *                               client build first: unsupported, the runner
+ *                               never fabricates a transaction.
+ *   - x402 verify            -> Adapter::verifyPaymentHeader, the SDK's
+ *                               pre-broadcast verification (version dispatch,
+ *                               offer binding, extensions gate, structural
+ *                               transaction verifier) against a PayKit Config
+ *                               built from the vector route and the fixture
+ *                               RPC. Nothing is signed or broadcast.
+ *   - build-transaction      -> unsupported-mode (no client build path).
  *
- * x402-exact (intent === "x402-exact"): the cross-SDK oracle is the decoded
- * ENVELOPE shape, not the signed Solana transaction inside
- * payload.transaction (that is the harness matrix's job). PHP is server-only,
- * so:
- *
- *   - build-transaction (x402)  -> unsupported (no client envelope builder)
- *   - verify-transaction (x402) -> supported: drive the x402 envelope verify
- *                                  (version dispatch + network gate + v2
- *                                  accepted-vs-route comparison) and emit
- *                                  accept (with x402EnvelopeShape) or reject
- *                                  (with rejectCode). Mirrors the PHP x402
- *                                  Adapter's parse/dispatch/gate
- *                                  (Protocols\X402\Adapter::verifyAndSettle)
- *                                  and the rust spine line-for-line. The
- *                                  inner-transaction 11-rule structural check
- *                                  and broadcast are out of scope here.
- *
- * For any mode this SDK cannot exercise, the runner emits a RunnerResult with
- * outcome "unsupported-mode" so the driver SKIPs that vector for PHP rather
- * than failing it.
- *
- * The run is deterministic and RPC-free: verify operates purely on the wire
- * transaction the vector pins, with no live validator, no RPC, and no HMAC
- * challenge round-trip.
+ * The runner fills no defaults, resolves no token programs or decimals and
+ * applies no field precedence (harness/expectations/RULINGS.md).
  */
 
 error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
@@ -55,24 +39,33 @@ ini_set('display_errors', 'stderr');
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use Brick\Math\BigDecimal;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use PayKit\Config;
+use PayKit\Gate;
+use PayKit\Operator;
+use PayKit\PayCore\Network;
 use PayKit\PayCore\Solana\Mints;
 use PayKit\PayCore\Solana\TransactionWire;
+use PayKit\PayCore\Stablecoin;
 use PayKit\PayCore\Wire\Base64Url;
 use PayKit\PayCore\Wire\Json;
+use PayKit\Price;
+use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Core\Challenge;
-use PayKit\Protocols\Mpp\Core\ChallengeEcho;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Protocols\X402\Exact\PaymentExtensions;
-use SolanaPhpSdk\Keypair\PublicKey;
-use SolanaPhpSdk\Programs\AssociatedTokenProgram;
+use PayKit\Protocols\X402\X402Config;
+use PayKit\Signer;
 use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
-const DEFAULT_NETWORK = 'mainnet';
 
 /**
  * Read the entire vector JSON from stdin.
@@ -96,40 +89,6 @@ function read_stdin(): string
 function emit(array $result): void
 {
     fwrite(STDOUT, json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
-}
-
-/**
- * Apply the precedence rules the vectors probe: top-level asset / payTo win
- * over currency / recipient. Returns a ChargeRequest the PHP verifier
- * consumes. tokenProgram / decimals resolution is left to the verifier
- * itself (Mints::tokenProgramFor by currency, decimals read from
- * methodDetails) so the runner injects no defaults the SDK would not.
- *
- * @param array<string, mixed> $request
- */
-function flatten_request(array $request): ChargeRequest
-{
-    $currency = Json::optionalString($request['asset'] ?? null, 'asset')
-        ?: Json::optionalString($request['currency'] ?? null, 'currency');
-    $recipient = Json::optionalString($request['payTo'] ?? null, 'payTo')
-        ?: Json::optionalString($request['recipient'] ?? null, 'recipient');
-    if ($recipient === '') {
-        throw new InvalidArgumentException('vector request is missing recipient/payTo');
-    }
-
-    $md = $request['methodDetails'] ?? null;
-    $methodDetails = is_array($md) ? Json::object($md, 'methodDetails') : [];
-    if (!isset($methodDetails['network']) || !is_string($methodDetails['network']) || $methodDetails['network'] === '') {
-        $methodDetails['network'] = DEFAULT_NETWORK;
-    }
-
-    return new ChargeRequest(
-        amount: Json::optionalString($request['amount'] ?? null, 'amount'),
-        currency: $currency,
-        recipient: $recipient,
-        externalId: Json::optionalString($request['externalId'] ?? null, 'externalId'),
-        methodDetails: $methodDetails,
-    );
 }
 
 /**
@@ -299,7 +258,7 @@ function classify_reject(string $message): ?string
         // x402-exact reject vocabulary. Ordered before the generic
         // invalid/payload fallback so an unknown version or a network
         // mismatch classifies precisely (mirrors reject.ts).
-        '/unsupported x402 version/i' => 'unsupported-version',
+        '/unsupported[ _]x402[ _]version/i' => 'unsupported-version',
         '/network mismatch/i' => 'wrong-network',
         // x402-exact extensions: server required a payment-identifier id but
         // the credential echoed none / an invalid one. Checked before the
@@ -339,201 +298,6 @@ function read_u64_le(string $bytes): int
         $value = ($value << 8) + ord($bytes[$i]);
     }
     return $value;
-}
-
-/**
- * Encode an integer as `width` little-endian bytes.
- */
-function encode_uint_le(int $value, int $width): string
-{
-    $out = '';
-    for ($i = 0; $i < $width; $i += 1) {
-        $out .= chr($value & 0xff);
-        $value >>= 8;
-    }
-    if ($value !== 0) {
-        throw new InvalidArgumentException('value does not fit in ' . $width . ' bytes');
-    }
-    return $out;
-}
-
-/**
- * Solana shortvec (compact-u16) length prefix.
- */
-function compact_u16(int $value): string
-{
-    $out = '';
-    while (true) {
-        $byte = $value & 0x7f;
-        $value >>= 7;
-        if ($value === 0) {
-            $out .= chr($byte);
-            break;
-        }
-        $out .= chr($byte | 0x80);
-    }
-    return $out;
-}
-
-/**
- * Assemble a verify-transaction wire fixture from a flattened ChargeRequest
- * and the vector's 64-byte signer secret key, returning the base64 wire
- * transaction the PHP verifier (the system under test) then accepts.
- *
- * PHP is a server-only SDK: a verify vector that omits input.transaction
- * pins only the request + signer and expects the runner to assemble the
- * transaction itself, exactly as the Ruby runner does. The layout mirrors
- * the Rust client builder and matches what the PHP verifier reads:
- * transferChecked accounts (source, mint, dest, authority); idempotent ATA
- * create accounts (payer, ata, owner, mint, system, token program); memo
- * program data is the raw memo bytes. No RPC, no signature: the verifier
- * checks transaction shape, not signatures.
- *
- * @param array<int, int> $signerSecretKey
- */
-function build_fixture(ChargeRequest $request, array $signerSecretKey): string
-{
-    if (count($signerSecretKey) !== 64) {
-        throw new InvalidArgumentException('signerSecretKey must be 64 bytes');
-    }
-    // The ed25519 public key is the trailing 32 bytes of the secret key.
-    $pubBytes = '';
-    for ($i = 32; $i < 64; $i += 1) {
-        $pubBytes .= chr($signerSecretKey[$i] & 0xff);
-    }
-    $signer = PublicKey::fromBytes($pubBytes)->toBase58();
-
-    $md = $request->methodDetails;
-    $network = is_string($md['network'] ?? null) ? $md['network'] : DEFAULT_NETWORK;
-    $currency = (string) $request->currency;
-    $recipient = (string) $request->recipient;
-    $isSol = strtoupper($currency) === 'SOL';
-
-    $total = (int) $request->amount;
-    $splits = is_array($md['splits'] ?? null) ? $md['splits'] : [];
-    $splitTotal = 0;
-    foreach ($splits as $split) {
-        $splitTotal += (int) $split['amount'];
-    }
-    $primary = $total - $splitTotal;
-
-    /** @var array<int, array{program: string, accounts: array<int, string>, data: string}> $instructions */
-    $instructions = [];
-    $add = static function (string $program, array $accounts, string $data) use (&$instructions): void {
-        $instructions[] = ['program' => $program, 'accounts' => $accounts, 'data' => $data];
-    };
-
-    if ($isSol) {
-        $add(SystemProgram::PROGRAM_ID, [$signer, $recipient], encode_uint_le(2, 4) . encode_uint_le($primary, 8));
-        foreach ($splits as $split) {
-            $add(SystemProgram::PROGRAM_ID, [$signer, (string) $split['recipient']], encode_uint_le(2, 4) . encode_uint_le((int) $split['amount'], 8));
-            if (isset($split['memo']) && $split['memo'] !== '') {
-                $add(MemoProgram::PROGRAM_ID_V2, [], (string) $split['memo']);
-            }
-        }
-    } else {
-        $mint = Mints::resolve($currency, $network) ?? $currency;
-        $tokenProgram = is_string($md['tokenProgram'] ?? null) && $md['tokenProgram'] !== ''
-            ? $md['tokenProgram']
-            : Mints::tokenProgramFor($currency, $network);
-        $decimals = isset($md['decimals']) ? (int) $md['decimals'] : 6;
-        $sourceAta = Mints::deriveAta($signer, $mint, $tokenProgram);
-        $destAta = Mints::deriveAta($recipient, $mint, $tokenProgram);
-        $add($tokenProgram, [$sourceAta, $mint, $destAta, $signer], chr(12) . encode_uint_le($primary, 8) . chr($decimals));
-        foreach ($splits as $split) {
-            $sr = (string) $split['recipient'];
-            $sata = Mints::deriveAta($sr, $mint, $tokenProgram);
-            if (($split['ataCreationRequired'] ?? false) === true) {
-                $add(AssociatedTokenProgram::PROGRAM_ID, [$signer, $sata, $sr, $mint, SystemProgram::PROGRAM_ID, $tokenProgram], chr(1));
-            }
-            $add($tokenProgram, [$sourceAta, $mint, $sata, $signer], chr(12) . encode_uint_le((int) $split['amount'], 8) . chr($decimals));
-            if (isset($split['memo']) && $split['memo'] !== '') {
-                $add(MemoProgram::PROGRAM_ID_V2, [], (string) $split['memo']);
-            }
-        }
-    }
-
-    // Account key set: signer (lone signer / fee payer) at index 0, then every
-    // instruction account and program id in first-seen order. The verifier
-    // reads layout by index, so a single read-only-unsigned tail suffices.
-    $keys = [$signer];
-    $seen = [$signer => true];
-    foreach ($instructions as $ix) {
-        foreach ($ix['accounts'] as $a) {
-            if (!isset($seen[$a])) {
-                $seen[$a] = true;
-                $keys[] = $a;
-            }
-        }
-        if (!isset($seen[$ix['program']])) {
-            $seen[$ix['program']] = true;
-            $keys[] = $ix['program'];
-        }
-    }
-    $index = array_flip($keys);
-
-    $blockhash = is_string($md['recentBlockhash'] ?? null) && $md['recentBlockhash'] !== ''
-        ? $md['recentBlockhash']
-        : str_repeat('1', 32);
-    try {
-        $blockhashBytes = PublicKey::fromBase58($blockhash)->toBytes();
-    } catch (Throwable) {
-        $blockhashBytes = PublicKey::fromBase58(str_repeat('1', 32))->toBytes();
-    }
-
-    $signerCount = 1;
-    $readonlyUnsigned = count($keys) - 1;
-
-    // v0 wire: version prefix, header, keys, blockhash, instructions, and an
-    // empty address-table-lookup vector. Clients never build legacy messages.
-    $message = chr(0x80) . chr($signerCount) . chr(0) . chr($readonlyUnsigned);
-    $message .= compact_u16(count($keys));
-    foreach ($keys as $k) {
-        $message .= PublicKey::fromBase58($k)->toBytes();
-    }
-    $message .= $blockhashBytes;
-    $message .= compact_u16(count($instructions));
-    foreach ($instructions as $ix) {
-        $message .= chr($index[$ix['program']]);
-        $message .= compact_u16(count($ix['accounts']));
-        foreach ($ix['accounts'] as $a) {
-            $message .= chr($index[$a]);
-        }
-        $message .= compact_u16(strlen($ix['data']));
-        $message .= $ix['data'];
-    }
-
-    $message .= compact_u16(0);
-
-    $signatures = compact_u16($signerCount) . str_repeat(chr(0), 64 * $signerCount);
-    return base64_encode($signatures . $message);
-}
-
-// ── x402-exact envelope oracle ───────────────────────────────────────────
-//
-// Canonical CAIP-2 chain identifiers (rust types.rs / PHP Adapter).
-const X402_SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-const X402_SOLANA_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
-const X402_SOLANA_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
-const X402_VERSION_V1     = 1;
-const X402_VERSION_V2     = 2;
-const X402_EXACT_SCHEME   = 'exact';
-
-/**
- * Normalize a legacy v1 network slug (or any cluster slug / CAIP-2 id) to its
- * canonical CAIP-2 chain identifier. Mirrors the rust spine
- * `caip2_network_for_cluster` and PHP Adapter::caip2NetworkForCluster
- * (localnet collapses to the devnet CAIP-2 id by convention).
- */
-function x402_caip2_for_cluster(string $cluster): string
-{
-    return match ($cluster) {
-        X402_SOLANA_MAINNET, 'solana', 'mainnet', 'mainnet-beta' => X402_SOLANA_MAINNET,
-        X402_SOLANA_TESTNET, 'testnet', 'solana-testnet'         => X402_SOLANA_TESTNET,
-        'devnet', 'localnet'                                     => X402_SOLANA_DEVNET,
-        X402_SOLANA_DEVNET, 'solana-devnet'                      => X402_SOLANA_DEVNET,
-        default                                                  => X402_SOLANA_MAINNET,
-    };
 }
 
 /**
@@ -615,135 +379,6 @@ function x402_envelope_shape(array $envelope): array
 }
 
 /**
- * Decode and verify an x402 payment header against a server route, mirroring
- * the PHP x402 Adapter's envelope parse/dispatch/gate
- * (Protocols\X402\Adapter::verifyAndSettle) and the rust spine version
- * dispatch + network gate + v2 accepted-vs-route comparison. RPC-free: the
- * inner signed-transaction 11-rule structural check and broadcast are out of
- * scope for the envelope oracle (the harness matrix owns those), so a
- * structurally valid, route-matching envelope is accepted here.
- *
- * Throws InvalidArgumentException with a message classify_reject maps onto the
- * shared reject vocabulary (unsupported-version, wrong-network, invalid-payload).
- *
- * @param array<string, mixed> $route
- * @return array<string, mixed> the decoded envelope shape on accept
- */
-function verify_x402_header(string $header, array $route): array
-{
-    $decoded = base64_decode($header, true);
-    if ($decoded === false || $decoded === '') {
-        throw new InvalidArgumentException('invalid payload: undecodable x402 payment header');
-    }
-    try {
-        $envelope = json_decode($decoded, true, flags: JSON_THROW_ON_ERROR);
-    } catch (Throwable) {
-        throw new InvalidArgumentException('invalid payload: x402 payment header is not JSON');
-    }
-    if (!is_array($envelope)) {
-        throw new InvalidArgumentException('invalid payload: x402 envelope must be a JSON object');
-    }
-
-    $version = $envelope['x402Version'] ?? null;
-    $expectedNetwork = x402_caip2_for_cluster((string) ($route['network'] ?? ''));
-
-    if ($version === X402_VERSION_V2) {
-        // v2: `accepted` is required and structurally matched against the
-        // server route (network/amount/payTo/asset), mirroring the Adapter
-        // v2 identity-key match and the rust verify_envelope_payload.
-        $accepted = $envelope['accepted'] ?? null;
-        if (!is_array($accepted)) {
-            throw new InvalidArgumentException('invalid payload: v2 envelope missing accepted');
-        }
-        $acceptedNetwork = is_string($accepted['network'] ?? null) ? $accepted['network'] : '';
-        if ($acceptedNetwork !== $expectedNetwork) {
-            throw new InvalidArgumentException(
-                "Network mismatch: expected $expectedNetwork, got $acceptedNetwork",
-            );
-        }
-        $acceptedAmount = is_string($accepted['amount'] ?? null) ? $accepted['amount'] : '';
-        if ($acceptedAmount !== (string) ($route['amount'] ?? '')) {
-            throw new InvalidArgumentException(
-                'Amount mismatch: expected ' . ($route['amount'] ?? '') . ", got $acceptedAmount",
-            );
-        }
-        $acceptedPayTo = is_string($accepted['payTo'] ?? null) ? $accepted['payTo'] : '';
-        if ($acceptedPayTo !== (string) ($route['recipient'] ?? '')) {
-            throw new InvalidArgumentException(
-                'Recipient mismatch: credential claims a different recipient',
-            );
-        }
-        $acceptedAsset = is_string($accepted['asset'] ?? null) ? $accepted['asset'] : '';
-        if ($acceptedAsset !== (string) ($route['currency'] ?? '')) {
-            throw new InvalidArgumentException(
-                'Currency mismatch: expected ' . ($route['currency'] ?? '') . ", got $acceptedAsset",
-            );
-        }
-
-        // Extensions reject gate: when the route requires a payment-identifier,
-        // the echoed credential must carry a valid `pay_`-shaped id. Missing,
-        // empty, or pattern-violating ids are rejected (coinbase spec: 400).
-        // Mirrors the PHP Adapter::verifyAndSettle gate + rust
-        // requires_payment_identifier reject-when-required-and-missing. This is
-        // a v2-only concept, so it lives inside the v2 branch.
-        if (($route['requiresPaymentIdentifier'] ?? false) === true) {
-            $echoed = PaymentExtensions::fromArray(
-                is_array($envelope['extensions'] ?? null) ? $envelope['extensions'] : null,
-            );
-            $info = $echoed?->paymentIdentifier?->info;
-            if ($info === null || $info->id === null || $info->id === '') {
-                throw new InvalidArgumentException(
-                    'payment-identifier required but credential echoed no id',
-                );
-            }
-            if (!$info->hasValidId()) {
-                throw new InvalidArgumentException(
-                    'payment-identifier id is invalid: ' . $info->id
-                    . ' does not match ^[A-Za-z0-9_-]{16,128}$',
-                );
-            }
-        }
-    } elseif ($version === X402_VERSION_V1) {
-        // v1 (legacy): no `accepted` object. The envelope commits only to a
-        // top-level scheme + plain network slug (siblings of `payload`). Bind
-        // scheme === "exact" and normalize the plain slug to a CAIP-2 chain id,
-        // gating it against the server route. Mirrors the PHP Adapter
-        // matchLegacyCredential + the rust v1 parse arm (server/exact.rs).
-        $scheme = $envelope['scheme'] ?? null;
-        if ($scheme !== X402_EXACT_SCHEME) {
-            throw new InvalidArgumentException(
-                'invalid payload: unsupported scheme ' . (is_scalar($scheme) ? (string) $scheme : 'unknown'),
-            );
-        }
-        $network = is_string($envelope['network'] ?? null) ? $envelope['network'] : '';
-        if ($network === '') {
-            throw new InvalidArgumentException('invalid payload: v1 envelope missing network');
-        }
-        $normalized = x402_caip2_for_cluster($network);
-        if ($normalized !== $expectedNetwork) {
-            throw new InvalidArgumentException(
-                "Network mismatch: expected $expectedNetwork, got $network",
-            );
-        }
-    } else {
-        // Genuinely-unknown versions are rejected (rust exact.rs / Adapter
-        // unsupported_x402_version arm). Adding v1 support must not widen the
-        // version gate.
-        throw new InvalidArgumentException(
-            'unsupported x402 version: ' . (is_scalar($version) ? (string) $version : 'unknown'),
-        );
-    }
-
-    $payload = $envelope['payload'] ?? null;
-    $transaction = is_array($payload) ? ($payload['transaction'] ?? null) : null;
-    if (!is_string($transaction) || $transaction === '') {
-        throw new InvalidArgumentException('invalid payload: missing transaction proof');
-    }
-
-    return x402_envelope_shape($envelope);
-}
-
-/**
  * Drive the x402-exact intent. PHP is server-only, so build vectors are
  * unsupported (no client envelope builder) and verify vectors run the
  * envelope-level verify against the vector's server route.
@@ -779,24 +414,62 @@ function run_x402_vector(array $vector): array
     if ($header === '') {
         throw new InvalidArgumentException('invalid payload: x402 verify vector missing input.x402PaymentHeader');
     }
-    foreach (['x402ServerNetwork', 'x402ServerRecipient', 'x402ServerCurrency', 'x402ServerAmount'] as $key) {
+    foreach (['x402ServerNetwork', 'x402ServerRecipient', 'x402ServerCurrency', 'x402ServerAmount', 'x402ServerFeePayerSecretKey', 'rpcUrl'] as $key) {
         if (!array_key_exists($key, $input)) {
-            throw new InvalidArgumentException('invalid payload: x402 verify vector missing server route');
+            throw new InvalidArgumentException('x402 verify vector missing input.' . $key);
         }
     }
-    $route = [
-        'network' => Json::optionalString($input['x402ServerNetwork'] ?? null, 'x402ServerNetwork'),
-        'recipient' => Json::optionalString($input['x402ServerRecipient'] ?? null, 'x402ServerRecipient'),
-        'currency' => Json::optionalString($input['x402ServerCurrency'] ?? null, 'x402ServerCurrency'),
-        'amount' => Json::optionalString($input['x402ServerAmount'] ?? null, 'x402ServerAmount'),
-        'requiresPaymentIdentifier' => ($input['x402ServerRequiresPaymentIdentifier'] ?? null) === true,
-    ];
 
-    $shape = verify_x402_header($header, $route);
+    // Configure the route the way a PayKit operator would. The SDK prices in
+    // a Gate (human amount of a settlement stablecoin) and always scales by
+    // 10^6, so the route's atomic amount maps back onto that fixed scale;
+    // the stablecoin is the table entry for the route's mint.
+    $network = match (Json::optionalString($input['x402ServerNetwork'], 'x402ServerNetwork')) {
+        'mainnet', 'mainnet-beta', 'solana' => Network::SolanaMainnet,
+        'localnet' => Network::SolanaLocalnet,
+        default => Network::SolanaDevnet,
+    };
+    $currency = Json::optionalString($input['x402ServerCurrency'], 'x402ServerCurrency');
+    $symbol = Mints::symbolFor($currency, $network->mintsLabel());
+    $coin = $symbol === null ? null : Stablecoin::tryFrom($symbol);
+    if ($coin === null) {
+        return [
+            'id' => $id,
+            'outcome' => 'unsupported-mode',
+            'error' => 'php x402 server only settles built-in stablecoins; ' . $currency . ' is not one',
+        ];
+    }
+    $amount = BigDecimal::ofUnscaledValue(Json::optionalString($input['x402ServerAmount'], 'x402ServerAmount'), 6);
+    $secret = json_encode($input['x402ServerFeePayerSecretKey'], JSON_THROW_ON_ERROR);
+    $config = new Config(
+        network: $network,
+        accept: [Protocol::X402],
+        stablecoins: [$coin],
+        rpcUrl: Json::optionalString($input['rpcUrl'], 'rpcUrl'),
+        operator: new Operator(
+            recipient: Json::optionalString($input['x402ServerRecipient'], 'x402ServerRecipient'),
+            signer: Signer::json($secret),
+            feePayer: true,
+        ),
+        x402: new X402Config(
+            advertisedExtensions: ($input['x402ServerRequiresPaymentIdentifier'] ?? null) === true
+                ? [PaymentExtensions::PAYMENT_IDENTIFIER_KEY => ['info' => ['required' => true]]]
+                : null,
+        ),
+        mpp: new MppConfig(challengeBindingSecret: 'unused-x402-conformance-secret-0123456789'),
+        preflight: false,
+    );
+    $adapter = new X402Adapter($config, new \PayKit\Store\MemoryStore());
+    $gate = new Gate(amount: Price::usd($amount, $coin));
+
+    // Pre-broadcast verification only. The vector route has no resource memo.
+    $adapter->verifyPaymentHeader($gate, $header, null);
+
+    $decoded = json_decode((string) base64_decode($header, true), true, flags: JSON_THROW_ON_ERROR);
     return [
         'id' => $id,
         'outcome' => 'accept',
-        'x402EnvelopeShape' => $shape,
+        'x402EnvelopeShape' => x402_envelope_shape(is_array($decoded) ? $decoded : []),
     ];
 }
 
@@ -880,25 +553,16 @@ function run_vector(array $vector): array
             ];
 
         case 'verify-transaction':
-            $request = flatten_request(is_array($input['request'] ?? null) ? Json::object($input['request'], 'request') : []);
             $transaction = $input['transaction'] ?? null;
             if (!is_string($transaction) || $transaction === '') {
-                // No wire transaction pinned: the verifier is the system
-                // under test, so the runner assembles the wire fixture from
-                // the request + signer (exactly as the Ruby runner does) and
-                // verifies it. PHP ships no client build path, but a fixture
-                // builder is not a client SDK surface; it only feeds the
-                // server verifier deterministic, RPC-free input.
-                $secret = $input['signerSecretKey'] ?? null;
-                if (!is_array($secret)) {
-                    return [
-                        'id' => $id,
-                        'outcome' => 'unsupported-mode',
-                        'error' => 'php verify-transaction without a pinned input.transaction requires input.signerSecretKey to assemble the fixture',
-                    ];
-                }
-                $transaction = build_fixture($request, array_map('intval', $secret));
+                return [
+                    'id' => $id,
+                    'outcome' => 'unsupported-mode',
+                    'error' => 'php is server-only: this verify vector pins no transaction, so it needs a client build first and php has no client build path',
+                ];
             }
+            // The request is handed to the SDK verbatim.
+            $request = ChargeRequest::fromArray(is_array($input['request'] ?? null) ? Json::object($input['request'], 'request') : []);
             verify_transaction($request, $transaction);
             return [
                 'id' => $id,
