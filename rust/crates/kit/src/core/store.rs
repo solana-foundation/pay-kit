@@ -194,6 +194,24 @@ fn consumed_signature_key(signature: &str) -> String {
     format!("solana:consumed-signature:{signature}")
 }
 
+/// CAIP-2 networks the x402 `exact` server scoped its pre-ledger claims by
+/// (every value `caip2_network_for_cluster` returns).
+const LEGACY_X402_NETWORKS: [&str; 3] = [
+    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+];
+
+/// Keys under which MPP charge and x402 `exact` claimed signatures before
+/// they shared this ledger.
+fn legacy_consumed_signature_keys(signature: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(format!("solana-charge:consumed:{signature}")).chain(
+        LEGACY_X402_NETWORKS
+            .iter()
+            .map(move |network| format!("x402-exact:consumed:{network}:{signature}")),
+    )
+}
+
 impl ConsumedSignatures {
     pub fn new(store: Arc<dyn Store>) -> Self {
         Self { store }
@@ -202,9 +220,25 @@ impl ConsumedSignatures {
     /// Atomically claim `signature`. `false` means an earlier presentation,
     /// through any protocol, already claimed it.
     pub async fn claim(&self, signature: &str) -> Result<bool, StoreError> {
+        if self.consumed_before_ledger(signature).await? {
+            return Ok(false);
+        }
         self.store
             .put_if_absent(&consumed_signature_key(signature), serde_json::json!(true))
             .await
+    }
+
+    /// Whether `signature` was claimed under a pre-ledger MPP or x402 key, by
+    /// a replica running an older release or before this one upgraded. Read
+    /// only and fail closed: such a signature stays consumed, it is never
+    /// migrated or claimed again.
+    async fn consumed_before_ledger(&self, signature: &str) -> Result<bool, StoreError> {
+        for key in legacy_consumed_signature_keys(signature) {
+            if self.store.get(&key).await?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Claim `signature` for a transaction about to be broadcast, whose
@@ -215,6 +249,9 @@ impl ConsumedSignatures {
     /// taken: [`Self::claim`] refuses it, so no protocol can present the
     /// signature while its settlement is unresolved.
     pub async fn claim_pending(&self, signature: &str) -> Result<PendingClaim, StoreError> {
+        if self.consumed_before_ledger(signature).await? {
+            return Ok(PendingClaim::Consumed);
+        }
         let key = consumed_signature_key(signature);
         if self.store.put_if_absent(&key, pending_marker()).await? {
             return Ok(PendingClaim::Fresh);
@@ -3575,6 +3612,65 @@ mod tests {
     }
 
     // ── ChargeReplayStore ──
+
+    // A signature claimed under a pre-ledger key (by an older replica, or
+    // just before an upgrade) stays consumed for every claim path, and the
+    // legacy record is only read, never rewritten.
+    async fn assert_legacy_key_stays_consumed(legacy_key: &str) {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        raw.put(legacy_key, serde_json::json!(true)).await.unwrap();
+
+        assert!(!ledger.claim("sig-legacy").await.unwrap(), "{legacy_key}");
+        assert_eq!(
+            ledger.claim_pending("sig-legacy").await.unwrap(),
+            PendingClaim::Consumed,
+            "{legacy_key}"
+        );
+        assert!(raw
+            .get(&consumed_signature_key("sig-legacy"))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            raw.get(legacy_key).await.unwrap(),
+            Some(serde_json::json!(true))
+        );
+
+        // Signatures without a legacy record claim normally.
+        assert!(ledger.claim("sig-fresh").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-other").await.unwrap(),
+            PendingClaim::Fresh
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_mpp_charge_claim_stays_consumed() {
+        assert_legacy_key_stays_consumed("solana-charge:consumed:sig-legacy").await;
+    }
+
+    #[tokio::test]
+    async fn legacy_x402_exact_claim_stays_consumed_on_every_network() {
+        for network in LEGACY_X402_NETWORKS {
+            assert_legacy_key_stays_consumed(&format!("x402-exact:consumed:{network}:sig-legacy"))
+                .await;
+        }
+    }
+
+    // The legacy x402 key was scoped by `caip2_network_for_cluster`; every
+    // network it can return must be checked.
+    #[cfg(feature = "x402")]
+    #[test]
+    fn legacy_x402_networks_cover_every_caip2_cluster() {
+        use crate::x402::protocol::schemes::exact::caip2_network_for_cluster;
+        for cluster in ["mainnet", "devnet", "testnet", "localnet", "unknown"] {
+            assert!(
+                LEGACY_X402_NETWORKS.contains(&caip2_network_for_cluster(cluster)),
+                "{cluster}"
+            );
+        }
+    }
 
     fn replay_store() -> ChargeReplayStore {
         ChargeReplayStore::new(Arc::new(MemoryStore::new()))
