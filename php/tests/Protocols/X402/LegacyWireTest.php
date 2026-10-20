@@ -301,6 +301,55 @@ final class LegacyWireTest extends TestCase
         $adapter->verifyAndSettle($this->makeGate(), $req);
     }
 
+    /**
+     * RULINGS S1: extra.tokenProgram / extra.decimals are non-spec hints, so
+     * an `accepted` echo that omits them still binds to the offer.
+     */
+    public function testCanonicalMatchIgnoresNonSpecExtraHints(): void
+    {
+        $adapter = $this->makeAdapter(Network::SolanaDevnet);
+        $offer = $adapter->acceptsEntry($this->makeGate(), $this->request());
+        $accepted = $offer;
+        unset($accepted['extra']['tokenProgram'], $accepted['extra']['decimals']);
+
+        $this->invoke($adapter, 'matchCanonicalCredential', ['x402Version' => 2, 'accepted' => $accepted], $offer);
+        $this->addToAssertionCount(1);
+    }
+
+    /** Negative control: a spec field of `extra` (feePayer) still binds. */
+    public function testCanonicalMatchStillBindsFeePayer(): void
+    {
+        $adapter = $this->makeAdapter(Network::SolanaDevnet);
+        $offer = $adapter->acceptsEntry($this->makeGate(), $this->request());
+        $accepted = $offer;
+        $accepted['extra']['feePayer'] = Signer::generate()->pubkey();
+
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/extra\.feePayer/');
+        $this->invoke($adapter, 'matchCanonicalCredential', ['x402Version' => 2, 'accepted' => $accepted], $offer);
+    }
+
+    /**
+     * Pre-broadcast verification inspects the transaction: a route-matching
+     * envelope whose transaction is not a payment is rejected, never accepted
+     * on the envelope alone (RULINGS S3).
+     */
+    public function testVerifyPaymentHeaderRunsTheTransactionVerifier(): void
+    {
+        $adapter = $this->makeAdapter(Network::SolanaDevnet);
+        $offer = $adapter->acceptsEntry($this->makeGate(), $this->request());
+        unset($offer['extra']['memo']);
+        $header = $this->legacyHeader([
+            'x402Version' => 2,
+            'accepted'    => $offer,
+            'payload'     => ['transaction' => 'AA=='],
+        ]);
+
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/invalid_exact_svm_payload/');
+        $adapter->verifyPaymentHeader($this->makeGate(), $header, null);
+    }
+
     public function testVerifyAndSettleCanonicalHeaderTakesPrecedenceOverLegacy(): void
     {
         // When both headers are present the canonical PAYMENT-SIGNATURE wins.

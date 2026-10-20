@@ -16,8 +16,15 @@ use PayKit\Protocols\Mpp\Adapter;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
+use PayKit\PayCore\Solana\Mints;
 use PayKit\PayCore\Stablecoin;
+use PayKit\Protocols\Mpp\Core\Challenge;
+use PayKit\Protocols\Mpp\Core\Credential;
+use PayKit\Protocols\Mpp\Core\Headers;
+use PayKit\Protocols\Mpp\Server\PaymentVerifier;
+use PayKit\Protocols\Mpp\Server\VerificationResult;
 use PHPUnit\Framework\TestCase;
+use SolanaPhpSdk\Programs\TokenProgram;
 
 final class AdapterTest extends TestCase
 {
@@ -47,6 +54,76 @@ final class AdapterTest extends TestCase
         $this->assertSame('100000', $entry['amount']);
         $this->assertSame('USDC', $entry['currency']);
         $this->assertSame($cfg->effectiveRecipient(), $entry['payTo']);
+    }
+
+    /**
+     * RULINGS C1/C2: the issued challenge carries the mint address (never
+     * the "USDC" symbol), `decimals`, and the `tokenProgram` hint.
+     */
+    public function testChallengeCarriesMintDecimalsAndTokenProgram(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $challenge = Headers::parseWwwAuthenticate($adapter->challengeHeaders($gate, $req)['www-authenticate']);
+        $request = $challenge->decodeRequest();
+
+        $this->assertSame(Mints::USDC['devnet'], $request['currency']);
+        $this->assertSame(6, $request['methodDetails']['decimals']);
+        $this->assertSame(TokenProgram::PROGRAM_ID, $request['methodDetails']['tokenProgram']);
+        $this->assertSame('devnet', $request['methodDetails']['network']);
+    }
+
+    /** Token-2022 stablecoins resolve their own mint and program. */
+    public function testChallengeResolvesToken2022Stablecoin(): void
+    {
+        $cfg = new Config(
+            network: Network::SolanaMainnet,
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
+            stablecoins: [Stablecoin::Pyusd],
+            preflight: false,
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
+        );
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $request = Headers::parseWwwAuthenticate($adapter->challengeHeaders($gate, $req)['www-authenticate'])->decodeRequest();
+
+        $this->assertSame(Mints::PYUSD['mainnet'], $request['currency']);
+        $this->assertSame(TokenProgram::TOKEN_2022_PROGRAM_ID, $request['methodDetails']['tokenProgram']);
+    }
+
+    /**
+     * The server verifies against the values it issued: a credential echoing
+     * the adapter's challenge passes the pinned-field and expected-request
+     * checks of the same route's ChargeServer.
+     */
+    public function testIssuedChallengeVerifiesAgainstTheSameRoute(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $challenge = Headers::parseWwwAuthenticate($adapter->challengeHeaders($gate, $req)['www-authenticate']);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'transaction', 'transaction' => 'AA==']);
+        $expected = (new \ReflectionMethod($adapter, 'chargeRequestFor'))->invoke($adapter, $gate);
+
+        $result = $this->serverFor($adapter, $gate)->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class () implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::success(reference: 'sig');
+                }
+            },
+            expectedRequest: $expected,
+        );
+
+        $this->assertTrue($result->ok, (string) $result->reason);
     }
 
     public function testAcceptsEntryIncludesSplitsForFeeBearingGate(): void
@@ -193,7 +270,7 @@ final class AdapterTest extends TestCase
         $this->expectExceptionMessage('recipient does not match server configuration');
         $charges->createChallenge(new ChargeRequest(
             amount: '100000',
-            currency: 'USDC',
+            currency: Mints::USDC['devnet'],
             recipient: Signer::generate()->pubkey(),
             methodDetails: ['network' => $cfg->network->mintsLabel()],
         ));
@@ -210,7 +287,7 @@ final class AdapterTest extends TestCase
         $this->expectExceptionMessage('network does not match server configuration');
         $charges->createChallenge(new ChargeRequest(
             amount: '100000',
-            currency: 'USDC',
+            currency: Mints::USDC['devnet'],
             recipient: $cfg->effectiveRecipient(),
             // config is SolanaDevnet -> "devnet"; advertise a different network.
             methodDetails: ['network' => 'mainnet'],

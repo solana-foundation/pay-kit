@@ -42,7 +42,7 @@ final class AdapterTest extends TestCase
         $this->assertSame('x402', $entry['protocol']);
         $this->assertSame('exact', $entry['scheme']);
         $this->assertSame('100000', $entry['amount']);
-        $this->assertSame('100000', $entry['maxAmountRequired']);
+        $this->assertArrayNotHasKey('maxAmountRequired', $entry);
         $this->assertSame(60, $entry['maxTimeoutSeconds']);
         $this->assertSame('/paid', $entry['extra']['memo']);
         $this->assertSame(6, $entry['extra']['decimals']);

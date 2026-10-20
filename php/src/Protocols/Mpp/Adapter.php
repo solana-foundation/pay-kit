@@ -7,6 +7,7 @@ namespace PayKit\Protocols\Mpp;
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
+use PayKit\PayCore\Solana\Mints;
 use PayKit\Payment;
 use PayKit\Price;
 use PayKit\Protocol;
@@ -33,6 +34,12 @@ use SolanaPhpSdk\Rpc\RpcClient;
  */
 final class Adapter
 {
+    /**
+     * Base-unit precision of every price this adapter emits: priceUnits()
+     * scales by 10^6, and every settlement coin is a 6-decimal stablecoin.
+     */
+    private const DECIMALS = 6;
+
     /** @var array<string,array{ChargeServer, SolanaChargeHandler}> */
     private array $handlerCache = [];
 
@@ -146,7 +153,7 @@ final class Adapter
 
     private function chargeRequestFor(Gate $gate): ChargeRequest
     {
-        $coin  = $this->settlementCoin($gate);
+        $mint  = $this->settlementMint($gate);
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
         // Charge the gate total (base + any fee-on-top), matching the amount
         // advertised in acceptsEntry. The MPP wire derives the primary
@@ -161,7 +168,17 @@ final class Adapter
         // (rust/crates/core/src/client/mpp.rs:83). Advertise the same
         // slug `Mints::resolve` uses so `pay --sandbox --mpp curl`
         // matches against its sandbox network.
-        $methodDetails = ['network' => $this->config->network->mintsLabel()];
+        //
+        // draft-solana-charge-00: `decimals` "MUST be present when `currency`
+        // is a mint address" (RULINGS C2). `tokenProgram` is a hint that
+        // spares the client a mint lookup (C3); the settlement coins are all
+        // stablecoins from the built-in table, so it is known here. Native
+        // SOL is never a settlement coin on this adapter.
+        $methodDetails = [
+            'network'      => $this->config->network->mintsLabel(),
+            'decimals'     => self::DECIMALS,
+            'tokenProgram' => Mints::tokenProgramFor($mint, $this->config->network->mintsLabel()),
+        ];
         if ($gate->hasFees()) {
             $splits = [];
             foreach ($gate->fees as $f) {
@@ -179,7 +196,7 @@ final class Adapter
         }
         return new ChargeRequest(
             amount: $amount,
-            currency: $coin,
+            currency: $mint,
             recipient: $payTo,
             description: $gate->description ?? '',
             externalId: $gate->externalId ?? '',
@@ -192,9 +209,9 @@ final class Adapter
      */
     private function serverFor(Gate $gate): array
     {
-        $coin  = $this->settlementCoin($gate);
+        $mint  = $this->settlementMint($gate);
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
-        $key = $payTo . '|' . $coin;
+        $key = $payTo . '|' . $mint;
         if (isset($this->handlerCache[$key])) {
             return $this->handlerCache[$key];
         }
@@ -213,10 +230,10 @@ final class Adapter
             realm: $this->config->mpp->resolveRealm($payTo),
             method: 'solana',
             blockhashProvider: null,
-            pinnedCurrency: $coin,
+            pinnedCurrency: $mint,
             pinnedRecipient: $payTo,
             pinnedNetwork: $this->config->network->mintsLabel(),
-            pinnedDecimals: 6,
+            pinnedDecimals: self::DECIMALS,
         );
         $rpc = new RpcClient($this->config->rpcUrl);
         $feePayer = null;
@@ -240,6 +257,23 @@ final class Adapter
     {
         $primary = $gate->amount->primaryCoin();
         return $primary?->value ?? $this->config->stablecoins[0]->value;
+    }
+
+    /**
+     * The settlement coin's mint on the configured network. draft-solana-
+     * charge-00 `currency`: "For SPL tokens, MUST be the base58-encoded mint
+     * address", so the symbol is resolved here, before it reaches the
+     * challenge or the pinned verification config (RULINGS C1). Issuance and
+     * verification both read this value, so they cannot disagree.
+     */
+    private function settlementMint(Gate $gate): string
+    {
+        $coin = $this->settlementCoin($gate);
+        $mint = Mints::resolve($coin, $this->config->network->mintsLabel());
+        if ($mint === null || !Mints::looksLikeMintAddress($mint)) {
+            throw new \LogicException('pay_kit: no mint for settlement coin ' . $coin);
+        }
+        return $mint;
     }
 
     private function totalUnits(Gate $gate): int

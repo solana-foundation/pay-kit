@@ -31,6 +31,7 @@ use PayKit\Config;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
 use PayKit\PayCore\Network;
+use PayKit\PayCore\Solana\Mints;
 use PayKit\Operator;
 use PayKit\Price;
 use PayKit\Protocol;
@@ -110,11 +111,18 @@ if ($x402Active) {
 } else {
     $rpcUrl       = require_env('MPP_HARNESS_RPC_URL');
     $payTo        = require_env('MPP_HARNESS_PAY_TO');
-    $mint         = require_env('MPP_HARNESS_MINT');
     $amountUnits  = require_env('MPP_HARNESS_AMOUNT');
+    $networkRaw   = optional_env('MPP_HARNESS_NETWORK', 'localnet');
+    // `currency` on the wire is "sol" or a mint address, never a symbol
+    // (draft-solana-charge-00; RULINGS C1), so resolve a symbol scenario
+    // ("USDC") to its mint before it reaches the challenge.
+    $assetKind    = optional_env('MPP_HARNESS_ASSET_KIND', 'spl');
+    $mint         = $assetKind === 'sol'
+        ? 'sol'
+        : (Mints::resolve(require_env('MPP_HARNESS_MINT'), $networkRaw) ?? require_env('MPP_HARNESS_MINT'));
+    $decimals     = (int) optional_env('MPP_HARNESS_DECIMALS', '6');
     // Must be >= 32 bytes (audit #24); the default is a fixed harness value.
     $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret-0123456789abcdef');
-    $networkRaw   = optional_env('MPP_HARNESS_NETWORK', 'localnet');
     $resourcePath = optional_env('MPP_HARNESS_RESOURCE_PATH', '/paid');
     $settlementHeader = optional_env('MPP_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
     $paymentMode  = optional_env('MPP_HARNESS_PAYMENT_MODE', 'pull');
@@ -201,12 +209,13 @@ function format_decimal_amount(string $units, int $decimals = 6): string
 /**
  * @param array<int,array<string,mixed>> $splits
  */
-function build_charge_request(string $amount, string $mint, string $payTo, string $network, string $paymentMode, ?string $feePayerKey, array $splits): ChargeRequest
+function build_charge_request(string $amount, string $mint, int $decimals, string $payTo, string $network, string $paymentMode, ?string $feePayerKey, array $splits): ChargeRequest
 {
-    $methodDetails = [
-        'network'  => $network,
-        'decimals' => 6,
-    ];
+    // `decimals` is required for a mint and forbidden for "sol" (RULINGS C2).
+    $methodDetails = ['network' => $network];
+    if ($mint !== 'sol') {
+        $methodDetails['decimals'] = $decimals;
+    }
     if ($paymentMode !== 'push') {
         $methodDetails['feePayer']    = true;
         $methodDetails['feePayerKey'] = $feePayerKey;
@@ -395,7 +404,7 @@ while (is_resource($listener)) {
         } else {
             // Existing MPP path (untouched).
             $protectedAmount = $isReplay && $replayAmount !== null ? (string) $replayAmount : $amountUnits;
-            $request = build_charge_request($protectedAmount, $mint, $payTo, $networkRaw, $paymentMode, $handler->feePayerPubkey(), $splits);
+            $request = build_charge_request($protectedAmount, $mint, $decimals, $payTo, $networkRaw, $paymentMode, $handler->feePayerPubkey(), $splits);
             $authorization = $req['headers']['authorization'] ?? null;
             try {
                 $result = $handler->handle($authorization, $request);

@@ -13,8 +13,8 @@ use RuntimeException;
  * ABI, the same way the TypeScript harness driver does. PHP is a SERVER-only
  * SDK, so:
  *
- *   - verify-transaction vectors run the envelope verify (version dispatch +
- *     scheme + network gate) and assert accept (with x402EnvelopeShape) or
+ *   - verify-transaction vectors run the pre-broadcast server verify (version dispatch,
+ *     scheme + network gate, structural transaction checks) and assert accept (with x402EnvelopeShape) or
  *     reject (with rejectCode), matching the vector's expectation.
  *   - build-transaction vectors are client-side and SKIP for PHP
  *     (outcome === "unsupported-mode").
@@ -78,6 +78,11 @@ final class X402LegacyVectorTest extends TestCase
         self::assertNotEmpty($vectors, 'expected x402 v1 verify vectors');
 
         foreach ($vectors as $vector) {
+            // The harness driver injects a fixture RPC URL. The only chain
+            // read on this pre-broadcast path is the optional blockhash hint,
+            // which the adapter drops when the RPC is unreachable, so a
+            // closed local port stands in for it here.
+            $vector['input']['rpcUrl'] ??= 'http://127.0.0.1:9';
             $expect = $vector['expect'] ?? [];
             $result = $this->runVector($vector);
             $id = $vector['id'] ?? '?';
