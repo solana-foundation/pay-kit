@@ -390,17 +390,23 @@ jobs:
         run: npm install && npx playwright install chromium
       - name: Start playground API
         working-directory: typescript/examples/playground-api
-        run: npx tsx index.ts &
+        # Funding and plan bootstrap run before listen(); point them at the
+        # local Surfnet started above rather than the shared remote sandbox.
+        run: npx tsx index.ts > "$RUNNER_TEMP/playground-api.log" 2>&1 &
         env:
           NETWORK: localnet
           PLAYGROUND_DISABLE_SIDECAR: "1"
+          RPC_URL: http://localhost:8899
       - name: Wait for playground server
         working-directory: .
         run: |
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3000/api/v1/health && break
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/api/v1/health && exit 0
             sleep 1
           done
+          echo "playground API did not become healthy in 60s; server log:"
+          cat "$RUNNER_TEMP/playground-api.log"
+          exit 1
       - name: Run Playwright tests (Playground)
         working-directory: html
         run: npm run test:e2e:demo
@@ -532,14 +538,17 @@ jobs:
         run: cargo build --example payment_link_server --features axum
       - name: Start Rust test server
         working-directory: rust
-        run: cargo run --example payment_link_server --features axum &
+        run: cargo run --example payment_link_server --features axum > "$RUNNER_TEMP/payment-link-server.log" 2>&1 &
       - name: Wait for Rust server
         working-directory: .
         run: |
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3001/health && break
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/health && exit 0
             sleep 1
           done
+          echo "Rust payment link server did not become healthy in 60s; server log:"
+          cat "$RUNNER_TEMP/payment-link-server.log"
+          exit 1
       - name: Run Playwright tests (Rust)
         working-directory: html
         run: npm run test:e2e:rust
