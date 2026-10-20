@@ -2705,6 +2705,22 @@ fn compare_expected_to_request(
             "methodDetails.feePayerKey mismatch",
         ));
     }
+    // Settlement mode: the authenticated challenge decides whether only a
+    // confidential Bundle may settle it. A rebuilt expectation must not
+    // downgrade that (or upgrade it), nor swap the keys the confidential
+    // amount is recovered with.
+    if request_md.confidential.unwrap_or(false) != expected_md.confidential.unwrap_or(false) {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.confidential mismatch",
+        ));
+    }
+    if request_md.auditor_elgamal_pubkey != expected_md.auditor_elgamal_pubkey
+        || request_md.recipient_elgamal_pubkey != expected_md.recipient_elgamal_pubkey
+    {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails confidential keys mismatch",
+        ));
+    }
     // Splits compared element-wise (order-sensitive). A route that pins
     // `[A, B]` will reject a credential carrying `[B, A]`.
     if !splits_eq(request_md.splits.as_deref(), expected_md.splits.as_deref()) {
@@ -8032,6 +8048,38 @@ mod tests {
             err.message.contains("methodDetails.feePayerKey mismatch"),
             "got: {err:?}"
         );
+    }
+
+    // A challenge issued in confidential mode can only be settled by a
+    // confidential Bundle; an expectation rebuilt without the flag (a generic
+    // amount-based route) must not let a cleartext transfer settle it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_confidential_mismatch() {
+        let mpp = test_mpp();
+        let plain = expected_from_challenge(&mpp.charge("0.10").unwrap());
+        let mut confidential = plain.clone();
+        mutate_method_details(&mut confidential, |md| md.confidential = Some(true));
+        let cred = PaymentCredential {
+            challenge: mpp.charge_challenge(&confidential).unwrap().to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &plain)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.confidential mismatch"),
+            "got: {err:?}"
+        );
+        // Against its own (confidential) expectation it gets past the
+        // comparison to the settlement-mode check.
+        let err = mpp
+            .verify_credential_with_expected(&cred, &confidential)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("Bundle credential"), "got: {err:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
