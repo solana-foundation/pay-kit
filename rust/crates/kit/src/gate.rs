@@ -44,6 +44,7 @@ use crate::core::credit_provider::{
     validate_credit_providers, CreditProvider, CreditProviderError,
 };
 use crate::core::tx::TxV1Mode;
+use crate::mpp::server::axum::{is_settlement_in_progress, settlement_in_progress_response};
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::TransactionSigner;
 use crate::mpp::store::Store;
@@ -802,6 +803,7 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                 attach_mpp_receipt(&mut resp, &receipt);
                 resp
             }
+            Err(e) if is_settlement_in_progress(&e) => settlement_in_progress_response(&e),
             Err(_) => challenge_response(&state.pay, &amount, &req),
         };
     }
@@ -2022,16 +2024,19 @@ mod tests {
         assert_eq!(resource, ["https://example.test/api/report?x=1"]);
     }
 
-    fn test_paykit() -> PayKit {
-        PayKit::new(PayKitConfig {
+    fn test_paykit_config() -> PayKitConfig {
+        PayKitConfig {
             realm: Some("test-realm".to_string()),
             store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
             ..Default::default()
-        })
-        .expect("valid paykit config")
+        }
+    }
+
+    fn test_paykit() -> PayKit {
+        PayKit::new(test_paykit_config()).expect("valid paykit config")
     }
 
     async fn report(_payment: Payment) -> &'static str {
@@ -2989,6 +2994,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+
+    // A charge that may already be paid is never answered with a fresh
+    // challenge: the client would pay it again. It retries the credential.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mpp_settlement_in_progress_is_not_rechallenged() {
+        use crate::mpp::protocol::solana::CredentialPayload;
+        use crate::mpp::store::{ChargeReplayStore, CHARGE_RESERVATION_LEASE};
+        use crate::mpp::{format_authorization, PaymentCredential};
+
+        let store: Arc<dyn Store> = Arc::new(crate::mpp::store::MemoryStore::new());
+        let pay = PayKit::new(PayKitConfig {
+            store: Some(store.clone()),
+            ..test_paykit_config()
+        })
+        .unwrap();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+        let send = |cred: PaymentCredential| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/r")
+                        .header(header::AUTHORIZATION, format_authorization(&cred).unwrap())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let credential = || {
+            PaymentCredential::new(
+                pay.mpp().charge("0.10").unwrap().to_echo(),
+                serde_json::json!({"type": "signature", "signature": "fakesig"}),
+            )
+        };
+
+        // Another request is settling this exact credential.
+        let busy = credential();
+        let payload: CredentialPayload = serde_json::from_value(busy.payload.clone()).unwrap();
+        let digest = crate::mpp::server::charge::normalized_request_digest(
+            &busy.challenge.id,
+            busy.challenge.request.raw(),
+            &payload,
+        )
+        .unwrap();
+        ChargeReplayStore::new(store)
+            .reserve(&busy.challenge.id, &digest, CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        let resp = send(busy).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(!resp.headers().contains_key(header::WWW_AUTHENTICATE));
+        assert!(!resp.headers().contains_key("payment-required"));
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "1");
+
+        // A plainly rejected credential is still re-challenged.
+        let resp = send(credential()).await;
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
     }
 
     #[test]

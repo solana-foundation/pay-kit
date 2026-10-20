@@ -381,6 +381,13 @@ impl Mpp {
                 )));
             }
 
+            let is_final = idx + 1 == bundle_len;
+            if is_final {
+                // Claim before sending, as pull settlement does, so the
+                // transfer is recorded whatever happens after it leaves.
+                self.consume_signature(&super::charge::final_signature(tx)?)
+                    .await?;
+            }
             let signature = crate::core::rpc::send_transaction(
                 &self.rpc,
                 &*tx,
@@ -390,12 +397,6 @@ impl Mpp {
                 VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
             })?;
             let signature_str = signature.to_string();
-            let is_final = idx + 1 == bundle_len;
-            if is_final {
-                // Reserve before polling, as pull settlement does, so an
-                // unconfirmed transfer can be reconciled but never re-sent.
-                self.consume_signature(&signature_str).await?;
-            }
 
             // Confirm at `confirmed` before moving on: later txs in the bundle
             // (and the final balance read) depend on earlier ones landing.

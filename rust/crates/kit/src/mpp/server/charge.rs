@@ -1531,10 +1531,11 @@ impl Mpp {
         }
         match payload {
             CredentialPayload::Transaction { transaction } => {
+                // Claims the signature before sending, so nothing that can
+                // fail after the broadcast is left to record the payment.
                 let signature = self
                     .broadcast_pull(transaction, request, method_details, challenge)
                     .await?;
-                self.consume_signature(&signature).await?;
                 if method_details.channel_charge.is_some() {
                     self.await_pull_confirmation(&signature)
                         .and_then(|()| self.verify_confirmed_channel_charge(&signature, transaction, challenge))
@@ -1629,6 +1630,16 @@ impl Mpp {
             ));
         }
         Ok(())
+    }
+
+    /// Release a claim on a transaction that provably never landed.
+    async fn release_signature(&self, signature: &str) {
+        if let Err(error) = crate::core::store::ConsumedSignatures::new(self.store.clone())
+            .release(signature)
+            .await
+        {
+            tracing::warn!(%error, %signature, "failed to release unsent charge signature");
+        }
     }
 
     /// Pull mode: deserialize tx, optionally co-sign, simulate, broadcast.
@@ -1773,6 +1784,14 @@ impl Mpp {
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
 
+        // Every signature is in place, so the transaction's identity is known
+        // before it leaves this process. Claim it now: a store failure here
+        // provably sent nothing, while one after the broadcast would leave a
+        // possibly-landed payment unrecorded and the charge free to be paid
+        // again.
+        let local_signature = final_signature(&tx)?;
+        self.consume_signature(&local_signature).await?;
+
         // Broadcast with the node's preflight simulation (skip_preflight stays
         // off) rather than a separate simulate round-trip: on success the tx is
         // already accepted into the mempool; on preflight failure the error
@@ -1891,6 +1910,9 @@ impl Mpp {
                             ));
                             continue;
                         }
+                        // Preflight rejected it: the transaction was never
+                        // forwarded, so the payer may present it again.
+                        self.release_signature(&local_signature).await;
                         return Err(VerificationError::transaction_failed(message));
                     }
 
@@ -2538,7 +2560,7 @@ fn expected_ata_creation_policy(
 /// any cryptographic purpose: the HMAC challenge id already authenticates
 /// the challenge itself; this digest only distinguishes "identical retry"
 /// from "different request/credential reusing the same challenge id".
-fn normalized_request_digest(
+pub(crate) fn normalized_request_digest(
     challenge_id: &str,
     encoded_request: &str,
     payload: &CredentialPayload,
@@ -2700,6 +2722,18 @@ fn challenge_route(challenge: &crate::mpp::protocol::core::ChallengeEcho) -> Opt
         .get("route")?
         .as_str()
         .map(str::to_string)
+}
+
+/// The signature that identifies `tx` on-chain: its first (fee payer) slot,
+/// which must already be signed.
+pub(crate) fn final_signature(tx: &VersionedTransaction) -> Result<String, VerificationError> {
+    tx.signatures
+        .first()
+        .filter(|signature| **signature != Signature::default())
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            VerificationError::invalid_payload("Transaction is missing its fee-payer signature")
+        })
 }
 
 /// Why settlement produced no receipt.
@@ -8270,7 +8304,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-            let tx = crate::core::tx::build_unsigned_unchecked(
+            let mut tx = crate::core::tx::build_unsigned_unchecked(
                 TxVersion::V0,
                 &sender,
                 &[system_transfer_ix(&sender, &recipient, 1000)],
@@ -8278,6 +8312,7 @@ mod tests {
                 None,
             )
             .unwrap();
+            tx.signatures[0] = Signature::from([9u8; 64]);
             let transaction = crate::core::tx::encode(&tx).unwrap();
             let cred = build_credential(
                 &mpp,
@@ -8304,16 +8339,30 @@ mod tests {
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
     ) -> String {
+        stub_rpc_counting(signature, status, blockhash_valid, Arc::default()).await
+    }
+
+    /// [`stub_rpc`] that also counts `sendTransaction` calls in `sends`.
+    async fn stub_rpc_counting(
+        signature: Signature,
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+        sends: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> String {
         use axum::{routing::post, Json, Router};
         use std::sync::atomic::Ordering;
         let app = Router::new().route(
             "/",
             post(move |Json(request): Json<serde_json::Value>| {
-                let (status, blockhash_valid) = (status.clone(), blockhash_valid.clone());
+                let (status, blockhash_valid, sends) =
+                    (status.clone(), blockhash_valid.clone(), sends.clone());
                 async move {
                     let context = serde_json::json!({ "slot": 1 });
                     let result = match request["method"].as_str() {
-                        Some("sendTransaction") => serde_json::json!(signature.to_string()),
+                        Some("sendTransaction") => {
+                            sends.fetch_add(1, Ordering::SeqCst);
+                            serde_json::json!(signature.to_string())
+                        }
                         Some("isBlockhashValid") => serde_json::json!({
                             "context": context,
                             "value": blockhash_valid.load(Ordering::SeqCst),
@@ -8394,7 +8443,7 @@ mod tests {
             ..Default::default()
         };
         let sender = Pubkey::new_unique();
-        let tx = crate::core::tx::build_unsigned_unchecked(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
             TxVersion::V0,
             &sender,
             &[system_transfer_ix(
@@ -8406,6 +8455,8 @@ mod tests {
             None,
         )
         .unwrap();
+        // The stub never checks signatures; it only has to be the one it echoes.
+        tx.signatures[0] = signature;
         let payload = serde_json::json!({
             "type": "transaction",
             "transaction": crate::core::tx::encode(&tx).unwrap(),
@@ -8450,6 +8501,179 @@ mod tests {
             }
         }
         serde_json::from_value(raw).unwrap()
+    }
+
+    /// A [`MemoryStore`] whose `put_if_absent` fails while `failing` is set
+    /// for keys starting with `prefix`.
+    struct FlakyStore {
+        inner: MemoryStore,
+        prefix: &'static str,
+        failing: std::sync::atomic::AtomicBool,
+    }
+
+    impl Store for FlakyStore {
+        fn get(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Option<serde_json::Value>, crate::mpp::store::StoreError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            self.inner.get(key)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.put(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.delete(key)
+        }
+
+        fn put_if_absent(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<bool, crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            if key.starts_with(self.prefix)
+                && self.failing.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Box::pin(async {
+                    Err(crate::mpp::store::StoreError::Internal(
+                        "injected store outage".into(),
+                    ))
+                });
+            }
+            self.inner.put_if_absent(key, value)
+        }
+
+        fn put_if_eq(
+            &self,
+            key: &str,
+            expected: Option<serde_json::Value>,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<bool, crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.put_if_eq(key, expected, value)
+        }
+    }
+
+    /// A signed SOL pull credential for a fresh challenge on `mpp`.
+    fn signed_pull_credential(
+        mpp: &Mpp,
+        signature: Signature,
+    ) -> (PaymentCredential, ChargeRequest) {
+        let blockhash = Hash::new_unique();
+        let expected = ChargeRequest {
+            amount: "1000".into(),
+            currency: "SOL".into(),
+            recipient: Some(TEST_RECIPIENT.into()),
+            method_details: Some(serde_json::json!({
+                "network": "devnet",
+                "decimals": 9,
+                "recentBlockhash": blockhash.to_string(),
+            })),
+            ..Default::default()
+        };
+        let sender = Pubkey::new_unique();
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V0,
+            &sender,
+            &[system_transfer_ix(
+                &sender,
+                &Pubkey::from_str(TEST_RECIPIENT).unwrap(),
+                1000,
+            )],
+            blockhash,
+            None,
+        )
+        .unwrap();
+        tx.signatures[0] = signature;
+        let payload = serde_json::json!({
+            "type": "transaction",
+            "transaction": crate::core::tx::encode(&tx).unwrap(),
+        });
+        (build_credential(mpp, &expected, payload), expected)
+    }
+
+    // The signature is claimed before the broadcast, so a replay store that
+    // fails provably sent nothing: no payment can land unrecorded and then be
+    // paid again under a fresh challenge.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn store_failure_while_claiming_the_signature_sends_nothing() {
+        use std::sync::atomic::Ordering;
+        let signature = Signature::from([11u8; 64]);
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rpc_url = stub_rpc_counting(
+            signature,
+            Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            sends.clone(),
+        )
+        .await;
+        let store = Arc::new(FlakyStore {
+            inner: MemoryStore::new(),
+            prefix: "solana:consumed-signature:",
+            failing: std::sync::atomic::AtomicBool::new(true),
+        });
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let err = mpp.verify(&credential, &expected).await.unwrap_err();
+        assert!(err.message.contains("injected store outage"), "{err:?}");
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "nothing may be broadcast");
+
+        // Once the store recovers the same transaction settles exactly once.
+        store.failing.store(false, Ordering::SeqCst);
+        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let receipt = mpp.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, signature.to_string());
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
