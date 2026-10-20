@@ -720,13 +720,12 @@ impl SubscriptionServer {
                 subscriber,
                 activation_signature,
                 activate.authentication.as_ref(),
+                recovery_claim.as_ref(),
             )
             .await;
         // A recovery that did not bind stays available to a later retry.
-        if let (Err(_), Some(claim)) = (&bound, recovery_claim) {
-            self.store.delete(&claim).await.map_err(|e| {
-                VerificationError::new(format!("Failed to release activation recovery: {e}"))
-            })?;
+        if let (Err(_), Some(claim)) = (&bound, &recovery_claim) {
+            claim.release(self.store.as_ref()).await?;
         }
         bound
     }
@@ -742,6 +741,7 @@ impl SubscriptionServer {
         subscriber: Pubkey,
         activation_reference: String,
         authentication: Option<&SubscriptionAuthentication>,
+        recovery: Option<&RecoveryClaim>,
     ) -> Result<ReceiptKind, VerificationError> {
         // ── Derive subscription PDA and read on-chain state ──────────────
         let program_id = parse_pubkey(&self.program_id, "program_id")
@@ -824,7 +824,11 @@ impl SubscriptionServer {
         // A cancelled or revoked subscription can later reuse the same PDA.
         // Reaching this point proves the new activation confirmed and its
         // on-chain delegation matches the challenge, so rotate the bearer
-        // binding and invalidate any proof from the prior lifecycle.
+        // binding and invalidate any proof from the prior lifecycle. A
+        // recovery binds only while it still holds the activation.
+        if let Some(claim) = recovery {
+            claim.ensure_held(self.store.as_ref()).await?;
+        }
         rotate_subscription_binding(self.store.as_ref(), &binding_key, binding).await?;
 
         // ── Build the receipt ───────────────────────────────────────────
@@ -1441,16 +1445,150 @@ async fn reserve_activation_signature(
     }
 }
 
-/// Claim the one recovery of a confirmed activation reserved under another
-/// challenge whose binding was never written, returning the claim's key.
-/// Refused once any binding for this activation exists: its holder presents
-/// the subscription proof.
+/// How long a recovery may hold its activation before a fresh challenge can
+/// take it over: a request cancelled or a server stopped mid-recovery leaves
+/// a claim that only blocks recovery this long.
+const RECOVERY_CLAIM_LEASE_SECS: i64 = 120;
+
+/// Most recovery takeovers recorded for one activation.
+const MAX_RECOVERY_GENERATIONS: u32 = 32;
+
+/// One recovery attempt's hold on a confirmed activation that was never
+/// bound. Claims are generations under the activation signature, each taken
+/// with `put_if_absent`, so a takeover of an expired claim has one winner.
+struct RecoveryClaim {
+    signature: String,
+    generation: u32,
+    challenge_id: String,
+}
+
+impl RecoveryClaim {
+    fn key(signature: &str, generation: u32) -> String {
+        format!("solana-subscription:recovered:{signature}:{generation}")
+    }
+
+    fn value(&self, expires_at: i64) -> serde_json::Value {
+        serde_json::json!({ "challengeId": self.challenge_id, "expiresAt": expires_at })
+    }
+
+    async fn latest(
+        store: &dyn Store,
+        signature: &str,
+    ) -> Result<(u32, Option<serde_json::Value>), VerificationError> {
+        let mut latest = None;
+        for generation in 0..MAX_RECOVERY_GENERATIONS {
+            match store
+                .get(&Self::key(signature, generation))
+                .await
+                .map_err(|e| VerificationError::new(format!("Failed to load recovery: {e}")))?
+            {
+                Some(claim) => latest = Some((generation, claim)),
+                None => {
+                    return Ok(match latest {
+                        Some((generation, claim)) => (generation, Some(claim)),
+                        None => (0, None),
+                    })
+                }
+            }
+        }
+        Err(VerificationError::new(
+            "Activation recovery was taken over too many times",
+        ))
+    }
+
+    /// Take the recovery of `signature` for `challenge_id`: resume this
+    /// challenge's own claim, take over an expired one, or refuse while another
+    /// challenge's claim is live.
+    async fn acquire(
+        store: &dyn Store,
+        signature: &str,
+        challenge_id: &str,
+        now: i64,
+    ) -> Result<Self, VerificationError> {
+        loop {
+            let (generation, latest) = Self::latest(store, signature).await?;
+            let next = match &latest {
+                None => generation,
+                Some(claim) => {
+                    let holder = claim.get("challengeId").and_then(serde_json::Value::as_str);
+                    let expires_at = claim
+                        .get("expiresAt")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(i64::MAX);
+                    if holder == Some(challenge_id) {
+                        let claim = Self {
+                            signature: signature.to_string(),
+                            generation,
+                            challenge_id: challenge_id.to_string(),
+                        };
+                        claim.renew(store, now).await?;
+                        return Ok(claim);
+                    }
+                    if expires_at > now {
+                        return Err(VerificationError::signature_consumed(
+                            "Activation recovery is in progress under another challenge; retry later",
+                        ));
+                    }
+                    generation + 1
+                }
+            };
+            let claim = Self {
+                signature: signature.to_string(),
+                generation: next,
+                challenge_id: challenge_id.to_string(),
+            };
+            if store
+                .put_if_absent(
+                    &Self::key(signature, next),
+                    claim.value(now.saturating_add(RECOVERY_CLAIM_LEASE_SECS)),
+                )
+                .await
+                .map_err(|e| VerificationError::new(format!("Failed to claim recovery: {e}")))?
+            {
+                return Ok(claim);
+            }
+        }
+    }
+
+    async fn renew(&self, store: &dyn Store, now: i64) -> Result<(), VerificationError> {
+        store
+            .put(
+                &Self::key(&self.signature, self.generation),
+                self.value(now.saturating_add(RECOVERY_CLAIM_LEASE_SECS)),
+            )
+            .await
+            .map_err(|e| VerificationError::new(format!("Failed to renew recovery: {e}")))
+    }
+
+    /// Refuse to bind once the claim was taken over.
+    async fn ensure_held(&self, store: &dyn Store) -> Result<(), VerificationError> {
+        let (generation, _) = Self::latest(store, &self.signature).await?;
+        if generation != self.generation {
+            return Err(VerificationError::signature_consumed(
+                "Activation recovery was taken over by another challenge",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Let a later challenge take over at once.
+    async fn release(&self, store: &dyn Store) -> Result<(), VerificationError> {
+        store
+            .put(&Self::key(&self.signature, self.generation), self.value(0))
+            .await
+            .map_err(|e| VerificationError::new(format!("Failed to release recovery: {e}")))
+    }
+}
+
+/// Claim the recovery of a confirmed activation reserved under another
+/// challenge whose binding was never written. Refused once any binding for
+/// this activation exists: its holder presents the subscription proof.
 async fn claim_activation_recovery(
     store: &dyn Store,
     delegation: &Pubkey,
     signature: &Signature,
     challenge_id: &str,
-) -> Result<String, VerificationError> {
+) -> Result<RecoveryClaim, VerificationError> {
     let bound = store
         .get(&subscription_binding_key(delegation))
         .await
@@ -1470,14 +1608,7 @@ async fn claim_activation_recovery(
             "Activation is already bound; present the subscription proof instead",
         ));
     }
-    let claim = format!("solana-subscription:recovered:{signature}");
-    reserve_activation_signature(
-        store,
-        &claim,
-        serde_json::json!({ "challengeId": challenge_id }),
-    )
-    .await?;
-    Ok(claim)
+    RecoveryClaim::acquire(store, &signature, challenge_id, now_unix_secs()).await
 }
 
 async fn rotate_subscription_binding(
@@ -3312,22 +3443,108 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-        // The failed recovery released its claim for a later retry.
+        // The failed recovery released its claim: another challenge can try
+        // again at once, and is refused on the same on-chain check.
+        let again = fixture.server.subscription_challenge("10000000").unwrap();
+        let (retry, _) = fixture.activation(&again, &fixture.signer).await;
+        let error = fixture.server.verify_credential(&retry).await.unwrap_err();
+        assert!(error.to_string().contains("subscriber"), "{error}");
+        fixture.rpc_task.abort();
+    }
+
+    fn activation_signature(credential: &PaymentCredential) -> String {
         let ActivatePayload {
             transaction: Some(transaction),
             ..
-        } = decode_activate_payload(&recovery).unwrap()
+        } = decode_activate_payload(credential).unwrap()
         else {
             panic!("transaction payload");
         };
-        let signature = decode_base64_transaction(&transaction).unwrap().signatures[0];
-        assert!(fixture
-            .server
-            .store
-            .get(&format!("solana-subscription:recovered:{signature}"))
+        decode_base64_transaction(&transaction).unwrap().signatures[0].to_string()
+    }
+
+    /// A recovery cancelled before it bound leaves a claim that blocks other
+    /// challenges only for its lease; past it a fresh challenge recovers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_interrupted_recovery_is_taken_over_after_its_lease() {
+        let fixture = activation_fixture(None).await;
+        let first = fixture.server.subscription_challenge("10000000").unwrap();
+        let (activation, _) = fixture.activation(&first, &fixture.signer).await;
+        fixture.server.verify_credential(&activation).await.unwrap();
+        let binding_key = subscription_binding_key(&fixture.delegation);
+        fixture.server.store.delete(&binding_key).await.unwrap();
+        let signature = activation_signature(&activation);
+
+        // A recovery under another challenge claimed the activation and was
+        // cancelled before binding.
+        let store = fixture.server.store.as_ref();
+        let cancelled = RecoveryClaim::acquire(store, &signature, "cancelled", now_unix_secs())
             .await
-            .unwrap()
-            .is_none());
+            .unwrap();
+        let fresh = fixture.server.subscription_challenge("10000000").unwrap();
+        let (recovery, fresh_auth) = fixture.activation(&fresh, &fixture.signer).await;
+        let error = fixture
+            .server
+            .verify_credential(&recovery)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("in progress"), "{error}");
+
+        // Its lease runs out.
+        store
+            .put(
+                &RecoveryClaim::key(&signature, cancelled.generation),
+                cancelled.value(now_unix_secs() - 1),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            fixture.server.verify_credential(&recovery).await.unwrap(),
+            ReceiptKind::Subscription { .. }
+        ));
+        fixture
+            .server
+            .verify_credential(&fixture.access(&fresh, fresh_auth))
+            .await
+            .unwrap();
+        // The cancelled holder, resuming late, can no longer bind.
+        assert!(cancelled.ensure_held(store).await.is_err());
         fixture.rpc_task.abort();
+    }
+
+    /// Claims are generations taken with `put_if_absent`: one holder at a time,
+    /// a live claim refuses other challenges, its own challenge resumes it, and
+    /// a takeover of an expired claim leaves the old holder unable to bind.
+    #[tokio::test]
+    async fn recovery_claims_have_one_holder() {
+        let store = crate::core::store::MemoryStore::new();
+        let now = 1_000;
+        let a = RecoveryClaim::acquire(&store, "sig", "a", now)
+            .await
+            .unwrap();
+        assert!(RecoveryClaim::acquire(&store, "sig", "b", now + 1)
+            .await
+            .is_err());
+        let resumed = RecoveryClaim::acquire(&store, "sig", "a", now + 1)
+            .await
+            .unwrap();
+        assert_eq!(resumed.generation, a.generation);
+
+        let later = now + 1 + RECOVERY_CLAIM_LEASE_SECS + 1;
+        let b = RecoveryClaim::acquire(&store, "sig", "b", later)
+            .await
+            .unwrap();
+        assert_eq!(b.generation, a.generation + 1);
+        assert!(a.ensure_held(&store).await.is_err());
+        b.ensure_held(&store).await.unwrap();
+        assert!(RecoveryClaim::acquire(&store, "sig", "c", later)
+            .await
+            .is_err());
+
+        b.release(&store).await.unwrap();
+        let c = RecoveryClaim::acquire(&store, "sig", "c", later)
+            .await
+            .unwrap();
+        assert_eq!(c.generation, b.generation + 1);
     }
 }
