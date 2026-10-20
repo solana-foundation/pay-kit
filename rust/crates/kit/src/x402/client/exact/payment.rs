@@ -63,7 +63,7 @@ pub async fn build_payment(
     let mint = try_resolve_mint(&requirements.currency, Some(cluster))?;
 
     if let Some(mint_str) = mint {
-        let decimals = payment_decimals(rpc, requirements)?;
+        let decimals = payment_decimals_async(rpc, requirements).await?;
         build_spl_instructions(
             &mut instructions,
             &signer_pubkey,
@@ -410,21 +410,44 @@ pub fn payment_decimals(rpc: &RpcClient, requirements: &PaymentRequirements) -> 
     if let Some(decimals) = requirements.decimals {
         return Ok(decimals);
     }
-    let cluster = signing_cluster(requirements)?;
-    let mint = try_resolve_mint(&requirements.currency, Some(cluster))?
-        .ok_or_else(|| Error::Other("native SOL has no token decimals".into()))?;
-    let mint = Pubkey::from_str(mint).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
+    let mint = decimals_mint(requirements)?;
     let account = rpc
         .get_account(&mint)
         .map_err(|e| Error::Rpc(format!("failed to read mint {mint}: {e}")))?;
-    let owner = account.owner.to_string();
+    mint_decimals(&mint, &account.owner, &account.data)
+}
+
+/// [`payment_decimals`] without blocking the async runtime on the mint read.
+async fn payment_decimals_async(
+    rpc: &RpcClient,
+    requirements: &PaymentRequirements,
+) -> Result<u8, Error> {
+    if let Some(decimals) = requirements.decimals {
+        return Ok(decimals);
+    }
+    let mint = decimals_mint(requirements)?;
+    let account = rpc
+        .get_inner_client()
+        .get_account(&mint)
+        .await
+        .map_err(|e| Error::Rpc(format!("failed to read mint {mint}: {e}")))?;
+    mint_decimals(&mint, &account.owner, &account.data)
+}
+
+fn decimals_mint(requirements: &PaymentRequirements) -> Result<Pubkey, Error> {
+    let cluster = signing_cluster(requirements)?;
+    let mint = try_resolve_mint(&requirements.currency, Some(cluster))?
+        .ok_or_else(|| Error::Other("native SOL has no token decimals".into()))?;
+    Pubkey::from_str(mint).map_err(|e| Error::Other(format!("Invalid mint: {e}")))
+}
+
+fn mint_decimals(mint: &Pubkey, owner: &Pubkey, data: &[u8]) -> Result<u8, Error> {
+    let owner = owner.to_string();
     if owner != programs::TOKEN_PROGRAM && owner != programs::TOKEN_2022_PROGRAM {
         return Err(Error::Other(format!("{mint} is not an SPL token mint")));
     }
     // SPL Token and Token-2022 mints store decimals at byte 44.
-    account
-        .data
-        .get(MINT_DECIMALS_OFFSET)
+    data.get(MINT_DECIMALS_OFFSET)
         .copied()
         .ok_or_else(|| Error::Other(format!("{mint} is not an SPL token mint")))
 }
@@ -1530,5 +1553,33 @@ mod tests {
             .is_err());
         let not_a_mint = mint_rpc(programs::SYSTEM_PROGRAM, 6);
         assert!(payment_decimals(&not_a_mint, &requirements).is_err());
+    }
+
+    // A single-threaded runtime cannot host a blocking RPC call at all.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mint_decimals_lookup_does_not_block_the_runtime() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let mut requirements = test_requirements("USDC");
+        requirements.decimals = None;
+        let payload = build_payment(
+            &signer,
+            &mint_rpc(programs::TOKEN_PROGRAM, 9),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(transfer_decimals(payload), 9);
+        assert!(build_payment(
+            &signer,
+            &mint_rpc(programs::SYSTEM_PROGRAM, 6),
+            &requirements,
+            None
+        )
+        .await
+        .is_err());
     }
 }
