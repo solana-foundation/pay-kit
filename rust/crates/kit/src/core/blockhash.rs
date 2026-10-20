@@ -111,3 +111,102 @@ pub fn fetch_blockhash_with_slot(
         slot: response.context.slot,
     })
 }
+
+/// Why a client could not settle on a blockhash to sign.
+#[derive(Debug, thiserror::Error)]
+pub enum ChallengeBlockhashError {
+    /// The challenge's `recentBlockhash` is malformed or not live on the
+    /// client's cluster.
+    #[error("{0}")]
+    Invalid(String),
+    /// The client's RPC could not be reached or answered unexpectedly.
+    #[error("{0}")]
+    Rpc(String),
+}
+
+/// The blockhash a client signs into a payment transaction.
+///
+/// A server-provided `recentBlockhash` saves the client a fetch, but it is
+/// untrusted: a hash from another cluster would yield a signature that is
+/// valid there and not on the network the payment was approved for. So the
+/// hint is only used once the client's own RPC, which serves the approved
+/// network, confirms it is a live blockhash; otherwise the client fetches its
+/// own.
+pub async fn resolve_challenge_blockhash(
+    rpc: &solana_rpc_client::nonblocking::rpc_client::RpcClient,
+    hint: Option<&str>,
+) -> Result<solana_hash::Hash, ChallengeBlockhashError> {
+    let commitment = CommitmentConfig::confirmed();
+    let Some(hint) = hint else {
+        return rpc
+            .get_latest_blockhash_with_commitment(commitment)
+            .await
+            .map(|(hash, _)| hash)
+            .map_err(|e| ChallengeBlockhashError::Rpc(e.to_string()));
+    };
+    let hash = hint
+        .parse::<solana_hash::Hash>()
+        .map_err(|e| ChallengeBlockhashError::Invalid(format!("Invalid blockhash: {e}")))?;
+    let live = rpc
+        .is_blockhash_valid(&hash, commitment)
+        .await
+        .map_err(|e| ChallengeBlockhashError::Rpc(e.to_string()))?;
+    if !live {
+        return Err(ChallengeBlockhashError::Invalid(format!(
+            "challenge recentBlockhash {hash} is not a live blockhash on the client's cluster"
+        )));
+    }
+    Ok(hash)
+}
+
+/// Test RPC that answers `isBlockhashValid` with `live` (up to 64 calls) and
+/// every other method with `null`, so nothing else appears to succeed.
+#[cfg(test)]
+pub(crate) fn mock_blockhash_rpc(live: bool) -> RpcClient {
+    use solana_rpc_client::mock_sender::MocksMap;
+    let mut mocks = MocksMap::default();
+    for _ in 0..64 {
+        mocks.insert(
+            RpcRequest::IsBlockhashValid,
+            serde_json::json!({ "context": { "slot": 1 }, "value": live }),
+        );
+    }
+    RpcClient::new_mock_with_mocks_map("fails", mocks)
+}
+
+#[cfg(test)]
+mod challenge_blockhash_tests {
+    use super::*;
+
+    const HASH: &str = "11111111111111111111111111111111";
+
+    #[tokio::test]
+    async fn a_live_hint_is_used() {
+        let rpc = mock_blockhash_rpc(true);
+        let hash = resolve_challenge_blockhash(rpc.get_inner_client(), Some(HASH))
+            .await
+            .unwrap();
+        assert_eq!(hash.to_string(), HASH);
+    }
+
+    #[tokio::test]
+    async fn a_hint_the_client_cluster_does_not_know_is_rejected() {
+        let rpc = mock_blockhash_rpc(false);
+        let error = resolve_challenge_blockhash(rpc.get_inner_client(), Some(HASH))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ChallengeBlockhashError::Invalid(_)),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_rpc_rejects_the_hint() {
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_string());
+        let error = resolve_challenge_blockhash(rpc.get_inner_client(), Some(HASH))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ChallengeBlockhashError::Rpc(_)), "{error}");
+    }
+}

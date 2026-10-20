@@ -178,22 +178,26 @@ pub struct SelectChargeChallengeOptions<'a> {
 }
 
 /// Build a charge transaction from challenge parameters and additional client options.
-/// Resolve the blockhash to sign with: prefer the server-provided
-/// `recentBlockhash`, else fetch one at `confirmed` commitment.
+/// Resolve the blockhash to sign with: the server-provided `recentBlockhash`
+/// once the client's RPC confirms it is live on its cluster, else one fetched
+/// at `confirmed` commitment.
 ///
 /// Audit #36: ask for `confirmed` explicitly instead of leaning on the RPC
 /// client's default commitment. Solana's client guidance recommends
 /// `confirmed` for blockhash fetches — a `processed` hash can disappear under
 /// reorgs and produce signed transactions that fail with BlockhashNotFound.
-fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
-    if let Some(bh) = &method_details.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))
-    } else {
-        use solana_commitment_config::CommitmentConfig;
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .map(|(hash, _last_valid_block_height)| hash)
-            .map_err(|e| Error::Rpc(e.to_string()))
-    }
+async fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
+    // Only the nonblocking client is reachable here: a blocking call panics
+    // on a current-thread runtime.
+    crate::core::blockhash::resolve_challenge_blockhash(
+        rpc.get_inner_client(),
+        method_details.recent_blockhash.as_deref(),
+    )
+    .await
+    .map_err(|e| match e {
+        crate::core::blockhash::ChallengeBlockhashError::Invalid(message) => Error::Other(message),
+        crate::core::blockhash::ChallengeBlockhashError::Rpc(message) => Error::Rpc(message),
+    })
 }
 
 /// An unsigned, fully-compiled charge transaction plus the metadata a
@@ -422,7 +426,7 @@ pub async fn build_prepared_charge(
         )?;
     }
 
-    let blockhash = resolve_blockhash(rpc, method_details)?;
+    let blockhash = resolve_blockhash(rpc, method_details).await?;
 
     let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let version = crate::core::tx::negotiate(
@@ -529,7 +533,7 @@ pub async fn build_charge_transaction_with_options(
                     )
                 },
             )?;
-            let blockhash = resolve_blockhash(rpc, method_details)?;
+            let blockhash = resolve_blockhash(rpc, method_details).await?;
             return super::confidential::confidential_charge_payload(
                 signer,
                 rpc,
@@ -1833,8 +1837,9 @@ mod tests {
     }
 
     fn dummy_rpc() -> RpcClient {
-        // Never actually contacted — tests bypass RPC via method_details overrides.
-        RpcClient::new("http://localhost:1".to_string())
+        // Only confirms the challenged blockhash is live; every other call
+        // fails, so tests supply mint data through method_details overrides.
+        crate::core::blockhash::mock_blockhash_rpc(true)
     }
 
     /// 32 zero bytes in base58 — same as the system program address and a valid Hash.
@@ -1903,6 +1908,41 @@ mod tests {
                 .await
                 .unwrap();
         assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_refuses_a_challenged_blockhash_its_cluster_does_not_know() {
+        let signer = make_signer();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &crate::core::blockhash::mock_blockhash_rpc(false),
+            "1000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not a live blockhash"), "{err}");
+
+        // An unreachable RPC cannot vouch for the hint either.
+        let unreachable = RpcClient::new("http://127.0.0.1:1".to_string());
+        assert!(matches!(
+            build_charge_transaction(
+                signer.as_ref(),
+                &unreachable,
+                "1000000",
+                "SOL",
+                RECIPIENT,
+                &md
+            )
+            .await,
+            Err(Error::Rpc(_))
+        ));
     }
 
     #[tokio::test]

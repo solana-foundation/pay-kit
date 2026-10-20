@@ -461,6 +461,11 @@ impl PaymentOffer {
             .parse::<solana_pubkey::Pubkey>()
             .map_err(|_| PermissionRejection::invalid_terms("invalid MPP asset mint"))?
             .to_string();
+        if is_other_cluster_mint(&mint, network) {
+            return Err(PermissionRejection::invalid_terms(
+                "MPP asset mint belongs to another network",
+            ));
+        }
         let amount = request
             .amount
             .parse()
@@ -503,6 +508,11 @@ impl PaymentOffer {
             .parse::<solana_pubkey::Pubkey>()
             .map_err(|_| PermissionRejection::invalid_terms("invalid x402 asset mint"))?
             .to_string();
+        if is_other_cluster_mint(&mint, network) {
+            return Err(PermissionRejection::invalid_terms(
+                "x402 asset mint belongs to another network",
+            ));
+        }
         let amount = requirement
             .amount
             .parse()
@@ -518,6 +528,32 @@ impl PaymentOffer {
 
     fn candidate(&self) -> PaymentCandidate<'_> {
         PaymentCandidate::new(&self.origin, self.network, &self.mint, self.amount)
+    }
+}
+
+/// True when `mint` is a known stablecoin deployed on a different cluster than
+/// `network`. Approving "devnet USDC" must not sign a transfer of the mainnet
+/// mint. Localnet forks mainnet, so mainnet mints are valid there.
+fn is_other_cluster_mint(mint: &str, network: SolanaNetwork) -> bool {
+    use crate::core::mints;
+    const MAINNET: &[&str] = &[
+        mints::USDC_MAINNET,
+        mints::USDT_MAINNET,
+        mints::USDG_MAINNET,
+        mints::PYUSD_MAINNET,
+        mints::CASH_MAINNET,
+        mints::USDPT_MAINNET,
+    ];
+    const DEVNET: &[&str] = &[
+        mints::USDC_DEVNET,
+        mints::USDTEST_DEVNET,
+        mints::USDG_DEVNET,
+        mints::PYUSD_DEVNET,
+    ];
+    match network {
+        SolanaNetwork::Mainnet => DEVNET.contains(&mint),
+        SolanaNetwork::Devnet => MAINNET.contains(&mint),
+        SolanaNetwork::Localnet => false,
     }
 }
 
@@ -1054,7 +1090,7 @@ mod tests {
         let (url, saw_payment, task) = challenge_server(500_000, Pubkey::new_unique()).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1071,7 +1107,7 @@ mod tests {
         let (url, saw_payment, task) = mpp_challenge_server(500_000, Pubkey::new_unique()).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::Mpp])
             .build()
             .unwrap();
@@ -1136,7 +1172,7 @@ mod tests {
             mpp_challenge_server_with_network(500_000, Pubkey::new_unique(), None).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::Mpp])
             .build()
             .unwrap();
@@ -1152,7 +1188,7 @@ mod tests {
         let (url, task) = malformed_x402_server().await;
         let client = PayKitClient::builder()
             .signer(test_signer())
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1178,7 +1214,7 @@ mod tests {
         let (url, task) = explicit_cluster_x402_server("bogus").await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .network(SolanaNetwork::Devnet)
             .accept([ClientProtocol::X402])
             .build()
@@ -1206,7 +1242,7 @@ mod tests {
         let (url, task) = explicit_cluster_x402_server("localnet").await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .network(SolanaNetwork::Localnet)
             .accept([ClientProtocol::X402])
             .build()
@@ -1234,7 +1270,7 @@ mod tests {
         let (url, task) = redirected_challenge_server(Pubkey::new_unique()).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1251,7 +1287,7 @@ mod tests {
         let (url, saw_x402_payment, task) = dual_challenge_server(Pubkey::new_unique()).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .build()
             .unwrap();
 
@@ -1271,7 +1307,7 @@ mod tests {
         let (url, saw_payment, task) = challenge_server(1_000_001, Pubkey::new_unique()).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1331,7 +1367,7 @@ mod tests {
             .unwrap();
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .permissions(permissions)
             .build()
             .unwrap();
@@ -1360,7 +1396,7 @@ mod tests {
             .unwrap();
         let client = PayKitClient::builder()
             .signer(test_signer())
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .permissions(permissions)
             .build()
             .unwrap();
@@ -1369,6 +1405,59 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_x402_payment.load(Ordering::SeqCst));
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn known_mint_of_another_network_is_denied_before_signing() {
+        for (asset, signed) in [
+            (USDC_MAINNET, false),
+            (crate::core::mints::USDC_DEVNET, true),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let signer = CountingSigner {
+                calls: calls.clone(),
+                pubkey: Pubkey::new_unique(),
+            };
+            let (url, saw_payment, task) = x402_offer_server(serde_json::json!({
+                "scheme": "exact",
+                "network": SOLANA_DEVNET,
+                "amount": "1",
+                "asset": asset,
+                "payTo": Pubkey::new_unique().to_string(),
+                "maxTimeoutSeconds": 300,
+                "extra": {
+                    "decimals": 6,
+                    "tokenProgram": TOKEN_PROGRAM,
+                    "recentBlockhash": Hash::new_unique().to_string(),
+                }
+            }))
+            .await;
+            let client = PayKitClient::builder()
+                .signer(signer)
+                .rpc_url(live_rpc().await)
+                .network(SolanaNetwork::Devnet)
+                .accept([ClientProtocol::X402])
+                .build()
+                .unwrap();
+
+            // The counting signer refuses to sign, so reaching it is the
+            // positive control.
+            let result = client.get(url).send().await;
+            if signed {
+                assert!(matches!(result, Err(ClientError::X402(_))), "{result:?}");
+            } else {
+                let Err(ClientError::PermissionDenied(denial)) = result else {
+                    panic!("{asset}: expected permission denial");
+                };
+                assert_eq!(
+                    denial.rejections[0].code,
+                    PermissionDeniedCode::InvalidChallengeTerms
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst) > 0, signed, "{asset}");
+            assert!(!saw_payment.load(Ordering::SeqCst));
+            task.abort();
+        }
     }
 
     #[tokio::test]
@@ -1394,7 +1483,7 @@ mod tests {
         .await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1460,6 +1549,25 @@ mod tests {
         "captured"
     }
 
+    /// A Solana RPC that vouches for any challenged blockhash, so signing
+    /// paths reach the signer without a live cluster.
+    async fn live_rpc() -> String {
+        async fn answer(
+            axum::Json(request): axum::Json<serde_json::Value>,
+        ) -> axum::Json<serde_json::Value> {
+            let result = match request["method"].as_str() {
+                Some("isBlockhashValid") => {
+                    serde_json::json!({ "context": { "slot": 1 }, "value": true })
+                }
+                _ => serde_json::Value::Null,
+            };
+            axum::Json(
+                serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
+            )
+        }
+        serve(Router::new().route("/", axum::routing::post(answer))).await
+    }
+
     async fn serve(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1519,10 +1627,10 @@ mod tests {
         (format!("{paying_origin}/paid"), captured)
     }
 
-    fn x402_client(http: Option<reqwest::ClientBuilder>) -> PayKitClient {
+    async fn x402_client(http: Option<reqwest::ClientBuilder>) -> PayKitClient {
         let mut builder = PayKitClient::builder()
             .signer(test_signer())
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402]);
         if let Some(http) = http {
             builder = builder.http_client(http);
@@ -1538,6 +1646,7 @@ mod tests {
     ) {
         let (url, captured) = redirect_fixture(cross_origin).await;
         let response = x402_client(http)
+            .await
             .post(url)
             .header("X-Api-Key", "caller-secret")
             .body(b"private".to_vec())
@@ -1572,7 +1681,7 @@ mod tests {
     async fn caller_http_client_still_pays_the_challenged_url() {
         let (url, saw_payment, task) = challenge_server(500_000, Pubkey::new_unique()).await;
         let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(10));
-        let response = x402_client(Some(http)).get(url).send().await.unwrap();
+        let response = x402_client(Some(http)).await.get(url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_payment.load(Ordering::SeqCst));
         task.abort();
@@ -1637,7 +1746,7 @@ mod tests {
         .await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .permissions(ClientPermissions::unrestricted())
             .build()
             .unwrap();
@@ -1682,7 +1791,7 @@ mod tests {
             .await;
             let client = PayKitClient::builder()
                 .signer(signer)
-                .rpc_url("http://127.0.0.1:1")
+                .rpc_url(live_rpc().await)
                 .network(SolanaNetwork::Mainnet)
                 .accept([ClientProtocol::X402])
                 .build()
@@ -1728,7 +1837,7 @@ mod tests {
         let (url, saw_payment, task) = x402_offer_server(offer("upto")).await;
         let client = PayKitClient::builder()
             .signer(signer)
-            .rpc_url("http://127.0.0.1:1")
+            .rpc_url(live_rpc().await)
             .accept([ClientProtocol::X402])
             .build()
             .unwrap();
@@ -1742,7 +1851,7 @@ mod tests {
 
         // The same legacy shape declaring `exact` is still paid.
         let (url, saw_payment, task) = x402_offer_server(offer("exact")).await;
-        let response = x402_client(None).get(url).send().await.unwrap();
+        let response = x402_client(None).await.get(url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_payment.load(Ordering::SeqCst));
         task.abort();
