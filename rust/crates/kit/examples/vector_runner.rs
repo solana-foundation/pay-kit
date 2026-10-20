@@ -841,6 +841,9 @@ fn envelope_fields(header_b64: &str) -> Result<Map<String, Value>, String> {
 // ── reject classification (mirrors harness/src/conformance/reject.ts) ───────
 
 fn classify_reject(message: &str) -> Option<&'static str> {
+    if let Some(code) = classify_x402_exact_reason(message) {
+        return Some(code);
+    }
     let m = message.to_ascii_lowercase();
     let has = |needle: &str| m.contains(needle);
     let code = if has("invalid challenge") {
@@ -879,4 +882,33 @@ fn classify_reject(message: &str) -> Option<&'static str> {
         return None;
     };
     Some(code)
+}
+
+/// The x402 exact verifier reports snake_case reasons
+/// (`invalid_exact_svm_payload_*`, x402 facilitator vocabulary). Map them onto
+/// the shared reject codes.
+fn classify_x402_exact_reason(message: &str) -> Option<&'static str> {
+    let reason = message.strip_prefix("invalid_exact_svm_payload_")?;
+    let has = |needle: &str| reason.contains(needle);
+    Some(if has("fee_payer") {
+        "fee-payer-not-authority"
+    } else if has("compute_price_instruction_too_high") {
+        "compute-price-over-cap"
+    } else if has("compute_limit_instruction_too_high") {
+        "compute-limit-over-cap"
+    } else if has("amount_mismatch") {
+        "amount-mismatch"
+    } else if has("decimals_mismatch") {
+        "decimals-mismatch"
+    } else if has("no_transfer_instruction") || has("mint_mismatch") || has("recipient_mismatch") {
+        "no-matching-transfer"
+    } else if has("multiple_matching_transfers")
+        || has("unknown_")
+        || has("instructions_length")
+        || has("unexpected_signer")
+    {
+        "unexpected-instruction"
+    } else {
+        "invalid-payload"
+    })
 }
