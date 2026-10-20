@@ -6,6 +6,7 @@ package server
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -329,22 +330,44 @@ func TestVerifyVoucherForChannelZeroExpiresAtReplayNeverExpires(t *testing.T) {
 	}
 }
 
-func TestVerifyVoucherForChannelExpiryOutsideSettlementWindowAccepted(t *testing.T) {
+func TestVerifyVoucherForChannelSettlementWindowBoundary(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	now := int64(1_000)
-	// expiresAt is exactly now + window: the boundary is accepted (>=).
-	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, now+900)
 	state := voucherTestState(signer.Address())
+	// The boundary is exclusive: expiresAt must be strictly after now + window.
+	cases := []struct {
+		name      string
+		expiresAt int64
+		accepted  bool
+	}{
+		{"one below", now + 899, false},
+		{"at", now + 900, false},
+		{"one above", now + 901, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			voucher := signer.SignVoucher(t, testVoucherChannelID, 100, tc.expiresAt)
+			result := VerifyVoucherForChannel(VerifyVoucherArgs{
+				State:                   state,
+				Signed:                  voucher,
+				Deposit:                 1_000,
+				SettlementWindowSeconds: 900,
+				NowSeconds:              &now,
+			})
+			if tc.accepted && result.Status != VoucherVerifyAccepted {
+				t.Fatalf("result = %+v, want accepted", result)
+			}
+			if !tc.accepted && (result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectExpiryTooSoon) {
+				t.Fatalf("result = %+v, want expiry-too-soon rejection", result)
+			}
+		})
+	}
+}
 
-	result := VerifyVoucherForChannel(VerifyVoucherArgs{
-		State:                   state,
-		Signed:                  voucher,
-		Deposit:                 1_000,
-		SettlementWindowSeconds: 900,
-		NowSeconds:              &now,
-	})
-	if result.Status != VoucherVerifyAccepted {
-		t.Fatalf("status = %s (%s: %s), want accepted at the window boundary", result.Status, result.Reason, result.Detail)
+func TestVoucherExpiryRejectionSaturatesWindow(t *testing.T) {
+	now := int64(1_000)
+	if rejection := voucherExpiryRejection(math.MaxInt64, now, math.MaxInt64); rejection == nil || rejection.Reason != VoucherRejectExpiryTooSoon {
+		t.Fatalf("rejection = %+v, want expiry-too-soon when now + window overflows", rejection)
 	}
 }
 

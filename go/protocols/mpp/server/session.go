@@ -91,7 +91,7 @@ type SessionConfig struct {
 
 	// SettlementWindowSeconds is the channel's forced-close grace period in
 	// seconds. When positive, a non-zero voucher expiry must outlast this
-	// window (expiresAt >= now + settlementWindowSeconds) so the async settle
+	// window (expiresAt > now + settlementWindowSeconds) so the async settle
 	// transaction cannot be rejected on-chain after the server has served. 0
 	// disables the extra margin (plain `expiresAt > now` only). A voucher
 	// expiresAt of 0 never expires regardless of this setting. Should match the

@@ -77,7 +77,7 @@ export interface VerifyVoucherArgs {
      * Forced-close grace period of the channel, in seconds (the on-chain
      * `gracePeriod` captured at open). When set, a *non-zero* voucher
      * `expiresAt` must outlast the settlement window — i.e. it must still
-     * be valid `settlementWindow` seconds from now, so the merchant can
+     * be valid strictly after `now + settlementWindow`, so the merchant can
      * land an async settle_and_seal before the voucher expires.
      * A voucher with `expiresAt == 0` never expires and is unaffected.
      * Defaults to 0 (window check disabled — only `expiresAt <= now` is
@@ -194,7 +194,7 @@ function reject(reason: VoucherRejectReason, detail: string): VoucherVerifyRejec
  *
  * - `expiresAt == 0` ⇒ never expires; always accepted regardless of `now`.
  * - non-zero `expiresAt <= now` ⇒ already expired.
- * - non-zero `expiresAt` within `settlementWindow` of `now` ⇒ rejected: it
+ * - non-zero `expiresAt <= now + settlementWindow` ⇒ rejected: it
  *   would not outlast the forced-close grace period, so a merchant settle
  *   could miss the window. Skipped when `settlementWindow` is unset/zero.
  *
@@ -212,7 +212,7 @@ function checkExpiry(
         return reject('expired', `Voucher expired at ${expiresAt} (now ${now})`);
     }
     const window = settlementWindow ?? 0n;
-    if (window > 0n && expiresAt < now + window) {
+    if (window > 0n && expiresAt <= now + window) {
         return reject(
             'expires-within-settlement-window',
             `Voucher expiresAt ${expiresAt} is within the settlement window (now ${now} + window ${window} = ${now + window}); ` +

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
@@ -396,7 +397,7 @@ def test_verify_voucher_for_channel_nonzero_expires_at_must_outlast_settlement_w
     """A non-zero expiry in the future but inside the settlement window is
     rejected: it could expire on-chain before the async close settlement."""
     signer = _TestVoucherSigner(1)
-    # now=1000, window=900 -> need expires_at >= 1900. 1500 is in the future but
+    # now=1000, window=900 -> need expires_at > 1900. 1500 is in the future but
     # does not outlast the window.
     voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_500)
     state = _voucher_test_state(signer.address())
@@ -408,16 +409,25 @@ def test_verify_voucher_for_channel_nonzero_expires_at_must_outlast_settlement_w
     assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT
 
 
-def test_verify_voucher_for_channel_nonzero_expires_at_outlasting_window_accepted() -> None:
-    """A non-zero expiry at/after now + settlement_window is accepted."""
+@pytest.mark.parametrize(
+    ("expires_at", "accepted"),
+    [(1_899, False), (1_900, False), (1_901, True)],
+    ids=["one-below", "at", "one-above"],
+)
+def test_verify_voucher_for_channel_settlement_window_boundary(expires_at: int, accepted: bool) -> None:
+    """The boundary is exclusive: expires_at must be strictly after now + window."""
     signer = _TestVoucherSigner(1)
-    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_900)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, expires_at)
     state = _voucher_test_state(signer.address())
 
     result = verify_voucher_for_channel(
         VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
     )
-    assert result.status == VoucherVerifyStatus.ACCEPTED
+    if accepted:
+        assert result.status == VoucherVerifyStatus.ACCEPTED
+    else:
+        assert result.status == VoucherVerifyStatus.REJECTED
+        assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT
 
 
 def test_verify_voucher_for_channel_expired_beats_settlement_window() -> None:
