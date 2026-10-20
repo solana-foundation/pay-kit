@@ -2479,9 +2479,10 @@ fn verify_versioned_transaction_pre_broadcast(
     Ok(())
 }
 
-/// Every required signer must be the fee payer or the authority of a matched
-/// payment transfer. Any other signer authorizes nothing and only adds a
-/// signature fee, which a sponsor would pay.
+/// Every required signer must be the fee payer or the one authority that
+/// funds every matched payment transfer. Any other signer authorizes nothing
+/// and only adds a signature fee, which a sponsor would pay; letting each leg
+/// of a split name its own authority would let a payer multiply those fees.
 fn verify_required_signers(
     tx: &VersionedTransaction,
     account_keys: &[Pubkey],
@@ -2491,7 +2492,7 @@ fn verify_required_signers(
     let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
     let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
     let instructions = tx.message.instructions();
-    let mut allowed: HashSet<&Pubkey> = account_keys.first().into_iter().collect();
+    let mut funding_authority: Option<&Pubkey> = None;
     for index in matched_payment_instruction_indexes {
         let Some(ix) = instructions.get(*index) else {
             continue;
@@ -2509,9 +2510,19 @@ fn verify_required_signers(
             .get(authority_position)
             .and_then(|i| account_keys.get(*i as usize))
         {
-            allowed.insert(authority);
+            if funding_authority.is_some_and(|funder| funder != authority) {
+                return Err(VerificationError::invalid_payload(
+                    "Payment transfers must share one funding authority",
+                ));
+            }
+            funding_authority = Some(authority);
         }
     }
+    let allowed: HashSet<&Pubkey> = account_keys
+        .first()
+        .into_iter()
+        .chain(funding_authority)
+        .collect();
     let required = usize::from(tx.message.header().num_required_signatures);
     if account_keys
         .iter()
@@ -5772,6 +5783,50 @@ mod tests {
             &sender,
         );
         verify_transaction_pre_broadcast(&tx, &request, &MethodDetails::default()).unwrap();
+    }
+
+    // A sponsor pays a signature fee per required signer, so the legs of a
+    // split must all be funded by one authority, not one signer per leg.
+    #[test]
+    fn sponsored_split_legs_must_share_one_funding_authority() {
+        let fee_payer = Pubkey::new_unique();
+        let (primary, split_recipient) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let request = charge_request(1_000_000, "SOL", &primary);
+        let details = MethodDetails {
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: "200000".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..sponsored_by(&fee_payer)
+        };
+        let (payer, other_payer) = (Pubkey::new_unique(), Pubkey::new_unique());
+
+        let tx = dummy_tx(
+            vec![
+                system_transfer_ix(&payer, &primary, 800_000),
+                system_transfer_ix(&other_payer, &split_recipient, 200_000),
+            ],
+            &fee_payer,
+        );
+        assert_eq!(tx.message.header().num_required_signatures, 3);
+        let err = verify_transaction_pre_broadcast(&tx, &request, &details).unwrap_err();
+        assert!(
+            err.message.contains("one funding authority"),
+            "{}",
+            err.message
+        );
+
+        let tx = dummy_tx(
+            vec![
+                system_transfer_ix(&payer, &primary, 800_000),
+                system_transfer_ix(&payer, &split_recipient, 200_000),
+            ],
+            &fee_payer,
+        );
+        verify_transaction_pre_broadcast(&tx, &request, &details).unwrap();
     }
 
     // ── Pre-broadcast SPL verification tests ──
