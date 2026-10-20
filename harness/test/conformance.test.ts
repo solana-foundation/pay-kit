@@ -20,6 +20,7 @@ import { findAssociatedTokenPda } from "@solana-program/token";
 import { afterAll, describe, expect, it } from "vitest";
 import { assertRunnerResult } from "../src/conformance/contract-schema";
 import { loadVectors } from "../src/conformance/load";
+import { type RpcFixtures, startFixtureRpc } from "../src/conformance/fixture-rpc";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
 import {
@@ -50,7 +51,33 @@ const RUNNERS = discoverRunners().filter(
   (runner) => !allowlist || allowlist.has(runner.language),
 );
 
-function runVector(
+// Fixture RPC state for one vector: the vector's rpcFixtures, with the
+// challenge's recentBlockhash as the default chain blockhash.
+function fixturesFor(vector: ConformanceVector): RpcFixtures {
+  const fixtures = (vector.input.rpcFixtures ?? {}) as RpcFixtures;
+  return {
+    ...fixtures,
+    recentBlockhash:
+      fixtures.recentBlockhash ?? vector.input.request?.methodDetails?.recentBlockhash,
+  };
+}
+
+// Run one vector with a fixture RPC whose URL is passed as input.rpcUrl.
+async function runVector(
+  command: string[],
+  vector: ConformanceVector,
+  cwd: string,
+): Promise<{ result: RunnerResult; rpcCalls: string[] }> {
+  const rpc = await startFixtureRpc(fixturesFor(vector));
+  try {
+    const result = await spawnRunner(command, { ...vector, input: { ...vector.input, rpcUrl: rpc.url } }, cwd);
+    return { result, rpcCalls: rpc.calls };
+  } finally {
+    await rpc.close();
+  }
+}
+
+function spawnRunner(
   command: string[],
   vector: ConformanceVector,
   cwd: string,
@@ -254,7 +281,19 @@ async function checkVector(
   cwd: string,
   vector: ConformanceVector,
 ): Promise<"pass" | { unsupported: string }> {
-  const result = await runVector(command, vector, cwd);
+  const { result, rpcCalls } = await runVector(command, vector, cwd);
+  try {
+    return await judgeVector(vector, result);
+  } catch (error) {
+    const calls = rpcCalls.length ? rpcCalls.join(", ") : "none";
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n(fixture RPC calls: ${calls})`);
+  }
+}
+
+async function judgeVector(
+  vector: ConformanceVector,
+  result: RunnerResult,
+): Promise<"pass" | { unsupported: string }> {
   expect(result.id).toBe(vector.id);
 
   // A runner that cannot express a vector's mode for its SDK's role (e.g.

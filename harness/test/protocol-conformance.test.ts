@@ -13,7 +13,9 @@
 //
 // Adapter allow-listed cases (canonically python-only, e.g. the adversarial
 // ReDoS probe) run for every language with an explicit budget, because
-// ReDoS resistance matters to every parser.
+// ReDoS resistance matters to every parser. For those languages the case
+// asserts the time bound and accepts either the golden result or a
+// parse_error, since the spec does not mandate the golden's leniency.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type CaseRef, danglingEntries, decide, loadAllExpectations } from "../src/expectations";
@@ -109,6 +111,16 @@ for (const runner of selectedRunners) {
           );
           if (!result.ok && /unsupported_operation/.test(result.detail ?? "")) {
             return { unsupported: result.detail ?? "unsupported_operation" };
+          }
+          // A case the canonical suite assigns to other adapters (the
+          // python-only ReDoS probe) is run here for its time bound. Its
+          // golden encodes one parser's leniency toward a header that
+          // violates the auth-param grammar (an unterminated quoted-string),
+          // which draft-httpauth-payment-00 does not require: rejecting the
+          // malformed header with parse_error is equally conformant. The
+          // duration budget below stays non-waivable either way.
+          if (!assigned && !result.ok && /got error_type=parse_error/.test(result.detail ?? "")) {
+            return "pass";
           }
           expect(result.ok, result.detail).toBe(true);
           return "pass";

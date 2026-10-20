@@ -15,8 +15,3 @@ ids = [
   "flow/same_origin_payment_request",
   "flow/same_origin_post_payment_request",
 ]
-
-[[known_failing]]
-id = "protocol/challenge.parse :: adversarial_unclosed_quoted_extension"
-reason = "mppx rejects a header with an unclosed quoted extension param (parse_error) where the canonical golden ignores the param; rejection is immediate, not a ReDoS"
-tracking = "FINDINGS.md#strict-unclosed-quoted-extension"

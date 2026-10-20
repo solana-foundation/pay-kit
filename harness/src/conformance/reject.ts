@@ -12,6 +12,9 @@
 import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
+  // Client refusing a challenge that violates the method spec (RULINGS C2,
+  // C3). Checked first: these messages also contain generic words.
+  [/decimals is required|failed to determine token program/i, "invalid-challenge"],
   [/compute unit price .* exceeds maximum/i, "compute-price-over-cap"],
   [/compute unit limit .* exceeds maximum/i, "compute-limit-over-cap"],
   [/fee payer cannot authorize/i, "fee-payer-not-authority"],

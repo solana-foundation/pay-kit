@@ -30,8 +30,3 @@ ids = [
   "vector/x402-ext-omit-when-none-advertised",
   "vector/x402-ext-preserve-unknown-verbatim",
 ]
-
-[[known_failing]]
-id = "protocol/challenge.parse :: adversarial_unclosed_quoted_extension"
-reason = "PHP parser rejects a header with an unclosed quoted extension param (parse_error) where the canonical golden ignores the param; never exercised before because spawned runners only ran one smoke case per op"
-tracking = "FINDINGS.md#strict-unclosed-quoted-extension"

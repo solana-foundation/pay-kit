@@ -12,7 +12,9 @@
     "coverage": "tsx coverage-table.ts",
     "coverage:check": "tsx coverage-table.ts --check",
     "interop": "tsx interop-coverage.ts",
-    "interop:check": "tsx interop-coverage.ts --check"
+    "interop:check": "tsx interop-coverage.ts --check",
+    "vectors:x402": "tsx gen-x402-verify-vectors.ts",
+    "vectors:x402:check": "tsx gen-x402-verify-vectors.ts --check"
   },
   "dependencies": {
     "@solana/kit": "^6.5.0",

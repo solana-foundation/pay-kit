@@ -118,7 +118,7 @@ jobs:
           test/conformance.test.ts test/protocol-conformance.test.ts test/flow-conformance.test.ts
       - name: Check generated coverage tables
         working-directory: harness
-        run: pnpm coverage:check && pnpm interop:check
+        run: pnpm coverage:check && pnpm interop:check && pnpm vectors:x402:check
       # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
         if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}

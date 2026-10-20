@@ -20,9 +20,7 @@ import {
   voucherMessageBytes,
 } from "@solana/mpp/client";
 import {
-  defaultTokenProgramForCurrency,
   encodeVoucherMessageBytes,
-  resolveStablecoinMint,
   verifyChargeTransaction,
   verifyVoucherForChannel,
 } from "@solana/mpp/server";
@@ -45,52 +43,20 @@ import type {
   VectorChargeRequest,
 } from "./schema";
 
-// Apply the precedence rules a vector can probe: top-level `asset` /
-// `payTo` win over `currency` / `recipient`; the methodDetails carry the
-// network/decimals/tokenProgram/recentBlockhash. A vector that sets both
-// pins which one the SDK must honor.
-function flattenRequest(
+// Pass the decoded challenge request to the SDK verbatim. The runner never
+// applies field precedence, fills defaults or resolves token programs:
+// chain state comes from the fixture RPC (input.rpcUrl), so whatever the
+// SDK does with an omitted field is what the vector judges
+// (harness/expectations/RULINGS.md C2-C4).
+function sdkRequest(
   request: VectorChargeRequest,
-  mintOwners: Record<string, string> | undefined,
 ): Parameters<typeof buildChargeTransaction>[0]["request"] {
-  const currency = request.asset ?? request.currency;
-  const recipient = request.payTo ?? request.recipient;
-  if (!recipient) {
-    throw new Error("vector request is missing recipient/payTo");
-  }
-  const md = request.methodDetails ?? {};
-  const network = md.network ?? "mainnet";
+  return request as unknown as Parameters<typeof buildChargeTransaction>[0]["request"];
+}
 
-  // tokenProgram precedence: explicit methodDetails wins, then rpc fixture
-  // mint owner, then default-by-currency. This keeps the build path
-  // RPC-free for SPL vectors.
-  let tokenProgram = md.tokenProgram;
-  const resolvedMint = resolveStablecoinMint(currency, network) ?? currency;
-  if (!tokenProgram && currency.toLowerCase() !== "sol") {
-    tokenProgram =
-      (mintOwners && mintOwners[resolvedMint]) ??
-      defaultTokenProgramForCurrency(currency, network);
-  }
-
-  // decimals default: 6 for SPL when omitted (matches buildChargeTransaction).
-  const decimals =
-    md.decimals ?? (currency.toLowerCase() === "sol" ? undefined : 6);
-
-  return {
-    amount: request.amount,
-    currency,
-    ...(request.externalId ? { externalId: request.externalId } : {}),
-    methodDetails: {
-      network,
-      ...(decimals !== undefined ? { decimals } : {}),
-      ...(tokenProgram ? { tokenProgram } : {}),
-      ...(md.recentBlockhash ? { recentBlockhash: md.recentBlockhash } : {}),
-      ...(md.feePayer !== undefined ? { feePayer: md.feePayer } : {}),
-      ...(md.feePayerKey ? { feePayerKey: md.feePayerKey } : {}),
-      ...(md.splits ? { splits: md.splits } : {}),
-    },
-    recipient,
-  };
+function rpcUrlOf(vector: ConformanceVector): string {
+  if (!vector.input.rpcUrl) throw new Error("driver did not inject input.rpcUrl");
+  return vector.input.rpcUrl;
 }
 
 async function buildTransactionForVector(
@@ -106,10 +72,7 @@ async function buildTransactionForVector(
   const signer = await createKeyPairSignerFromBytes(
     new Uint8Array(input.signerSecretKey),
   );
-  const request = flattenRequest(input.request, input.rpcFixtures?.mintOwners);
-  // Offline determinism: a build vector must supply recentBlockhash so the
-  // build path does not reach for a live RPC. If it is missing the build
-  // will throw against the bogus rpcUrl, surfacing as a clear failure.
+  const request = sdkRequest(input.request);
   return await buildChargeTransaction({
     ...(input.request.computeUnitLimit !== undefined
       ? { computeUnitLimit: input.request.computeUnitLimit }
@@ -118,7 +81,7 @@ async function buildTransactionForVector(
       ? { computeUnitPrice: BigInt(input.request.computeUnitPrice) }
       : {}),
     request,
-    rpcUrl: "http://127.0.0.1:1",
+    rpcUrl: rpcUrlOf(vector),
     signer,
   });
 }
@@ -398,11 +361,7 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (!vector.input.request) {
     throw new Error("verify vector is missing input.request");
   }
-  const request = flattenRequest(
-    vector.input.request,
-    vector.input.rpcFixtures?.mintOwners,
-  );
-  await verifyChargeTransaction(tx, request);
+  await verifyChargeTransaction(tx, sdkRequest(vector.input.request));
   return {
     id: vector.id,
     outcome: "accept",

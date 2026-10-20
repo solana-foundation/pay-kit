@@ -60,12 +60,13 @@ export type VectorChargeRequest = {
 };
 
 export type VectorRpcFixtures = {
-  // Pinned blockhash so the build path needs no live RPC.
+  // Chain blockhash served by getLatestBlockhash. Defaults to the
+  // challenge's methodDetails.recentBlockhash.
   recentBlockhash?: string;
-  // mint pubkey -> owning token program. Lets the build/verify path
-  // resolve a token program without an RPC getAccountInfo call when the
-  // vector omits methodDetails.tokenProgram.
-  mintOwners?: Record<string, string>;
+  // mint address -> account served by getAccountInfo / getMultipleAccounts
+  // (82-byte SPL mint layout). A mint absent here does not exist, so an SDK
+  // that must look it up (tokenProgram omitted, x402 decimals) has to reject.
+  mints?: Record<string, { owner: string; decimals: number }>;
 };
 
 // The decoded semantic shape of an x402 `exact` envelope. This is the
@@ -202,6 +203,10 @@ export type RejectCode =
   // id (missing, empty, or pattern-violating). The coinbase spec maps
   // this to HTTP 400; the conformance oracle pins it as a reject category.
   | "payment-identifier-required"
+  // charge / x402 client: the challenge itself violates the method spec
+  // (e.g. decimals missing for a mint, tokenProgram omitted and the mint
+  // lookup failed or returned an unexpected owner) and must be refused.
+  | "invalid-challenge"
   // session voucher verify: a non-zero expiry at/before now.
   | "voucher-expired"
   // session voucher verify: a non-zero expiry at/before now + settlement
@@ -218,6 +223,11 @@ export type VectorInput = {
   // Ed25519 secret key (64-byte array) for the transfer authority / signer.
   signerSecretKey?: number[];
   rpcFixtures?: VectorRpcFixtures;
+  // Injected by the driver, never authored: URL of a fixture JSON-RPC
+  // server built from rpcFixtures (src/conformance/fixture-rpc.ts). Runners
+  // MUST pass it to their SDK as the RPC endpoint and MUST NOT resolve
+  // chain state (token programs, decimals) themselves.
+  rpcUrl?: string;
   // canonical-bytes: the JSON value to canonicalize, OR the raw input for
   // a base64url / fixed-width byte vector.
   value?: unknown;
