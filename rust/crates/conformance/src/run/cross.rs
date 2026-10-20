@@ -95,10 +95,11 @@ pub fn cross(opts: &Options) -> Result<CrossReport, String> {
         ));
     }
     let clients: BTreeSet<String> = builds.iter().map(|b| b.sdk.clone()).collect();
-    let selected: Vec<String> = if opts.sdks.is_empty() {
+    // Sorted, so the table does not depend on the order of --sdk.
+    let selected: BTreeSet<String> = if opts.sdks.is_empty() {
         manifests.iter().map(|m| m.language.clone()).collect()
     } else {
-        opts.sdks.clone()
+        opts.sdks.iter().cloned().collect()
     };
     let mut servers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for intent in ["charge", "x402-exact"] {
