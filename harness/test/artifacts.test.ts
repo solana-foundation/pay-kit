@@ -43,8 +43,8 @@ describe("adapter build selection", () => {
     expect(planAdapterBuilds(selection).map(({ key }) => key)).toEqual([
       "go-conformance-go", "kotlin-conformance-kotlin", "swift-conformance-swift",
     ]);
-    expect(() => planAdapterBuilds({ clients: [], servers: [], conformance: ["rust"] }))
-      .toThrow('Unknown conformance adapter "rust"');
+    expect(() => planAdapterBuilds({ clients: [], servers: [], conformance: ["cobol"] }))
+      .toThrow('Unknown conformance adapter "cobol"');
   });
   it("covers every compiled implementation without importing SDKs", () => {
     for (const implementation of [...clientImplementations, ...serverImplementations]) {
