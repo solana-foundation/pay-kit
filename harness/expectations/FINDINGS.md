@@ -25,3 +25,50 @@ protocol runners only executed one smoke case per operation.
 drop the malformed param) or to propose the strict behaviour upstream. Until
 then both SDKs are listed as known failing; a duration blowout on this case
 fails CI regardless of the listing.
+
+# Interop findings (not yet reconciled)
+
+Found on 2026-10-20 by running, locally against surfpool, every eligible
+x402-exact pair that CI never runs (`interop-coverage.ts` lists them). Interop
+claims are not in the expectations files yet, so these have no
+`known_failing` entries; they are the input for that step. Go server cases
+were excluded (the local checkout had no prebuilt Go server binary) and Kotlin
+was not run (no JVM locally).
+
+Result: 55 cases, 26 pass. Every failure falls into one of the classes below.
+
+## go-x402-requires-protocol-field
+
+The Go x402 client only selects `accepts` entries that carry
+`"protocol": "x402"` (`go/protocols/x402/client/client.go`, `selectEntry`).
+That field is not part of x402 v2 `PaymentRequirements`
+(`x402-specification-v2.md` §5.1.2). Servers built on the pay-kit gate add it;
+the Rust x402 server does not, so `go-x402 → rust-x402` gets a 402 and the
+transport hands it back without paying. Verified directly: the same Rust offer
+is rejected by `ParseChallengeVersionedWithExtensions` without the field and
+accepted with it. Any strictly spec-conformant server is affected.
+
+## ruby-x402-decimal-amount-on-wire
+
+`ruby-x402-server` advertises `"amount": "0.001"` in its v2 offer. The Ruby
+config (`ruby/lib/pay_kit/protocols/x402/server/exact.rb`) converts a price to
+base units only when it starts with `$`; any other string is copied verbatim
+onto the wire, and nothing checks that it is an integer. The harness passes the
+human price, so Rust (`Invalid amount: 0.001`), Go, Python and Swift clients
+all reject the offer. The dual-protocol `ruby` server is not affected.
+
+## rust-x402-harness-server-ignores-resource-path
+
+`rust/crates/harness-bins/src/bin/x402_harness_server.rs` hardcodes
+`/protected` and ignores `X402_HARNESS_RESOURCE_PATH`, so the
+`x402-exact-network-mismatch` and `x402-exact-cross-route-replay` scenarios get
+404 instead of exercising the server. Adapter bug, not an SDK bug.
+
+## ts-x402-adapters-are-stubs
+
+The `ts-x402` client sends a v2 payload with no signed transaction, and the
+`ts-x402` server returns a fabricated settlement id, accepts a mismatched
+network, and advertises the v1 `maxAmountRequired` field inside a v2 offer.
+Every pair involving either adapter fails, which is why CI never runs them: the
+TypeScript x402 SDK has no interop coverage. `test/x402-exact.e2e.test.ts`
+already notes "stub TS fixture; tracked follow-up".
