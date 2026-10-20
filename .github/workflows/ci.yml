@@ -236,6 +236,11 @@ jobs:
           # surfpool integration tests clone from the public mainnet-beta RPC,
           # which rate-limits and crashes surfnet mid-test in CI.
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+          # With the datasource available, an integration test that cannot
+          # reach its validator must fail rather than report `ok` (cargo hides
+          # the stderr of passing tests). Fork PRs have no secret and keep the
+          # local skip behaviour.
+          HARNESS_REQUIRE: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL != '' && '1' || '' }}
         # Lock to library scope: the inlined `mpp` module of solana-pay-kit
         # (x402 has its own coverage budget tracked separately), exclude
         # on-chain program adapters under src/mpp/program/ and the

@@ -166,7 +166,7 @@ async fn distribution_hash_matches_on_chain_commitment() {
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
     if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+        paykit_integration_tests::skip_or_fail(&format!("surfnet {url} unreachable"));
         return;
     }
 
@@ -241,7 +241,7 @@ async fn expired_voucher_is_rejected_on_chain() {
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
     if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+        paykit_integration_tests::skip_or_fail(&format!("surfnet {url} unreachable"));
         return;
     }
 
@@ -288,7 +288,7 @@ async fn channels_settle_on_chain_in_batches() {
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
     if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+        paykit_integration_tests::skip_or_fail(&format!("surfnet {url} unreachable"));
         return;
     }
 
@@ -340,7 +340,7 @@ async fn settlement_throughput_smoke() {
         .await
         .is_err()
     {
-        eprintln!("skipping: surfnet {url} unreachable");
+        paykit_integration_tests::skip_or_fail(&format!("surfnet {url} unreachable"));
         return;
     }
 
@@ -406,7 +406,7 @@ async fn settlement_packing_runloop_demo() {
         .await
         .is_err()
     {
-        eprintln!("skipping: surfnet {url} unreachable");
+        paykit_integration_tests::skip_or_fail(&format!("surfnet {url} unreachable"));
         return;
     }
 

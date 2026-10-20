@@ -20,7 +20,9 @@ async fn start_surfnet() -> Option<Surfnet> {
     let datasource_rpc_url = match std::env::var(SURFPOOL_DATASOURCE_RPC_URL_ENV) {
         Ok(value) if !value.trim().is_empty() => value,
         _ => {
-            eprintln!("skipping surfpool test: {SURFPOOL_DATASOURCE_RPC_URL_ENV} is not set");
+            paykit_integration_tests::skip_or_fail(&format!(
+                "surfpool test: {SURFPOOL_DATASOURCE_RPC_URL_ENV} is not set"
+            ));
             return None;
         }
     };
@@ -32,7 +34,9 @@ async fn start_surfnet() -> Option<Surfnet> {
     {
         Ok(surfnet) => Some(surfnet),
         Err(e) => {
-            eprintln!("skipping surfpool test: surfnet failed to start ({e})");
+            paykit_integration_tests::skip_or_fail(&format!(
+                "surfpool test: surfnet failed to start ({e})"
+            ));
             None
         }
     }
@@ -70,7 +74,8 @@ async fn wait_for_surfnet(surfnet: &Surfnet) -> bool {
 /// environment — notably CI, where the confidential dep set's forked litesvm
 /// (zk-sdk 7 needs solana-address 2.5; no newer litesvm exists) destabilizes the
 /// embedded validator. The test then skips instead of failing; where surfnet
-/// works (local/main) the test runs normally.
+/// works (local/main) the test runs normally. Under `HARNESS_REQUIRE=1`
+/// (CI with the datasource secret) every skip path panics instead.
 async fn start_surfnet_or_skip() -> Option<Surfnet> {
     // Start surfnet, wait for readiness, and probe the cheatcode RPC. surfnet
     // clones from SURFPOOL_DATASOURCE_RPC_URL (a reliable RPC in CI); if it is
@@ -78,12 +83,14 @@ async fn start_surfnet_or_skip() -> Option<Surfnet> {
     // datasource wired it runs and contributes coverage.
     let surfnet = start_surfnet().await?;
     if !wait_for_surfnet(&surfnet).await {
-        eprintln!("skipping surfpool test: surfnet RPC did not become ready");
+        paykit_integration_tests::skip_or_fail("surfpool test: surfnet RPC did not become ready");
         return None;
     }
     let probe = Keypair::new();
     if let Err(e) = surfnet.cheatcodes().fund_sol(&probe.pubkey(), 1) {
-        eprintln!("skipping surfpool test: surfnet cheatcode RPC unavailable ({e})");
+        paykit_integration_tests::skip_or_fail(&format!(
+            "surfpool test: surfnet cheatcode RPC unavailable ({e})"
+        ));
         return None;
     }
     Some(surfnet)
