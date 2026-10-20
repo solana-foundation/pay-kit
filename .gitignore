@@ -45,3 +45,6 @@ rust/target/doc-json/
 *.xcuserstate
 *.xcuserstate
 coverage.out
+
+# Conformance run outputs (harness/src/expectations-run.ts)
+harness/results/

@@ -8,7 +8,9 @@
     "test:watch": "vitest",
     "test:onchain": "HARNESS_ONCHAIN=1 vitest run -c vitest.onchain.config.ts",
     "typecheck": "tsc --noEmit",
-    "typecheck:onchain": "tsc --noEmit -p tsconfig.onchain.json"
+    "typecheck:onchain": "tsc --noEmit -p tsconfig.onchain.json",
+    "coverage": "tsx coverage-table.ts",
+    "coverage:check": "tsx coverage-table.ts --check"
   },
   "dependencies": {
     "@solana/kit": "^6.5.0",
@@ -23,8 +25,10 @@
     "@types/node": "^25.0.0",
     "ajv": "^8.17.1",
     "express": "^4.21.0",
+    "smol-toml": "^1.9.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.8.3"
   }
 }
