@@ -77,6 +77,53 @@ pairs with a generated matrix and interop claims in the expectations files.
 The never-run x402 pairs were run locally first; their failures are recorded
 under "Interop findings" in `expectations/FINDINGS.md`.
 
+## Backlog: Rust tests to migrate into shared cases
+
+Surveyed 2026-10-20: about 136 Rust tests cover replay, tampering, expiry and
+concurrency, and almost none have a shared counterpart.
+
+**Expressible as vectors today** (single input, one verdict):
+
+| Rust test(s) | Rule | Vector to add |
+| --- | --- | --- |
+| `verify_{sol,spl}_transfers_rejects_reusing_single_instruction_for_duplicate_splits` (`mpp/server/charge.rs`) | charge: "A single transfer instruction MUST NOT satisfy more than one required payment leg" | verify reject + accept pair with a duplicate split recipient |
+| `verify_parsed_memo_instructions_requires_distinct_memos_for_duplicate_split_memos` | split memos per leg | verify reject |
+| `tier2_rejects_tampered_{realm,currency,recipient,method}`, `verify_rejects_tampered_{id,challenge_id}` | core: challenge binding | credential-verify vectors: one valid credential, one field mutated |
+| `verify_rejects_expired_challenge`, `challenge_expired_*` | core: "Clients MUST NOT submit credentials for expired challenges" | verify with pinned clock |
+| `cross_route_v2_attacker_lying_about_{amount,recipient,currency}` (`x402/server/exact.rs`) | x402: `accepted` must match the route | verify reject per field |
+| `wrong_amount` / `wrong_recipient` (`charge_integration.rs`) | charge SPL/SOL verification | verify reject per field (no validator needed) |
+| x402 §1.4 and §2.1.1, no Rust test yet | exactly one matching transfer; fee payer in no instruction | verify rejects: zero transfers, two transfers, fee payer as account; accept: overpayment |
+| `rejects_expired_and_not_yet_active` (`x402/.../upto/verify.rs`) | upto voucher validity window | upto verify vectors (needs an `x402-upto` intent) |
+
+**Need a sequence suite** (ordered steps against one server, store state
+asserted between steps):
+
+- **Replay.** `replay_protection_marks_and_detects_consumed`,
+  `charge_identical_retry_is_rejected`, `process_payment_rejects_cross_route_replay`
+  and `a_replay_is_bound_to_the_route_that_committed_it` each send the same
+  credential twice, the second time to the same or another route.
+- **Concurrency.** `consume_signature_concurrent_replay_reserves_exactly_once`,
+  `concurrent_pending_retries_grant_one_receipt`,
+  `concurrent_cumulative_vouchers_are_served_one_at_a_time` and
+  `concurrent_recoveries_produce_exactly_one_binding` send N parallel copies
+  and expect exactly one success.
+- **Replicas.** `{push,x402}_signature_consumed_on_one_replica_is_rejected_on_another`
+  needs two server instances sharing one store.
+- **Session lifecycle** (`mpp/server/session.rs`): voucher replay,
+  below-price voucher, expired pre-broadcast open, guarded failure rollback,
+  delayed activation after close.
+
+A sequence case is a list of `{ send, expect: { status, code }, assertStore? }`
+steps run by the driver against the server testee (PLAN phase 3
+`server.start` + `store.dump`), with the Rust client and fault proxy
+producing the credentials. Until then, the replay and cross-route cases stay
+as interop scenarios (`charge-idempotent-resubmit`, `*-cross-route-replay`).
+
+**Vector documentation.** All 55 vectors have a description; 26 cite the
+spec. Add a required `spec` field (`{ doc, section, quote }`) to the vector
+schema and fail at load when it is missing, so each case is traceable to the
+sentence it encodes.
+
 ## Phase 0: make the current harness honest (one PR, 1–3 days)
 
 Goal: no code moves, no new crate. After this PR the existing driver cannot
