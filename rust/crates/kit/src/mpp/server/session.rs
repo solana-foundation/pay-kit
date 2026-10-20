@@ -146,6 +146,10 @@ struct OpenIntent {
     /// Fully signed transaction ID (the sponsor signature for sponsored opens).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transaction_signature: Option<String>,
+    /// Cluster slot observed before this ledger's first broadcast. Only a
+    /// landing after it proves this ledger opened the channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    adoption_floor: Option<u64>,
 }
 
 /// Result of accepting a channel top-up action.
@@ -1123,6 +1127,14 @@ impl<S: ChannelStore> SessionServer<S> {
             binding::require_binding(existing, &self.store.binding, true)?;
         }
         let fresh_open = existing.is_none();
+        // Activating a reservation (fresh or still pending) adopts a channel
+        // into this ledger and needs proof this ledger opened it.
+        let activating = existing.as_ref().is_none_or(|state| {
+            state
+                .pending_setup
+                .as_ref()
+                .is_some_and(|setup| setup.opens_channel)
+        });
         #[cfg(feature = "server")]
         let pipeline = self.transaction_pipeline().await?;
         #[cfg(not(feature = "server"))]
@@ -1139,13 +1151,13 @@ impl<S: ChannelStore> SessionServer<S> {
         // A fresh open's own broadcast lands after this observed slot; one that
         // landed at or before it was opened elsewhere and has no ledger here.
         #[cfg(feature = "server")]
-        let adoption_floor = if fresh_open {
+        let observed_floor = if fresh_open {
             Some(validate_open_slot(&pipeline, params.open_slot).await?)
         } else {
             None
         };
         #[cfg(not(feature = "server"))]
-        let adoption_floor: Option<u64> = None;
+        let observed_floor: Option<u64> = None;
 
         let authentication = payload
             .authentication
@@ -1213,6 +1225,22 @@ impl<S: ChannelStore> SessionServer<S> {
         let finalized_valid_at = stored_intent
             .as_ref()
             .and_then(|intent| intent.finalized_valid_at);
+        let adoption_floor = if fresh_open {
+            observed_floor
+        } else {
+            stored_intent
+                .as_ref()
+                .and_then(|intent| intent.adoption_floor)
+        };
+        let activation_floor = if activating {
+            Some(adoption_floor.ok_or_else(|| {
+                Error::Other(
+                    "pending open has no recorded broadcast floor and cannot be adopted".into(),
+                )
+            })?)
+        } else {
+            None
+        };
         #[cfg(feature = "server")]
         let finalized_valid_at = if fresh_open {
             // Confirmed challenge hashes can be newer than the finalized bank.
@@ -1243,6 +1271,7 @@ impl<S: ChannelStore> SessionServer<S> {
             } else {
                 prepared.0.signatures.first().map(ToString::to_string)
             },
+            adoption_floor,
         })
         .map_err(|error| Error::Other(format!("serialize open intent: {error}")))?;
         fresh_state
@@ -1310,9 +1339,15 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?;
 
-        let opened =
-            submit_and_fetch_open(prepared.0, &params, &pipeline, adoption_floor, &self.config)
-                .await;
+        let opened = submit_and_fetch_open(
+            prepared.0,
+            &params,
+            &pipeline,
+            fresh_open,
+            activation_floor,
+            &self.config,
+        )
+        .await;
         let (transaction_signature, onchain_settled) = match opened? {
             OpenSubmission::Landed { signature, settled } => (signature, settled),
             OpenSubmission::OpenedElsewhere => {
@@ -2641,53 +2676,85 @@ async fn submit_and_fetch_open(
     tx: solana_transaction::versioned::VersionedTransaction,
     params: &payment_channels::OpenChannelParams,
     pipeline: &crate::core::tx_pipeline::TxPipeline,
-    adoption_floor: Option<u64>,
+    fresh_open: bool,
+    activation_floor: Option<u64>,
     config: &SessionConfig,
 ) -> Result<OpenSubmission> {
-    let fresh_open = adoption_floor.is_some();
-    let transaction_signature = tx
-        .signatures
-        .first()
-        .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
-        .to_string();
+    let signature = *tx.signatures.first().ok_or_else(|| {
+        Error::Other("open transaction is missing its fee-payer signature".into())
+    })?;
+    let transaction_signature = signature.to_string();
+    // With no active ledger row, a channel is adopted only on proof that this
+    // ledger's own broadcast landed it: its signature confirmed after the slot
+    // recorded before that broadcast. Anything else may be a channel opened by
+    // another endpoint sharing the challenge secret, or by a lost ledger, and
+    // adopting it would start an independent watermark against escrow another
+    // ledger already spends.
+    let landed_here = |landed: u64, floor: u64| {
+        if landed <= floor {
+            Err(OpenSubmission::OpenedElsewhere)
+        } else {
+            Ok(())
+        }
+    };
 
-    if !fresh_open {
-        if let Ok(settled) = fetch_and_match_open_channel(pipeline, params, None, config).await {
-            // This open already exists in the store (a resubmit — e.g. the
-            // client never saw the first response), and the channel account
-            // confirmed on-chain already matches this exact open. Return the
-            // already-landed signature instead of resubmitting: co-signing and
-            // rebroadcasting an open that has nothing left to do would burn a
-            // sponsor fee on every duplicate open request, not just the first.
-            return Ok(OpenSubmission::Landed {
-                signature: transaction_signature,
-                settled,
-            });
+    let existing = if fresh_open {
+        None
+    } else {
+        fetch_and_match_open_channel(pipeline, params, None, config)
+            .await
+            .ok()
+    };
+    if let Some(settled) = existing {
+        // The channel account already matches this exact open (a resubmit —
+        // e.g. the client never saw the first response). Never rebroadcast an
+        // open that has nothing left to do: it would burn a sponsor fee on
+        // every duplicate open request, not just the first.
+        match activation_floor {
+            None => {
+                return Ok(OpenSubmission::Landed {
+                    signature: transaction_signature,
+                    settled,
+                })
+            }
+            Some(floor) => {
+                let landed = pipeline
+                    .landed_slot(signature)
+                    .await
+                    .map_err(|error| Error::Rpc(format!("open ownership check failed: {error}")))?
+                    .ok_or_else(|| {
+                        Error::Rpc(format!(
+                            "open {transaction_signature} has not been observed landing; \
+                             channel ownership is unproven"
+                        ))
+                    })?;
+                if let Err(elsewhere) = landed_here(landed, floor) {
+                    return Ok(elsewhere);
+                }
+                return Ok(OpenSubmission::Landed {
+                    signature: transaction_signature,
+                    settled,
+                });
+            }
         }
     }
     // A broadcast rejection is not authoritative: a retry of an open whose
     // first submission landed (response lost, or the store write after it
-    // failed) dies at preflight with "already processed". The confirmed
-    // channel account is — it matches the verified open params only if this
-    // exact open succeeded, so a match is treated as success regardless of
-    // what the broadcast said.
+    // failed) dies at preflight with "already processed", and the pipeline
+    // still reports that signature's confirmed landing.
     let submission = pipeline.submit_verified(&tx).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
-    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot, config).await;
-    // With no ledger row this server has never broadcast the open, so a
-    // channel that landed before this attempt (or that this attempt cannot
-    // prove it landed) was opened elsewhere — another endpoint sharing the
-    // challenge secret, or a ledger that was lost. Adopting it would start an
-    // independent watermark against escrow another ledger already spends.
-    if let (Some(floor), Ok(landed)) = (adoption_floor, &submission) {
-        if landed.slot <= floor {
-            return Ok(OpenSubmission::OpenedElsewhere);
+    if let (Some(floor), Ok(landed)) = (activation_floor, &submission) {
+        if let Err(elsewhere) = landed_here(landed.slot, floor) {
+            return Ok(elsewhere);
         }
     }
+    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot, config).await;
     let settled = match (submission, confirmed) {
         (Ok(_), confirmed) => confirmed,
-        (Err(_), Ok(settled)) => Ok(settled),
-        (Err(error), Err(_)) => Err(Error::Rpc(format!("open submission failed: {error}"))),
+        // An active row's channel account is authoritative for this exact open.
+        (Err(_), Ok(settled)) if activation_floor.is_none() => Ok(settled),
+        (Err(error), _) => Err(Error::Rpc(format!("open submission failed: {error}"))),
     }?;
     Ok(OpenSubmission::Landed {
         signature: transaction_signature,
@@ -2985,7 +3052,8 @@ async fn submit_and_fetch_open(
     _tx: solana_transaction::versioned::VersionedTransaction,
     _params: &payment_channels::OpenChannelParams,
     _pipeline: &(),
-    _adoption_floor: Option<u64>,
+    _fresh_open: bool,
+    _activation_floor: Option<u64>,
     _config: &SessionConfig,
 ) -> Result<OpenSubmission> {
     Err(Error::Other(
@@ -3388,6 +3456,21 @@ mod tests {
         tokio::task::JoinHandle<()>,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) {
+        rpc_for_landed_channel(channel, current_slot, landed_status, []).await
+    }
+
+    /// Like [`rpc_for_channel_with_options`], with `prelanded` signatures
+    /// already landed at their slots (a cluster that saw an earlier broadcast).
+    async fn rpc_for_landed_channel<const N: usize>(
+        channel: payment_channels::generated::generated::accounts::Channel,
+        current_slot: u64,
+        landed_status: LandedStatus,
+        prelanded: [(String, u64); N],
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use base64::Engine;
         use serde_json::{json, Value};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3403,7 +3486,7 @@ mod tests {
         // real RPC rejects it, and `getSignatureStatuses` reports only
         // signatures that actually landed.
         let landed: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
-            std::sync::Arc::default();
+            std::sync::Arc::new(std::sync::Mutex::new(prelanded.into_iter().collect()));
         let send_tx_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let send_tx_count_srv = std::sync::Arc::clone(&send_tx_count);
         let handle = tokio::spawn(async move {
@@ -4280,7 +4363,18 @@ mod tests {
         snapshot.apply_to(&mut changed).unwrap();
         assert_eq!(changed.recipient, cfg.recipient);
         assert_eq!(changed.amount, cfg.amount);
-        let (url, rpc, sends) = rpc_for_channel(channel, params.open_slot + 10_000).await;
+        // The cluster still reports the original broadcast's landing.
+        let signature = pending.extra[OPEN_INTENT_KEY]["transaction_signature"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (url, rpc, sends) = rpc_for_landed_channel(
+            channel,
+            params.open_slot + 10_000,
+            LandedStatus::Finalized,
+            [(signature, params.open_slot + 1)],
+        )
+        .await;
         changed.rpc_url = Some(url);
         let mut restarted = SessionServer::new(changed, store)
             .with_channel_binding(json!({"deployment": "b", "version": 1}));
@@ -4362,6 +4456,7 @@ mod tests {
                 recent_slot: CHALLENGED_SLOT,
                 finalized_valid_at: Some(42),
                 transaction_signature: Some(prepared.0.signatures[0].to_string()),
+                adoption_floor: Some(CHALLENGED_SLOT),
             })
             .unwrap(),
         );
@@ -4529,12 +4624,13 @@ mod tests {
             .to_string()
             .contains("request a new channel"));
         release.notify_one();
-        assert!(task
-            .await
-            .unwrap()
-            .unwrap_err()
-            .to_string()
-            .contains("request a new channel"));
+        // The delayed activation never proves ownership (the open's signature
+        // never landed) and cannot revive the retired row either way.
+        let error = task.await.unwrap().unwrap_err().to_string();
+        assert!(
+            error.contains("request a new channel") || error.contains("ownership is unproven"),
+            "{error}"
+        );
         let terminal = server
             .store
             .inner
@@ -5070,6 +5166,102 @@ mod tests {
             )
             .await
             .is_err());
+        rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_open_is_adopted_only_when_it_landed_after_its_recorded_floor() {
+        use serde_json::json;
+        for (landed_at, adopted) in [
+            (CHALLENGED_SLOT - 2, false),
+            (CHALLENGED_SLOT, false),
+            (CHALLENGED_SLOT + 1, true),
+        ] {
+            let mut server =
+                SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new())
+                    .with_channel_binding(json!({"version": 1}));
+            let (open, params) = signed_open(&server, 4).await;
+            // A reservation left by an attempt whose confirmation and account
+            // read both failed; its floor was recorded before that broadcast.
+            let pending = pending_before_broadcast(&server, &open).await;
+            let signature = pending.extra[OPEN_INTENT_KEY]["transaction_signature"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            server
+                .store
+                .inner
+                .put_channel(&open.channel_id, pending)
+                .await
+                .unwrap();
+            let (url, rpc, sends) = rpc_for_landed_channel(
+                channel_for_params(&params),
+                CHALLENGED_SLOT + 10,
+                LandedStatus::Finalized,
+                [(signature, landed_at)],
+            )
+            .await;
+            server.config.rpc_url = Some(url);
+            let blockhash = test_blockhash().to_string();
+            let context = SessionOpenContext {
+                challenge_id: "opening",
+                expires: None,
+                recent_blockhash: &blockhash,
+                recent_slot: CHALLENGED_SLOT,
+            };
+            let outcome = server.process_open_with_outcome(&open, context).await;
+            let state = server
+                .store
+                .inner
+                .get_channel(&open.channel_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if adopted {
+                assert_eq!(outcome.unwrap().state.deposit, params.deposit);
+            } else {
+                let error = outcome.unwrap_err().to_string();
+                assert!(error.contains("cannot be adopted"), "{error}");
+                assert!(session_open_is_terminal(&state));
+                assert_eq!(state.deposit, 0);
+            }
+            assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
+            rpc.abort();
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_fresh_open_never_adopts_a_matching_channel() {
+        let mut server =
+            SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let (open, params) = signed_open(&server, 4).await;
+        // This open's own transaction fails on-chain, yet a matching channel
+        // account exists: it was opened by some other transaction.
+        let (url, rpc, _) =
+            rpc_for_channel_with_options(channel_for_params(&params), 43, LandedStatus::Failed)
+                .await;
+        server.config.rpc_url = Some(url);
+        let blockhash = test_blockhash().to_string();
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &blockhash,
+            recent_slot: CHALLENGED_SLOT,
+        };
+        for _ in 0..2 {
+            assert!(server.process_open(&open, context).await.is_err());
+            let state = server
+                .store
+                .inner
+                .get_channel(&open.channel_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.deposit, 0);
+            assert!(state.pending_setup.is_some());
+        }
         rpc.abort();
     }
 

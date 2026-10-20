@@ -560,6 +560,26 @@ impl TxPipeline {
                     && status.satisfies_commitment(CommitmentConfig::finalized())))
     }
 
+    /// Slot at which `signature` landed successfully at confirmed commitment,
+    /// searching transaction history; `None` when it is not observed.
+    pub async fn landed_slot(&self, signature: Signature) -> PipelineResult<Option<u64>> {
+        let statuses = self
+            .inner
+            .rpc
+            .get_signature_statuses_with_history(&[signature])
+            .await
+            .map_err(|_| TxPipelineError::SubmissionFailed { signature })?;
+        Ok(match statuses.value.as_slice() {
+            [Some(status)]
+                if status.err.is_none()
+                    && status.satisfies_commitment(CommitmentConfig::confirmed()) =>
+            {
+                Some(status.slot)
+            }
+            _ => None,
+        })
+    }
+
     async fn pace_submission(&self) {
         let mut next = self.inner.next_send_at.lock().await;
         let now = Instant::now();
