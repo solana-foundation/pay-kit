@@ -37,7 +37,7 @@ class MethodsSolanaChargeTest < Minitest::Test
     )
 
     assert_instance_of PayKit::Protocols::Mpp::Protocol::Solana::ChargeMethod, method
-    assert_equal "USDC", method.currency
+    assert_equal "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", method.currency
     assert_equal "mainnet", method.network
     assert_equal ::PayCore::Solana::Mints::TOKEN_PROGRAM, method.token_program
     assert_nil method.fee_payer_pubkey
@@ -63,6 +63,69 @@ class MethodsSolanaChargeTest < Minitest::Test
 
     sol_method = PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "SOL", rpc: StubRpc.new)
     assert_equal 9, sol_method.decimals
+  end
+
+  # RULINGS C2/C3: `decimals` and `tokenProgram` MUST be absent for SOL.
+  def test_sol_method_details_omit_decimals_and_token_program
+    method = PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "SOL", rpc: StubRpc.new)
+    details = method.method_details
+
+    assert_equal "sol", method.currency
+    refute details.key?("decimals")
+    refute details.key?("tokenProgram")
+    assert_equal "mainnet", details["network"]
+  end
+
+  # Positive control for the SOL case: a mint carries both.
+  def test_mint_method_details_carry_decimals_and_token_program
+    method = PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", network: "devnet", rpc: StubRpc.new)
+    details = method.method_details
+
+    assert_equal ::PayCore::Solana::Mints::USDC_DEVNET, method.currency
+    assert_equal 6, details.fetch("decimals")
+    assert_equal ::PayCore::Solana::Mints::TOKEN_PROGRAM, details.fetch("tokenProgram")
+  end
+
+  # RULINGS C1: a symbol in configuration is resolved before the wire.
+  def test_symbol_currency_is_resolved_to_mint_on_the_challenge
+    server = PayKit::Protocols::Mpp.create(
+      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(
+        recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new
+      ),
+      secret_key: TEST_SECRET,
+      realm: "Test",
+      replay_store: PayKit::Protocols::Mpp::MemoryStore.new
+    )
+
+    usdt = server.charge(nil, amount: "1000", currency: "USDT")
+    request = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_www_authenticate(
+      usdt.headers.fetch(PayKit::Protocols::Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
+    ).decode_request
+    assert_equal ::PayCore::Solana::Mints::MINTS.fetch("USDT").fetch("mainnet"), request.fetch("currency")
+    assert_equal 6, request.fetch("methodDetails").fetch("decimals")
+
+    sol = server.charge(nil, amount: "1000", currency: "SOL")
+    sol_request = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_www_authenticate(
+      sol.headers.fetch(PayKit::Protocols::Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
+    ).decode_request
+    assert_equal "sol", sol_request.fetch("currency")
+    refute sol_request.fetch("methodDetails").key?("decimals")
+    refute sol_request.fetch("methodDetails").key?("tokenProgram")
+  end
+
+  def test_unknown_mint_requires_explicit_decimals
+    mint = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"
+    assert_raises(ArgumentError) do
+      PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: mint, rpc: StubRpc.new)
+    end
+    method = PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: mint, rpc: StubRpc.new, decimals: 9)
+    assert_equal 9, method.decimals
+  end
+
+  def test_unresolvable_currency_symbol_is_rejected
+    assert_raises(ArgumentError) do
+      PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "NOTACOIN", rpc: StubRpc.new)
+    end
   end
 
   def test_decimals_can_be_overridden_explicitly

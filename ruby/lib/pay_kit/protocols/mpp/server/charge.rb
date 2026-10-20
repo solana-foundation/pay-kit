@@ -61,7 +61,7 @@ module PayKit::Protocols::Mpp
       # default (e.g. an endpoint that accepts USDC by default but lets the
       # caller pay in USDT for this specific request).
       def charge(authorization, amount:, description: nil, external_id: nil, splits: nil, currency: nil)
-        currency ||= method.currency
+        currency = currency.nil? ? method.currency : method.wire_currency(currency)
         details = method.method_details(currency: currency)
         if splits && !splits.empty?
           validate_splits!(splits, recipient: method.recipient)

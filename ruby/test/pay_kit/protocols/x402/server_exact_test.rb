@@ -20,6 +20,69 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "1250000", PayKit::Protocols::X402::Server::Exact.normalize_amount("1.25")
   end
 
+  # RULINGS X2: the harness passes the human price "0.001" (no "$"); it
+  # used to be copied verbatim onto the wire as `amount`.
+  def test_human_price_without_dollar_is_converted_to_atomic_units
+    requirement = PayKit::Protocols::X402::Server::Exact.exact_requirement(build_state(price: "0.001"))
+
+    assert_equal "1000", requirement.fetch("amount")
+  end
+
+  # Positive control: a plain integer string is already atomic units.
+  def test_integer_price_is_atomic_units
+    assert_equal "1000", build_state(price: "1000").amount
+    assert_equal "1000", build_state(price: 1000).amount
+    assert_equal "1000000", build_state(price: "$1").amount
+  end
+
+  def test_price_uses_configured_decimals
+    state = PayKit::Protocols::X402::Server::Exact::Config.new(
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: EXTRA_ASSET,
+      decimals: 9,
+      pay_to: PAY_TO,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: "0.5"
+    )
+
+    assert_equal "500000000", state.amount
+    assert_equal 9, PayKit::Protocols::X402::Server::Exact.exact_requirement(state).fetch("extra").fetch("decimals")
+  end
+
+  def test_unknown_mint_without_decimals_is_rejected
+    assert_raises(ArgumentError) do
+      PayKit::Protocols::X402::Server::Exact::Config.new(
+        rpc_url: "http://127.0.0.1:8899",
+        network: NETWORK,
+        mint: EXTRA_ASSET,
+        pay_to: PAY_TO,
+        facilitator_secret_key: JSON.generate(secret(65)),
+        amount: "0.5"
+      )
+    end
+  end
+
+  def test_invalid_prices_are_rejected_at_construction
+    ["0", "$0", "0.0000001", "abc", "-5", "1e3", "", "1.2.3"].each do |price|
+      assert_raises(ArgumentError, "expected #{price.inspect} to be rejected") { build_state(price: price) }
+    end
+    assert_raises(ArgumentError) { build_state(price: 0) }
+    assert_raises(ArgumentError) { build_state(price: 0.001) }
+  end
+
+  # RULINGS X1: `maxAmountRequired` is the v1 field; a v2 accepts entry
+  # carries `amount` only.
+  def test_v2_requirement_has_no_max_amount_required
+    challenge = PayKit::Protocols::X402::Server::Exact.exact_challenge(build_state)
+
+    assert_equal 2, challenge.fetch("x402Version")
+    challenge.fetch("accepts").each do |requirement|
+      refute requirement.key?("maxAmountRequired")
+      assert_match(/\A[1-9]\d*\z/, requirement.fetch("amount"))
+    end
+  end
+
   def test_exact_challenge_uses_runtime_state
     state = build_state(price: "$0.125")
     requirement = PayKit::Protocols::X402::Server::Exact.exact_requirement(state)
@@ -431,6 +494,34 @@ class X402ServerExactTest < Minitest::Test
   # `extra.tokenProgram` but whose on-chain transfer uses the canonical
   # Token program must still verify. Before the fix the verifier read
   # `extra.tokenProgram` as required and raised on its absence.
+  # RULINGS S1: extra.tokenProgram / extra.decimals are non-spec hints. A
+  # client that echoes only the spec's extra fields still binds to the offer,
+  # and the transaction is verified against the server's requirement.
+  def test_verify_accepts_accepted_offer_without_non_spec_extra_hints
+    state = build_state
+    envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
+    envelope.fetch("accepted").fetch("extra").delete("tokenProgram")
+    envelope.fetch("accepted").fetch("extra").delete("decimals")
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
+
+    verified = PayKit::Protocols::X402::Server::Exact.verify_exact_payment(state, payment_header)
+    assert_equal "1000", verified.fetch(:requirement).fetch("amount")
+  end
+
+  # Negative control: verification still inspects the transaction, so an
+  # offer echo that matches does not rescue an underpaying transfer.
+  def test_verify_rejects_transaction_that_does_not_pay_the_route
+    payer_state = build_state(price: "999")
+    server_state = build_state(price: "1000")
+    envelope = JSON.parse(Base64.decode64(build_payment_header(payer_state)))
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.verify_exact_payment(server_state, payment_header)
+    end
+    assert_equal "invalid_exact_svm_payload_amount_mismatch", error.message
+  end
+
   def test_verifier_accepts_transfer_without_extra_token_program
     state = build_state
     requirement = PayKit::Protocols::X402::Server::Exact.exact_requirement(state)

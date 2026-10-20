@@ -223,6 +223,8 @@ module PayKit
           amount: to_smallest_units_string(gate.total),
           network: caip2_for(@config.network),
           mint: mint_for(gate.amount.primary_coin, @config.network),
+          # Matches the 6-decimal scaling of to_smallest_units_string.
+          decimals: 6,
           resource_path: request.path,
           settlement_cache: @x402_settlement_cache
         )
@@ -268,7 +270,11 @@ module PayKit
             currency: currency,
             network: network,
             rpc: rpc,
-            fee_payer: fee_payer_account
+            fee_payer: fee_payer_account,
+            # The MPP adapter scales every price to 6-decimal base units
+            # (PayKit::Protocols::Mpp#to_smallest_units), so the wire
+            # `decimals` must say the same, including for a raw mint.
+            decimals: 6
           )
           ::PayKit::Protocols::Mpp.create(
             method: method,

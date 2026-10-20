@@ -92,7 +92,12 @@ module PayKit::Protocols::X402
         end
 
         # Match on identifying fields only (scheme/network/asset/payTo
-        # and the canonical `extra` knobs feePayer/tokenProgram/memo).
+        # and the scheme's `extra` fields feePayer/memo). `tokenProgram`
+        # and `decimals` are non-spec hints the server may add to `extra`
+        # (scheme_exact_svm defines feePayer, memo, recentBlockhash and
+        # lastValidBlockHeight only; RULINGS S1), so a client that drops
+        # them still matches; the Verifier binds the transfer to the
+        # canonical token programs and re-derives the payTo ATA itself.
         # Amount and maxTimeoutSeconds are intentionally excluded: the
         # TS reference server (harness/src/fixtures/typescript/
         # exact-server.ts:141-143) only matches scheme/network/asset
@@ -101,7 +106,7 @@ module PayKit::Protocols::X402
         # strictly broke cross-language harness ("No matching payment
         # requirements" against structurally compatible payloads).
         REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
-        REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer tokenProgram memo].freeze
+        REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer memo].freeze
 
         def accepted_requirement_matches?(left, right)
           return false unless left.is_a?(Hash) && right.is_a?(Hash)

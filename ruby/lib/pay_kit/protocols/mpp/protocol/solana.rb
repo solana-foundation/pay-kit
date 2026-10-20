@@ -3,6 +3,7 @@
 require "pay_core/error_codes"
 require "pay_core/solana/rpc"
 require "pay_core/solana/mints"
+require "pay_core/solana/public_key"
 
 module PayKit::Protocols::Mpp
   module Protocol
@@ -47,14 +48,49 @@ module PayKit::Protocols::Mpp
       #   )
       def self.charge(recipient:, currency:, rpc:, network: DEFAULT_NETWORK, fee_payer: nil, decimals: nil)
         validate_network!(network)
+        wire_currency = wire_currency_for(currency, network)
         ChargeMethod.new(
           recipient: recipient,
-          currency: currency,
+          currency: wire_currency,
           network: network,
           rpc: rpc.is_a?(String) ? ::PayCore::Solana::Rpc.new(rpc) : rpc,
           fee_payer: fee_payer,
-          decimals: decimals || ::PayCore::Solana::Mints.decimals_for(currency, network)
+          decimals: decimals.nil? ? decimals_for!(wire_currency, network) : Integer(decimals)
         )
+      end
+
+      # Wire value of native SOL in `currency`.
+      SOL_CURRENCY = "sol"
+
+      # Resolve a configured currency (a symbol such as "USDC" or "SOL", or a
+      # mint address) to its wire form. draft-solana-charge-00 `currency`:
+      # "For native SOL, MUST be the lowercase string "sol". For SPL tokens,
+      # MUST be the base58-encoded mint address." A symbol is accepted in
+      # configuration but never reaches the wire (RULINGS C1).
+      def self.wire_currency_for(currency, network)
+        raise ArgumentError, "currency is required" if currency.to_s.empty?
+        return SOL_CURRENCY if currency.to_s.casecmp("SOL").zero?
+
+        mint = ::PayCore::Solana::Mints.resolve(currency.to_s, network)
+        begin
+          ::PayCore::Solana::PublicKey.new(mint)
+        rescue ArgumentError
+          raise ArgumentError, "currency #{currency.inspect} is neither SOL, a known stablecoin symbol, nor a mint address"
+        end
+        mint
+      end
+
+      # Decimals for a currency whose precision the stablecoin table knows.
+      # An arbitrary mint has no safe default: `decimals` goes on the wire and
+      # the client must not assume one (RULINGS C2), so the caller has to pass
+      # it explicitly.
+      def self.decimals_for!(wire_currency, network)
+        return ::PayCore::Solana::Mints::DECIMALS.fetch("SOL") if wire_currency == SOL_CURRENCY
+        unless ::PayCore::Solana::Mints.known_currency?(wire_currency, network)
+          raise ArgumentError, "decimals is required for mint #{wire_currency} (not a known stablecoin)"
+        end
+
+        ::PayCore::Solana::Mints.decimals_for(wire_currency, network)
       end
 
       # Per-rail config for a Solana charge endpoint. Owns the RPC client,
@@ -90,7 +126,7 @@ module PayKit::Protocols::Mpp
         # once, lazily, and cache it; we reject any owner that is neither the
         # Token nor Token-2022 program. The result is `nil` for SOL.
         def token_program
-          return nil if currency.to_s.casecmp("SOL").zero?
+          return nil if currency == SOL_CURRENCY
           return ::PayCore::Solana::Mints.token_program_for(currency, network) if ::PayCore::Solana::Mints.known_currency?(currency, network)
 
           resolve_arbitrary_mint_token_program
@@ -113,18 +149,31 @@ module PayKit::Protocols::Mpp
         # Pass `currency:` to override the method's default — useful when one
         # endpoint accepts multiple currencies (USDC, USDT, ...) and selects
         # one per request.
+        #
+        # draft-solana-charge-00: `decimals` "MUST be present when `currency`
+        # is a mint address; MUST be absent when `currency` is "sol"", and
+        # `tokenProgram` "MUST NOT be present when `currency` is "sol""
+        # (RULINGS C2/C3). Both are emitted for a mint and omitted for SOL.
         def method_details(currency: self.currency)
-          details = {
-            "network" => network,
-            "decimals" => (currency == self.currency) ? decimals : ::PayCore::Solana::Mints.decimals_for(currency, network),
-            "tokenProgram" => token_program_for(currency),
-            "recentBlockhash" => latest_blockhash
-          }
+          currency = wire_currency(currency)
+          details = {"network" => network}
+          unless currency == SOL_CURRENCY
+            details["decimals"] = (currency == self.currency) ? decimals : Solana.decimals_for!(currency, network)
+            details["tokenProgram"] = token_program_for(currency)
+          end
+          details["recentBlockhash"] = latest_blockhash
           if fee_payer
             details["feePayer"] = true
             details["feePayerKey"] = fee_payer_pubkey
           end
           details
+        end
+
+        # Wire form ("sol" or a mint address) of a currency on this method's
+        # network. Per-request overrides go through this so a symbol such as
+        # "USDT" is resolved before it reaches the challenge.
+        def wire_currency(currency)
+          (currency == self.currency) ? currency : Solana.wire_currency_for(currency, network)
         end
 
         private

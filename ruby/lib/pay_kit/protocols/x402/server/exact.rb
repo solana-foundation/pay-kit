@@ -108,7 +108,10 @@ module PayKit::Protocols::X402
       # specific env-var parsing (X402_HARNESS_*) lives in the
       # harness bin, not in this library.
       class Config
-        attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer,
+        # `amount` is always a positive atomic-unit integer string: the
+        # configured price is parsed once here (see `Exact.parse_amount`), so
+        # no code path can put a human price on the wire (RULINGS X2).
+        attr_reader :rpc_url, :network, :mint, :decimals, :extra_offered_mints, :pay_to, :fee_payer,
           :fee_payer_secret_key, :amount, :resource_path, :settlement_header,
           :payment_identifier_required
 
@@ -122,6 +125,7 @@ module PayKit::Protocols::X402
           amount:,
           network: DEFAULT_NETWORK,
           mint: DEFAULT_MINT,
+          decimals: nil,
           extra_offered_mints: [],
           resource_path: DEFAULT_RESOURCE_PATH,
           settlement_header: DEFAULT_SETTLEMENT_HEADER,
@@ -143,7 +147,8 @@ module PayKit::Protocols::X402
           @pay_to = pay_to
           @fee_payer_secret_key = facilitator_secret_key
           @fee_payer = Types.private_key_from_json(@fee_payer_secret_key)
-          @amount = (amount.is_a?(String) && amount.start_with?("$")) ? Exact.normalize_amount(amount) : amount.to_s
+          @decimals = decimals.nil? ? Exact.known_decimals!(mint) : Integer(decimals)
+          @amount = Exact.parse_amount(amount, decimals: @decimals)
           @resource_path = (resource_path.nil? || resource_path.empty?) ? DEFAULT_RESOURCE_PATH : resource_path
           @settlement_header = (settlement_header.nil? || settlement_header.empty?) ? DEFAULT_SETTLEMENT_HEADER : settlement_header
           @payment_identifier_required = payment_identifier_required == true
@@ -220,19 +225,72 @@ module PayKit::Protocols::X402
       # =====================================================================
 
       class << self
-        def normalize_amount(price)
-          amount = price.strip.delete_prefix("$").split.first
-          whole, dot, fraction = amount.partition(".")
-          raise "X402_HARNESS_PRICE has too many decimal places: #{price}" if dot && fraction.length > DEFAULT_TOKEN_DECIMALS
+        # Parse a configured price into the atomic-unit integer string the
+        # wire `amount` carries. x402 v2: `amount` is the "Required payment
+        # amount in atomic token units" (RULINGS X2).
+        #
+        # - an Integer, or a String of digits only ("1000"), is already in
+        #   atomic units;
+        # - a String with a "$" prefix, a decimal point or a unit suffix
+        #   ("$0.001", "0.001", "1 USDC") is a human price, scaled by
+        #   `decimals`.
+        #
+        # Raises ArgumentError unless the result is a positive integer, so
+        # an unparseable or fractional atomic amount fails at construction.
+        def parse_amount(price, decimals:)
+          atomic =
+            case price
+            when Integer
+              price
+            when String
+              text = price.strip
+              if text.match?(/\A\d+\z/)
+                Integer(text, 10)
+              else
+                Integer(normalize_amount(text, decimals: decimals), 10)
+              end
+            else
+              raise ArgumentError, "x402 price must be an Integer or String, got #{price.class}"
+            end
+          raise ArgumentError, "x402 price must be a positive amount: #{price.inspect}" unless atomic.positive?
 
-          fraction = fraction.ljust(DEFAULT_TOKEN_DECIMALS, "0")
-          ((Integer(whole, 10) * 1_000_000) + Integer(fraction.empty? ? "0" : fraction, 10)).to_s
+          atomic.to_s
+        end
+
+        # Scale a human price ("$0.001", "0.001 USDC", "1.25") to atomic
+        # units with `decimals` places.
+        def normalize_amount(price, decimals: DEFAULT_TOKEN_DECIMALS)
+          amount = price.to_s.strip.delete_prefix("$").split.first.to_s
+          unless amount.match?(/\A\d+(\.\d+)?\z/)
+            raise ArgumentError, "x402 price is not a decimal amount: #{price.inspect}"
+          end
+
+          whole, _dot, fraction = amount.partition(".")
+          if fraction.length > decimals
+            raise ArgumentError, "x402 price has more than #{decimals} decimal places: #{price.inspect}"
+          end
+
+          scaled_fraction = fraction.ljust(decimals, "0")
+          ((Integer(whole, 10) * (10**decimals)) + (scaled_fraction.empty? ? 0 : Integer(scaled_fraction, 10))).to_s
+        end
+
+        # Decimals of a mint the built-in stablecoin table knows. Any other
+        # mint has no safe default, so `Config` requires `decimals:`.
+        def known_decimals!(mint)
+          unless ::PayCore::Solana::Mints.known_currency?(mint, nil)
+            raise ArgumentError, "decimals is required for mint #{mint} (not a known stablecoin)"
+          end
+
+          ::PayCore::Solana::Mints.decimals_for(mint, nil)
         end
 
         def exact_requirement(config, mint: config.mint, resource: nil)
+          # `decimals` and `tokenProgram` in `extra` are non-spec hints
+          # (scheme_exact_svm only defines feePayer/memo/recentBlockhash/
+          # lastValidBlockHeight); clients read the mint (RULINGS S1).
           extra = {
             "feePayer" => Types.base58_encode(config.fee_payer.raw_public_key),
-            "decimals" => DEFAULT_TOKEN_DECIMALS,
+            "decimals" => config.decimals,
             "tokenProgram" => token_program_for_mint(mint)
           }
           # Bind the payment to the resource being unlocked. Without this,
@@ -255,14 +313,10 @@ module PayKit::Protocols::X402
             "scheme" => Constants::EXACT_SCHEME,
             "network" => config.network,
             "asset" => mint,
-            # Emit both `amount` (spine canonical, also what
-            # Types#accepted_requirement_matches?  identity tuple
-            # checks) and `maxAmountRequired` (what the ts-x402
-            # client adapter reads via `offer.maxAmountRequired`).
-            # Rust spine's parser accepts either spelling
-            # (rust/crates/x402/src/protocol/schemes/exact/types.rs:337-339).
+            # x402 v2 PaymentRequirements carry `amount`; `maxAmountRequired`
+            # is the v1 spelling and does not belong in a v2 `accepts` entry
+            # (RULINGS X1).
             "amount" => config.amount,
-            "maxAmountRequired" => config.amount,
             "payTo" => config.pay_to,
             "maxTimeoutSeconds" => DEFAULT_MAX_TIMEOUT_SECONDS,
             "extra" => extra
@@ -446,6 +500,36 @@ module PayKit::Protocols::X402
         end
 
         def settle_exact_payment(config, payment_header, resource: nil)
+          verified = verify_exact_payment(config, payment_header, resource: resource)
+          transaction = verified.fetch(:transaction)
+          verify_token_accounts_exist!(config, verified.fetch(:transfer))
+
+          signed_transaction = Types.sign_transaction_with_fee_payer(
+            transaction: transaction,
+            fee_payer_secret_key: config.fee_payer_secret_key
+          )
+
+          # L8 settlement order. There is no release-on-failure path;
+          # the durable replay primitive is Solana's per-signature
+          # uniqueness inside the blockhash window.
+          signature = config.transaction_sender.call(config, signed_transaction)
+          config.signature_confirmer.call(config, signature)
+
+          unless config.settlement_cache.put_if_absent(signature_consumed_key(signature))
+            raise ::PayKit::Protocols::X402::Error::SignatureConsumed::TOKEN
+          end
+
+          signature
+        end
+
+        # Pre-broadcast verification of a payment header: version dispatch,
+        # requirement binding, the structural Verifier over the decoded
+        # transaction (exactly one TransferChecked of `amount` of `asset` to
+        # the payTo ATA, fee payer kept out of every instruction, memo
+        # binding) and the client signatures. No chain state is read and
+        # nothing is signed or sent; `settle_exact_payment` runs this first.
+        # Returns `{transaction:, requirement:, transfer:}` or raises.
+        def verify_exact_payment(config, payment_header, resource: nil)
           decoded = Types.decode_payment_signature(payment_header)
           requirements = exact_requirements(config, resource: resource)
 
@@ -472,24 +556,8 @@ module PayKit::Protocols::X402
             managed_signers: [config.fee_payer.raw_public_key]
           )
           Verifier.verify_client_signatures!(transaction, [config.fee_payer.raw_public_key])
-          verify_token_accounts_exist!(config, transfer)
 
-          signed_transaction = Types.sign_transaction_with_fee_payer(
-            transaction: transaction,
-            fee_payer_secret_key: config.fee_payer_secret_key
-          )
-
-          # L8 settlement order. There is no release-on-failure path;
-          # the durable replay primitive is Solana's per-signature
-          # uniqueness inside the blockhash window.
-          signature = config.transaction_sender.call(config, signed_transaction)
-          config.signature_confirmer.call(config, signature)
-
-          unless config.settlement_cache.put_if_absent(signature_consumed_key(signature))
-            raise ::PayKit::Protocols::X402::Error::SignatureConsumed::TOKEN
-          end
-
-          signature
+          {transaction: transaction, requirement: requirement, transfer: transfer}
         end
 
         def verify_token_accounts_exist!(config, transfer)

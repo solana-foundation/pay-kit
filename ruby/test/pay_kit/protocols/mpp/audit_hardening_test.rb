@@ -119,7 +119,7 @@ class AuditHardeningTest < Minitest::Test
 
   def arbitrary_mint_method(rpc)
     PayKit::Protocols::Mpp::Protocol::Solana.charge(
-      recipient: RECIPIENT, currency: pubkey(7), network: "localnet", rpc: rpc
+      recipient: RECIPIENT, currency: pubkey(7), network: "localnet", rpc: rpc, decimals: 6
     )
   end
 
