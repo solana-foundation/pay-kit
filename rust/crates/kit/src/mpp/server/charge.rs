@@ -1633,7 +1633,7 @@ impl Mpp {
     }
 
     /// Release a claim on a transaction that provably never landed.
-    async fn release_signature(&self, signature: &str) {
+    pub(crate) async fn release_signature(&self, signature: &str) {
         if let Err(error) = crate::core::store::ConsumedSignatures::new(self.store.clone())
             .release(signature)
             .await
@@ -1691,7 +1691,7 @@ impl Mpp {
         request: &ChargeRequest,
         method_details: &MethodDetails,
         challenge: &crate::mpp::protocol::core::ChallengeEcho,
-    ) -> Result<String, VerificationError> {
+    ) -> Result<String, SettleFailure> {
         let tx_bytes =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction_b64)
                 .map_err(|e| {
@@ -1725,7 +1725,8 @@ impl Mpp {
                 if challenged != tx_recent_blockhash {
                     return Err(VerificationError::credential_mismatch(
                         "Transaction does not use the challenged blockhash",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -1745,7 +1746,8 @@ impl Mpp {
             if !self.accepted_versions.contains(&version) {
                 return Err(VerificationError::invalid_payload(
                     "channel transaction version disabled",
-                ));
+                )
+                .into());
             }
             self.simulate_channel_charge(&tx, challenge)?;
             crate::core::signing::sign_versioned_transaction_slot(
@@ -1804,6 +1806,17 @@ impl Mpp {
         // Confirmation polling stays in await_pull_confirmation so the caller
         // can reserve the signature in the replay store between broadcast
         // acceptance and confirmation polling.
+        //
+        // Only a preflight rejection proves the node did not forward the
+        // transaction. Any other send error (a lost response, a 5xx from a
+        // proxy that already forwarded it) leaves the outcome unknown, and so
+        // does everything after an attempt that might have been forwarded: the
+        // claimed signature is then kept and reconciled, never released.
+        let mut maybe_sent = false;
+        let ambiguous = |error: VerificationError| SettleFailure::Unconfirmed {
+            signature: local_signature.clone(),
+            error,
+        };
         let mut broadcast_signature: Option<Signature> = None;
         for attempt in 1..=SIMULATION_MAX_ATTEMPTS {
             if method_details.channel_charge.is_some() {
@@ -1880,7 +1893,9 @@ impl Mpp {
                                         skip_preflight = SKIP_PREFLIGHT_SEND.skip_preflight,
                                         "broadcast_pull skip_preflight rpc error"
                                     );
-                                    return Err(VerificationError::network_error(message));
+                                    return Err(ambiguous(VerificationError::network_error(
+                                        message,
+                                    )));
                                 }
                             }
                         }
@@ -1910,13 +1925,20 @@ impl Mpp {
                             ));
                             continue;
                         }
-                        // Preflight rejected it: the transaction was never
-                        // forwarded, so the payer may present it again.
+                        let error = VerificationError::transaction_failed(message);
+                        if maybe_sent {
+                            return Err(ambiguous(error));
+                        }
+                        // Preflight rejected every attempt: the transaction
+                        // was never forwarded, so the payer may present it
+                        // again.
                         self.release_signature(&local_signature).await;
-                        return Err(VerificationError::transaction_failed(message));
+                        return Err(error.into());
                     }
 
-                    // Transport / RPC error (node unreachable, transient 5xx).
+                    // Transport / RPC error (node unreachable, transient 5xx,
+                    // lost response): the node may have accepted it.
+                    maybe_sent = true;
                     let message = format!("Broadcast RPC error: {err}");
                     tracing::warn!(
                         elapsed_ms = %t0.elapsed().as_millis(),
@@ -1932,12 +1954,14 @@ impl Mpp {
                         ));
                         continue;
                     }
-                    return Err(VerificationError::network_error(message));
+                    return Err(ambiguous(VerificationError::network_error(message)));
                 }
             }
         }
         let signature = broadcast_signature.ok_or_else(|| {
-            VerificationError::network_error("Broadcast did not complete".to_string())
+            ambiguous(VerificationError::network_error(
+                "Broadcast did not complete".to_string(),
+            ))
         })?;
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "send", "broadcast_pull");
         Ok(signature.to_string())
@@ -3763,6 +3787,13 @@ fn preflight_simulation(err: &ClientError) -> Option<&RpcSimulateTransactionResu
         }) => Some(result),
         _ => None,
     }
+}
+
+/// Whether a send error is a preflight rejection, the one send failure that
+/// proves the node did not forward the transaction.
+#[cfg(feature = "confidential")]
+pub(crate) fn is_preflight_rejection(err: &ClientError) -> bool {
+    preflight_simulation(err).is_some()
 }
 
 fn is_blockhash_not_found_simulation(sim: &RpcSimulateTransactionResult) -> bool {
@@ -8339,28 +8370,46 @@ mod tests {
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
     ) -> String {
-        stub_rpc_counting(signature, status, blockhash_valid, Arc::default()).await
+        stub_rpc_counting(
+            signature,
+            status,
+            blockhash_valid,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
     }
 
-    /// [`stub_rpc`] that also counts `sendTransaction` calls in `sends`.
+    /// [`stub_rpc`] that also counts `sendTransaction` calls in `sends`, and
+    /// answers them with the JSON-RPC error in `send_error` while it is set.
     async fn stub_rpc_counting(
         signature: Signature,
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
         sends: Arc<std::sync::atomic::AtomicUsize>,
+        send_error: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
     ) -> String {
         use axum::{routing::post, Json, Router};
         use std::sync::atomic::Ordering;
         let app = Router::new().route(
             "/",
             post(move |Json(request): Json<serde_json::Value>| {
-                let (status, blockhash_valid, sends) =
-                    (status.clone(), blockhash_valid.clone(), sends.clone());
+                let (status, blockhash_valid, sends, send_error) = (
+                    status.clone(),
+                    blockhash_valid.clone(),
+                    sends.clone(),
+                    send_error.clone(),
+                );
                 async move {
                     let context = serde_json::json!({ "slot": 1 });
                     let result = match request["method"].as_str() {
                         Some("sendTransaction") => {
                             sends.fetch_add(1, Ordering::SeqCst);
+                            if let Some(error) = send_error.lock().unwrap().clone() {
+                                return Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": request["id"], "error": error,
+                                }));
+                            }
                             serde_json::json!(signature.to_string())
                         }
                         Some("isBlockhashValid") => serde_json::json!({
@@ -8643,6 +8692,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicU8::new(1)),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
             sends.clone(),
+            Arc::default(),
         )
         .await;
         let store = Arc::new(FlakyStore {
@@ -8674,6 +8724,77 @@ mod tests {
         let receipt = mpp.verify(&credential, &expected).await.unwrap();
         assert_eq!(receipt.reference, signature.to_string());
         assert_eq!(sends.load(Ordering::SeqCst), 1);
+    }
+
+    // A send error other than a preflight rejection does not prove the node
+    // dropped the transaction (the response may be lost after it was
+    // accepted), so the charge stays pending under the locally derived
+    // signature and reconciles; only a preflight rejection fails it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambiguous_send_error_is_pending_not_failed() {
+        use crate::mpp::store::ChargeRecordState;
+        use std::sync::atomic::Ordering;
+        let signature = Signature::from([12u8; 64]);
+        let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let send_error = Arc::new(std::sync::Mutex::new(Some(serde_json::json!({
+            "code": -32099,
+            "message": "response lost after the node accepted the transaction",
+        }))));
+        let rpc_url = stub_rpc_counting(
+            signature,
+            status.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            Arc::default(),
+            send_error.clone(),
+        )
+        .await;
+        let store = Arc::new(MemoryStore::new());
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let err = mpp.verify(&credential, &expected).await.unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        let record = charge_record(&store, &credential.challenge.id).await;
+        assert_eq!(record.state, ChargeRecordState::Pending);
+        assert_eq!(
+            record.final_signature.as_deref(),
+            Some(signature.to_string().as_str())
+        );
+        // The transaction did land: the identical retry gets the receipt.
+        status.store(1, Ordering::SeqCst);
+        let receipt = mpp.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, signature.to_string());
+
+        // A preflight rejection is definitive: failed, and the unsent
+        // transaction's claim is released.
+        let rejected = Signature::from([13u8; 64]);
+        *send_error.lock().unwrap() = Some(serde_json::json!({
+            "code": -32002,
+            "message": "Transaction simulation failed: Error processing Instruction 0",
+            "data": {
+                "err": { "InstructionError": [0, { "Custom": 1 }] },
+                "logs": ["Program failed"],
+                "accounts": null,
+                "unitsConsumed": 0,
+            },
+        }));
+        let (credential, expected) = signed_pull_credential(&mpp, rejected);
+        let err = mpp.verify(&credential, &expected).await.unwrap_err();
+        assert!(err.message.contains("Simulation failed"), "{err:?}");
+        let record = charge_record(&store, &credential.challenge.id).await;
+        assert_eq!(record.state, ChargeRecordState::Failed);
+        mpp.consume_signature(&rejected.to_string()).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

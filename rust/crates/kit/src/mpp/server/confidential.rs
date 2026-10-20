@@ -382,20 +382,36 @@ impl Mpp {
             }
 
             let is_final = idx + 1 == bundle_len;
+            let local_signature = super::charge::final_signature(tx)?;
             if is_final {
                 // Claim before sending, as pull settlement does, so the
                 // transfer is recorded whatever happens after it leaves.
-                self.consume_signature(&super::charge::final_signature(tx)?)
-                    .await?;
+                self.consume_signature(&local_signature).await?;
             }
-            let signature = crate::core::rpc::send_transaction(
+            let signature = match crate::core::rpc::send_transaction(
                 &self.rpc,
                 &*tx,
                 crate::core::rpc::preflight_config(&self.rpc),
-            )
-            .map_err(|e| {
-                VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
-            })?;
+            ) {
+                Ok(signature) => signature,
+                Err(e) => {
+                    let error = VerificationError::network_error(format!(
+                        "Bundle tx {idx} broadcast failed: {e}"
+                    ));
+                    // Only a preflight rejection proves the transfer was not
+                    // forwarded; any other error leaves it to reconcile.
+                    if is_final {
+                        if !super::charge::is_preflight_rejection(&e) {
+                            return Ok(BundleSettlement::Unconfirmed {
+                                signature: local_signature,
+                                error,
+                            });
+                        }
+                        self.release_signature(&local_signature).await;
+                    }
+                    return Err(error);
+                }
+            };
             let signature_str = signature.to_string();
 
             // Confirm at `confirmed` before moving on: later txs in the bundle
