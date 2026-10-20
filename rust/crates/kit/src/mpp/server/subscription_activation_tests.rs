@@ -881,7 +881,7 @@ fn sponsored_activation_rejects_extra_signer_slots() {
     assert_eq!(tx.message.header().num_required_signatures, 5);
 
     let err = fixture.validate(&tx).unwrap_err();
-    assert!(err.message.contains("signers"), "{}", err.message);
+    assert!(err.message.contains("signers"));
 }
 
 #[test]
