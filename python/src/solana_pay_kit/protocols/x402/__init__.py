@@ -20,6 +20,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from solana_pay_kit._paycore.currency import parse_units
@@ -30,6 +31,7 @@ from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.store import MemoryStore, Store
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
+from solana_pay_kit.protocols.x402.exact.extensions import PaymentIdentifierError, verify_payment_identifier
 from solana_pay_kit.protocols.x402.exact.legacy import (
     X402_LEGACY_PAYMENT_HEADER,
     caip2_for_network,
@@ -55,7 +57,7 @@ if TYPE_CHECKING:
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import Gate
 
-__all__ = ["X402Adapter", "ExactVerifier", "X402_VERSION"]
+__all__ = ["X402Adapter", "ExactVerifier", "VerifiedExactCredential", "X402_VERSION", "verify_exact_credential"]
 
 
 _SETTLEMENT_HEADER = "x-payment-settlement-signature"
@@ -168,53 +170,16 @@ class X402Adapter:
         if not header:
             raise InvalidProofError("solana_pay_kit: payment required", code="payment_required")
 
-        try:
-            decoded = base64.b64decode(header, validate=True)
-        except Exception as exc:  # noqa: BLE001
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_signature_base64",
-                code="invalid_exact_svm_payload_signature_base64",
-            ) from exc
-        try:
-            envelope = json.loads(decoded)
-        except Exception as exc:  # noqa: BLE001
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_signature_json",
-                code="invalid_exact_svm_payload_signature_json",
-            ) from exc
-
-        if not isinstance(envelope, dict):
-            raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
-        # The envelope is attacker-controlled; it is validated field-by-field
-        # below, then narrowed to the typed wire shape for the rest of the flow.
-        envelope_map = cast("dict[str, object]", envelope)
-        version = envelope_map.get("x402Version")
-
         # The server's freshly built offer for this route is the source of truth
         # for the route's parameters in BOTH wire shapes; the credential is never
-        # trusted for them. The structural verifier and every facilitator
-        # MUST-check below run against this offer identically for v1 and v2.
+        # trusted for them.
         offer = self.accepts_entry(gate, request)
-        offer_map = cast("dict[str, object]", offer)
-
-        if version == X402_VERSION_V2:
-            accepted, payload = self._bind_canonical(envelope_map, offer_map)
-        elif version == X402_VERSION_V1:
-            accepted, payload = self._bind_legacy(envelope_map, offer_map)
-        else:
-            # A genuinely-unknown version is rejected on the dual-accept path,
-            # exactly like the catch-all arm in rust ``parse_payment_signature``.
-            raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
-
-        tx_base64 = payload.get("transaction")
-        if not isinstance(tx_base64, str) or tx_base64 == "":
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_missing_transaction",
-                code="invalid_exact_svm_payload_missing_transaction",
-            )
-
-        # Structural shape (11 rules) against the server offer.
-        ExactVerifier.verify(tx_base64, cast("dict[str, Any]", offer), [str(signer.pubkey)])
+        verified = await verify_exact_credential(header, offer, signer, require_payment_identifier=False)
+        version = verified.version
+        accepted = verified.accepted
+        payload = verified.payload
+        tx_base64 = verified.transaction
+        cosigned_wire = verified.cosigned_wire
 
         # Reject up-front if the client signed against the wrong cluster.
         # Skip on a loopback RPC where a Surfpool blockhash is expected.
@@ -224,8 +189,6 @@ class X402Adapter:
             if blockhash is not None:
                 check_network_blockhash(self._config.network.mints_label(), blockhash)
 
-        # Cosign as the facilitator fee payer (slot-splice, version aware).
-        cosigned_wire = await _co_sign(tx_base64, signer)
         signature = _transaction_signature(cosigned_wire)
         replay_key = _REPLAY_PREFIX + signature
         binding = hashlib.sha256(cosigned_wire).hexdigest()
@@ -319,95 +282,6 @@ class X402Adapter:
             raw=header,
         )
 
-    def _bind_canonical(
-        self,
-        envelope: dict[str, object],
-        offer: dict[str, object],
-    ) -> tuple[dict[str, object], X402PayloadField]:
-        """Bind a canonical (v2) credential to the route's offer.
-
-        The v2 envelope carries an ``accepted`` requirement the client echoed
-        back; it is matched field-by-field against the server's freshly built
-        offer (x402 has no HMAC-bound challenge id, so the offer is the source
-        of truth). Mirrors the v2 arm of rust ``parse_payment_signature`` plus
-        ``verify_pinned_fields`` (server/exact.rs:328-341).
-        """
-        accepted_raw = envelope.get("accepted")
-        payload_raw = envelope.get("payload")
-        if not isinstance(accepted_raw, dict) or not isinstance(payload_raw, dict):
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_envelope",
-                code="invalid_exact_svm_payload_envelope",
-            )
-        accepted = cast("dict[str, object]", accepted_raw)
-        # Tier-2 identity-key match: scheme/network/asset/payTo must match.
-        for key in ("scheme", "network", "asset", "payTo"):
-            if accepted.get(key) != offer.get(key):
-                raise InvalidProofError(
-                    "solana_pay_kit: charge_request_mismatch: "
-                    "accepted payment requirement does not match server challenge",
-                    code="charge_request_mismatch",
-                )
-        # Reject if EITHER the exact ``amount`` or the ``maxAmountRequired``
-        # ceiling drifts from the server offer.
-        if accepted.get("amount") != offer.get("amount") or accepted.get("maxAmountRequired") != offer.get(
-            "maxAmountRequired"
-        ):
-            raise InvalidProofError(
-                "solana_pay_kit: charge_request_mismatch (amount)",
-                code="charge_request_mismatch",
-            )
-        offer_extra = cast("dict[str, object]", offer.get("extra") or {})
-        accepted_extra_raw = accepted.get("extra")
-        accepted_extra = cast("dict[str, object]", accepted_extra_raw if isinstance(accepted_extra_raw, dict) else {})
-        for key in ("feePayer", "tokenProgram", "memo"):
-            if key in offer_extra and accepted_extra.get(key) != offer_extra[key]:
-                raise InvalidProofError(
-                    f"solana_pay_kit: charge_request_mismatch (extra.{key})",
-                    code="charge_request_mismatch",
-                )
-        return accepted, cast("X402PayloadField", payload_raw)
-
-    def _bind_legacy(
-        self,
-        envelope: dict[str, object],
-        offer: dict[str, object],
-    ) -> tuple[dict[str, object], X402PayloadField]:
-        """Bind a legacy (x402Version=1) credential to the route's offer.
-
-        The legacy envelope has NO ``accepted`` object: it commits only to
-        ``scheme`` + a plain ``network`` slug at the top level. The server binds
-        exactly those two fields (scheme must be ``exact``; the plain network
-        slug, normalized via ``caip2_for_network``, must match the route's CAIP-2
-        network), then runs the IDENTICAL structural verifier and facilitator
-        MUST-checks against the route's offer as the v2 path. Mirrors the v1 arm
-        of rust ``parse_payment_signature`` (server/exact.rs:316-327).
-        """
-        scheme = envelope.get("scheme")
-        if scheme != EXACT_SCHEME:
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_scheme",
-                code="invalid_exact_svm_payload_scheme",
-            )
-        network = envelope.get("network")
-        network_slug = network if isinstance(network, str) else ""
-        expected = self._caip2()
-        if caip2_for_network(network_slug) != expected:
-            raise InvalidProofError(
-                f"Network mismatch: expected {expected}, got {network_slug}",
-                code="charge_request_mismatch",
-            )
-        payload_raw = envelope.get("payload")
-        if not isinstance(payload_raw, dict):
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_envelope",
-                code="invalid_exact_svm_payload_envelope",
-            )
-        # The legacy wire carries no ``accepted`` body, so the response receipt
-        # reports the route's CAIP-2 network rather than echoing the credential.
-        synthetic_accepted: dict[str, object] = {"network": expected}
-        return synthetic_accepted, cast("X402PayloadField", payload_raw)
-
     def _fetch_recent_blockhash(self) -> str | None:
         if self._recent_blockhash_provider is not None:
             try:
@@ -419,6 +293,186 @@ class X402Adapter:
 
     def _caip2(self) -> str:
         return self._config.network.caip2()
+
+
+@dataclass(frozen=True)
+class VerifiedExactCredential:
+    """An x402 ``exact`` credential that passed every pre-broadcast check.
+
+    Only :func:`verify_exact_credential` builds one; settlement takes its
+    ``cosigned_wire``, so a transaction cannot be broadcast unverified.
+    """
+
+    version: int
+    accepted: dict[str, object]
+    payload: X402PayloadField
+    #: The client's partially signed transaction (standard base64).
+    transaction: str
+    #: The same transaction with the fee payer's signature spliced in.
+    cosigned_wire: bytes
+
+
+async def verify_exact_credential(
+    header: str,
+    offer: X402AcceptsEntry,
+    fee_payer: TransactionSigner,
+    *,
+    require_payment_identifier: bool,
+) -> VerifiedExactCredential:
+    """Run the x402 ``exact`` server checks that precede broadcast.
+
+    Decodes the ``PAYMENT-SIGNATURE`` / ``X-PAYMENT`` value, dispatches on
+    ``x402Version`` (v1 legacy or v2), binds the credential to ``offer`` (the
+    route's own requirements), enforces a required ``payment-identifier`` id,
+    runs the structural :class:`ExactVerifier` on the transaction (exactly one
+    matching ``TransferChecked``, fee payer kept out of every instruction, memo
+    when ``extra.memo`` is set), and cosigns the fee-payer slot. Nothing is
+    sent to the network.
+    """
+    try:
+        decoded = base64.b64decode(header, validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_signature_base64",
+            code="invalid_exact_svm_payload_signature_base64",
+        ) from exc
+    try:
+        envelope = json.loads(decoded)
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_signature_json",
+            code="invalid_exact_svm_payload_signature_json",
+        ) from exc
+    if not isinstance(envelope, dict):
+        raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
+    # The envelope is attacker-controlled; it is validated field-by-field
+    # below, then narrowed to the typed wire shape for the rest of the flow.
+    envelope_map = cast("dict[str, object]", envelope)
+    version = envelope_map.get("x402Version")
+    offer_map = cast("dict[str, object]", offer)
+
+    if version == X402_VERSION_V2:
+        accepted, payload = _bind_canonical(envelope_map, offer_map)
+    elif version == X402_VERSION_V1:
+        accepted, payload = _bind_legacy(envelope_map, offer_map)
+    else:
+        # A genuinely-unknown version is rejected on the dual-accept path,
+        # exactly like the catch-all arm in rust ``parse_payment_signature``.
+        raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
+
+    extensions = envelope_map.get("extensions")
+    try:
+        verify_payment_identifier(
+            cast("dict[str, Any]", extensions) if isinstance(extensions, dict) else None,
+            required=require_payment_identifier,
+        )
+    except PaymentIdentifierError as exc:
+        raise InvalidProofError(str(exc), code="payment_identifier_required") from exc
+
+    tx_base64 = payload.get("transaction")
+    if not isinstance(tx_base64, str) or tx_base64 == "":
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_missing_transaction",
+            code="invalid_exact_svm_payload_missing_transaction",
+        )
+
+    ExactVerifier.verify(tx_base64, cast("dict[str, Any]", offer), [str(fee_payer.pubkey)])
+    cosigned_wire = await _co_sign(tx_base64, fee_payer)
+    return VerifiedExactCredential(
+        version=cast("int", version),
+        accepted=accepted,
+        payload=payload,
+        transaction=tx_base64,
+        cosigned_wire=cosigned_wire,
+    )
+
+
+def _bind_canonical(
+    envelope: dict[str, object],
+    offer: dict[str, object],
+) -> tuple[dict[str, object], X402PayloadField]:
+    """Bind a canonical (v2) credential to the route's offer.
+
+    The v2 envelope carries an ``accepted`` requirement the client echoed
+    back; it is matched field-by-field against the server's freshly built
+    offer (x402 has no HMAC-bound challenge id, so the offer is the source
+    of truth). Mirrors the v2 arm of rust ``parse_payment_signature`` plus
+    ``verify_pinned_fields`` (server/exact.rs:328-341).
+    """
+    accepted_raw = envelope.get("accepted")
+    payload_raw = envelope.get("payload")
+    if not isinstance(accepted_raw, dict) or not isinstance(payload_raw, dict):
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_envelope",
+            code="invalid_exact_svm_payload_envelope",
+        )
+    accepted = cast("dict[str, object]", accepted_raw)
+    # Tier-2 identity-key match: scheme/network/asset/payTo must match.
+    for key in ("scheme", "network", "asset", "payTo"):
+        if accepted.get(key) != offer.get(key):
+            raise InvalidProofError(
+                "solana_pay_kit: charge_request_mismatch: accepted payment requirement does not match server challenge",
+                code="charge_request_mismatch",
+            )
+    # Reject if EITHER the exact ``amount`` or the ``maxAmountRequired``
+    # ceiling drifts from the server offer.
+    if accepted.get("amount") != offer.get("amount") or accepted.get("maxAmountRequired") != offer.get(
+        "maxAmountRequired"
+    ):
+        raise InvalidProofError(
+            "solana_pay_kit: charge_request_mismatch (amount)",
+            code="charge_request_mismatch",
+        )
+    offer_extra = cast("dict[str, object]", offer.get("extra") or {})
+    accepted_extra_raw = accepted.get("extra")
+    accepted_extra = cast("dict[str, object]", accepted_extra_raw if isinstance(accepted_extra_raw, dict) else {})
+    for key in ("feePayer", "tokenProgram", "memo"):
+        if key in offer_extra and accepted_extra.get(key) != offer_extra[key]:
+            raise InvalidProofError(
+                f"solana_pay_kit: charge_request_mismatch (extra.{key})",
+                code="charge_request_mismatch",
+            )
+    return accepted, cast("X402PayloadField", payload_raw)
+
+
+def _bind_legacy(
+    envelope: dict[str, object],
+    offer: dict[str, object],
+) -> tuple[dict[str, object], X402PayloadField]:
+    """Bind a legacy (x402Version=1) credential to the route's offer.
+
+    The legacy envelope has NO ``accepted`` object: it commits only to
+    ``scheme`` + a plain ``network`` slug at the top level. The server binds
+    exactly those two fields (scheme must be ``exact``; the plain network
+    slug, normalized via ``caip2_for_network``, must match the route's CAIP-2
+    network), then runs the IDENTICAL structural verifier and facilitator
+    MUST-checks against the route's offer as the v2 path. Mirrors the v1 arm
+    of rust ``parse_payment_signature`` (server/exact.rs:316-327).
+    """
+    scheme = envelope.get("scheme")
+    if scheme != EXACT_SCHEME:
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_scheme",
+            code="invalid_exact_svm_payload_scheme",
+        )
+    network = envelope.get("network")
+    network_slug = network if isinstance(network, str) else ""
+    expected = cast("str", offer.get("network"))
+    if caip2_for_network(network_slug) != expected:
+        raise InvalidProofError(
+            f"Network mismatch: expected {expected}, got {network_slug}",
+            code="charge_request_mismatch",
+        )
+    payload_raw = envelope.get("payload")
+    if not isinstance(payload_raw, dict):
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_envelope",
+            code="invalid_exact_svm_payload_envelope",
+        )
+    # The legacy wire carries no ``accepted`` body, so the response receipt
+    # reports the route's CAIP-2 network rather than echoing the credential.
+    synthetic_accepted: dict[str, object] = {"network": expected}
+    return synthetic_accepted, cast("X402PayloadField", payload_raw)
 
 
 async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:

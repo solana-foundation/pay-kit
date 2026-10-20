@@ -14,6 +14,7 @@ import struct
 from typing import Any, cast
 
 from solana_pay_kit._paycore.mints import derive_ata
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM as SPL_TOKEN_PROGRAM
 from solana_pay_kit.errors import InvalidProofError
 
 __all__ = [
@@ -163,6 +164,17 @@ class ExactVerifier:
                 )
                 raise InvalidProofError(reason, code=reason)
 
+        # §2.1.1: the fee payer (any managed signer) MUST NOT appear in the
+        # accounts of ANY instruction, not only the transfer.
+        for ix in instructions:
+            for idx in ix.accounts:
+                key = account_keys[int(idx)] if 0 <= int(idx) < len(account_keys) else None
+                if key is not None and key in managed_signers:
+                    raise InvalidProofError(
+                        "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
+                        code="invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
+                    )
+
         # Rule 10: memo binding (exactly one Memo == extra.memo if set).
         expected_memo = ExactVerifier._string_extra(requirement, "memo", required=False)
         if expected_memo:
@@ -204,9 +216,18 @@ class ExactVerifier:
         managed_signers: list[str],
     ) -> dict[str, Any]:
         program = ExactVerifier._program_of(account_keys, ix)
-        # Rule 11: token program strict bind to extra.tokenProgram.
-        token_program_extra = ExactVerifier._string_extra(requirement, "tokenProgram", required=True)
-        if program != token_program_extra and program != TOKEN_2022_PROGRAM:
+        # Rule 11: the transfer runs under an SPL token program (scheme §1.2:
+        # "spl-token or token-2022"). A server that pins the non-spec
+        # ``extra.tokenProgram`` hint binds it strictly; without the hint
+        # either SPL program is accepted and the destination ATA (Rule 7) is
+        # derived under the program actually used.
+        token_program_extra = ExactVerifier._string_extra(requirement, "tokenProgram", required=False)
+        allowed_programs = (
+            (token_program_extra, TOKEN_2022_PROGRAM)
+            if token_program_extra
+            else (SPL_TOKEN_PROGRAM, TOKEN_2022_PROGRAM)
+        )
+        if program not in allowed_programs:
             raise InvalidProofError(
                 "invalid_exact_svm_payload_no_transfer_instruction",
                 code="invalid_exact_svm_payload_no_transfer_instruction",

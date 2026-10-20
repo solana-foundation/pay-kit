@@ -364,12 +364,42 @@ def test_reject_bad_transfer_discriminator():
     assert e.value.code == "invalid_exact_svm_payload_no_transfer_instruction"
 
 
-def test_reject_missing_token_program_extra():
-    tx, req, managed = _happy()
+def test_missing_token_program_extra_accepts_spl_token_programs():
+    # extra.tokenProgram is not a scheme field; a spec offer omits it and the
+    # verifier accepts either SPL token program (scheme §1.2).
+    for program in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        tx, req, managed = _happy(program=program)
+        del req["extra"]["tokenProgram"]
+        assert ExactVerifier.verify(tx, req, managed)["program"] == program
+
+
+def test_missing_token_program_extra_still_rejects_other_programs():
+    tx, req, managed = _happy(program=str(Keypair().pubkey()))
     del req["extra"]["tokenProgram"]
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, req, managed)
-    assert e.value.code == "invalid_exact_svm_payload_missing_extra_tokenProgram"
+    assert e.value.code == "invalid_exact_svm_payload_no_transfer_instruction"
+
+
+def test_reject_fee_payer_in_optional_instruction_accounts():
+    # §2.1.1: the fee payer MUST NOT appear in ANY instruction's accounts.
+    # Before, only the transfer's accounts were checked.
+    from solana_pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    lighthouse = Instruction(
+        Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [AccountMeta(fee_payer.pubkey(), False, True)]
+    )
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        lighthouse,
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts"
 
 
 # -- rule 5: managed-signer guard --------------------------------------------
