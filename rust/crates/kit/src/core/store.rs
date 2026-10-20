@@ -1022,6 +1022,12 @@ impl ChannelBinding {
         }
     }
 
+    /// Whether every deployment field is recorded. A partial binding predates
+    /// the newer fields and cannot by itself place the channel in a deployment.
+    pub fn is_complete(&self) -> bool {
+        self.pay_to.is_some() && self.network.is_some() && self.program_id.is_some()
+    }
+
     /// This binding with any field it did not record taken from `current`.
     pub fn filled_from(&self, current: &ChannelBinding) -> ChannelBinding {
         ChannelBinding {
@@ -1102,6 +1108,21 @@ impl ChannelState {
     pub fn set_binding(&mut self, binding: &ChannelBinding) {
         if let Ok(value) = serde_json::to_value(binding) {
             self.extra.insert(CHANNEL_BINDING_KEY.to_string(), value);
+        }
+    }
+
+    /// Require this record to be bound to exactly `current`, every field
+    /// recorded. This is the check that admits a charge: a record without a
+    /// binding, or with a partial one, must first be completed from a
+    /// confirmed read of its channel with [`Self::adopt_binding`].
+    pub fn check_binding_complete(&self, current: &ChannelBinding) -> Result<(), StoreError> {
+        self.check_binding(current)?;
+        match self.binding()? {
+            Some(recorded) if recorded == *current && recorded.is_complete() => Ok(()),
+            _ => Err(StoreError::Internal(format!(
+                "channel {} has no complete deployment binding",
+                self.channel_id
+            ))),
         }
     }
 
@@ -4051,7 +4072,8 @@ mod tests {
         };
         assert!(decoded.check_binding(&other_program).is_err());
 
-        // An older binding without a receiver is accepted and completed.
+        // An older binding without a receiver passes the mismatch check but
+        // admits no charge until it is completed.
         let mut older = make_state("c2", 10_000);
         older.set_binding(&ChannelBinding {
             scheme: "batch-settlement".to_string(),
@@ -4060,8 +4082,13 @@ mod tests {
             program_id: None,
         });
         older.check_binding(&batch).unwrap();
+        assert!(older.check_binding_complete(&batch).is_err());
+        assert!(make_state("c3", 10_000)
+            .check_binding_complete(&batch)
+            .is_err());
         older.adopt_binding(&batch).unwrap();
         assert_eq!(older.binding().unwrap(), Some(batch.clone()));
+        older.check_binding_complete(&batch).unwrap();
 
         state
             .extra

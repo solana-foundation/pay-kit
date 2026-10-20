@@ -2545,7 +2545,11 @@ mod tests {
         };
         batch
             .store()
-            .put_channel(&channel_id, batch_channel_state(&channel_id, &payer))
+            .put_channel(&channel_id, {
+                let mut state = batch_channel_state(&channel_id, &payer);
+                state.set_binding(&batch.binding());
+                state
+            })
             .await
             .unwrap();
         let header = base64::Engine::encode(

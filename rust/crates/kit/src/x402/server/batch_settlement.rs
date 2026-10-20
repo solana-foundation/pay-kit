@@ -1602,6 +1602,7 @@ impl X402BatchSettlement {
         // a stale one is conservative — while a channel that is closing or gone
         // is refused by the reconciliation itself.
         self.reconcile_channel(&outcome.channel_id).await?;
+        self.complete_binding(&outcome).await?;
         // The watermark already stands at this voucher, so the request it pays
         // for was charged and served. Answer it as a replay even if the cached
         // record has since aged out — never as a fresh serve.
@@ -1696,6 +1697,7 @@ impl X402BatchSettlement {
         });
         let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
+        let binding = self.binding();
         let request = AuthorizationRequest {
             authorization_id: id,
             request_fingerprint: fingerprint,
@@ -1714,18 +1716,23 @@ impl X402BatchSettlement {
                 &outcome.channel_id,
                 seed,
                 request,
-                Box::new(move |state| match (&state.pending_setup, setup) {
-                    // Another setup transaction is already in flight for this
-                    // channel; one of them would be credited twice.
-                    (Some(current), Some(setup))
-                        if current.payer_signature != setup.payer_signature =>
-                    {
-                        Err(crate::core::store::StoreError::Internal(format!(
-                            "channel {} already has a pending setup transaction",
-                            state.channel_id
-                        )))
+                Box::new(move |state| {
+                    // Admission requires the complete binding of this
+                    // deployment, in the same transition as the reservation.
+                    state.check_binding_complete(&binding)?;
+                    match (&state.pending_setup, setup) {
+                        // Another setup transaction is already in flight for this
+                        // channel; one of them would be credited twice.
+                        (Some(current), Some(setup))
+                            if current.payer_signature != setup.payer_signature =>
+                        {
+                            Err(crate::core::store::StoreError::Internal(format!(
+                                "channel {} already has a pending setup transaction",
+                                state.channel_id
+                            )))
+                        }
+                        (_, setup) => Ok(setup),
                     }
-                    (_, setup) => Ok(setup),
                 }),
             )
             .await
@@ -1734,6 +1741,81 @@ impl X402BatchSettlement {
                 BatchReservation::Closing => Err(closing_error(&outcome.channel_id)),
                 reservation => Ok(reservation),
             })
+    }
+
+    /// Complete the deployment binding of a record that predates it, before
+    /// anything is reserved on it.
+    ///
+    /// A missing or partial binding cannot rule out a record left by another
+    /// deployment sharing this store, so it is completed only from a confirmed
+    /// read of the channel: owned by this program and committing to this
+    /// receiver's distribution. A channel that cannot be read or does not match
+    /// is refused, and the reservation itself requires the complete binding.
+    async fn complete_binding(&self, outcome: &BatchOutcome) -> Result<(), Error> {
+        let current = self.binding();
+        let recorded: Arc<Mutex<Option<Option<ChannelBinding>>>> = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&recorded);
+        let expected = current.clone();
+        self.store
+            .read_channel(
+                &outcome.channel_id,
+                Box::new(move |state| {
+                    if let Some(state) = state {
+                        state.check_binding(&expected)?;
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.binding()?);
+                    }
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
+        let recorded = recorded.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match recorded {
+            // No record yet: a deposit seeds one carrying the full binding.
+            None => return Ok(()),
+            Some(Some(binding)) if binding == current && binding.is_complete() => return Ok(()),
+            Some(_) => {}
+        }
+        let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
+        let rpc = Arc::clone(&self.rpc);
+        let program_id = self.program_id()?;
+        let onchain =
+            tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
+                .await
+                .map_err(|e| Error::Other(format!("channel binding task failed: {e}")))??
+                .ok_or_else(|| {
+                    batch_err(
+                        codes::INVALID_CHANNEL_STATE,
+                        format!(
+                            "channel {} has no complete deployment binding and is not onchain \
+                             to complete it from",
+                            outcome.channel_id
+                        ),
+                    )
+                })?;
+        self.check_channel_bindings(
+            &onchain,
+            outcome.payload.channel_config(),
+            &self.config.pay_to,
+            0,
+        )?;
+        self.store
+            .mutate_channel(
+                &outcome.channel_id,
+                None,
+                Box::new(move |state| {
+                    state.check_binding(&current)?;
+                    state.adopt_binding(&current)?;
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
+        tracing::info!(
+            channel = %outcome.channel_id,
+            "completed a legacy channel binding from the confirmed channel"
+        );
+        Ok(())
     }
 
     /// Record that the resource handler succeeded, before the charge is
@@ -1895,9 +1977,9 @@ impl X402BatchSettlement {
                             }
                         }
                     }
-                    state.check_binding(&binding)?;
-                    // A record from before bindings adopts this deployment's.
-                    state.adopt_binding(&binding)?;
+                    // Completed before the reservation; never adopted here,
+                    // after the handler has already been served.
+                    state.check_binding_complete(&binding)?;
                     state.last_activity_at = now.max(0) as u64;
                     state.commit_authorization(
                         &token,
@@ -3616,6 +3698,20 @@ mod tests {
         deposit: u64,
         cumulative: u64,
     ) -> ChannelState {
+        let mut state = unbound(channel, config, deposit, cumulative);
+        // Bound to the deployment `handler` builds, as a deposit seeds it.
+        state.set_binding(&handler(Arc::new(MemoryChannelStore::new())).0.binding());
+        state
+    }
+
+    /// [`seeded`] without a deployment binding, as a record that predates
+    /// bindings was written.
+    fn unbound(
+        channel: &Pubkey,
+        config: &BatchChannelConfig,
+        deposit: u64,
+        cumulative: u64,
+    ) -> ChannelState {
         ChannelState {
             channel_id: pc::pubkey_string(channel),
             authorized_signer: config.payer_authorizer.clone(),
@@ -4959,28 +5055,116 @@ mod tests {
         assert!(handler.may_drop_absent_record(&own));
     }
 
-    /// A record from before bindings is accepted and adopts this server's
-    /// binding when its next charge commits.
-    #[tokio::test]
-    async fn an_unbound_record_adopts_the_binding_on_commit() {
+    /// A record from before bindings is bound from its confirmed channel
+    /// before anything is reserved on it, never adopted after serving.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unbound_record_is_bound_from_the_confirmed_channel_before_serving() {
         let store = Arc::new(MemoryChannelStore::new());
         let (handler, fee_payer) = handler(store.clone());
-        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
-        let BatchAccess::Serve(outcome) = handler
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        store
+            .put_channel(
+                &pc::pubkey_string(&channel),
+                unbound(&channel, &config, 5_000, 2_000),
+            )
+            .await
+            .unwrap();
+        let handler = handler.with_rpc_client(chain_with(Some(&onchain_channel(
+            &config, &fee_payer, 5_000,
+        ))));
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config,
+                voucher: voucher(&key, &channel, 3_000),
+            },
+        );
+        let BatchAccess::Serve(_outcome) = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
             .unwrap()
         else {
-            panic!("an unbound record is served");
+            panic!("an unbound record matching its channel is served");
         };
-        handler.mark_handler_succeeded(&outcome).await.unwrap();
-        handler.finish_commit(&outcome).await.unwrap();
         let state = store
-            .get_channel(&outcome.channel_id)
+            .get_channel(&pc::pubkey_string(&channel))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(state.binding().unwrap(), Some(handler.binding()));
+    }
+
+    /// A partial legacy binding does not let another deployment sharing the
+    /// store serve on the channel: the confirmed channel pays the original
+    /// receiver, so the binding is not completed and nothing is reserved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_partial_binding_is_not_admitted_by_another_deployment() {
+        const API_B: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+        let store = Arc::new(MemoryChannelStore::new());
+        let (api_a, fee_payer) = handler(store.clone());
+        let requirements_a = api_a.requirements("0.001").unwrap();
+        let (key, config_a, channel) = client(&fee_payer, &requirements_a);
+        let partial = ChannelBinding {
+            scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
+            pay_to: None,
+            network: None,
+            program_id: None,
+        };
+        let mut legacy = unbound(&channel, &config_a, 5_000, 1_000);
+        legacy.set_binding(&partial);
+        store
+            .put_channel(&pc::pubkey_string(&channel), legacy)
+            .await
+            .unwrap();
+        // The channel commits to deployment A's receiver.
+        let chain = || chain_with(Some(&onchain_channel(&config_a, &fee_payer, 5_000)));
+
+        let mut config = BatchConfig::new(API_B, "localnet", Arc::new(TestSigner::new(21)));
+        config.withdraw_delay = 3600;
+        config.memo = Some("invoice-1".to_string());
+        let api_b = X402BatchSettlement::with_store(config, store.clone())
+            .unwrap()
+            .with_rpc_client(chain());
+        let requirements_b = api_b.requirements("0.001").unwrap();
+        let mut config_b = config_a.clone();
+        config_b.receiver = requirements_b.pay_to.clone();
+        let request_b = header(
+            &requirements_b,
+            BatchPayload::Voucher {
+                channel_config: config_b,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+        let err = api_b
+            .verify_and_reserve_payment(&request_b, "0.001")
+            .await
+            .expect_err("deployment B is refused");
+        assert!(err.to_string().contains("distribution"), "{err}");
+        let state = store
+            .get_channel(&pc::pubkey_string(&channel))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.binding().unwrap(), Some(partial));
+        assert!(state.pending_deliveries.is_empty());
+
+        // Positive control: deployment A completes the binding and serves.
+        let api_a = api_a.with_rpc_client(chain());
+        let request_a = header(
+            &requirements_a,
+            BatchPayload::Voucher {
+                channel_config: config_a,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+        assert!(matches!(
+            api_a
+                .verify_and_reserve_payment(&request_a, "0.001")
+                .await
+                .unwrap(),
+            BatchAccess::Serve(_)
+        ));
     }
 
     /// A voucher for a channel this store has no record of is refused, never
