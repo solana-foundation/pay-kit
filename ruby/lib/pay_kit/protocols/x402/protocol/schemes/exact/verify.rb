@@ -196,7 +196,9 @@ module PayKit::Protocols::X402
 
             amount = data.byteslice(1, 8).unpack1("Q<")
             expected_amount = Integer(requirement.fetch("amount"), 10)
-            raise "invalid_exact_svm_payload_amount_mismatch" unless amount == expected_amount
+            # scheme_exact_svm §1.4: the matching transfer is "at least" the
+            # required amount; overpayment is tolerated, less is rejected.
+            raise "invalid_exact_svm_payload_amount_mismatch" if amount < expected_amount
 
             {
               source: source,

@@ -191,7 +191,7 @@ class X402ServerExactTest < Minitest::Test
 
   def test_settlement_v1_runs_identical_facilitator_checks_as_v2
     # The MUST-checks after the version gate are shared: a v1 credential
-    # whose transfer amount drifts from the route is rejected by the same
+    # whose transfer underpays the route is rejected by the same
     # Verifier the v2 path uses, before broadcast.
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -200,7 +200,7 @@ class X402ServerExactTest < Minitest::Test
     })
     header = build_v1_payment_header(state, network: "solana-devnet")
     tampered = mutate_payment_transaction(header, resign: true) do |transaction|
-      replace_transfer_amount(transaction, 999_999)
+      replace_transfer_amount(transaction, 999)
     end
 
     assert_raises(RuntimeError) do
@@ -520,6 +520,44 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.verify_exact_payment(server_state, payment_header)
     end
     assert_equal "invalid_exact_svm_payload_amount_mismatch", error.message
+  end
+
+  # scheme_exact_svm §1.4: a matching transfer MAY exceed the required
+  # amount. Paired with the underpayment rejection above.
+  def test_verify_accepts_overpayment
+    payer_state = build_state(price: "1001")
+    server_state = build_state(price: "1000")
+    payment_header = build_payment_header(payer_state)
+
+    verified = PayKit::Protocols::X402::Server::Exact.verify_exact_payment(server_state, payment_header)
+    assert_equal "1000", verified.fetch(:requirement).fetch("amount")
+  end
+
+  # §1.4: exactly one matching transfer. A second TransferChecked, or none,
+  # is rejected; the unmodified instruction list is the positive control.
+  def test_verifier_requires_exactly_one_transfer
+    state = build_state
+    requirement = PayKit::Protocols::X402::Server::Exact.exact_requirement(state)
+    transaction = Base64.decode64(JSON.parse(Base64.decode64(build_payment_header(state))).fetch("payload").fetch("transaction"))
+    parsed = PayKit::Protocols::X402::Protocol::Schemes::Exact.parse_versioned_transaction(transaction)
+    keys = parsed.fetch(:account_keys)
+    instructions = parsed.fetch(:instructions)
+    managed = [state.fee_payer.raw_public_key]
+    verify = ->(list) {
+      PayKit::Protocols::X402::Protocol::Schemes::Exact::Verifier.verify_instructions!(
+        account_keys: keys, instructions: list, requirement: requirement, managed_signers: managed
+      )
+    }
+
+    refute_nil verify.call(instructions)
+
+    two = instructions.take(3) + [instructions.fetch(2)] + instructions.drop(3)
+    assert_raises(RuntimeError) { verify.call(two) }
+
+    none = instructions.take(2) + instructions.drop(3)
+    none += [instructions.fetch(0)] while none.length < 3
+    error = assert_raises(RuntimeError) { verify.call(none) }
+    assert_match(/no_transfer_instruction/, error.message)
   end
 
   def test_verifier_accepts_transfer_without_extra_token_program
