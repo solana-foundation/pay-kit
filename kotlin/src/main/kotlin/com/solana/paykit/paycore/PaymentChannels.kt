@@ -25,6 +25,9 @@ object PaymentChannels {
     /** Default payment-channel close grace period, in seconds. */
     const val DEFAULT_GRACE_PERIOD_SECONDS: UInt = 900u
 
+    /** Maximum byte length of a memo emitted after `open`. */
+    const val OPEN_MAX_MEMO_BYTES = 256
+
     private const val OPEN_DISCRIMINATOR: Byte = 1
     private val CHANNEL_SEED = "channel".encodeToByteArray()
     private val EVENT_AUTHORITY_SEED = "event_authority".encodeToByteArray()
@@ -187,6 +190,8 @@ object PaymentChannels {
         programId: PublicKey,
         feePayer: PublicKey,
         recentBlockhash: ByteArray,
+        // Required so each caller decides: x402 upto passes extra.memo.
+        memo: String?,
     ): OpenTransaction {
         val payerPubkey = PublicKey(payer.publicKeyBytes)
         val params = OpenChannelParams(
@@ -195,8 +200,16 @@ object PaymentChannels {
             tokenProgram = tokenProgram, programId = programId,
         )
         val channelId = findChannelPda(payerPubkey, payee, mint, authorizedSigner, salt, openSlot, programId)
-        val instruction = buildOpenInstruction(params)
-        val message = Transaction.buildV0Message(feePayer, recentBlockhash, listOf(instruction))
+        val instructions = mutableListOf(buildOpenInstruction(params))
+        // A seller-declared memo rides as one SPL Memo right after `open`.
+        if (memo != null) {
+            val size = memo.encodeToByteArray().size
+            require(size <= OPEN_MAX_MEMO_BYTES) {
+                "channel open memo is $size bytes, over the $OPEN_MAX_MEMO_BYTES-byte maximum"
+            }
+            instructions += Instructions.memo(memo)
+        }
+        val message = Transaction.buildV0Message(feePayer, recentBlockhash, instructions)
         val signature = payer.sign(message.serialize())
         require(signature.size == 64) { "open signature must be 64 bytes (got ${signature.size})" }
         val signerIndex = message.accountKeys.indexOfFirst { it.bytes.contentEquals(payerPubkey.bytes) }

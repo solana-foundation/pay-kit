@@ -286,6 +286,7 @@ object PaymentChannelSession {
             programId = open.programId,
             feePayer = feePayer,
             recentBlockhash = blockhash,
+            memo = null,
         )
 
         val session = ActiveSession(

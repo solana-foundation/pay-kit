@@ -188,6 +188,9 @@ fun buildUptoPayload(
         programId = programId,
         feePayer = feePayer,
         recentBlockhash = blockhash,
+        // A seller that declares extra.memo requires exactly one matching Memo
+        // after `open`; without it the transaction stays a bare open.
+        memo = extra.memo,
     )
 
     return UptoPayload(

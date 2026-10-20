@@ -81,6 +81,8 @@ data class UptoExtra(
     @Serializable(with = SlotStringSerializer::class) val recentSlot: ULong? = null,
     /** Earliest activation time (Unix seconds). */
     val validAfter: Long? = null,
+    /** Seller-declared memo the client signs into the open as one SPL Memo after ``open``. */
+    val memo: String? = null,
 )
 
 /** An ``upto`` payment requirement (one ``accepts[]`` entry in a 402 challenge). */

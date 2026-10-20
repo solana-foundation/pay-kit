@@ -601,4 +601,73 @@ class UptoPaymentTest {
         assertEquals(1, back.accepts.size)
         assertEquals(UPTO_SCHEME, back.accepts.first().scheme)
     }
+
+    // ── extra.memo ──────────────────────────────────────────────────────────
+
+    /** (program id, account count, data) per instruction of a v0 transaction. */
+    private fun instructions(txB64: String): List<Triple<String, Int, ByteArray>> {
+        val tx = Base64.getDecoder().decode(txB64)
+        var p = 0
+        val sigCount = tx[p++].toInt()
+        p += sigCount * 64
+        assertEquals(V0_PREFIX, tx[p++])
+        p += 3
+        val acctCount = tx[p++].toInt()
+        val keys = (0 until acctCount).map { Base58.encode(tx.copyOfRange(p + it * 32, p + it * 32 + 32)) }
+        p += acctCount * 32 + 32
+        val ixCount = tx[p++].toInt()
+        return (0 until ixCount).map {
+            val program = keys[tx[p++].toInt()]
+            val accts = tx[p++].toInt()
+            p += accts
+            val len = tx[p++].toInt()
+            val data = tx.copyOfRange(p, p + len)
+            p += len
+            Triple(program, accts, data)
+        }
+    }
+
+    @Test
+    fun declared_memo_is_signed_after_open_and_echoed() {
+        val memo = "x402-upto:route-a"
+        val req = requirements(extra = extra().copy(memo = memo))
+        val payload = buildUptoPayload(signer, req, expiresAt = 1L, saltProvider = { fixedSalt })
+        val ixs = instructions(payload.openTransaction!!)
+        assertEquals(2, ixs.size, "open + memo")
+        assertEquals(PaymentChannels.PROGRAM_ID, ixs[0].first)
+        assertEquals(Programs.MEMO_PROGRAM, ixs[1].first)
+        assertEquals(0, ixs[1].second)
+        assertEquals(memo, ixs[1].third.decodeToString())
+
+        val accepted = json.parseToJsonElement(
+            Base64.getDecoder().decode(encodeUptoHeader(req, payload)).decodeToString(),
+        ).jsonObject["accepted"]!!.jsonObject
+        assertEquals(memo, accepted["extra"]!!.jsonObject["memo"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun declared_memo_parses_off_the_wire() {
+        val wire = challengeEnvelope(uptoEntry().replace("\"withdrawDelay\":900", "\"withdrawDelay\":900,\"memo\":\"m-1\""))
+        val req = parseUptoChallenge(emptyMap(), wire)!!
+        assertEquals("m-1", req.extra.memo)
+        val ixs = instructions(buildUptoPayload(signer, req, expiresAt = 1L).openTransaction!!)
+        assertEquals("m-1", ixs.last().third.decodeToString())
+    }
+
+    @Test
+    fun no_declared_memo_keeps_a_bare_open() {
+        val req = requirements()
+        val payload = buildUptoPayload(signer, req, expiresAt = 1L, saltProvider = { fixedSalt })
+        assertEquals(1, instructions(payload.openTransaction!!).size)
+        val accepted = json.parseToJsonElement(
+            Base64.getDecoder().decode(encodeUptoHeader(req, payload)).decodeToString(),
+        ).jsonObject["accepted"]!!.jsonObject
+        assertNull(accepted["extra"]!!.jsonObject["memo"])
+    }
+
+    @Test
+    fun overlong_memo_is_rejected() {
+        val req = requirements(extra = extra().copy(memo = "x".repeat(PaymentChannels.OPEN_MAX_MEMO_BYTES + 1)))
+        assertFailsWith<IllegalArgumentException> { buildUptoPayload(signer, req, expiresAt = 1L) }
+    }
 }

@@ -86,6 +86,7 @@ class PaymentChannelsOpenAccountsTest {
             programId = programId,
             feePayer = feePayer,
             recentBlockhash = ByteArray(32) { 0x11 },
+            memo = null,
         )
 
         // The compiled message must carry two required signers: the fee payer /
