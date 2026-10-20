@@ -448,13 +448,12 @@ object Charge {
      *
      * 1. When the challenge pins `methodDetails.tokenProgram`, validate it
      *    against {Token, Token-2022} ONLY and reject anything else.
-     * 2. Otherwise, when [mint] is a known stablecoin mint, answer from the
-     *    static table (no RPC needed; the owner is well-known).
-     * 3. Otherwise (arbitrary mint, no pinned program) read the mint account
-     *    owner via [mintOwnerResolver] and validate it against
-     *    {Token, Token-2022}. Fail closed when no resolver is available rather
-     *    than guessing the legacy Token program (which would mis-derive ATAs
-     *    for a Token-2022 mint and bind the wrong program on the wire).
+     * 2. Otherwise read the mint account owner via [mintOwnerResolver] and
+     *    validate it against {Token, Token-2022}, for every mint including
+     *    known stablecoins. Fail closed when no resolver is available or the
+     *    lookup fails rather than guessing from a table or defaulting to the
+     *    legacy Token program (which would mis-derive ATAs for a Token-2022
+     *    mint and bind the wrong program on the wire).
      *
      * Audit #26: whenever the resolved program is Token-2022 AND [mint] is not
      * a known stablecoin mint, REFUSE to sign unless [allowUnknownToken2022] is
@@ -478,15 +477,10 @@ object Charge {
             gateUnknownToken2022(mint, explicit, allowUnknownToken2022)
             return explicit
         }
-        // Known stablecoin mints carry a deterministic owner; answer from the
-        // table so callers paying stablecoins do not need to wire an RPC.
-        if (stablecoinSymbol(mint) != null) {
-            return if (stablecoinUsesToken2022(mint)) {
-                Programs.TOKEN_2022_PROGRAM
-            } else {
-                Programs.TOKEN_PROGRAM
-            }
-        }
+        // Spec (draft-solana-charge-00): "If omitted, clients MUST determine
+        // the correct token program by fetching the mint account ... clients
+        // MUST reject the challenge rather than falling back". No static-table
+        // shortcut, even for known stablecoins.
         val resolver = mintOwnerResolver
             ?: throw MppException.InvalidTransaction(
                 "methodDetails.tokenProgram omitted and no MintOwnerResolver " +
@@ -604,9 +598,6 @@ object Charge {
         allowUnknownToken2022: Boolean,
     ) {
         val mintKey = PublicKey.fromBase58(mint)
-        val tokenProgram = PublicKey.fromBase58(
-            resolveTokenProgram(mint, methodDetails, mintOwnerResolver, allowUnknownToken2022),
-        )
         // Audit #42: spec §7.2 marks `decimals` as conditionally required —
         // MUST be present for SPL (this branch). Defaulting a missing value to
         // 6 silently signs a wrong `transferChecked` decimals byte / wrong
@@ -617,6 +608,11 @@ object Charge {
             ?: throw MppException.InvalidTransaction(
                 "methodDetails.decimals is required for SPL charges (spec §7.2)",
             )
+        // Resolved after the decimals check so a malformed challenge is refused
+        // before any mint-account RPC.
+        val tokenProgram = PublicKey.fromBase58(
+            resolveTokenProgram(mint, methodDetails, mintOwnerResolver, allowUnknownToken2022),
+        )
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgram)
         val payer = feePayer ?: signerKey
 

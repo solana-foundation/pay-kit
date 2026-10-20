@@ -34,6 +34,20 @@ class ChargeBuildTest {
 
     private fun signer(): MemorySigner = MemorySigner.fromSeed(deterministicSeed)
 
+    /**
+     * Stand-in for the mint-account RPC: answers the owner the cluster reports
+     * for the stablecoin mints these tests pay. The spec requires the client
+     * to fetch the mint whenever `tokenProgram` is omitted, so SPL builds
+     * without a pinned program need a resolver.
+     */
+    private val mintAccountOwners = MintOwnerResolver { mint ->
+        when (mint) {
+            Mints.USDC_MAINNET, Mints.USDC_DEVNET -> Programs.TOKEN_PROGRAM
+            Mints.PYUSD_MAINNET, Mints.PYUSD_DEVNET -> Programs.TOKEN_2022_PROGRAM
+            else -> throw MppException.InvalidTransaction("no mint account for $mint")
+        }
+    }
+
     @Test
     fun buildSolChargeTransactionRoundTripsThroughBase64() {
         val request = ChargeRequest(
@@ -55,7 +69,12 @@ class ChargeBuildTest {
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
         )
-        val transaction = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        val transaction = Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
+        )
         val raw = JBase64.getDecoder().decode(transaction)
         // 1 signature slot + 64 bytes of signature + message
         assertEquals(0x01.toByte(), raw[0])
@@ -256,10 +275,9 @@ class ChargeBuildTest {
     @Test
     fun acceptsBase58MintCurrencyWithAtaCreationSplit() {
         // The positive case for finding-9: when `currency` IS the resolved
-        // base58 mint address, ataCreationRequired is accepted. USDC mainnet
-        // mint is a known stablecoin, so the token program resolves from the
-        // static table without an RPC. Parity with the rust/Swift positive
-        // path (`mint_str == currency`).
+        // base58 mint address, ataCreationRequired is accepted. The token
+        // program is read from the mint account owner. Parity with the
+        // rust/Swift positive path (`mint_str == currency`).
         val request = ChargeRequest(
             amount = "1000",
             currency = Mints.USDC_MAINNET,
@@ -276,7 +294,12 @@ class ChargeBuildTest {
                 ),
             ),
         )
-        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
+        )
     }
 
     @Test
@@ -293,11 +316,17 @@ class ChargeBuildTest {
                 feePayerKey = feePayer,
             ),
         )
-        val transactionWithFp = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        val transactionWithFp = Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
+        )
         val transactionSolo = Charge.buildChargeTransaction(
             signer(),
             request.copy(methodDetails = request.methodDetails!!.copy(feePayer = false, feePayerKey = null)),
             fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
         )
         // Wire bytes should differ because the fee payer changes the
         // ordered account-key set and the compiled instruction indices.
@@ -367,7 +396,8 @@ class ChargeBuildTest {
     @Test
     fun token2022CurrencyWithoutExplicitTokenProgramUsesToken2022Ata() {
         // Without an explicit methodDetails.tokenProgram, PYUSD must end
-        // up on the Token-2022 program. We can't easily inspect the
+        // up on the Token-2022 program its mint account reports as owner.
+        // We can't easily inspect the
         // compiled wire bytes here, but we can sanity check that the
         // built transaction is well-formed and the Token-2022 program id
         // appears in the account-keys section.
@@ -377,7 +407,12 @@ class ChargeBuildTest {
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
         )
-        val transaction = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        val transaction = Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
+        )
         val raw = JBase64.getDecoder().decode(transaction)
         // Token-2022 base58 string interpolated as a byte signature inside
         // the wire bytes is a reasonable witness.
@@ -523,17 +558,67 @@ class ChargeBuildTest {
         }
     }
 
+    private fun knownStablecoinRequest() = ChargeRequest(
+        amount = "1000",
+        currency = Mints.USDC_DEVNET,
+        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
+    )
+
     @Test
-    fun knownStablecoinResolvesWithoutResolver() {
-        // A known stablecoin (USDC) resolves its token program from the static
-        // table, so no resolver is needed even without an explicit program.
-        val request = ChargeRequest(
-            amount = "1000",
-            currency = "USDC",
-            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-            methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
+    fun knownStablecoinWithoutResolverFailsClosed() {
+        // RULINGS C3 regression: with tokenProgram omitted the client MUST
+        // fetch the mint account. The prior build answered known stablecoins
+        // from a static table and signed without any lookup.
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), knownStablecoinRequest(), fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun knownStablecoinFetchesMintOwner() {
+        // Positive control: the token program comes from the mint account
+        // owner even for a known stablecoin.
+        var queried: String? = null
+        val resolver = MintOwnerResolver { mint ->
+            queried = mint
+            Programs.TOKEN_PROGRAM
+        }
+        Charge.buildChargeTransaction(
+            signer(),
+            knownStablecoinRequest(),
+            fixedBlockhash,
+            mintOwnerResolver = resolver,
         )
-        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        assertEquals(Mints.USDC_DEVNET, queried)
+    }
+
+    @Test
+    fun knownStablecoinRejectsFailedMintLookup() {
+        val resolver = MintOwnerResolver { mint ->
+            throw MppException.InvalidTransaction("getAccountInfo returned no account for mint $mint")
+        }
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(
+                signer(),
+                knownStablecoinRequest(),
+                fixedBlockhash,
+                mintOwnerResolver = resolver,
+            )
+        }
+    }
+
+    @Test
+    fun knownStablecoinRejectsUnexpectedMintOwner() {
+        val resolver = MintOwnerResolver { "11111111111111111111111111111111" }
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(
+                signer(),
+                knownStablecoinRequest(),
+                fixedBlockhash,
+                mintOwnerResolver = resolver,
+            )
+        }
     }
 
     // ── Unsigned u64 amounts (main medium) ─────────────────────────────────
@@ -636,6 +721,7 @@ class ChargeBuildTest {
             walletPublicKey = externalPubkey,
             request = request,
             blockhashProvider = fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
         )
         assertTrue(unsigned.size > 64)
         assertEquals(0x01.toByte(), unsigned[0])
@@ -699,17 +785,23 @@ class ChargeBuildTest {
     fun rejectsMissingDecimalsOnSplCharge() {
         // Audit #42: a missing `decimals` on the SPL path must error rather
         // than silently defaulting to 6 (a wrong transferChecked byte / divisor
-        // for any non-6-decimal mint). USDC resolves its token program from the
-        // static table so no resolver is needed; the failure is the missing
-        // decimals, proving the path reached buildSplInstructions.
+        // for any non-6-decimal mint). The challenge is refused before any
+        // mint lookup: a resolver that is never expected to run fails the test
+        // with an AssertionError (not the InvalidTransaction asserted here).
         val request = ChargeRequest(
             amount = "1000",
             currency = "USDC",
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(network = "devnet"),
         )
+        val untouched = MintOwnerResolver { throw AssertionError("mint lookup before decimals check") }
         assertFailsWith<MppException.InvalidTransaction> {
-            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+            Charge.buildChargeTransaction(
+                signer(),
+                request,
+                fixedBlockhash,
+                mintOwnerResolver = untouched,
+            )
         }
     }
 
@@ -755,7 +847,12 @@ class ChargeBuildTest {
                 ),
             )
             val raw = JBase64.getDecoder().decode(
-                Charge.buildChargeTransaction(signer(), request, fixedBlockhash),
+                Charge.buildChargeTransaction(
+                    signer(),
+                    request,
+                    fixedBlockhash,
+                    mintOwnerResolver = mintAccountOwners,
+                ),
             )
             return raw.size
         }
@@ -832,15 +929,20 @@ class ChargeBuildTest {
 
     @Test
     fun doesNotGateKnownToken2022Stablecoin() {
-        // A KNOWN Token-2022 stablecoin (PYUSD) is never gated — no opt-in and
-        // no resolver needed.
+        // A KNOWN Token-2022 stablecoin (PYUSD) is never gated: no opt-in
+        // needed once its mint account reports the Token-2022 owner.
         val request = ChargeRequest(
             amount = "1000",
             currency = "PYUSD",
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
         )
-        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = mintAccountOwners,
+        )
     }
 
     @Test
