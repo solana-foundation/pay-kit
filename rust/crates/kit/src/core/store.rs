@@ -43,6 +43,17 @@ pub trait Store: Send + Sync {
         key: &str,
         value: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>>;
+
+    /// Atomically write `value` only if the key currently holds `expected`
+    /// (`None`: the key is absent). Returns `true` if the value was written.
+    /// Implementations MUST compare and write in one atomic step;
+    /// [`conformance::check_store`] exercises it.
+    fn put_if_eq(
+        &self,
+        key: &str,
+        expected: Option<serde_json::Value>,
+        value: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +144,31 @@ impl Store for MemoryStore {
                     Ok(true)
                 }
             }
+        })
+    }
+
+    fn put_if_eq(
+        &self,
+        key: &str,
+        expected: Option<serde_json::Value>,
+        value: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        let key = key.to_string();
+        let serialized =
+            serde_json::to_string(&value).map_err(|e| StoreError::Serialization(e.to_string()));
+        Box::pin(async move {
+            let serialized = serialized?;
+            let mut data = self.data.lock().unwrap();
+            let current = data
+                .get(&key)
+                .map(|raw| serde_json::from_str::<serde_json::Value>(raw))
+                .transpose()
+                .map_err(|e| StoreError::Serialization(e.to_string()))?;
+            if current != expected {
+                return Ok(false);
+            }
+            data.insert(key, serialized);
+            Ok(true)
         })
     }
 }
@@ -2745,6 +2781,44 @@ pub mod conformance {
         }
     }
 
+    /// The [`Store`] contract: conditional writes are atomic and exact.
+    pub async fn check_store(store: &dyn Store) {
+        let key = "conformance-store-cas";
+        let v1 = serde_json::json!({ "v": 1 });
+        let v2 = serde_json::json!({ "v": 2 });
+        let v3 = serde_json::json!({ "v": 3 });
+        assert!(!store
+            .put_if_eq(key, Some(v1.clone()), v2.clone())
+            .await
+            .unwrap());
+        assert_eq!(store.get(key).await.unwrap(), None);
+        assert!(store.put_if_eq(key, None, v1.clone()).await.unwrap());
+        assert!(!store.put_if_eq(key, None, v2.clone()).await.unwrap());
+        assert!(!store
+            .put_if_eq(key, Some(v3.clone()), v2.clone())
+            .await
+            .unwrap());
+        assert!(store
+            .put_if_eq(key, Some(v1.clone()), v2.clone())
+            .await
+            .unwrap());
+        assert_eq!(store.get(key).await.unwrap(), Some(v2.clone()));
+        assert!(!store.put_if_absent(key, v3.clone()).await.unwrap());
+
+        // Writers racing from the same read: exactly one lands.
+        let (left, right) = tokio::join!(
+            store.put_if_eq(key, Some(v2.clone()), serde_json::json!({ "v": "left" })),
+            store.put_if_eq(key, Some(v2.clone()), serde_json::json!({ "v": "right" })),
+        );
+        assert_eq!(
+            [left.unwrap(), right.unwrap()]
+                .iter()
+                .filter(|won| **won)
+                .count(),
+            1
+        );
+    }
+
     /// Run the suite. `fresh` builds an open channel record with a deposit of
     /// at least 10_000 and a zero watermark that `store` accepts.
     pub async fn check_channel_store(
@@ -4265,6 +4339,11 @@ mod tests {
 
     fn conformance_state(channel_id: &str) -> ChannelState {
         make_state(channel_id, 10_000)
+    }
+
+    #[tokio::test]
+    async fn memory_kv_store_passes_conformance() {
+        conformance::check_store(&MemoryStore::new()).await;
     }
 
     #[tokio::test]

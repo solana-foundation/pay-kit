@@ -642,11 +642,7 @@ impl SubscriptionServer {
                     .await
                     .is_ok();
 
-                let signature = *tx.signatures.first().ok_or_else(|| {
-                    VerificationError::invalid_payload(
-                        "Activation transaction has no signature slot",
-                    )
-                })?;
+                let signature = VerifiedSignature::of(&tx)?;
                 let key = format!("solana-subscription:consumed:{signature}");
                 let binding = serde_json::json!({
                     "challengeId": credential.challenge.id,
@@ -662,7 +658,7 @@ impl SubscriptionServer {
                 } else {
                     reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
                     match self.broadcast_and_confirm(&tx).await {
-                        Ok(signature) => signature,
+                        Ok(_) => signature,
                         // A transaction that can no longer land needs no
                         // replay record; ambiguous outcomes keep theirs.
                         Err(BroadcastError::Rejected(error)) => {
@@ -676,7 +672,7 @@ impl SubscriptionServer {
                         Err(BroadcastError::Unknown(error)) => return Err(error),
                     }
                 };
-                (subscriber, Some(sig.to_string()))
+                (subscriber, Some(sig))
             }
             "signature" => {
                 // Push mode (client already broadcast). Not yet supported
@@ -720,9 +716,10 @@ impl SubscriptionServer {
         credential: &PaymentCredential,
         request: &SubscriptionRequest,
         subscriber: Pubkey,
-        activation_reference: String,
+        activation: VerifiedSignature,
         authentication: Option<&SubscriptionAuthentication>,
     ) -> Result<ReceiptKind, VerificationError> {
+        let activation_reference = activation.to_string();
         // ── Derive subscription PDA and read on-chain state ──────────────
         let program_id = parse_pubkey(&self.program_id, "program_id")
             .map_err(|e| VerificationError::new(e.to_string()))?;
@@ -808,8 +805,9 @@ impl SubscriptionServer {
         let bound = publish_activation_binding(
             self.store.as_ref(),
             &binding_key,
-            &activation_reference,
+            &activation,
             binding,
+            |other| self.activation_landed_after(activation, other),
         )
         .await?;
         if bound.get("challengeId").and_then(serde_json::Value::as_str)
@@ -1237,10 +1235,10 @@ impl SubscriptionServer {
     // Live-RPC boundary; covered by the scripted-node activation tests.
     async fn ensure_activation_landed(
         &self,
-        signature: &Signature,
+        signature: &VerifiedSignature,
     ) -> Result<(), VerificationError> {
         let rpc_url = self.rpc_url.clone();
-        let signature = *signature;
+        let signature = signature.0;
         let status = tokio::task::spawn_blocking(move || {
             let rpc = confirmed_rpc(rpc_url);
             rpc.get_signature_status_with_commitment_and_history(&signature, rpc.commitment(), true)
@@ -1262,6 +1260,34 @@ impl SubscriptionServer {
                  create it; present the subscription proof instead",
             )),
         }
+    }
+
+    /// Whether `activation` landed in a later slot than `other`, the
+    /// activation a binding currently names. Unknown or unreadable means no.
+    async fn activation_landed_after(
+        &self,
+        activation: VerifiedSignature,
+        other: String,
+    ) -> Result<bool, VerificationError> {
+        let Ok(other) = other.parse::<Signature>() else {
+            return Ok(false);
+        };
+        let rpc_url = self.rpc_url.clone();
+        let statuses = tokio::task::spawn_blocking(move || {
+            confirmed_rpc(rpc_url).get_signature_statuses_with_history(&[activation.0, other])
+        })
+        .await
+        .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
+        .map_err(|e| VerificationError::network_error(format!("getSignatureStatuses failed: {e}")))?
+        .value;
+        let slot = |index: usize| {
+            statuses
+                .get(index)
+                .and_then(Option::as_ref)
+                .filter(|status| status.err.is_none())
+                .map(|status| status.slot)
+        };
+        Ok(matches!((slot(0), slot(1)), (Some(this), Some(other)) if this > other))
     }
 
     // ── Accessors ──
@@ -1302,6 +1328,36 @@ impl SubscriptionServer {
 // ── Verify helpers ──────────────────────────────────────────────────────────
 
 /// Outcome of a failed activation broadcast.
+/// An activation transaction's ID: its first signature, verified against its
+/// message by its fee payer's key. Only this, never a raw `signatures[0]`,
+/// keys the activation's replay and binding records, so a transaction
+/// carrying someone else's landed signature cannot claim their activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedSignature(Signature);
+
+impl VerifiedSignature {
+    fn of(tx: &VersionedTransaction) -> Result<Self, VerificationError> {
+        let signature = tx.signatures.first().ok_or_else(|| {
+            VerificationError::invalid_payload("Activation transaction has no signature slot")
+        })?;
+        let signer = tx.message.static_account_keys().first().ok_or_else(|| {
+            VerificationError::invalid_payload("Activation transaction has no fee payer")
+        })?;
+        if !signature.verify(signer.as_ref(), &tx.message.serialize()) {
+            return Err(VerificationError::invalid_payload(
+                "Activation transaction signature does not verify against its message",
+            ));
+        }
+        Ok(Self(*signature))
+    }
+}
+
+impl std::fmt::Display for VerifiedSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 enum BroadcastError {
     /// The transaction did not and cannot land.
     Rejected(VerificationError),
@@ -1439,31 +1495,40 @@ async fn reserve_activation_signature(
 ///
 /// The per-activation record is the claim: `put_if_absent` lets its first
 /// writer win, and nothing else is held, so a request cancelled before it
-/// leaves nothing behind. Every attempt then publishes that record as the
-/// subscription's current binding (rotating out a prior lifecycle's), so a
-/// write interrupted between the two is repaired by the next attempt, and
-/// concurrent attempts only ever publish the same record.
-async fn publish_activation_binding(
+/// leaves nothing behind. The record is then published as the subscription's
+/// current binding, only by compare-and-set against the binding just read:
+/// - absent, or this activation's own: published, which also repairs a write
+///   interrupted between the two steps;
+/// - another activation's: replaced only when `landed_after` shows this one
+///   landed later (a renewal), never by a retry of a retired activation.
+async fn publish_activation_binding<F, Fut>(
     store: &dyn Store,
     binding_key: &str,
-    activation_signature: &str,
+    activation: &VerifiedSignature,
     candidate: serde_json::Value,
-) -> Result<serde_json::Value, VerificationError> {
+    landed_after: F,
+) -> Result<serde_json::Value, VerificationError>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, VerificationError>>,
+{
     let store_err = |error: crate::core::store::StoreError| {
         VerificationError::new(format!(
             "Failed to store subscription authentication binding: {error}"
         ))
     };
+    let activation_signature = activation.to_string();
+    let activation_of = |binding: &serde_json::Value| {
+        binding
+            .get("activationSignature")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
     let activation_key = format!("solana-subscription:activation-binding:{activation_signature}");
-    let current = store.get(binding_key).await.map_err(store_err)?;
+    let mut current = store.get(binding_key).await.map_err(store_err)?;
     // Bound before per-activation records existed: that binding is the record.
     let candidate = match &current {
-        Some(binding)
-            if binding
-                .get("activationSignature")
-                .and_then(serde_json::Value::as_str)
-                == Some(activation_signature) =>
-        {
+        Some(binding) if activation_of(binding).as_deref() == Some(&activation_signature) => {
             binding.clone()
         }
         _ => candidate,
@@ -1481,14 +1546,41 @@ async fn publish_activation_binding(
             .map_err(store_err)?
             .ok_or_else(|| VerificationError::new("Activation binding disappeared; retry"))?
     };
-    if current.as_ref() != Some(&bound) {
-        store
-            .put(binding_key, bound.clone())
+    let already_bound = || {
+        VerificationError::signature_consumed(
+            "Activation is already bound; present the subscription proof for the challenge \
+             that activated it",
+        )
+    };
+    for _ in 0..PUBLISH_ATTEMPTS {
+        match &current {
+            Some(binding) if binding == &bound => return Ok(bound),
+            Some(binding) => {
+                if let Some(other) = activation_of(binding) {
+                    if other != activation_signature && !landed_after(other).await? {
+                        return Err(already_bound());
+                    }
+                }
+            }
+            None => {}
+        }
+        if store
+            .put_if_eq(binding_key, current.clone(), bound.clone())
             .await
-            .map_err(store_err)?;
+            .map_err(store_err)?
+        {
+            return Ok(bound);
+        }
+        current = store.get(binding_key).await.map_err(store_err)?;
     }
-    Ok(bound)
+    Err(VerificationError::new(
+        "Subscription binding is contended; retry",
+    ))
 }
+
+/// Compare-and-set rounds one publish makes under contention before asking
+/// the client to retry.
+const PUBLISH_ATTEMPTS: usize = 8;
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
 /// accepting both the raw `ActivatePayload` shape (the v0 spec) and the
@@ -2375,33 +2467,98 @@ mod tests {
         assert!(err.message.to_lowercase().contains("consumed"));
     }
 
+    fn binding_for(activation: &VerifiedSignature, challenge: &str) -> serde_json::Value {
+        serde_json::json!({ "activationSignature": activation.to_string(), "challengeId": challenge })
+    }
+
+    async fn landed(after: bool) -> Result<bool, VerificationError> {
+        Ok(after)
+    }
+
+    /// A renewal B replaces A's binding; a later retry of the retired A is
+    /// refused and writes nothing, whichever challenge it carries.
     #[tokio::test]
-    async fn confirmed_reactivation_replaces_the_prior_bearer_binding() {
+    async fn a_retired_activation_never_replaces_a_renewal() {
         let store = MemoryStore::new();
         let key = "solana-subscription:authentication:test-delegation";
-        store
-            .put(
-                key,
-                serde_json::json!({ "activationSignature": "old", "challengeId": "old-challenge" }),
-            )
-            .await
-            .expect("seed old lifecycle binding");
-
-        let new_binding =
-            serde_json::json!({ "activationSignature": "new", "challengeId": "new-challenge" });
-        let bound = publish_activation_binding(&store, key, "new", new_binding.clone())
-            .await
-            .expect("confirmed reactivation rotates the binding");
-        assert_eq!(bound, new_binding);
-        assert_eq!(store.get(key).await.unwrap(), Some(new_binding.clone()));
-
-        // A later attempt for the same activation keeps the first binding.
-        let other = serde_json::json!({ "activationSignature": "new", "challengeId": "other" });
-        let bound = publish_activation_binding(&store, key, "new", other)
+        let a = VerifiedSignature(Signature::from([1u8; 64]));
+        let b = VerifiedSignature(Signature::from([2u8; 64]));
+        let a_binding = binding_for(&a, "challenge-a");
+        publish_activation_binding(&store, key, &a, a_binding.clone(), |_| landed(false))
             .await
             .unwrap();
-        assert_eq!(bound, new_binding);
-        assert_eq!(store.get(key).await.unwrap(), Some(new_binding));
+
+        let b_binding = binding_for(&b, "challenge-b");
+        let bound =
+            publish_activation_binding(&store, key, &b, b_binding.clone(), |_| landed(true))
+                .await
+                .expect("a renewal rotates the binding");
+        assert_eq!(bound, b_binding);
+        assert_eq!(store.get(key).await.unwrap(), Some(b_binding.clone()));
+
+        for challenge in ["challenge-a", "fresh"] {
+            let error =
+                publish_activation_binding(&store, key, &a, binding_for(&a, challenge), |_| {
+                    landed(false)
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("already bound"), "{error}");
+            assert_eq!(store.get(key).await.unwrap(), Some(b_binding.clone()));
+        }
+
+        // A later attempt for B under another challenge keeps B's first binding.
+        let bound =
+            publish_activation_binding(&store, key, &b, binding_for(&b, "other"), |_| landed(true))
+                .await
+                .unwrap();
+        assert_eq!(bound, b_binding);
+    }
+
+    /// B's renewal racing a retry of the retired A leaves B bound.
+    #[tokio::test]
+    async fn a_renewal_racing_a_retired_retry_leaves_the_renewal() {
+        let store = MemoryStore::new();
+        let key = "solana-subscription:authentication:test-delegation";
+        let a = VerifiedSignature(Signature::from([1u8; 64]));
+        let b = VerifiedSignature(Signature::from([2u8; 64]));
+        publish_activation_binding(&store, key, &a, binding_for(&a, "challenge-a"), |_| {
+            landed(false)
+        })
+        .await
+        .unwrap();
+        let b_binding = binding_for(&b, "challenge-b");
+        let (renewal, retry) = tokio::join!(
+            publish_activation_binding(&store, key, &b, b_binding.clone(), |_| landed(true)),
+            publish_activation_binding(&store, key, &a, binding_for(&a, "fresh"), |_| {
+                landed(false)
+            }),
+        );
+        assert_eq!(renewal.unwrap(), b_binding);
+        assert!(retry.is_err());
+        assert_eq!(store.get(key).await.unwrap(), Some(b_binding));
+    }
+
+    /// The activation record is keyed by a signature that verifies against
+    /// the transaction's message; another subscriber's landed signature put in
+    /// slot 0 is refused before anything is reserved under it.
+    #[tokio::test]
+    async fn an_activation_signature_must_verify_against_its_message() {
+        use solana_keychain::SolanaSigner;
+        let signer = stranger();
+        let message = solana_message::VersionedMessage::Legacy(solana_message::Message::new(
+            &[],
+            Some(&signer.pubkey()),
+        ));
+        let signature = signer.sign_message(&message.serialize()).await.unwrap();
+        let mut tx = VersionedTransaction {
+            signatures: vec![signature],
+            message,
+        };
+        assert_eq!(VerifiedSignature::of(&tx).unwrap().0, signature);
+        tx.signatures[0] = Signature::from([9u8; 64]);
+        let error = VerifiedSignature::of(&tx).unwrap_err();
+        assert!(error.to_string().contains("does not verify"), "{error}");
     }
 
     #[test]
@@ -3411,6 +3568,48 @@ mod tests {
         let (recovery, _) = fixture.activation(&fresh, &fixture.signer).await;
         fixture.server.verify_credential(&recovery).await.unwrap();
         assert_eq!(bound_challenge(&fixture).await, Some(fresh.id.clone()));
+        fixture.rpc_task.abort();
+    }
+
+    /// An unsponsored activation whose slot-0 signature is someone else's
+    /// (landed) one is refused before it reserves or binds anything under it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_activation_carrying_a_foreign_signature_claims_nothing() {
+        let fixture = activation_fixture(None).await;
+        let challenge = fixture.server.subscription_challenge("10000000").unwrap();
+        let mut tx = decode_base64_transaction(&fixture.transaction).unwrap();
+        let foreign = Signature::from([7u8; 64]);
+        tx.signatures[0] = foreign;
+        let authentication = crate::mpp::client::sign_subscription_authentication(
+            &fixture.signer,
+            &challenge.id,
+            &fixture.delegation.to_string(),
+        )
+        .await
+        .unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(crate::core::tx::encode(&tx).unwrap()),
+                signature: None,
+                authentication: Some(authentication),
+            },
+        );
+        let error = fixture
+            .server
+            .verify_credential(&credential)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("does not verify"), "{error}");
+        let store = fixture.server.store.as_ref();
+        for key in [
+            format!("solana-subscription:consumed:{foreign}"),
+            format!("solana-subscription:activation-binding:{foreign}"),
+        ] {
+            assert!(store.get(&key).await.unwrap().is_none(), "{key}");
+        }
+        assert_eq!(bound_challenge(&fixture).await, None);
         fixture.rpc_task.abort();
     }
 
