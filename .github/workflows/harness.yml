@@ -25,7 +25,11 @@ jobs:
         run: pnpm exec vitest run test/charge-client-gc.test.ts
       - name: Test native artifact build and dispatch contracts
         working-directory: harness
-        run: pnpm exec vitest run test/artifacts.test.ts test/build-adapters.test.ts test/conformance-runners.test.ts test/adapter-identity.test.ts
+        run: >-
+          pnpm exec vitest run
+          test/artifacts.test.ts test/build-adapters.test.ts test/conformance-runners.test.ts test/adapter-identity.test.ts
+          test/canonical-json.test.ts test/compute-budget-caps.test.ts test/intent-selection.test.ts
+          test/process.test.ts test/x402-amount-base-units.test.ts test/x402-v1-exact.test.ts
       - name: Upload @solana/mpp dist
         uses: actions/upload-artifact@v7
         with:
@@ -110,11 +114,11 @@ jobs:
           HARNESS_REQUIRE: "1"
         run: >-
           pnpm exec vitest run
-          test/expectations.test.ts test/ci-coverage.test.ts
+          test/expectations.test.ts test/ci-coverage.test.ts test/interop-coverage.test.ts
           test/conformance.test.ts test/protocol-conformance.test.ts test/flow-conformance.test.ts
-      - name: Check generated coverage table
+      - name: Check generated coverage tables
         working-directory: harness
-        run: pnpm coverage:check
+        run: pnpm coverage:check && pnpm interop:check
       # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
         if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}

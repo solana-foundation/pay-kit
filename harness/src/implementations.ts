@@ -33,14 +33,26 @@ export function expectedReportedImplementation(
   return implementation.reportsAs ?? implementation.id;
 }
 
-function isEnabled(
+// How each adapter is switched on: the env var that selects it and its
+// default. Recorded so tooling (interop-coverage.ts) can replay the
+// selection a CI step makes without re-importing this module per step.
+export type AdapterSelector = { envName: string; defaultEnabled: boolean };
+const selectors = new Map<string, AdapterSelector>();
+
+function roleOfSelectorEnv(envName: string): "client" | "server" {
+  if (envName.endsWith("_CLIENTS")) return "client";
+  if (envName.endsWith("_SERVERS")) return "server";
+  throw new Error(`adapter selector ${envName} must end in _CLIENTS or _SERVERS`);
+}
+
+export function enabledUnder(
   id: string,
-  envName: string,
-  defaultEnabled: boolean,
+  selector: AdapterSelector,
+  env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const selected = process.env[envName];
+  const selected = env[selector.envName];
   if (!selected || selected.trim() === "") {
-    return defaultEnabled;
+    return selector.defaultEnabled;
   }
 
   return selected
@@ -48,6 +60,24 @@ function isEnabled(
     .map((value) => value.trim())
     .filter(Boolean)
     .includes(id);
+}
+
+function isEnabled(
+  id: string,
+  envName: string,
+  defaultEnabled: boolean,
+): boolean {
+  const key = `${roleOfSelectorEnv(envName)}:${id}`;
+  if (selectors.has(key)) throw new Error(`duplicate adapter selector for ${key}`);
+  const selector = { envName, defaultEnabled };
+  selectors.set(key, selector);
+  return enabledUnder(id, selector, process.env);
+}
+
+export function adapterSelector(role: "client" | "server", id: string): AdapterSelector {
+  const selector = selectors.get(`${role}:${id}`);
+  if (!selector) throw new Error(`no selector recorded for ${role} ${id}`);
+  return selector;
 }
 
 export const clientImplementations: ImplementationDefinition[] = [

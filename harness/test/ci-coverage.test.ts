@@ -4,15 +4,9 @@
 // Go, Ruby, Lua and PHP, and every protocol and flow case, were never run in
 // CI at all.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parse as parseYaml } from "yaml";
+import { workflowRunSteps } from "../src/ci-workflows";
 import { loadAllExpectations, type Suite } from "../src/expectations";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const workflowsDir = join(here, "..", "..", ".github", "workflows");
 
 const SUITE_FILES: Record<Suite, string> = {
   vector: "test/conformance.test.ts",
@@ -20,33 +14,20 @@ const SUITE_FILES: Record<Suite, string> = {
   flow: "test/flow-conformance.test.ts",
 };
 
-type Step = { name?: string; run?: string; env?: Record<string, unknown> };
-type Job = { env?: Record<string, unknown>; steps?: Step[] };
-
 // (suite, language | "*") pairs run under HARNESS_REQUIRE=1, with their origin.
-export function requiredRuns(): Map<string, string[]> {
+function requiredRuns(): Map<string, string[]> {
   const runs = new Map<string, string[]>();
-  for (const file of readdirSync(workflowsDir).filter((f) => /\.ya?ml$/.test(f)).sort()) {
-    const doc = parseYaml(readFileSync(join(workflowsDir, file), "utf8")) as {
-      env?: Record<string, unknown>;
-      jobs?: Record<string, Job>;
-    };
-    for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
-      for (const step of job.steps ?? []) {
-        if (typeof step.run !== "string") continue;
-        const env = { ...(doc.env ?? {}), ...(job.env ?? {}), ...(step.env ?? {}) };
-        if (String(env.HARNESS_REQUIRE ?? "") !== "1") continue;
-        const languages = String(env.MPP_CONFORMANCE_LANGUAGES ?? "*")
-          .split(",")
-          .map((l) => l.trim())
-          .filter(Boolean);
-        for (const [suite, testFile] of Object.entries(SUITE_FILES)) {
-          if (!step.run.includes(testFile)) continue;
-          for (const language of languages) {
-            const key = `${suite}:${language}`;
-            runs.set(key, [...(runs.get(key) ?? []), `${file}#${jobId}`]);
-          }
-        }
+  for (const step of workflowRunSteps()) {
+    if (step.env.HARNESS_REQUIRE !== "1") continue;
+    const languages = (step.env.MPP_CONFORMANCE_LANGUAGES ?? "*")
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (const [suite, testFile] of Object.entries(SUITE_FILES)) {
+      if (!step.run.includes(testFile)) continue;
+      for (const language of languages) {
+        const key = `${suite}:${language}`;
+        runs.set(key, [...(runs.get(key) ?? []), step.origin]);
       }
     }
   }
