@@ -1567,20 +1567,28 @@ impl<S: ChannelStore> SessionServer<S> {
     ///
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
-        self.verify_voucher_with_guard(payload, |_| Ok(())).await
+        self.verify_voucher_priced(payload, self.config.amount, true, |_| Ok(()))
+            .await
     }
 
-    /// Verify a voucher and check a host lease/capacity precondition inside
-    /// the atomic watermark-and-service-debit mutation.
+    /// Verify a voucher authorizing one request, checking a host
+    /// lease/capacity precondition inside the atomic watermark-and-service-debit
+    /// mutation.
     ///
     /// The guard sees the current record on every committing mutation. It must
     /// be nonblocking and free of side effects; retries must recheck the lease.
+    ///
+    /// A successful return always charged the request: an exact replay of the
+    /// highest voucher is rejected rather than returned as a no-charge
+    /// acceptance, so a caller that forwards the request on `Ok` (for example
+    /// across replicas sharing the store) can never serve it twice for one
+    /// payment.
     pub async fn verify_voucher_with_guard(
         &self,
         payload: &VoucherPayload,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
-        self.verify_voucher_priced(payload, self.config.amount, true, guard)
+        self.verify_voucher_priced(payload, self.config.amount, false, guard)
             .await
     }
 
@@ -5095,13 +5103,23 @@ mod tests {
             })
             .await
             .is_err());
-        assert!(
-            server
-                .verify_voucher_with_guard(&payload, |_| Ok(()))
-                .await
-                .unwrap()
-                .replay
-        );
+        // An exact replay authorizes nothing: it is refused, not returned as a
+        // no-charge success a delegating host would forward.
+        let error = server
+            .verify_voucher_with_guard(&payload, |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already accepted"), "{error}");
+        let state = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((state.cumulative, state.spent_amount), (100, 25));
+        // The unguarded verifier still reports the replay idempotently.
+        assert!(server.verify_voucher(&payload).await.unwrap().replay);
     }
 
     #[cfg(feature = "server")]
