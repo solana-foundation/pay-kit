@@ -108,5 +108,5 @@ function kindOf(item) {
 }
 
 function escapeMd(s) {
-  return s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
+  return s.replace(/[\\|]/g, '\\$&').replace(/\n/g, ' ')
 }
