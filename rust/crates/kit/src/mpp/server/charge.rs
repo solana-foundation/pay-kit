@@ -4869,10 +4869,10 @@ mod tests {
 
         let request = charge_request(500_000, &Pubkey::new_unique().to_string(), &recipient);
 
-        for confidential in [None, Some(false)] {
+        for mode in [None, Some(false)] {
             let method_details = MethodDetails {
                 token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
-                confidential,
+                confidential: mode,
                 ..Default::default()
             };
             let err = mpp
@@ -4881,7 +4881,7 @@ mod tests {
                 .unwrap_err();
             assert!(
                 err.message.contains("confidential mode"),
-                "confidential={confidential:?} got: {}",
+                "confidential={mode:?} got: {}",
                 err.message
             );
         }
