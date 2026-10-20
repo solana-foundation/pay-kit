@@ -806,7 +806,9 @@ fn build_spl_instructions(
     // is a mint address (i.e. always on this SPL path). Defaulting to 6
     // silently produced wrong-decimals transfers for non-6-decimal tokens.
     let decimals = method_details.decimals.ok_or_else(|| {
-        Error::Other("methodDetails.decimals is required for SPL charges (spec §7.2)".into())
+        Error::InvalidChallenge(
+            "methodDetails.decimals is required for SPL charges (spec §7.2)".into(),
+        )
     })?;
 
     let payer = fee_payer.copied().unwrap_or(*signer_pubkey);
@@ -891,12 +893,19 @@ fn resolve_token_program(
     mint: &Pubkey,
     method_details: &MethodDetails,
 ) -> Result<Pubkey, Error> {
+    // Spec: with `tokenProgram` omitted the client MUST read the mint's
+    // owner, and MUST reject the challenge (never fall back to the Token
+    // Program) when that lookup fails or the owner is not a token program.
     let token_program = if let Some(token_program) = method_details.token_program.as_deref() {
         Pubkey::from_str(token_program)
-            .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?
+            .map_err(|e| Error::InvalidChallenge(format!("Invalid token program: {e}")))?
     } else {
         rpc.get_account(mint)
-            .map_err(|e| Error::Rpc(format!("Failed to fetch mint account: {e}")))?
+            .map_err(|e| {
+                Error::InvalidChallenge(format!(
+                    "tokenProgram omitted and the mint account lookup failed: {e}"
+                ))
+            })?
             .owner
     };
 
@@ -904,7 +913,7 @@ fn resolve_token_program(
     if token_program_str != programs::TOKEN_PROGRAM
         && token_program_str != programs::TOKEN_2022_PROGRAM
     {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidChallenge(format!(
             "Unsupported token program: {token_program}"
         )));
     }
@@ -2203,6 +2212,65 @@ mod tests {
         let err = resolve_token_program(&rpc, &mint, &md);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
+    }
+
+    /// RPC whose `getAccountInfo` answers with a mint owned by `owner`, or
+    /// with no account when `owner` is `None`.
+    fn mint_lookup_rpc(owner: Option<&str>) -> RpcClient {
+        use base64::Engine;
+        let value = owner.map(|owner| {
+            let mut data = vec![0u8; 82];
+            data[44] = 6;
+            data[45] = 1;
+            serde_json::json!({
+                "data": [base64::engine::general_purpose::STANDARD.encode(data), "base64"],
+                "executable": false,
+                "lamports": 1_461_600,
+                "owner": owner,
+                "rentEpoch": 0,
+                "space": 82,
+            })
+        });
+        let mut mocks = std::collections::HashMap::new();
+        mocks.insert(
+            solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+            serde_json::json!({ "context": { "slot": 1 }, "value": value }),
+        );
+        RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+    }
+
+    // RULINGS C3: with tokenProgram omitted, the owner read from the mint wins
+    // (positive control for the two rejections below).
+    #[test]
+    fn resolve_tp_reads_mint_owner_when_omitted() {
+        let mint = Pubkey::new_unique();
+        let md = MethodDetails::default();
+        for owner in [programs::TOKEN_PROGRAM, programs::TOKEN_2022_PROGRAM] {
+            let tp = resolve_token_program(&mint_lookup_rpc(Some(owner)), &mint, &md).unwrap();
+            assert_eq!(tp.to_string(), owner);
+        }
+    }
+
+    #[test]
+    fn resolve_tp_rejects_challenge_when_mint_lookup_fails() {
+        let err = resolve_token_program(
+            &mint_lookup_rpc(None),
+            &Pubkey::new_unique(),
+            &MethodDetails::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn resolve_tp_rejects_challenge_when_mint_owner_unexpected() {
+        let err = resolve_token_program(
+            &mint_lookup_rpc(Some(programs::SYSTEM_PROGRAM)),
+            &Pubkey::new_unique(),
+            &MethodDetails::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
     }
 
     // ── ComputeBudgetOptions ──
