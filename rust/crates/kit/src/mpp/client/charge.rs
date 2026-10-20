@@ -533,6 +533,16 @@ pub async fn build_charge_transaction_with_options(
                     )
                 },
             )?;
+            // Confidential mints are always Token-2022, so the unknown-mint
+            // opt-in that guards the plaintext SPL path applies here too.
+            if !crate::mpp::protocol::solana::is_known_stablecoin_mint(mint)
+                && !options.allow_unknown_token_2022
+            {
+                return Err(Error::Other(format!(
+                    "Refusing to sign a confidential charge for unknown Token-2022 mint {mint}: \
+                     set BuildChargeTransactionOptions::allow_unknown_token_2022 to opt in"
+                )));
+            }
             let blockhash = resolve_blockhash(rpc, method_details).await?;
             return super::confidential::confidential_charge_payload(
                 signer,
@@ -1891,6 +1901,57 @@ mod tests {
             !msg.contains("invalid mint"),
             "currency symbol was not resolved to a mint address: {msg}"
         );
+    }
+
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn build_charge_confidential_refuses_an_unknown_mint_without_opt_in() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
+            token_program: Some(
+                crate::mpp::protocol::solana::programs::TOKEN_2022_PROGRAM.to_string(),
+            ),
+            confidential: Some(true),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let unknown_mint = Pubkey::new_unique().to_string();
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            &unknown_mint,
+            "not-a-pubkey",
+            &md,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("allow_unknown_token_2022"),
+            "{err}"
+        );
+
+        // With the opt-in the builder proceeds to the bundle (and stops at
+        // the deliberately invalid recipient).
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            &unknown_mint,
+            "not-a-pubkey",
+            &md,
+            BuildChargeTransactionOptions {
+                allow_unknown_token_2022: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid recipient"), "{err}");
     }
 
     // ── build_charge_transaction: SOL happy paths ──
