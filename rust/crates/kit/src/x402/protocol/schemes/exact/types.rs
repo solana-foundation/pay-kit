@@ -366,8 +366,10 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("payment requirement must be an object"))?;
 
-        let raw_network =
-            string_field(object, "network").unwrap_or_else(|| SOLANA_NETWORK.to_string());
+        // Never default the ledger: an offer that omits `network` would
+        // otherwise be signed as a mainnet payment nobody named.
+        let raw_network = string_field(object, "network")
+            .ok_or_else(|| serde::de::Error::custom("payment requirement is missing network"))?;
         let network = normalize_network_identifier(&raw_network);
         let cluster = string_field(object, "cluster").or_else(|| {
             cluster_for_caip2_network(&network).map(|cluster| {
@@ -1427,5 +1429,16 @@ mod tests {
         let canonical: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
         assert_eq!(canonical.recipient, offer["payTo"]);
         assert_eq!(canonical.currency, offer["asset"]);
+    }
+
+    #[test]
+    fn offer_without_network_is_rejected_instead_of_defaulting_to_mainnet() {
+        let mut offer = v2_offer();
+        offer.as_object_mut().unwrap().remove("network");
+        let error = serde_json::from_value::<PaymentRequirements>(offer).unwrap_err();
+        assert!(error.to_string().contains("missing network"), "{error}");
+
+        let requirement: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
+        assert_eq!(requirement.network, SOLANA_MAINNET);
     }
 }
