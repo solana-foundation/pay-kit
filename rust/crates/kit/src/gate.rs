@@ -111,8 +111,8 @@ pub struct PayKitConfig {
     pub challenge_binding_secret: Option<String>,
     /// MPP realm (credential namespace). REQUIRED and unique per service.
     pub realm: Option<String>,
-    /// MPP replay store. REQUIRED and shared by every verifier of the same
-    /// challenges.
+    /// Replay store for MPP charges and x402 exact payments. REQUIRED and
+    /// shared by every verifier of the same challenges.
     pub store: Option<Arc<dyn Store>>,
     /// When set, the server sponsors the network fee: drives MPP fee-sponsored
     /// mode and is used as the x402 fee-payer address.
@@ -249,6 +249,11 @@ impl PayKit {
         })
         .map_err(|e| PayKitError::X402(e.to_string()))?
         .with_tx_v1(config.tx_v1);
+        // Consumed exact signatures must be visible to every replica too.
+        let x402 = match config.store.clone() {
+            Some(store) => x402.with_store(store),
+            None => x402,
+        };
 
         // The `upto` scheme needs an operator signer to sign `settle_and_seal`
         // (as the zero-share channel payee) and the settlement vouchers, so it
@@ -1998,6 +2003,24 @@ mod tests {
             .consume_signature("other-signature")
             .await
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn x402_signature_consumed_on_one_replica_is_rejected_on_another() {
+        let shared: Arc<dyn Store> = Arc::new(crate::mpp::store::MemoryStore::new());
+        let replica_a = PayKit::new(push_config(Some(shared.clone()))).unwrap();
+        let replica_b = PayKit::new(push_config(Some(shared))).unwrap();
+        let signature = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+
+        replica_a.x402().consume_signature(signature).await.unwrap();
+        assert!(replica_b.x402().consume_signature(signature).await.is_err());
+        replica_b
+            .x402()
+            .consume_signature("other-signature")
+            .await
+            .unwrap();
+        // Each protocol keeps its own replay namespace in the shared store.
+        replica_b.mpp().consume_signature(signature).await.unwrap();
     }
 
     #[test]
