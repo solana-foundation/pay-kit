@@ -224,8 +224,10 @@ async def test_matching_route_passes_binding_then_fails_at_settlement():
     auth = _credential_for(adapter, gate)
     with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, {"headers": {"authorization": auth}})
-    # Must NOT be a cross-route mismatch: the route lined up, settlement failed.
-    assert exc.value.code != "charge_request_mismatch"
+    # Must NOT be any binding mismatch: the route lined up (the gate expects
+    # the symbol, the challenge carries the mint), and only settlement failed.
+    assert exc.value.code not in ("charge_request_mismatch", "challenge_route_mismatch")
+    assert "mismatch" not in str(exc.value).lower()
 
 
 # -- recent blockhash injection (caveat #5) ----------------------------------

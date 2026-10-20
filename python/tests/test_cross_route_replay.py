@@ -209,3 +209,35 @@ async def test_with_expected_accepts_matching_route():
             "credential realm",
         ):
             assert phrase not in msg, f"matching route incorrectly tripped binding: {e}"
+
+
+# ── Expected requests built from route configuration ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_expected_symbol_matches_the_issued_mint():
+    """Regression: a caller's expected request names the currency by symbol
+    (as the unified gate does) while the challenge carries the mint. The
+    server must resolve the symbol before comparing, not reject the route."""
+    mpp = _make_mpp()
+    challenge = mpp.charge("0.10")
+    expected = ChargeRequest.from_dict(challenge.decode_request())
+    assert expected.currency == "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"  # devnet USDC
+    expected.currency = "USDC"
+
+    with pytest.raises(PaymentError) as exc:
+        await mpp.verify_credential_with_expected(_bogus_signature_credential(_echo_from(challenge)), expected)
+    assert "mismatch" not in str(exc.value).lower(), "binding must pass; only settlement may fail"
+
+
+@pytest.mark.asyncio
+async def test_expected_different_mint_is_still_rejected():
+    """Control: resolving symbols must not loosen the currency pin."""
+    mpp = _make_mpp()
+    challenge = mpp.charge("0.10")
+    expected = ChargeRequest.from_dict(challenge.decode_request())
+    expected.currency = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+
+    with pytest.raises(PaymentError) as exc:
+        await mpp.verify_credential_with_expected(_bogus_signature_credential(_echo_from(challenge)), expected)
+    assert exc.value.code == "currency-mismatch"

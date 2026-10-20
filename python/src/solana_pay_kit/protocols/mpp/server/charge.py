@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -385,6 +386,11 @@ class Mpp:
         succeed even if its other fields line up.
         """
         cred_request, _details, payload = self._verify_challenge_and_decode(credential)
+        # Callers build `expected` from route configuration, which may name
+        # the currency by symbol ("USDC") or as "SOL". The challenge carries
+        # the wire form ("sol" or the mint), so compare and settle against
+        # the same resolution the server used when it issued the challenge.
+        expected = self._to_wire_request(expected)
 
         if cred_request.amount != expected.amount:
             raise PaymentError(
@@ -407,6 +413,11 @@ class Mpp:
             expected_details = MethodDetails.from_dict(expected.method_details)
 
         return await self._verify_payload(credential, expected, expected_details, payload)
+
+    def _to_wire_request(self, request: ChargeRequest) -> ChargeRequest:
+        """Return ``request`` with its currency in wire form ("sol" or a mint)."""
+        wire = "sol" if is_native_sol(request.currency) else resolve_mint(request.currency, self._network)
+        return request if wire == request.currency else dataclasses.replace(request, currency=wire)
 
     def _verify_challenge_and_decode(
         self, credential: PaymentCredential
