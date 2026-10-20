@@ -109,9 +109,12 @@ fn expected_charge(
     decimals: u8,
     token_program: Option<&str>,
 ) -> solana_pay_kit::mpp::ChargeRequest {
+    // draft-solana-charge-00: decimals "MUST be absent when currency is
+    // \"sol\"", and the server no longer issues it for SOL.
+    let is_sol = currency.eq_ignore_ascii_case("sol");
     let md = solana_pay_kit::mpp::protocol::solana::MethodDetails {
         network: Some(network.to_string()),
-        decimals: Some(decimals),
+        decimals: (!is_sol).then_some(decimals),
         token_program: token_program.map(|s| s.to_string()),
         ..Default::default()
     };
