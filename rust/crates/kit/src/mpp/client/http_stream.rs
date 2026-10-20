@@ -292,7 +292,7 @@ impl HttpCommitTransport {
 
     /// The URL a commit for `directive` is sent to.
     pub fn commit_url(&self, directive: &MeteringDirective) -> Result<url::Url> {
-        let trusted = self
+        let configured = self
             .default_commit_url
             .as_deref()
             .map(|url| {
@@ -302,23 +302,23 @@ impl HttpCommitTransport {
             })
             .transpose()?;
         let Some(hint) = directive.commit_url.as_deref() else {
-            return trusted
+            return configured
                 .ok_or_else(|| Error::Other("metering directive missing commitUrl".to_string()));
         };
-        let trusted = trusted.ok_or_else(|| {
+        let configured = configured.ok_or_else(|| {
             Error::Other(
                 "directive commitUrl needs a configured default commit URL to trust".to_string(),
             )
         })?;
-        let url = trusted
+        let url = configured
             .join(hint)
             .map_err(|e| Error::Other(format!("invalid directive commitUrl: {e}")))
             .and_then(check_commit_url)?;
-        if url.origin() != trusted.origin() {
+        if url.origin() != configured.origin() {
             return Err(Error::Other(format!(
                 "directive commitUrl origin {} does not match the configured commit origin {}",
                 url.origin().ascii_serialization(),
-                trusted.origin().ascii_serialization()
+                configured.origin().ascii_serialization()
             )));
         }
         Ok(url)
@@ -326,13 +326,19 @@ impl HttpCommitTransport {
 }
 
 fn check_commit_url(url: url::Url) -> Result<url::Url> {
-    if !matches!(url.scheme(), "http" | "https")
+    let loopback = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    if !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
         || url.host_str().is_none_or(str::is_empty)
         || !url.username().is_empty()
         || url.password().is_some()
     {
         return Err(Error::Other(format!(
-            "commit URL must be http(s) without credentials: {url}"
+            "commit URL must be https (http only on loopback) without credentials: {url}"
         )));
     }
     Ok(url)
@@ -920,6 +926,18 @@ mod tests {
             .with_default_commit_url("https://user@api.example.com/commit")
             .commit_url(&directive_to("s", None))
             .is_err());
+        for (configured, ok) in [
+            ("http://api.example.com/commit", false),
+            ("http://10.0.0.1/commit", false),
+            ("http://127.0.0.1:8080/commit", true),
+            ("http://[::1]:8080/commit", true),
+            ("http://localhost/commit", true),
+        ] {
+            let resolved = HttpCommitTransport::new()
+                .with_default_commit_url(configured)
+                .commit_url(&directive_to("s", None));
+            assert_eq!(resolved.is_ok(), ok, "{configured}");
+        }
     }
 
     #[tokio::test]
