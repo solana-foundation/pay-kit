@@ -40,6 +40,7 @@ jobs:
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: swift
+          HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness

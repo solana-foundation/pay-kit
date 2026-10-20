@@ -125,6 +125,7 @@ jobs:
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: python
+          HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness

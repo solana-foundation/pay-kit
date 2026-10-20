@@ -45,7 +45,7 @@ jobs:
           - runner: ubuntu-latest
             clients: rust,rust-x402,go-x402,kotlin,kotlin-x402
             servers: rust,rust-x402,go
-            conformance: kotlin
+            conformance: kotlin,go
           - runner: macos-latest
             clients: swift,swift-x402
             servers: rust,rust-x402
@@ -103,6 +103,18 @@ jobs:
         id: harness-setup
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      - name: Run typescript offline conformance (vectors + protocol + flows)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+          HARNESS_REQUIRE: "1"
+        run: >-
+          pnpm exec vitest run
+          test/expectations.test.ts test/ci-coverage.test.ts
+          test/conformance.test.ts test/protocol-conformance.test.ts test/flow-conformance.test.ts
+      - name: Check generated coverage table
+        working-directory: harness
+        run: pnpm coverage:check
       # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
         if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
@@ -132,9 +144,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The vector runner is a prebuilt artifact; the protocol runner uses `go run`.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      - name: Run go offline conformance (vectors + protocol)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: go
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
       - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -168,11 +191,12 @@ jobs:
       - name: Sync Python uv environment
         working-directory: python
         run: uv sync --extra dev
-      - name: Run Python cross-SDK conformance vectors
+      - name: Run python offline conformance (vectors + protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: python
-        run: pnpm exec vitest run test/conformance.test.ts
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness
         env:
@@ -218,6 +242,12 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      - name: Run ruby offline conformance (vectors + protocol)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: ruby
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
       - name: Run harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -263,6 +293,12 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      - name: Run lua offline conformance (vectors + protocol)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: lua
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
       - name: TS-to-Lua focused matrix
         working-directory: harness
         env:
@@ -302,6 +338,12 @@ jobs:
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
+      - name: Run php offline conformance (vectors + protocol)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: php
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
       - name: Run PHP server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
@@ -339,6 +381,7 @@ jobs:
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: swift
+          HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness
@@ -390,6 +433,7 @@ jobs:
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: kotlin
+          HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Run Kotlin client harness smoke
         working-directory: harness
@@ -425,6 +469,32 @@ jobs:
   # deployed payment-channels program, so a green run proves settlement actually
   # lands on-chain (the byte-shape harness above cannot). Needs @solana/pay-kit
   # built (the on-chain suite imports it) and a mainnet RPC to fork from.
+  rust-conformance:
+    name: "Harness: Rust offline conformance"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-${{ runner.arch }}-harness-conformance-${{ hashFiles('rust/**/Cargo.toml', 'rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-harness-conformance-
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Build Rust conformance runners
+        working-directory: rust
+        run: cargo build -q -p solana-pay-kit --example protocol_runner
+      - name: Run rust offline conformance (vectors + protocol)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+          HARNESS_REQUIRE: "1"
+        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+
   onchain:
     name: "Harness: on-chain settlement (mainnet fork)"
     needs: build

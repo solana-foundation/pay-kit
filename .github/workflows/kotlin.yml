@@ -57,6 +57,7 @@ jobs:
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: kotlin
+          HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Pre-warm Gradle for the Kotlin harness client
         working-directory: harness/kotlin-client
