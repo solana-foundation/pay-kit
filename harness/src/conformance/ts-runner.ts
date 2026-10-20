@@ -15,7 +15,7 @@ import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
-import { caip2, toNetwork } from "@solana/pay-kit";
+import { caip2, readPaymentIdentifier, toNetwork } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import { session as sessionMethod } from "@solana/mpp";
 import {
@@ -131,7 +131,10 @@ function shapeFromDecoded(transactionBase64: string): RunnerResult["transactionS
 //             (adapters/x402.ts: `new x402Facilitator().register(network,
 //             new ExactSvmScheme(toFacilitatorSvmSigner(operator)))`), run
 //             on the vector's real transaction against requirements shaped
-//             like the adapter's `requirementsFor`.
+//             like the adapter's `requirementsFor`. A route that requires a
+//             payment-identifier first runs pay-kit's `readPaymentIdentifier`,
+//             the check the adapter applies to a `paymentIdentifier:
+//             'required'` gate before any chain work (a failure is HTTP 400).
 
 const X402_V1_UNSUPPORTED =
   "unsupported-mode: @solana/pay-kit speaks x402 v2 only (its client answers only the PAYMENT-REQUIRED header and its server registers only the v2 exact facilitator)";
@@ -240,15 +243,6 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
   ) {
     throw new Error("invalid payload: x402 verify vector missing server route");
   }
-  if (input.x402ServerRequiresPaymentIdentifier) {
-    return {
-      error:
-        "unsupported-mode: @solana/pay-kit's x402 server has no option to require the payment-identifier extension and never reads extensions",
-      id: vector.id,
-      outcome: "unsupported-mode",
-    };
-  }
-
   const operator = await createKeyPairSignerFromBytes(
     new Uint8Array(input.x402ServerFeePayerSecretKey),
   );
@@ -286,6 +280,9 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
     payload = decodePaymentSignatureHeader(input.x402PaymentHeader);
   } catch (error) {
     throw new Error(`invalid payload: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (input.x402ServerRequiresPaymentIdentifier) {
+    readPaymentIdentifier(payload.extensions, "required");
   }
   let verification: Awaited<ReturnType<typeof facilitator.verify>>;
   try {

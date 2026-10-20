@@ -32,10 +32,3 @@ ids = [
   "vector/x402-ext-echo-payment-identifier-pinned-id",
   "vector/x402-ext-preserve-unknown-verbatim",
 ]
-
-[[unsupported]]
-reason = "the @solana/pay-kit x402 server has no option to require a payment-identifier and never reads extensions"
-ids = [
-  "vector/x402-ext-server-accepts-valid-id",
-  "vector/x402-ext-server-rejects-required-missing-id",
-]
