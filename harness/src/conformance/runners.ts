@@ -5,6 +5,8 @@
 //   { "language": "go", "command": ["go", "run", "./cmd/conformance"],
 //     "cwd": "go" }
 //
+// Unknown keys are rejected (including the retired `intents`).
+//
 // The driver (test/conformance.test.ts) globs these manifests instead of
 // carrying a hardcoded RUNNERS table, so adding a language is a file drop
 // with no central edit. `cwd` is the runner's working directory relative to
@@ -23,17 +25,11 @@ export type RunnerManifest = {
   command: string[];
   // Working directory relative to the repo root. Defaults to the repo root.
   cwd?: string;
-  // Intents this runner can exercise. When omitted, the runner is assumed to
-  // support the original cross-SDK intents ("charge", "x402-exact"); a vector
-  // whose intent is not listed is skipped for this runner rather than failed.
-  // This lets a new intent (e.g. "session") land with only the SDKs that
-  // implement it, without editing every other language's runner.
-  intents?: string[];
 };
 
-// The intents every runner is assumed to support when its manifest does not
-// declare an explicit `intents` list.
-const DEFAULT_INTENTS = ["charge", "x402-exact"];
+// Which intents a runner claims is NOT declared here: it lives in
+// harness/expectations/<language>.toml and is reconciled exactly by
+// src/expectations.ts. A manifest only says how to launch the runner.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -46,11 +42,11 @@ function isRunnerManifest(value: unknown): value is RunnerManifest {
   if (!Array.isArray(m.command) || m.command.length === 0) return false;
   if (!m.command.every((c) => typeof c === "string")) return false;
   if (m.cwd !== undefined && typeof m.cwd !== "string") return false;
-  if (
-    m.intents !== undefined &&
-    (!Array.isArray(m.intents) || !m.intents.every((i) => typeof i === "string"))
-  ) {
-    return false;
+  // Capabilities moved to harness/expectations/; reject the old field so a
+  // stale manifest cannot silently narrow coverage.
+  if ("intents" in m) return false;
+  for (const key of Object.keys(m)) {
+    if (!["language", "command", "cwd"].includes(key)) return false;
   }
   return true;
 }
@@ -60,8 +56,6 @@ export type DiscoveredRunner = {
   command: string[];
   // Absolute working directory the driver spawns the runner in.
   cwd: string;
-  // Resolved intent capabilities (manifest `intents` or the default set).
-  intents: string[];
 };
 
 // Discover every runner manifest under harness/runners/, validate it, and
@@ -87,7 +81,6 @@ export function discoverRunners(): DiscoveredRunner[] {
         return resolveAdapterCommand("conformance", parsed.language, parsed.command);
       },
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
-      intents: parsed.intents ?? DEFAULT_INTENTS,
     });
   }
   return runners;

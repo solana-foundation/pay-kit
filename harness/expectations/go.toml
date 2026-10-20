@@ -1,0 +1,22 @@
+language = "go"
+
+# Suites and vector intents this SDK claims. Unclaimed ones are shown
+# as "unclaimed" in the coverage table; they are never silently skipped.
+[capabilities]
+vector = ["charge", "x402-exact", "session"]
+protocol = true
+flow = false
+
+[[unsupported]]
+reason = "session wire vectors are not implemented for the Go SDK yet"
+ids = [
+  "vector/session-wire-action-close-frozen",
+  "vector/session-wire-action-open-draft-slot-echo-reject",
+  "vector/session-wire-action-open-frozen",
+  "vector/session-wire-action-unknown-tag-reject",
+  "vector/session-wire-action-voucher-frozen",
+  "vector/session-wire-action-voucher-legacy-inner-data-reject",
+  "vector/session-wire-request-new-channel-frozen",
+  "vector/session-wire-request-resume-frozen",
+  "vector/session-wire-request-superseded-draft-reject",
+]

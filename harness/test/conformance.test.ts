@@ -1,57 +1,40 @@
 // Cross-SDK conformance-vector driver.
 //
-// Loads every vector under harness/vectors/, spawns the TypeScript
-// reference runner once per vector over stdin/stdout, and asserts the
-// runner output against the vector's `expect` block. The oracle is the
-// DECODED SEMANTIC SHAPE for build/verify vectors and EXACT BYTES for
-// canonical-bytes vectors.
+// Loads every vector under harness/vectors/, spawns each SDK's runner once
+// per vector over stdin/stdout, and asserts the runner output against the
+// vector's `expect` block. The oracle is the DECODED SEMANTIC SHAPE for
+// build/verify vectors and EXACT BYTES for canonical-bytes vectors.
 //
-// This suite is deterministic and RPC-free: it needs no surfpool, no
-// loopback socket, and no live validator. Only the TS reference runner
-// ships in this change; runners for the other SDKs are a tracked
-// follow-up (see harness/vectors/README.md), at which point this driver
-// gains a `RUNNERS` table and asserts every runner agrees per vector.
+// What each SDK must pass is declared in harness/expectations/<lang>.toml
+// and reconciled exactly (src/expectations.ts): unlisted failures fail,
+// listed failures that pass fail, and unsupported entries are executed and
+// must still report unsupported. Nothing is skipped.
+//
+// HARNESS_EXPECTATIONS_DISCOVER=1 runs every vector for every SDK
+// regardless of claims and only records outcomes to harness/results/, which
+// is how expectations files are seeded and audited.
 
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { address } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
-import { describe, expect, it } from "vitest";
-import {
-  assertConformanceVector,
-  assertRunnerResult,
-} from "../src/conformance/contract-schema";
+import { afterAll, describe, expect, it } from "vitest";
+import { assertRunnerResult } from "../src/conformance/contract-schema";
+import { loadVectors } from "../src/conformance/load";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
+import {
+  type CaseRef,
+  danglingEntries,
+  decide,
+  loadAllExpectations,
+} from "../src/expectations";
+import { CaseRecorder, discoveryMode, observe, requireMode } from "../src/expectations-run";
 import type {
   ConformanceVector,
   RunnerResult,
   TransactionShape,
   X402EnvelopeShape,
 } from "../src/conformance/schema";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const vectorsDir = join(here, "..", "vectors");
-
-function loadVectors(): ConformanceVector[] {
-  const files = readdirSync(vectorsDir).filter((name) => name.endsWith(".json"));
-  const vectors: ConformanceVector[] = [];
-  for (const file of files) {
-    const parsed = JSON.parse(
-      readFileSync(join(vectorsDir, file), "utf8"),
-    ) as ConformanceVector[];
-    for (const vector of parsed) {
-      // Validate the vector against the ABI at load so an authoring mistake
-      // (wrong mode, missing expect.outcome, stray envelope key) fails here
-      // with a clear message instead of deep inside a runner.
-      assertConformanceVector(vector, `${file}:${vector?.id ?? "(no id)"}`);
-      vectors.push(vector);
-    }
-  }
-  return vectors;
-}
 
 // One CLI per SDK over stdin/stdout, discovered from per-language manifest
 // files under harness/runners/ rather than a hardcoded table: adding a
@@ -263,6 +246,82 @@ function assertEnvelopeShape(
 
 const vectors = loadVectors();
 
+// Execute one vector against one runner and compare against `expect`.
+// Throws (via vitest `expect`) on any mismatch; returns "unsupported" when the
+// runner declares it cannot express the vector's mode.
+async function checkVector(
+  command: string[],
+  cwd: string,
+  vector: ConformanceVector,
+): Promise<"pass" | { unsupported: string }> {
+  const result = await runVector(command, vector, cwd);
+  expect(result.id).toBe(vector.id);
+
+  // A runner that cannot express a vector's mode for its SDK's role (e.g.
+  // verify-transaction on a client-only SDK) reports `unsupported-mode`, or
+  // a reject whose error starts with "unsupported-mode". The reconciler
+  // decides whether that is allowed for this (SDK, vector).
+  if (
+    (result.outcome as string) === "unsupported-mode" ||
+    (result.outcome === "reject" && (result.error ?? "").startsWith("unsupported-mode"))
+  ) {
+    return { unsupported: result.error ?? "unsupported-mode" };
+  }
+
+  expect(
+    result.outcome,
+    `expected ${vector.expect.outcome} but runner said ${result.outcome}: ${result.error ?? ""}`,
+  ).toBe(vector.expect.outcome);
+
+  if (vector.expect.outcome === "reject") {
+    // Pin WHY the SDK rejected, not just that it did. A vector that
+    // declares a rejectCode forces the runner to have mapped its native
+    // error onto the shared category, so a guard that fires for the wrong
+    // reason fails here instead of passing on outcome alone.
+    if (vector.expect.rejectCode !== undefined) {
+      expect(
+        result.rejectCode,
+        `expected reject category ${vector.expect.rejectCode} but runner emitted ${result.rejectCode ?? "(none)"}: ${result.error ?? ""}`,
+      ).toBe(vector.expect.rejectCode);
+    }
+    return "pass";
+  }
+
+  if (vector.mode === "canonical-bytes") {
+    const wanted = vector.expect.exactBytes;
+    expect(wanted, "canonical-bytes vector missing expect.exactBytes").toBeDefined();
+    if (wanted?.canonicalJson !== undefined) {
+      expect(result.exactBytes?.canonicalJson).toBe(wanted.canonicalJson);
+    }
+    if (wanted?.base64Url !== undefined) {
+      expect(result.exactBytes?.base64Url).toBe(wanted.base64Url);
+    }
+    if (wanted?.bytes !== undefined) {
+      expect(result.exactBytes?.bytes).toEqual(wanted.bytes);
+    }
+    return "pass";
+  }
+
+  if (vector.intent === "x402-exact") {
+    if (vector.expect.x402EnvelopeShape) {
+      assertEnvelopeShape(vector.expect.x402EnvelopeShape, result.x402EnvelopeShape);
+    }
+    return "pass";
+  }
+
+  if (vector.expect.transactionShape) {
+    await assertShape(vector.expect.transactionShape, result.transactionShape);
+  }
+  return "pass";
+}
+
+const EXPECTATIONS = loadAllExpectations();
+const vectorRefs: CaseRef[] = vectors.map((v) => ({
+  suite: "vector",
+  id: v.id,
+  capability: v.intent,
+}));
+
 describe("cross-SDK conformance vectors", () => {
   it("loaded at least the seeded vector classes", () => {
     expect(vectors.length).toBeGreaterThanOrEqual(10);
@@ -272,91 +331,48 @@ describe("cross-SDK conformance vectors", () => {
     expect(modes.has("canonical-bytes")).toBe(true);
   });
 
-  for (const { language, command, cwd: runnerCwd, intents } of RUNNERS) {
+  it("vector ids are unique", () => {
+    const ids = vectors.map((v) => v.id);
+    expect(ids.length).toBe(new Set(ids).size);
+  });
+
+  it("every runner manifest has expectations claiming vectors, and vice versa", () => {
+    const manifests = new Set(discoverRunners().map((r) => r.language));
+    const claiming = new Set(
+      [...EXPECTATIONS.values()]
+        .filter((e) => e.capabilities.vector.size > 0)
+        .map((e) => e.language),
+    );
+    expect([...manifests].sort()).toEqual([...claiming].sort());
+  });
+
+  for (const { language, command, cwd: runnerCwd } of RUNNERS) {
     describe(`${language} reference runner`, () => {
-      for (const vector of vectors) {
-        it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome}`, async (ctx) => {
-          // Skip vectors for an intent this runner does not declare. Lets a new
-          // intent (e.g. "session") land with only the SDKs that implement it;
-          // runners without an explicit `intents` list default to the original
-          // cross-SDK set ("charge", "x402-exact").
-          if (!intents.includes(vector.intent)) {
-            ctx.skip();
-            return;
-          }
-          const result = await runVector(command, vector, runnerCwd);
-          expect(result.id).toBe(vector.id);
+      const exp = EXPECTATIONS.get(language);
+      if (!exp) throw new Error(`no harness/expectations/${language}.toml`);
+      const recorder = new CaseRecorder("vector", language);
 
-          // A runner that does not support a vector's mode for this SDK's
-          // role (e.g. verify-transaction on a client-only SDK) declares it
-          // either as a dedicated `unsupported-mode` outcome or as a reject
-          // whose error is prefixed "unsupported-mode". Both conventions are
-          // honored so every SDK runner registers cleanly regardless of its
-          // style. The prefix is a deliberate sentinel and never a real
-          // reject category, so it skips even when the vector itself expects
-          // a reject (a client-only SDK cannot exercise a verify-reject
-          // vector at all). Skip the vector for this language rather than
-          // fail it.
-          if (
-            (result.outcome as string) === "unsupported-mode" ||
-            (result.outcome === "reject" &&
-              (result.error ?? "").startsWith("unsupported-mode"))
-          ) {
-            ctx.skip();
-            return;
-          }
+      it("expectations have no dangling entries", () => {
+        expect(danglingEntries(exp, "vector", vectorRefs)).toEqual([]);
+      });
 
-          expect(
-            result.outcome,
-            `expected ${vector.expect.outcome} but runner said ${result.outcome}: ${result.error ?? ""}`,
-          ).toBe(vector.expect.outcome);
-
-          if (vector.expect.outcome === "reject") {
-            // Pin WHY the SDK rejected, not just that it did. A vector that
-            // declares a rejectCode forces the runner to have mapped its
-            // native error onto the shared category, so a guard that fires
-            // for the wrong reason (e.g. a decimals mismatch caught only by a
-            // generic no-matching-transfer fallback) fails here instead of
-            // passing on outcome alone.
-            if (vector.expect.rejectCode !== undefined) {
-              expect(
-                result.rejectCode,
-                `expected reject category ${vector.expect.rejectCode} but runner emitted ${result.rejectCode ?? "(none)"}: ${result.error ?? ""}`,
-              ).toBe(vector.expect.rejectCode);
-            }
-            return;
-          }
-
-          if (vector.mode === "canonical-bytes") {
-            const wanted = vector.expect.exactBytes;
-            expect(wanted, "canonical-bytes vector missing expect.exactBytes").toBeDefined();
-            if (wanted?.canonicalJson !== undefined) {
-              expect(result.exactBytes?.canonicalJson).toBe(wanted.canonicalJson);
-            }
-            if (wanted?.base64Url !== undefined) {
-              expect(result.exactBytes?.base64Url).toBe(wanted.base64Url);
-            }
-            if (wanted?.bytes !== undefined) {
-              expect(result.exactBytes?.bytes).toEqual(wanted.bytes);
-            }
-            return;
-          }
-
-          if (vector.intent === "x402-exact") {
-            if (vector.expect.x402EnvelopeShape) {
-              assertEnvelopeShape(
-                vector.expect.x402EnvelopeShape,
-                result.x402EnvelopeShape,
-              );
-            }
-            return;
-          }
-
-          if (vector.expect.transactionShape) {
-            await assertShape(vector.expect.transactionShape, result.transactionShape);
-          }
+      for (const [index, vector] of vectors.entries()) {
+        const ref = vectorRefs[index];
+        const decision = discoveryMode() ? { kind: "pass" as const } : decide(exp, ref);
+        if (decision.kind === "unclaimed") {
+          recorder.record(ref, decision, undefined);
+          continue;
+        }
+        it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome} [${decision.kind}]`, async () => {
+          const observed = await observe(() => checkVector(command, runnerCwd, vector));
+          recorder.verdict(exp, ref, decision, observed);
         }, 60_000);
       }
+
+      afterAll(() => {
+        recorder.flush();
+        if (requireMode() && !discoveryMode()) recorder.assertComplete(vectorRefs, exp);
+      });
     });
   }
 });

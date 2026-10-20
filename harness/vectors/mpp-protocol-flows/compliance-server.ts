@@ -1,5 +1,5 @@
 // Vendored from tempoxyz/mpp-tools `conformance/flows/compliance-server.ts`
-// (commit b15fea4ee3f12da7ece735dc778ad84102af679c, MIT). Do not hand-edit
+// (commit 2c6ea56f98eefcdc52b6dee28b6bf5a8da1b7ea9, MIT). Do not hand-edit
 // beyond the deviations below; see README.md in this directory.
 //
 // Deviations from upstream (exhaustive):
@@ -44,6 +44,8 @@ type FlowCase = {
   initial_query?: string
   retry_query?: string
   bind_request_resource?: boolean
+  client_flow?: boolean
+  server_only?: boolean
   check_expires?: boolean
   accept_payment?: string
   idempotency_key?: string
@@ -65,9 +67,13 @@ type FlowCase = {
   no_payment?: boolean
   skip_authorization?: boolean
   verify_body_preserved?: boolean
+  redirect_to?: string
+  redirect_to_port_offset?: number
+  expect_no_authorization?: boolean
+  reject_authorization?: boolean
 }
 
-const secretKey = 'conformance-secret'
+const secretKey = 'conformance-secret-32-bytes-minimum'
 const realm = 'conformance'
 const port = Number(process.env.MPP_FLOW_PORT ?? 43999)
 const flowPath = process.env.MPP_FLOW_CASES
@@ -248,7 +254,7 @@ function sendJsonRpc(res: http.ServerResponse, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
-const server = http.createServer(async (req, res) => {
+const handler: http.RequestListener = async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const flowCase = caseByPath.get(url.pathname)
 
@@ -308,6 +314,19 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (flowCase.redirect_to) {
+    const redirectUrl = new URL(flowCase.redirect_to, url)
+    if (flowCase.redirect_to_port_offset) {
+      redirectUrl.port = String(port + flowCase.redirect_to_port_offset)
+    }
+    res.writeHead(302, {
+      Location: redirectUrl.toString(),
+      'Cache-Control': 'no-store',
+    })
+    res.end()
+    return
+  }
+
   if (flowCase.no_payment) {
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')
@@ -317,6 +336,13 @@ const server = http.createServer(async (req, res) => {
 
   // Read request body for POST flows
   const requestBody = req.method === 'POST' ? await readBody(req) : undefined
+  if (flowCase.reject_authorization && req.headers.authorization) {
+    res.statusCode = 400
+    res.setHeader('Content-Type', 'application/json')
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(JSON.stringify({ ok: false, name: flowCase.name, authorization_observed: true }))
+    return
+  }
   if (!req.headers.authorization) acceptPaymentByPath.set(url.pathname, req.headers['accept-payment'] ?? null)
   if (flowCase.concurrent_replay && req.headers.authorization) {
     const authorization = `${req.headers['x-flow-client'] ?? 'unknown'}:${req.headers.authorization}`
@@ -423,7 +449,19 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    if (flowCase.reject_authorization) {
+      headers.set('Content-Type', 'application/json')
+    }
     res.writeHead(402, Object.fromEntries(headers))
+    if (flowCase.reject_authorization) {
+      res.write(
+        JSON.stringify({
+          ok: false,
+          name: flowCase.name,
+          authorization_observed: false,
+        }),
+      )
+    }
     const body = await challenge.text()
     if (body) res.write(body)
     res.end()
@@ -501,10 +539,18 @@ const server = http.createServer(async (req, res) => {
   res.statusCode = response.status
   response.headers.forEach((value, key) => res.setHeader(key, value))
   res.end(await response.text())
-})
+}
 
+const server = http.createServer(handler)
+const redirectServer = http.createServer(handler)
 server.listen(port, () => {
   console.log(`compliance-server listening on ${port}`)
 })
+redirectServer.listen(port + 1, () => {
+  console.log(`compliance-server redirect origin listening on ${port + 1}`)
+})
 
-process.on('SIGINT', () => server.close())
+process.on('SIGINT', () => {
+  server.close()
+  redirectServer.close()
+})

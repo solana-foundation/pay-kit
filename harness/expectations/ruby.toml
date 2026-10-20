@@ -1,0 +1,32 @@
+language = "ruby"
+
+# Suites and vector intents this SDK claims. Unclaimed ones are shown
+# as "unclaimed" in the coverage table; they are never silently skipped.
+[capabilities]
+vector = ["charge", "x402-exact"]
+protocol = true
+flow = false
+
+[[unsupported]]
+reason = "ruby SDK is server-only: build-transaction has no client builder"
+ids = [
+  "vector/charge-asset-over-currency-precedence",
+  "vector/charge-payto-over-recipient-precedence",
+  "vector/charge-sol-native-build",
+  "vector/charge-spl-field-omitted-defaults",
+  "vector/charge-splits-consume-amount-reject",
+  "vector/charge-token2022-default-program-by-currency",
+]
+
+[[unsupported]]
+reason = "ruby SDK is server-only: x402 build-transaction has no client builder"
+ids = [
+  "vector/x402-exact-v1-build-devnet",
+  "vector/x402-exact-v1-build-mainnet-network-name",
+  "vector/x402-exact-v2-build",
+  "vector/x402-exact-v2-build-default-producer",
+  "vector/x402-ext-echo-payment-identifier",
+  "vector/x402-ext-echo-payment-identifier-pinned-id",
+  "vector/x402-ext-omit-when-none-advertised",
+  "vector/x402-ext-preserve-unknown-verbatim",
+]

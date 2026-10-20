@@ -1,0 +1,57 @@
+language = "swift"
+
+# Suites and vector intents this SDK claims. Unclaimed ones are shown
+# as "unclaimed" in the coverage table; they are never silently skipped.
+[capabilities]
+vector = ["charge", "x402-exact", "session"]
+protocol = false
+flow = false
+
+[[unsupported]]
+reason = "session wire vectors are not implemented for the Swift runner yet"
+ids = [
+  "vector/session-wire-action-close-frozen",
+  "vector/session-wire-action-open-draft-slot-echo-reject",
+  "vector/session-wire-action-open-frozen",
+  "vector/session-wire-action-unknown-tag-reject",
+  "vector/session-wire-action-voucher-frozen",
+  "vector/session-wire-action-voucher-legacy-inner-data-reject",
+  "vector/session-wire-request-new-channel-frozen",
+  "vector/session-wire-request-resume-frozen",
+  "vector/session-wire-request-superseded-draft-reject",
+]
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction"
+ids = [
+  "vector/charge-compute-price-over-cap-reject",
+  "vector/charge-feepayer-as-authority-reject",
+  "vector/charge-split-ata-memo-envelope-accept",
+  "vector/charge-transferchecked-decimals-match-accept",
+  "vector/charge-transferchecked-decimals-mismatch-reject",
+  "vector/session-voucher-expired-at-now",
+  "vector/session-voucher-never-expires-with-window",
+  "vector/session-voucher-window-at-boundary",
+  "vector/session-voucher-window-one-above",
+  "vector/session-voucher-window-one-below",
+]
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement x402 verify-transaction"
+ids = [
+  "vector/x402-exact-unknown-version-reject",
+  "vector/x402-exact-v1-verify-accept-devnet",
+  "vector/x402-exact-v1-verify-accept-mainnet",
+  "vector/x402-exact-v1-verify-reject-unknown-version",
+  "vector/x402-exact-v1-verify-reject-wrong-network",
+  "vector/x402-exact-v2-verify-accept",
+  "vector/x402-ext-server-accepts-valid-id",
+  "vector/x402-ext-server-rejects-required-missing-id",
+]
+
+[[unsupported]]
+reason = "swift x402 runner only builds v2 envelopes; got 1"
+ids = [
+  "vector/x402-exact-v1-build-devnet",
+  "vector/x402-exact-v1-build-mainnet-network-name",
+]

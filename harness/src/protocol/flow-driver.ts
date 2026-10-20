@@ -66,6 +66,12 @@ export type FlowCase = {
   no_payment?: boolean;
   skip_authorization?: boolean;
   verify_body_preserved?: boolean;
+  // Client-side flow: the adapter itself performs the HTTP payment request
+  // (upstream capability `http.payment_request`). Not yet ported.
+  client_flow?: boolean;
+  // Helper endpoint served for other cases (e.g. a redirect target); never
+  // run as a case of its own, matching upstream run_adapter_flows.
+  server_only?: boolean;
 };
 
 // Recorded per-case result. Shape mirrors what flow_runner.py records (and
@@ -410,6 +416,11 @@ export async function runFlowCase(
   }
   if (flowCase.discovery) return runDiscoveryFlowCase(baseUrl, flowCase);
   if (flowCase.json_rpc) return runJsonRpcFlowCase(baseUrl, flowCase);
+  // Upstream drives client_flow cases through the adapter's
+  // `http.payment_request` capability, which this port does not implement
+  // yet. Upstream's skipped_flow records such a case as ok:true; here it is
+  // reported as unsupported so the expectations file must declare it.
+  if (flowCase.client_flow) return unsupportedFlow(name, "http.payment_request");
 
   const initial = await performRequest(url, challengeCase, null, false, adapter.name);
   const initialCacheControl = initial.headers.get("Cache-Control");
@@ -547,6 +558,25 @@ export async function runFlowCase(
   return result;
 }
 
+export const UNSUPPORTED_FLOW = "unsupported_capability";
+
+function unsupportedFlow(name: string, capability: string): FlowResult {
+  return {
+    name,
+    outcome: { ok: false, status: 0, error_type: UNSUPPORTED_FLOW },
+    unsupported_capability: capability,
+  };
+}
+
+export function isUnsupportedFlow(result: FlowResult): boolean {
+  return result.outcome.error_type === UNSUPPORTED_FLOW;
+}
+
+// The cases an adapter runs: everything except server-only helpers.
+export function runnableFlowCases(): FlowCase[] {
+  return loadFlowCases().filter((flowCase) => !flowCase.server_only);
+}
+
 // Run every flow case in declaration order, like run_adapter_flows. Order
 // matters: the compliance server is stateful (idempotency counters, seen
 // credentials, accept-payment observations).
@@ -557,7 +587,7 @@ export async function runAllFlowCases(
   const flowCases = loadFlowCases();
   const casesByPath = new Map(flowCases.map((flowCase) => [String(flowCase.path ?? "/"), flowCase]));
   const results: FlowResult[] = [];
-  for (const flowCase of flowCases) {
+  for (const flowCase of runnableFlowCases()) {
     results.push(await runFlowCase(adapter, baseUrl, flowCase, casesByPath));
   }
   return results;

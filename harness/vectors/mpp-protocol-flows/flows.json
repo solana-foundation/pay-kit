@@ -384,6 +384,90 @@
       }
     },
     {
+      "name": "same_origin_payment_request",
+      "path": "/charge/same-origin-payment-request",
+      "client_flow": true,
+      "request": {
+        "amount": "2040",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xsameorigin"
+      },
+      "expected_signature": "0xsameorigin",
+      "expect_payment_receipt": true
+    },
+    {
+      "name": "plain_payment_request",
+      "path": "/charge/plain-payment-request",
+      "client_flow": true,
+      "mode": "plain",
+      "request": {
+        "amount": "2041",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xplain"
+      }
+    },
+    {
+      "name": "same_origin_post_payment_request",
+      "path": "/charge/same-origin-post-payment-request",
+      "client_flow": true,
+      "http_method": "POST",
+      "body": "{\"prompt\":\"expensive question\"}",
+      "verify_body_preserved": true,
+      "request": {
+        "amount": "2042",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xpostpayment"
+      },
+      "expected_signature": "0xpostpayment",
+      "expect_payment_receipt": true
+    },
+    {
+      "name": "cross_origin_redirect_before_402_rejected",
+      "path": "/charge/redirect-cross-origin",
+      "client_flow": true,
+      "expect_no_authorization": true,
+      "expect_error_type": "http_error",
+      "expect_error_message_contains": "Refusing to send payment credential across redirect",
+      "redirect_to": "/charge/redirect-cross-origin-target",
+      "redirect_to_port_offset": 1,
+      "payload": {
+        "type": "transaction",
+        "signature": "0xredirect"
+      }
+    },
+    {
+      "name": "cross_origin_redirect_before_402_target",
+      "path": "/charge/redirect-cross-origin-target",
+      "server_only": true,
+      "reject_authorization": true,
+      "request": {
+        "amount": "2050",
+        "currency": "USD",
+        "recipient": "redirected-merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xredirect"
+      },
+      "expected_signature": "0xredirect"
+    },
+    {
       "name": "idempotent_post_side_effect",
       "path": "/charge/idempotent-post",
       "http_method": "POST",

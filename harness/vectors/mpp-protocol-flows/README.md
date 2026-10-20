@@ -40,7 +40,7 @@ receipts, and golden results line up regardless.
 ## Source / attribution
 
 - Upstream: `tempoxyz/mpp-tools`, `conformance/flows/`
-- Upstream commit: `b15fea4ee3f12da7ece735dc778ad84102af679c` (2026-06-08)
+- Upstream commit: `2c6ea56f98eefcdc52b6dee28b6bf5a8da1b7ea9` (2026-08-09)
 - License: MIT, Copyright (c) 2026 Tempo — see `LICENSE.mpp-tools` in this
   directory (copied alongside, identical to
   `../mpp-protocol/LICENSE.mpp-tools`).

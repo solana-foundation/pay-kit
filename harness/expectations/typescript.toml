@@ -1,0 +1,22 @@
+language = "typescript"
+
+# Suites and vector intents this SDK claims. Unclaimed ones are shown
+# as "unclaimed" in the coverage table; they are never silently skipped.
+[capabilities]
+vector = ["charge", "x402-exact", "session"]
+protocol = true
+flow = true
+
+[[unsupported]]
+reason = "flow driver port does not implement the upstream `http.payment_request` client capability"
+ids = [
+  "flow/cross_origin_redirect_before_402_rejected",
+  "flow/plain_payment_request",
+  "flow/same_origin_payment_request",
+  "flow/same_origin_post_payment_request",
+]
+
+[[known_failing]]
+id = "protocol/challenge.parse :: adversarial_unclosed_quoted_extension"
+reason = "mppx rejects a header with an unclosed quoted extension param (parse_error) where the canonical golden ignores the param; rejection is immediate, not a ReDoS"
+tracking = "FINDINGS.md#strict-unclosed-quoted-extension"

@@ -12,9 +12,9 @@
 //
 // Scope: the in-process TS reference adapter only, for now. The spawned
 // per-language runners already implement the 9 vector ops the flows need,
-// so they can join here once their flow results are validated against the
-// canonical runner — mirroring how protocol-conformance.test.ts phases
-// languages in.
+// so they can join by claiming `flow` in their expectations file once a
+// spawned flow adapter is wired here. Per-case expectations live in
+// harness/expectations/typescript.toml.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -25,27 +25,30 @@ import {
   COMPLIANCE_SERVER_PATH,
   FLOW_CASES_PATH,
   flowDeepEqual,
-  loadFlowCases,
+  isUnsupportedFlow,
   loadGoldenFlowResults,
   normalizeFlowResult,
   runAllFlowCases,
+  runnableFlowCases,
   type FlowResult,
 } from "../src/protocol/flow-driver";
+import { type CaseRef, danglingEntries, decide, loadAllExpectations } from "../src/expectations";
+import { CaseRecorder, discoveryMode, observe, requireMode } from "../src/expectations-run";
 import { typescriptProtocolAdapter } from "../src/protocol/runners/typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const harnessRoot = join(here, "..");
 const tsxBin = join(harnessRoot, "node_modules", ".bin", "tsx");
 
-// Known divergences between pay-kit's TypeScript protocol surface and the
-// canonical flow golden, mirroring KNOWN_TS_DIVERGENCES in
-// protocol-conformance.test.ts: each entry is a flow-case name asserted to
-// STILL diverge, so the gap fails loudly the moment an SDK fix lands.
-const KNOWN_TS_FLOW_DIVERGENCES = new Set<string>([]);
-
-const flowCases = loadFlowCases();
+const flowCases = runnableFlowCases();
 const golden = loadGoldenFlowResults();
 const goldenByName = new Map(golden.map((entry) => [entry.name, entry]));
+const EXPECTATIONS = loadAllExpectations();
+const flowRefs: CaseRef[] = flowCases.map((c) => ({ suite: "flow", id: c.name, capability: "flow" }));
+
+// Only the in-process TypeScript adapter can drive flows today. A language
+// that claims `flow` without an adapter here is a configuration error.
+const FLOW_ADAPTERS = { typescript: typescriptProtocolAdapter } as const;
 
 async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -79,7 +82,19 @@ async function waitForServer(baseUrl: string, timeoutMs = 15_000): Promise<void>
   throw new Error("compliance server did not start");
 }
 
+describe("flow suite expectations", () => {
+  it("only languages with a flow adapter claim flow", () => {
+    const claiming = [...EXPECTATIONS.values()]
+      .filter((e) => e.capabilities.flow.size > 0)
+      .map((e) => e.language);
+    expect(claiming.filter((l) => !(l in FLOW_ADAPTERS))).toEqual([]);
+  });
+});
+
 describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", () => {
+  const exp = EXPECTATIONS.get("typescript");
+  if (!exp) throw new Error("no harness/expectations/typescript.toml");
+  const recorder = new CaseRecorder("flow", "typescript");
   let server: ChildProcess | undefined;
   let serverStderr = "";
   const resultsByName = new Map<string, FlowResult>();
@@ -111,7 +126,7 @@ describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", 
       await waitForServer(baseUrl);
       // Run every flow case in declaration order against the stateful
       // server, exactly like the canonical runner does per adapter.
-      for (const result of await runAllFlowCases(typescriptProtocolAdapter, baseUrl)) {
+      for (const result of await runAllFlowCases(FLOW_ADAPTERS.typescript, baseUrl)) {
         resultsByName.set(result.name, result);
       }
     } catch (err) {
@@ -126,6 +141,8 @@ describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", 
 
   afterAll(() => {
     stopServer();
+    recorder.flush();
+    if (requireMode() && !discoveryMode()) recorder.assertComplete(flowRefs, exp);
   });
 
   it("covers every canonical flow case exactly once", () => {
@@ -134,36 +151,38 @@ describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", 
     expect([...resultsByName.keys()].sort()).toEqual([...goldenByName.keys()].sort());
   });
 
-  for (const flowCase of flowCases) {
+  it("expectations have no dangling entries", () => {
+    expect(danglingEntries(exp, "flow", flowRefs)).toEqual([]);
+  });
+
+  for (const [index, flowCase] of flowCases.entries()) {
     const name = flowCase.name;
-    if (KNOWN_TS_FLOW_DIVERGENCES.has(name)) {
-      it(`KNOWN DIVERGENCE: ${name}`, () => {
+    const ref = flowRefs[index];
+    const decision = discoveryMode() ? { kind: "pass" as const } : decide(exp, ref);
+    if (decision.kind === "unclaimed") {
+      recorder.record(ref, decision, undefined);
+      continue;
+    }
+    it(`${name} [${decision.kind}]`, async () => {
+      const observed = await observe(async () => {
         const expected = goldenByName.get(name);
         const actual = resultsByName.get(name);
         expect(expected, `no golden entry for ${name}`).toBeDefined();
         expect(actual, `no recorded result for ${name}`).toBeDefined();
-        // Assert the divergence persists. Remove the entry from
-        // KNOWN_TS_FLOW_DIVERGENCES once the TS protocol layer conforms.
+        if (isUnsupportedFlow(actual!)) {
+          return { unsupported: `requires ${String(actual!.unsupported_capability)}` };
+        }
+        const normalizedExpected = normalizeFlowResult(expected!);
+        const normalizedActual = normalizeFlowResult(actual!);
         expect(
-          flowDeepEqual(normalizeFlowResult(expected!), normalizeFlowResult(actual!)),
-          `${name} now conforms — remove from KNOWN_TS_FLOW_DIVERGENCES`,
-        ).toBe(false);
+          flowDeepEqual(normalizedExpected, normalizedActual),
+          `flow result mismatch for ${name}\n` +
+            `golden: ${JSON.stringify(normalizedExpected, null, 2)}\n` +
+            `actual: ${JSON.stringify(normalizedActual, null, 2)}`,
+        ).toBe(true);
+        return "pass";
       });
-      continue;
-    }
-    it(name, () => {
-      const expected = goldenByName.get(name);
-      const actual = resultsByName.get(name);
-      expect(expected, `no golden entry for ${name}`).toBeDefined();
-      expect(actual, `no recorded result for ${name}`).toBeDefined();
-      const normalizedExpected = normalizeFlowResult(expected!);
-      const normalizedActual = normalizeFlowResult(actual!);
-      expect(
-        flowDeepEqual(normalizedExpected, normalizedActual),
-        `flow result mismatch for ${name}\n` +
-          `golden: ${JSON.stringify(normalizedExpected, null, 2)}\n` +
-          `actual: ${JSON.stringify(normalizedActual, null, 2)}`,
-      ).toBe(true);
+      recorder.verdict(exp, ref, decision, observed);
     });
   }
 });

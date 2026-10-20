@@ -1,6 +1,12 @@
 {
   "language": "typescript",
-  "command": ["pnpm", "exec", "node", "--import", "tsx", "src/conformance/ts-runner.ts"],
-  "cwd": "harness",
-  "intents": ["charge", "x402-exact", "session"]
+  "command": [
+    "pnpm",
+    "exec",
+    "node",
+    "--import",
+    "tsx",
+    "src/conformance/ts-runner.ts"
+  ],
+  "cwd": "harness"
 }

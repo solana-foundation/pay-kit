@@ -1,6 +1,11 @@
 {
   "language": "swift",
-  "command": ["swift", "run", "-c", "release", "mpp-conformance"],
-  "cwd": "swift",
-  "intents": ["charge", "x402-exact", "session"]
+  "command": [
+    "swift",
+    "run",
+    "-c",
+    "release",
+    "mpp-conformance"
+  ],
+  "cwd": "swift"
 }

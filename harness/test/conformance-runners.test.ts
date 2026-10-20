@@ -28,7 +28,7 @@ describe("conformance runner commands", () => {
       .toEqual(["sh", "-c", "exec build/install/mpp-kotlin-conformance/bin/mpp-kotlin-conformance"]);
   });
 
-  it.each(["swift", "kotlin", "go"])("resolves only selected %s artifacts and keeps capabilities", (language) => {
+  it.each(["swift", "kotlin", "go"])("resolves only selected %s artifacts", (language) => {
     const root = artifactDirectory();
     const target = getNativeTarget("conformance", language)!;
     const executable = join(root, target.executable);
@@ -36,7 +36,6 @@ describe("conformance runner commands", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const runner = discoverRunners().find((runner) => runner.language === language)!;
     expect(runner.command).toEqual([executable]);
-    expect(runner.intents).toContain("session");
     expect(runner.cwd).toMatch(language === "kotlin" ? /\/harness\/kotlin-conformance$/ : new RegExp(`/${language}$`));
     chmodSync(executable, 0o644);
     expect(() => runner.command).toThrow("non-executable");

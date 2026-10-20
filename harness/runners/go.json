@@ -1,6 +1,9 @@
 {
   "language": "go",
-  "command": ["go", "run", "./cmd/conformance"],
-  "cwd": "go",
-  "intents": ["charge", "x402-exact", "session"]
+  "command": [
+    "go",
+    "run",
+    "./cmd/conformance"
+  ],
+  "cwd": "go"
 }
