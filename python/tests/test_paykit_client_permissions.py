@@ -16,6 +16,7 @@ from solana_pay_kit.client import (
     ClientPermissions,
     OriginPermissionOverride,
     PaymentCandidate,
+    PaymentDestination,
     PermissionConfigurationError,
     PermissionDeniedError,
     PermissionedPaymentTransport,
@@ -26,6 +27,8 @@ from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 UNKNOWN_MINT = "11111111111111111111111111111111"
+PAYEE = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+SPLIT = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 
 class MockTransport(httpx.AsyncBaseTransport):
@@ -43,9 +46,21 @@ class MockTransport(httpx.AsyncBaseTransport):
         return None
 
 
-def candidate(*, amount: int, origin: str = "https://api.example/path", mint: str = "USDC") -> PaymentCandidate:
-    """Build a mainnet candidate for policy tests."""
-    return PaymentCandidate(amount=amount, mint=mint, network="mainnet", origin=origin)
+def candidate(
+    *,
+    amount: int,
+    origin: str = "https://api.example/path",
+    mint: str = "USDC",
+    destinations: tuple[PaymentDestination, ...] | None = None,
+) -> PaymentCandidate:
+    """Build a mainnet candidate for policy tests, paying ``PAYEE`` by default."""
+    return PaymentCandidate(
+        amount=amount,
+        mint=mint,
+        network="mainnet",
+        origin=origin,
+        destinations=destinations if destinations is not None else (PaymentDestination(PAYEE, amount),),
+    )
 
 
 def test_default_is_mainnet_stablecoins_with_one_dollar_cap() -> None:
@@ -109,6 +124,91 @@ def test_unknown_assets_require_explicit_permission() -> None:
         .max_amount_atomic
         is None
     )
+
+
+def test_recipient_allowlist_covers_the_primary_recipient_and_every_split() -> None:
+    permissions = ClientPermissions.builder().allow_recipient(PAYEE).build()
+    assert permissions.authorize(candidate(amount=1_000)).max_amount_atomic == 1_000_000
+
+    with_split = (PaymentDestination(PAYEE, 900), PaymentDestination(SPLIT, 100))
+    with pytest.raises(PermissionDeniedError) as raised:
+        permissions.authorize(candidate(amount=1_000, destinations=with_split))
+    assert raised.value.rejections[0].code == "recipient_not_allowed"
+    with pytest.raises(PermissionDeniedError) as raised:
+        permissions.authorize(candidate(amount=1_000, destinations=(PaymentDestination(SPLIT, 1_000),)))
+    assert raised.value.rejections[0].code == "recipient_not_allowed"
+
+    both = ClientPermissions.builder().allow_recipient(PAYEE).allow_recipient(SPLIT).build()
+    assert both.authorize(candidate(amount=1_000, destinations=with_split)).max_amount_atomic == 1_000_000
+    anyone = ClientPermissions.builder().allow_recipient(PAYEE).allow_any_recipient().build()
+    assert anyone.authorize(candidate(amount=1_000, destinations=with_split)).max_amount_atomic == 1_000_000
+    with pytest.raises(PermissionConfigurationError):
+        ClientPermissions.builder().allow_recipient("not-an-address")
+
+
+@pytest.mark.parametrize(
+    "destinations",
+    [(), (PaymentDestination(PAYEE, 999),), (PaymentDestination("not-an-address", 1_000),)],
+)
+def test_destinations_must_be_valid_and_add_up_to_the_amount(destinations: tuple[PaymentDestination, ...]) -> None:
+    with pytest.raises(PermissionDeniedError) as raised:
+        ClientPermissions.builder().build().authorize(candidate(amount=1_000, destinations=destinations))
+    assert raised.value.rejections[0].code == "invalid_challenge_terms"
+
+
+async def test_mpp_split_to_an_unapproved_recipient_is_not_signed(monkeypatch: pytest.MonkeyPatch) -> None:
+    challenge = PaymentChallenge.with_secret_key(
+        secret_key="secret",
+        realm="api",
+        method="solana",
+        intent="charge",
+        request=encode_json(
+            {
+                "amount": "1000",
+                "currency": "USDC",
+                "recipient": PAYEE,
+                "methodDetails": {"network": "mainnet", "splits": [{"recipient": SPLIT, "amount": "400"}]},
+            }
+        ),
+    )
+    build = MagicMock()
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", build)
+    for permissions, signed in (
+        (ClientPermissions.builder().allow_recipient(PAYEE).build(), False),
+        (ClientPermissions.builder().allow_recipient(PAYEE).allow_recipient(SPLIT).build(), True),
+    ):
+        build.reset_mock()
+        inner = MockTransport(
+            [
+                httpx.Response(402, headers={"www-authenticate": format_www_authenticate(challenge)}),
+                httpx.Response(200),
+            ]
+        )
+
+        async def credential(**_kwargs: object) -> str:
+            build()
+            return "Payment credential"
+
+        monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", credential)
+        transport = PermissionedPaymentTransport(
+            MagicMock(),
+            MagicMock(),
+            network="mainnet",
+            permissions=permissions,
+            protocols=("mpp",),
+            base_transport=inner,
+        )
+        if signed:
+            response = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+            assert response.status_code == 200
+            build.assert_called_once()
+        else:
+            with pytest.raises(PermissionDeniedError) as raised:
+                await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+            assert raised.value.rejections[0].code == "recipient_not_allowed"
+            assert SPLIT in raised.value.rejections[0].message
+            build.assert_not_called()
+            assert len(inner.requests) == 1
 
 
 def test_usd_parser_is_exact() -> None:

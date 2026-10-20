@@ -15,6 +15,7 @@ from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_
 from solana_pay_kit.client.permissions import (
     ClientPermissions,
     PaymentCandidate,
+    PaymentDestination,
     PermissionDeniedError,
     PermissionRejection,
     SolanaNetwork,
@@ -26,6 +27,7 @@ from solana_pay_kit.protocols.x402.client.exact.payment import (
     build_payment_header,
     build_payment_header_legacy,
     parse_x402_challenge_with_version,
+    x402_exact_pay_to,
 )
 from solana_pay_kit.protocols.x402.client.exact.transport import PAYMENT_SIGNATURE_HEADER
 from solana_pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
@@ -90,7 +92,10 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                         raise _invalid("invalid MPP network")
                     network = _network(challenge_network, self._network)
                     mint = resolve_stablecoin_mint(currency, network) or currency
-                    authorized = self._permissions.authorize(PaymentCandidate(amount, mint, network, origin))
+                    destinations = _charge_destinations(raw.get("recipient"), amount, details.get("splits"))
+                    authorized = self._permissions.authorize(
+                        PaymentCandidate(amount, mint, network, origin, destinations=destinations)
+                    )
                     header = await build_credential_header(
                         signer=self._signer,
                         rpc_client=self._rpc,
@@ -116,7 +121,10 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     network = _network(requirement.get("network"), self._network)
                     amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
                     asset = requirement.get("asset")
-                    self._permissions.authorize(PaymentCandidate(amount, asset, network, origin))
+                    destinations = (PaymentDestination(x402_exact_pay_to(requirement), amount),)
+                    self._permissions.authorize(
+                        PaymentCandidate(amount, asset, network, origin, destinations=destinations)
+                    )
                     legacy = version == X402_VERSION_V1
                     builder = build_payment_header_legacy if legacy else build_payment_header
                     header = await builder(
@@ -270,6 +278,31 @@ def _amount(value: object) -> int:
     if not isinstance(value, str) or not value.isdigit():
         raise _invalid(f"invalid payment amount: {value!r}")
     return int(value)
+
+
+def _charge_destinations(recipient: object, amount: int, splits: object) -> tuple[PaymentDestination, ...]:
+    """Every transfer leg of an MPP charge, as the charge builder pays it.
+
+    The primary ``recipient`` receives ``amount`` minus the splits, followed by
+    each ``methodDetails.splits`` entry in order.
+    """
+    if not isinstance(recipient, str):
+        raise _invalid("MPP charge names no recipient")
+    if splits is not None and not isinstance(splits, list):
+        raise _invalid("invalid MPP splits")
+    legs: list[PaymentDestination] = []
+    for split in cast("list[object]", splits or []):
+        if not isinstance(split, dict):
+            raise _invalid("invalid MPP split")
+        entry = cast("dict[str, object]", split)
+        split_recipient = entry.get("recipient")
+        if not isinstance(split_recipient, str):
+            raise _invalid("invalid MPP split recipient")
+        legs.append(PaymentDestination(split_recipient, _amount(entry.get("amount"))))
+    primary = amount - sum(leg.amount for leg in legs)
+    if primary <= 0:
+        raise _invalid("MPP splits leave nothing for the recipient")
+    return (PaymentDestination(recipient, primary), *legs)
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:
