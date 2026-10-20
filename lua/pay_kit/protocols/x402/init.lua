@@ -34,6 +34,7 @@ local network_check = require('pay_kit.solana.network_check')
 local json        = require('pay_kit.util.json')
 local mints       = require('pay_kit.solana.mints')
 local price_mod   = require('pay_kit.internal.price')
+local consumed_signatures = require('pay_kit.consumed_signatures')
 
 local M = {}
 local Adapter = {}
@@ -385,9 +386,20 @@ local function build_rpc(config)
   return rpc_mod.new({url = config.rpc_url, transport = rpc_transport.new()})
 end
 
-local function claim_signature(store, signature)
+-- `ledger_store` holds the consumed-signature ledger shared with MPP
+-- charge: the first claim on a signature, through either protocol, owns it.
+-- The x402 records below (lease, consumed, confirmed) only drive x402's own
+-- retry recovery and are subordinate to that claim.
+local function claim_signature(store, ledger_store, signature)
   if not store or not store.put_if_absent then return 'claimed' end
   local prefix = 'x402-svm-exact:' .. signature
+  local ledger = consumed_signatures.new(ledger_store or store)
+  if ledger:claim(signature) then
+    store:put_if_absent(prefix .. ':consumed', true)
+  elseif not store:get(prefix .. ':consumed') then
+    -- Claimed by another protocol (an MPP charge settled this transaction).
+    return 'consumed'
+  end
   if store:get(prefix .. ':confirmed') then return 'confirmed' end
 
   -- A short lease prevents concurrent requests from both returning success,
@@ -395,7 +407,6 @@ local function claim_signature(store, signature)
   -- confirmation attempt. The durable consumed marker still records that the
   -- transaction has been broadcast.
   if store:put_if_absent(prefix .. ':pending', 15) then
-    store:put_if_absent(prefix .. ':consumed')
     return 'claimed'
   end
   return 'pending'
@@ -672,7 +683,11 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.INVALID_PROOF .. ': empty broadcast result'
   end
 
-  local replay_state = claim_signature(self._store, signature)
+  local replay_state = claim_signature(self._store,
+    consumed_signatures.shared_store(config, self._store), signature)
+  if replay_state == 'consumed' then
+    return nil, errors.SIGNATURE_CONSUMED .. ': payment already settled'
+  end
   if replay_state == 'pending' then
     return nil, errors.SIGNATURE_CONSUMED .. ': settlement confirmation is pending'
   end
@@ -721,6 +736,7 @@ end
 
 -- Test helpers / introspection. Not part of the public API.
 M._private = {
+  claim_signature              = claim_signature,
   accepted_requirement_matches = accepted_requirement_matches,
   exact_challenge              = exact_challenge,
   exact_requirement            = exact_requirement,

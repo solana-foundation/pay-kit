@@ -43,6 +43,7 @@ expected request.
 local json = require('pay_kit.util.json')
 local network_check = require('pay_kit.solana.network_check')
 local error_codes = require('pay_kit.protocol.core.error_codes')
+local consumed_signatures = require('pay_kit.consumed_signatures')
 
 local M = {}
 
@@ -50,7 +51,9 @@ local DEFAULT_CONFIRMATION_ATTEMPTS = 40
 local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
 local DEFAULT_SIMULATION_MAX_ATTEMPTS = 3
 local DEFAULT_SIMULATION_RETRY_DELAY_SECONDS = 0.4
-local CONSUMED_PREFIX = 'solana-charge:consumed:'
+-- The ledger shared with x402 `exact`, so a payment settled through either
+-- protocol cannot authorize a second request through the other.
+local CONSUMED_PREFIX = consumed_signatures.PREFIX
 
 local Handler = {}
 Handler.__index = Handler
@@ -149,9 +152,7 @@ function M.new(config)
 end
 
 local function consume_replay(self, signature)
-  local key = CONSUMED_PREFIX .. signature
-  local inserted = self.replay_store:put_if_absent(key, true)
-  if not inserted then
+  if not consumed_signatures.new(self.replay_store):claim(signature) then
     verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
   end
 end

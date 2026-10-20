@@ -15,7 +15,13 @@ Two backends, picked at dispatcher construction time:
    at dispatcher boot so the choice is visible.
 
 Both backends expose the same surface:
-- `:put_if_absent(key, ttl)`     -> true on first put, false on duplicate
+- `:put_if_absent(key, ttl)`     -> true on first put, false on duplicate.
+                                    A numeric `ttl` (or nil, the default)
+                                    expires the entry; any other value
+                                    (`true`) is kept with no expiry, the
+                                    `(key, value)` contract durable records
+                                    such as `pay_kit.consumed_signatures`
+                                    rely on.
 - `:get(key)`                    -> truthy if present
 - `:delete(key)`                 -> nil
 ]]
@@ -29,8 +35,25 @@ local MAX_MEMORY_ENTRIES  = 10000
 local SharedDict = {}
 SharedDict.__index = SharedDict
 
+-- Seconds until an entry written with `ttl` expires, or nil for a durable
+-- entry (a non-numeric value).
+local function expiry_seconds(ttl)
+  if ttl == nil then return DEFAULT_TTL_SECONDS end
+  if type(ttl) == 'number' then return ttl end
+  return nil
+end
+
 function SharedDict:put_if_absent(key, ttl)
-  local ok, err = self._dict:add(key, true, ttl or DEFAULT_TTL_SECONDS)
+  local seconds = expiry_seconds(ttl)
+  local ok, err
+  if seconds == nil then
+    -- Durable: never expires, and `safe_add` refuses rather than evicting
+    -- other entries when the zone is full, so a claim is never silently
+    -- dropped (a full zone reads as a duplicate, which fails closed).
+    ok, err = self._dict:safe_add(key, true, 0)
+  else
+    ok, err = self._dict:add(key, true, seconds)
+  end
   if ok then return true end
   -- `exists` error code means the key was already present.
   if err == 'exists' then return false end
@@ -59,11 +82,14 @@ function Memory:_prune(now)
     if exp >= now then kept[k] = exp; count = count + 1 end
   end
   if count > MAX_MEMORY_ENTRIES then
-    -- Sort by expiry and drop oldest.
+    -- Sort by expiry and drop oldest. Durable entries (math.huge) are
+    -- never evicted: dropping a consumed-signature claim would reopen it.
     local arr = {}
-    for k, exp in pairs(kept) do arr[#arr + 1] = {k, exp} end
+    for k, exp in pairs(kept) do
+      if exp ~= math.huge then arr[#arr + 1] = {k, exp} end
+    end
     table.sort(arr, function(a, b) return a[2] < b[2] end)
-    for i = 1, count - MAX_MEMORY_ENTRIES do
+    for i = 1, math.min(#arr, count - MAX_MEMORY_ENTRIES) do
       kept[arr[i][1]] = nil
       count = count - 1
     end
@@ -77,7 +103,8 @@ function Memory:put_if_absent(key, ttl)
   self:_prune(now)
   local existing = self._entries[key]
   if existing and existing >= now then return false end
-  self._entries[key] = now + (ttl or DEFAULT_TTL_SECONDS)
+  local seconds = expiry_seconds(ttl)
+  self._entries[key] = seconds and (now + seconds) or math.huge
   if not existing then self._size = self._size + 1 end
   return true
 end

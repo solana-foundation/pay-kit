@@ -14,7 +14,9 @@ local crypto = require('pay_kit.util._mpp_crypto')
 local M = {}
 
 local MIN_SECRET_KEY_BYTES = 32
-local CONSUMED_PREFIX = 'solana-charge:consumed:'
+-- Consumed signatures live in the protocol-independent ledger shared with
+-- x402, so one on-chain payment authorizes one request across protocols.
+local CONSUMED_PREFIX = require('pay_kit.consumed_signatures').PREFIX
 
 -- Audit #15: derive a per-recipient default realm instead of the static
 -- shared `"MPP Payment"`. Two servers that share a secret but front
@@ -529,7 +531,7 @@ function Server:_finalize_verification(credential_value, request, payload)
 
   -- Settlement layers that already consumed the replay marker themselves
   -- (e.g. `charge_handler:as_callback()` which writes
-  -- `solana-charge:consumed:<sig>` inside `settle_pull` before await, and
+  -- the consumed-signature ledger claim inside `settle_pull` before await, and
   -- `solana_verify.verify_transaction` which writes the same key between
   -- broadcast and await for the L8 ordering fix) signal back via
   -- `result.consumed = true`. Skip the outer put_if_absent in that case so

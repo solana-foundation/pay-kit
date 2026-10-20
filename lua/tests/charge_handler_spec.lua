@@ -259,13 +259,13 @@ t.test('settle_pull consumes signature before awaiting confirmation', function()
   })
   t.assert_error(function() handler:settle_pull('tx', {}) end, 'Timed out waiting')
   -- The replay store should already contain the consumed signature key.
-  local _value, present = replay:get('solana-charge:consumed:sig-x')
+  local _value, present = replay:get('solana:consumed-signature:sig-x')
   t.assert_true(present, 'signature must be consumed before confirmation poll completes')
 end)
 
 t.test('settle_pull rejects already-consumed signature', function()
   local replay = store.memory()
-  replay:put('solana-charge:consumed:sig-dupe', true)
+  replay:put('solana:consumed-signature:sig-dupe', true)
   local handler = new_handler({
     replay_store = replay,
     rpc = fake_rpc({
@@ -302,6 +302,88 @@ t.test('settle_pull times out when confirmation status never reaches confirmed',
   t.assert_error(function() handler:settle_pull('tx', {}) end, 'Timed out waiting')
 end)
 
+-- ─── Shared consumed-signature ledger (SOLA1-289) ────────────────────────
+
+-- One on-chain payment authorizes one request across protocols: a signature
+-- settled through MPP cannot be presented again as an x402 payment on a gate
+-- sharing the store, nor the other way round.
+t.test('signature consumed by one protocol is rejected by the other', function()
+  local x402_private = require('pay_kit.protocols.x402')._private
+  local shared = require('pay_kit.store').memory()
+  local handler = new_handler({
+    replay_store = shared,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } }, { result = { err = nil } } },
+      sendTransaction = { { result = 'mpp-paid' }, { result = 'x402-paid' } },
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
+    }),
+  })
+
+  t.assert_equal(handler:settle_pull('tx', {}), 'mpp-paid')
+  t.assert_equal(x402_private.claim_signature(shared, shared, 'mpp-paid'), 'consumed')
+
+  t.assert_equal(x402_private.claim_signature(shared, shared, 'x402-paid'), 'claimed')
+  t.assert_error(function() handler:settle_pull('tx', {}) end, 'already consumed')
+
+  -- An unrelated payment is still accepted, and x402's own retry recovery
+  -- of a signature it claimed keeps working.
+  t.assert_equal(x402_private.claim_signature(shared, shared, 'third'), 'claimed')
+  t.assert_equal(x402_private.claim_signature(shared, shared, 'x402-paid'), 'pending')
+end)
+
+-- A signature claimed under a pre-ledger MPP or x402 key (by an older
+-- replica, or just before an upgrade) stays consumed for both protocols; the
+-- legacy record is only read, never rewritten.
+for _, case in ipairs({
+  { name = 'MPP charge', key = 'solana-charge:consumed:legacy-sig' },
+  { name = 'x402 exact', key = 'x402-svm-exact:legacy-sig:consumed' },
+}) do
+  t.test('pre-ledger ' .. case.name .. ' claim stays consumed', function()
+    local consumed_signatures = require('pay_kit.consumed_signatures')
+    for _, shared in ipairs({ require('pay_kit.store').memory(), require('pay_kit.protocols.mpp.store').memory() }) do
+      shared:put_if_absent(case.key, true)
+      local ledger = consumed_signatures.new(shared)
+      t.assert_true(not ledger:claim('legacy-sig'), case.key)
+      t.assert_true(not shared:get(consumed_signatures.key('legacy-sig')), case.key)
+      t.assert_true(shared:get(case.key) and true or false, case.key)
+
+      -- Signatures without a legacy record claim normally, once.
+      t.assert_true(ledger:claim('fresh-sig'))
+      t.assert_true(not ledger:claim('fresh-sig'))
+    end
+  end)
+end
+
+t.test('pre-ledger MPP charge claim is consumed for x402 and MPP settlement', function()
+  local x402_private = require('pay_kit.protocols.x402')._private
+  local shared = require('pay_kit.store').memory()
+  shared:put_if_absent('solana-charge:consumed:legacy-sig', true)
+  t.assert_equal(x402_private.claim_signature(shared, shared, 'legacy-sig'), 'consumed')
+  local handler = new_handler({
+    replay_store = shared,
+    pull_signature_extractor = function() return 'legacy-sig' end,
+    rpc = fake_rpc({}),
+  })
+  t.assert_error(function() handler:settle_pull('tx', {}) end, 'already consumed')
+end)
+
+t.test('PayKit adapters resolve one ledger store for MPP and x402', function()
+  local consumed_signatures = require('pay_kit.consumed_signatures')
+  local dispatcher_store, operator_store = {}, {}
+  t.assert_equal(consumed_signatures.shared_store({ mpp = {} }, dispatcher_store), dispatcher_store)
+  t.assert_equal(consumed_signatures.shared_store(
+    { mpp = { replay_store = operator_store } }, dispatcher_store), operator_store)
+end)
+
+t.test('pay_kit.store keeps a consumed-signature claim with no expiry', function()
+  local memory = require('pay_kit.store').memory()
+  t.assert_true(memory:put_if_absent('durable', true))
+  t.assert_true(memory:put_if_absent('leased', 15))
+  t.assert_equal(memory._entries.durable, math.huge)
+  t.assert_true(memory._entries.leased < math.huge)
+  t.assert_true(not memory:put_if_absent('durable', true))
+end)
+
 -- ─── Push mode ────────────────────────────────────────────────────────────
 
 t.test('settle_push happy path: fetch → verify → consume', function()
@@ -320,7 +402,7 @@ t.test('settle_push happy path: fetch → verify → consume', function()
   local sig = handler:settle_push('sig-push', {})
   t.assert_equal(sig, 'sig-push')
   t.assert_true(verify_called)
-  local _v, present = replay:get('solana-charge:consumed:sig-push')
+  local _v, present = replay:get('solana:consumed-signature:sig-push')
   t.assert_true(present)
 end)
 
@@ -416,13 +498,13 @@ t.test('settle_push surfaces verifier rejection after fetch', function()
   })
   t.assert_error(function() handler:settle_push('sig', {}) end, 'wrong recipient')
   -- Signature must NOT be consumed when verification fails post-fetch.
-  local _v, present = replay:get('solana-charge:consumed:sig')
+  local _v, present = replay:get('solana:consumed-signature:sig')
   t.assert_true(not present, 'failed-shape settlements must not consume the signature')
 end)
 
 t.test('settle_push rejects already-consumed signature', function()
   local replay = store.memory()
-  replay:put('solana-charge:consumed:sig-dupe', true)
+  replay:put('solana:consumed-signature:sig-dupe', true)
   local handler = new_handler({
     replay_store = replay,
     rpc = fake_rpc({
@@ -478,7 +560,7 @@ end)
 -- replay_store between `charge_handler.new({ replay_store = shared })` and
 -- `mpp.server.new({ store = shared })`. Codex round 3 on PR #103 flagged
 -- that without the `consumed` signal (or namespaced replay_key) the inner
--- `settle_pull` consume of `solana-charge:consumed:<sig>` collides with
+-- `settle_pull` consume of `solana:consumed-signature:<sig>` collides with
 -- the outer `Server:_finalize_verification` put_if_absent of the same
 -- key on `result.reference`, returning `signature_consumed` for the
 -- first valid payment. This test drives the full Kong-style stack
