@@ -264,6 +264,12 @@ enum AllowedOrigins {
     Only(BTreeSet<String>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AllowedRecipients {
+    Any,
+    Only(BTreeSet<Pubkey>),
+}
+
 /// Permissions checked before PayKit builds or signs an automatic payment.
 ///
 /// Defaults allow any HTTP(S) origin, mainnet, known PayKit stablecoins, and a
@@ -284,6 +290,7 @@ enum AllowedOrigins {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientPermissions {
     allowed_origins: AllowedOrigins,
+    allowed_recipients: AllowedRecipients,
     allowed_networks: BTreeSet<SolanaNetwork>,
     max_amount_per_payment: Option<UsdAmount>,
     allow_any_asset: bool,
@@ -304,6 +311,7 @@ impl ClientPermissions {
     pub fn builder() -> ClientPermissionsBuilder {
         ClientPermissionsBuilder {
             allowed_origins: AllowedOrigins::Any,
+            allowed_recipients: AllowedRecipients::Any,
             allowed_networks: BTreeSet::from([SolanaNetwork::Mainnet]),
             max_amount_per_payment: Some(UsdAmount(DEFAULT_MAX_AMOUNT_MICRO_USD)),
             allow_any_asset: false,
@@ -319,6 +327,7 @@ impl ClientPermissions {
     pub fn unrestricted() -> Self {
         Self {
             allowed_origins: AllowedOrigins::Any,
+            allowed_recipients: AllowedRecipients::Any,
             allowed_networks: BTreeSet::new(),
             max_amount_per_payment: None,
             allow_any_asset: true,
@@ -353,6 +362,35 @@ impl ClientPermissions {
                 PermissionDeniedCode::NetworkNotAllowed,
                 format!("network {} is not allowed", candidate.network),
             ));
+        }
+
+        if candidate.destinations.is_empty() {
+            return Err(PermissionRejection::invalid_terms(
+                "payment names no recipient",
+            ));
+        }
+        let paid = candidate
+            .destinations
+            .iter()
+            .try_fold(0u64, |total, destination| {
+                total.checked_add(destination.amount)
+            });
+        if paid != Some(candidate.amount) {
+            return Err(PermissionRejection::invalid_terms(
+                "payment destinations do not add up to the payment amount",
+            ));
+        }
+        if let AllowedRecipients::Only(allowed) = &self.allowed_recipients {
+            if let Some(destination) = candidate
+                .destinations
+                .iter()
+                .find(|destination| !allowed.contains(&destination.recipient))
+            {
+                return Err(PermissionRejection::new(
+                    PermissionDeniedCode::RecipientNotAllowed,
+                    format!("recipient {} is not allowed", destination.recipient),
+                ));
+            }
         }
 
         let mint = candidate.mint.parse::<Pubkey>().map_err(|_| {
@@ -419,6 +457,7 @@ impl ClientPermissions {
 #[derive(Debug, Clone)]
 pub struct ClientPermissionsBuilder {
     allowed_origins: AllowedOrigins,
+    allowed_recipients: AllowedRecipients,
     allowed_networks: BTreeSet<SolanaNetwork>,
     max_amount_per_payment: Option<UsdAmount>,
     allow_any_asset: bool,
@@ -445,6 +484,27 @@ impl ClientPermissionsBuilder {
     /// Permit challenges from any HTTP(S) origin.
     pub fn allow_any_origin(mut self) -> Self {
         self.allowed_origins = AllowedOrigins::Any;
+        self
+    }
+
+    /// Restrict payments to destinations owned by `recipient`. The first call
+    /// changes the default from any recipient to an allowlist, which then
+    /// covers the primary recipient and every split of a payment.
+    pub fn allow_recipient(mut self, recipient: Pubkey) -> Self {
+        match &mut self.allowed_recipients {
+            AllowedRecipients::Any => {
+                self.allowed_recipients = AllowedRecipients::Only(BTreeSet::from([recipient]));
+            }
+            AllowedRecipients::Only(recipients) => {
+                recipients.insert(recipient);
+            }
+        }
+        self
+    }
+
+    /// Permit payments to any recipient.
+    pub fn allow_any_recipient(mut self) -> Self {
+        self.allowed_recipients = AllowedRecipients::Any;
         self
     }
 
@@ -502,6 +562,7 @@ impl ClientPermissionsBuilder {
         }
         Ok(ClientPermissions {
             allowed_origins: self.allowed_origins,
+            allowed_recipients: self.allowed_recipients,
             allowed_networks: self.allowed_networks,
             max_amount_per_payment: self.max_amount_per_payment,
             allow_any_asset: self.allow_any_asset,
@@ -511,27 +572,80 @@ impl ClientPermissionsBuilder {
     }
 }
 
+/// One account a payment transfers to, with its share in atomic units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PaymentDestination {
+    /// Wallet that receives the transfer (the owner of its token account).
+    pub recipient: Pubkey,
+    /// Amount in the asset's atomic units.
+    pub amount: u64,
+}
+
+impl PaymentDestination {
+    /// Describe one transfer leg.
+    pub const fn new(recipient: Pubkey, amount: u64) -> Self {
+        Self { recipient, amount }
+    }
+}
+
 /// A resolved payment offer presented to [`ClientPermissions::authorize`].
 ///
 /// `amount` is expressed in the asset's atomic units. Known stablecoins use
 /// six decimal places, so their atomic amount is also micro-USD for cap checks.
+/// `destinations` lists every transfer leg (primary recipient first, then
+/// splits) and must add up to `amount`. Prefer
+/// [`PaymentTerms::candidate`](super::PaymentTerms::candidate), which derives
+/// all of this from the challenge the signer will pay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaymentCandidate<'a> {
     origin: &'a str,
     network: SolanaNetwork,
     mint: &'a str,
     amount: u64,
+    destinations: &'a [PaymentDestination],
 }
 
 impl<'a> PaymentCandidate<'a> {
     /// Describe a payment after protocol parsing and asset resolution.
-    pub const fn new(origin: &'a str, network: SolanaNetwork, mint: &'a str, amount: u64) -> Self {
+    pub const fn new(
+        origin: &'a str,
+        network: SolanaNetwork,
+        mint: &'a str,
+        amount: u64,
+        destinations: &'a [PaymentDestination],
+    ) -> Self {
         Self {
             origin,
             network,
             mint,
             amount,
+            destinations,
         }
+    }
+
+    /// Origin that issued the challenge.
+    pub const fn origin(&self) -> &'a str {
+        self.origin
+    }
+
+    /// Solana cluster the payment is signed for.
+    pub const fn network(&self) -> SolanaNetwork {
+        self.network
+    }
+
+    /// Base58 mint address of the paid asset.
+    pub const fn mint(&self) -> &'a str {
+        self.mint
+    }
+
+    /// Total amount in atomic units.
+    pub const fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    /// Every transfer leg, primary recipient first.
+    pub const fn destinations(&self) -> &'a [PaymentDestination] {
+        self.destinations
     }
 }
 
@@ -559,6 +673,8 @@ pub enum PermissionDeniedCode {
     AssetNotAllowed,
     /// The atomic payment amount exceeds the resolved cap.
     AmountExceedsLimit,
+    /// A primary or split recipient is outside the recipient allowlist.
+    RecipientNotAllowed,
     /// A candidate contains malformed terms at the authorization boundary.
     InvalidChallengeTerms,
 }
@@ -640,12 +756,83 @@ mod tests {
     use super::*;
     use crate::core::mints::{PYUSD_MAINNET, USDC_MAINNET};
 
+    const PAYEE: Pubkey = Pubkey::new_from_array([7; 32]);
+
     fn candidate<'a>(origin: &'a str, mint: &'a str, amount: u64) -> PaymentCandidate<'a> {
-        PaymentCandidate {
+        let destinations = Box::leak(Box::new([PaymentDestination::new(PAYEE, amount)]));
+        PaymentCandidate::new(origin, SolanaNetwork::Mainnet, mint, amount, destinations)
+    }
+
+    #[test]
+    fn recipient_allowlist_covers_the_primary_recipient_and_every_split() {
+        let split = Pubkey::new_unique();
+        let permissions = ClientPermissions::builder()
+            .allow_recipient(PAYEE)
+            .build()
+            .unwrap();
+        let origin = "https://api.example.com";
+        assert!(permissions
+            .authorize(&candidate(origin, USDC_MAINNET, 1_000))
+            .is_ok());
+
+        let with_split = [
+            PaymentDestination::new(PAYEE, 900),
+            PaymentDestination::new(split, 100),
+        ];
+        let candidate = PaymentCandidate::new(
             origin,
-            network: SolanaNetwork::Mainnet,
-            mint,
-            amount,
+            SolanaNetwork::Mainnet,
+            USDC_MAINNET,
+            1_000,
+            &with_split,
+        );
+        let rejection = permissions.authorize(&candidate).unwrap_err();
+        assert_eq!(rejection.code, PermissionDeniedCode::RecipientNotAllowed);
+        assert!(rejection.message.contains(&split.to_string()));
+
+        let permissions = ClientPermissions::builder()
+            .allow_recipient(PAYEE)
+            .allow_recipient(split)
+            .build()
+            .unwrap();
+        assert!(permissions.authorize(&candidate).is_ok());
+
+        // Any recipient stays the default.
+        let stranger = [PaymentDestination::new(Pubkey::new_unique(), 1_000)];
+        let candidate = PaymentCandidate::new(
+            origin,
+            SolanaNetwork::Mainnet,
+            USDC_MAINNET,
+            1_000,
+            &stranger,
+        );
+        assert!(ClientPermissions::default().authorize(&candidate).is_ok());
+    }
+
+    #[test]
+    fn destinations_must_account_for_the_whole_amount() {
+        let origin = "https://api.example.com";
+        let permissions = ClientPermissions::default();
+        for destinations in [
+            &[][..],
+            &[PaymentDestination::new(PAYEE, 999)][..],
+            &[
+                PaymentDestination::new(PAYEE, u64::MAX),
+                PaymentDestination::new(PAYEE, 2),
+            ][..],
+        ] {
+            let candidate = PaymentCandidate::new(
+                origin,
+                SolanaNetwork::Mainnet,
+                USDC_MAINNET,
+                1_000,
+                destinations,
+            );
+            assert_eq!(
+                permissions.authorize(&candidate).unwrap_err().code,
+                PermissionDeniedCode::InvalidChallengeTerms,
+                "{destinations:?}"
+            );
         }
     }
 

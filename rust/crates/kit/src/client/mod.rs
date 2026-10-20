@@ -82,8 +82,8 @@ use crate::{
 pub use permissions::{
     AssetPermission, AuthorizedPayment, ClientPermissions, ClientPermissionsBuilder,
     OriginPermissionOverride, OriginPermissionOverrideBuilder, PaymentCandidate,
-    PermissionConfigError, PermissionDenied, PermissionDeniedCode, PermissionRejection,
-    SolanaNetwork, UsdAmount,
+    PaymentDestination, PermissionConfigError, PermissionDenied, PermissionDeniedCode,
+    PermissionRejection, SolanaNetwork, UsdAmount,
 };
 
 /// Payment protocols the high-level client can answer automatically.
@@ -262,7 +262,7 @@ impl PayKitClient {
                     challenge,
                     crate::mpp::client::BuildChargeTransactionOptions {
                         max_amount_base_units: authorization.max_amount_atomic(),
-                        expected_network: Some(offer.network.to_string()),
+                        expected_network: Some(offer.terms.network.to_string()),
                         // The spend cap covers `request.amount` only, so split
                         // ATA rent the wallet would fund sits outside it.
                         payer_funded_ata_creation:
@@ -423,20 +423,33 @@ enum PaymentSource {
     X402(Box<PaymentRequirements>),
 }
 
-struct PaymentOffer {
+/// The canonical economic terms of one payment offer: who is paid, how much,
+/// in which asset and on which network.
+///
+/// This is what [`ClientPermissions::authorize`] approves and what the signing
+/// path pays, so callers that run their own negotiation (for example an MCP
+/// server) should derive it with [`Self::from_mpp_charge`] or
+/// [`Self::from_x402_exact`] rather than re-reading the challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaymentTerms {
     origin: String,
     network: SolanaNetwork,
     mint: String,
     amount: u64,
-    source: PaymentSource,
+    destinations: Vec<PaymentDestination>,
 }
 
-impl PaymentOffer {
-    fn from_mpp(
-        challenge: crate::mpp::PaymentChallenge,
+impl PaymentTerms {
+    /// Terms of an MPP Solana `charge` challenge, or `None` for a challenge
+    /// this client does not answer (another method or intent, native SOL).
+    ///
+    /// Destinations are the primary `recipient` (paid `amount` minus the
+    /// splits) followed by every `methodDetails.splits` entry in order.
+    pub fn from_mpp_charge(
+        challenge: &crate::mpp::PaymentChallenge,
         origin: &str,
     ) -> Result<Option<Self>, PermissionRejection> {
-        if !is_solana_charge_challenge(&challenge) {
+        if !is_solana_charge_challenge(challenge) {
             return Ok(None);
         }
         let request = challenge
@@ -455,32 +468,58 @@ impl PaymentOffer {
             .unwrap_or_default();
         let network = parse_network(details.network.as_deref().unwrap_or("mainnet"))
             .ok_or_else(|| PermissionRejection::invalid_terms("unsupported MPP network"))?;
-        let mint = resolve_stablecoin_mint(&request.currency, Some(network.as_str()))
-            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported MPP asset"))?;
-        let mint = mint
-            .parse::<solana_pubkey::Pubkey>()
-            .map_err(|_| PermissionRejection::invalid_terms("invalid MPP asset mint"))?
-            .to_string();
-        if is_other_cluster_mint(&mint, network) {
-            return Err(PermissionRejection::invalid_terms(
-                "MPP asset mint belongs to another network",
-            ));
-        }
-        let amount = request
+        let mint = canonical_mint(&request.currency, network, "MPP")?;
+        let amount: u64 = request
             .amount
             .parse()
             .map_err(|_| PermissionRejection::invalid_terms("invalid MPP payment amount"))?;
+
+        let mut splits = Vec::new();
+        let mut splits_total = 0u64;
+        for split in details.splits.as_deref().unwrap_or_default() {
+            let destination = PaymentDestination::new(
+                parse_recipient(&split.recipient, "MPP split recipient")?,
+                split
+                    .amount
+                    .parse()
+                    .map_err(|_| PermissionRejection::invalid_terms("invalid MPP split amount"))?,
+            );
+            splits_total = splits_total
+                .checked_add(destination.amount)
+                .ok_or_else(|| PermissionRejection::invalid_terms("MPP splits overflow"))?;
+            splits.push(destination);
+        }
+        let primary = amount
+            .checked_sub(splits_total)
+            .filter(|primary| *primary > 0)
+            .ok_or_else(|| {
+                PermissionRejection::invalid_terms("MPP splits leave nothing for the recipient")
+            })?;
+        let mut destinations = vec![PaymentDestination::new(
+            parse_recipient(
+                request.recipient.as_deref().ok_or_else(|| {
+                    PermissionRejection::invalid_terms("MPP charge names no recipient")
+                })?,
+                "MPP recipient",
+            )?,
+            primary,
+        )];
+        destinations.extend(splits);
+
         Ok(Some(Self {
             origin: origin.to_string(),
             network,
             mint,
             amount,
-            source: PaymentSource::Mpp(Box::new(challenge)),
+            destinations,
         }))
     }
 
-    fn from_x402(
-        mut requirement: PaymentRequirements,
+    /// Terms of an x402 `exact` requirement, or `None` for one this client
+    /// does not answer (another scheme, native SOL). The single destination
+    /// is `payTo`.
+    pub fn from_x402_exact(
+        requirement: &PaymentRequirements,
         origin: &str,
     ) -> Result<Option<Self>, PermissionRejection> {
         if requirement.currency.eq_ignore_ascii_case("SOL") || !requirement.is_exact_scheme() {
@@ -499,35 +538,123 @@ impl PaymentOffer {
                 ));
             }
         }
-        // The signing path must consume the same canonical cluster that was
-        // authorized above; never retain an unchecked wire value.
-        requirement.cluster = Some(network.as_str().to_string());
-        let mint = resolve_stablecoin_mint(&requirement.currency, Some(network.as_str()))
-            .ok_or_else(|| PermissionRejection::invalid_terms("unsupported x402 asset"))?;
-        let mint = mint
-            .parse::<solana_pubkey::Pubkey>()
-            .map_err(|_| PermissionRejection::invalid_terms("invalid x402 asset mint"))?
-            .to_string();
-        if is_other_cluster_mint(&mint, network) {
-            return Err(PermissionRejection::invalid_terms(
-                "x402 asset mint belongs to another network",
-            ));
-        }
+        let mint = canonical_mint(&requirement.currency, network, "x402")?;
         let amount = requirement
             .amount
             .parse()
             .map_err(|_| PermissionRejection::invalid_terms("invalid x402 payment amount"))?;
+        let destinations = vec![PaymentDestination::new(
+            parse_recipient(&requirement.recipient, "x402 payTo")?,
+            amount,
+        )];
         Ok(Some(Self {
             origin: origin.to_string(),
             network,
             mint,
             amount,
+            destinations,
+        }))
+    }
+
+    /// Origin that issued the challenge.
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    /// Canonical Solana cluster.
+    pub fn network(&self) -> SolanaNetwork {
+        self.network
+    }
+
+    /// Base58 mint address of the paid asset.
+    pub fn mint(&self) -> &str {
+        &self.mint
+    }
+
+    /// Total amount in the asset's atomic units.
+    pub fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    /// Every account the payment transfers to, primary recipient first. The
+    /// amounts sum to [`Self::amount`].
+    pub fn destinations(&self) -> &[PaymentDestination] {
+        &self.destinations
+    }
+
+    /// The view presented to [`ClientPermissions::authorize`].
+    pub fn candidate(&self) -> PaymentCandidate<'_> {
+        PaymentCandidate::new(
+            &self.origin,
+            self.network,
+            &self.mint,
+            self.amount,
+            &self.destinations,
+        )
+    }
+}
+
+fn canonical_mint(
+    currency: &str,
+    network: SolanaNetwork,
+    protocol: &str,
+) -> Result<String, PermissionRejection> {
+    let mint = resolve_stablecoin_mint(currency, Some(network.as_str()))
+        .ok_or_else(|| PermissionRejection::invalid_terms(format!("unsupported {protocol} asset")))?
+        .parse::<solana_pubkey::Pubkey>()
+        .map_err(|_| PermissionRejection::invalid_terms(format!("invalid {protocol} asset mint")))?
+        .to_string();
+    if is_other_cluster_mint(&mint, network) {
+        return Err(PermissionRejection::invalid_terms(format!(
+            "{protocol} asset mint belongs to another network"
+        )));
+    }
+    Ok(mint)
+}
+
+fn parse_recipient(value: &str, label: &str) -> Result<solana_pubkey::Pubkey, PermissionRejection> {
+    value
+        .parse()
+        .map_err(|_| PermissionRejection::invalid_terms(format!("invalid {label}")))
+}
+
+/// A permitted offer and the challenge its terms were derived from.
+struct PaymentOffer {
+    terms: PaymentTerms,
+    source: PaymentSource,
+}
+
+impl PaymentOffer {
+    fn from_mpp(
+        challenge: crate::mpp::PaymentChallenge,
+        origin: &str,
+    ) -> Result<Option<Self>, PermissionRejection> {
+        Ok(
+            PaymentTerms::from_mpp_charge(&challenge, origin)?.map(|terms| Self {
+                terms,
+                source: PaymentSource::Mpp(Box::new(challenge)),
+            }),
+        )
+    }
+
+    fn from_x402(
+        mut requirement: PaymentRequirements,
+        origin: &str,
+    ) -> Result<Option<Self>, PermissionRejection> {
+        let Some(terms) = PaymentTerms::from_x402_exact(&requirement, origin)? else {
+            return Ok(None);
+        };
+        // The signing path must consume the same canonical cluster that was
+        // authorized; never retain an unchecked wire value.
+        requirement.cluster = Some(terms.network.as_str().to_string());
+        Ok(Some(Self {
+            terms,
             source: PaymentSource::X402(Box::new(requirement)),
         }))
     }
 
     fn candidate(&self) -> PaymentCandidate<'_> {
-        PaymentCandidate::new(&self.origin, self.network, &self.mint, self.amount)
+        self.terms.candidate()
     }
 }
 
@@ -1405,6 +1532,118 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_x402_payment.load(Ordering::SeqCst));
         task.abort();
+    }
+
+    fn split_charge_challenge(recipient: Pubkey, split: Pubkey) -> PaymentChallenge {
+        let details = MethodDetails {
+            decimals: Some(6),
+            token_program: Some(TOKEN_PROGRAM.to_string()),
+            recent_blockhash: Some(Hash::new_unique().to_string()),
+            splits: Some(vec![crate::mpp::protocol::solana::Split {
+                recipient: split.to_string(),
+                amount: "100".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "1000".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(recipient.to_string()),
+            method_details: Some(serde_json::to_value(details).unwrap()),
+            ..Default::default()
+        };
+        PaymentChallenge::new(
+            "permission-test",
+            "127.0.0.1",
+            "solana",
+            "charge",
+            Base64UrlJson::from_typed(&request).unwrap(),
+        )
+    }
+
+    #[test]
+    fn mpp_terms_expose_the_recipient_and_every_split() {
+        let (recipient, split) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let terms =
+            PaymentTerms::from_mpp_charge(&split_charge_challenge(recipient, split), "https://a.b")
+                .unwrap()
+                .unwrap();
+        assert_eq!(terms.amount(), 1000);
+        assert_eq!(terms.mint(), USDC_MAINNET);
+        assert_eq!(
+            terms.destinations(),
+            [
+                PaymentDestination::new(recipient, 900),
+                PaymentDestination::new(split, 100),
+            ]
+        );
+        assert_eq!(terms.candidate().destinations(), terms.destinations());
+
+        let requirement: PaymentRequirements = serde_json::from_value(serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "5",
+            "asset": USDC_MAINNET,
+            "payTo": recipient.to_string(),
+        }))
+        .unwrap();
+        let terms = PaymentTerms::from_x402_exact(&requirement, "https://a.b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            terms.destinations(),
+            [PaymentDestination::new(recipient, 5)]
+        );
+    }
+
+    #[tokio::test]
+    async fn split_to_an_unapproved_recipient_is_denied_before_signing() {
+        let (recipient, split) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let challenge = split_charge_challenge(recipient, split);
+        for (approved, signed) in [(vec![recipient], false), (vec![recipient, split], true)] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let signer = CountingSigner {
+                calls: calls.clone(),
+                pubkey: Pubkey::new_unique(),
+            };
+            let app = Router::new()
+                .route("/report", get(mpp_paid_resource))
+                .with_state(ChallengeState {
+                    payment_required: challenge.to_header().unwrap(),
+                    saw_payment: Arc::new(AtomicBool::new(false)),
+                });
+            let url = format!("{}/report", serve(app).await);
+            let mut permissions = ClientPermissions::builder();
+            for key in approved {
+                permissions = permissions.allow_recipient(key);
+            }
+            let client = PayKitClient::builder()
+                .signer(signer)
+                .rpc_url(live_rpc().await)
+                .permissions(permissions.build().unwrap())
+                .accept([ClientProtocol::Mpp])
+                .build()
+                .unwrap();
+
+            // The counting signer refuses to sign, so reaching it is the
+            // positive control.
+            let result = client.get(url).send().await;
+            if signed {
+                assert!(matches!(result, Err(ClientError::Mpp(_))), "{result:?}");
+            } else {
+                let Err(ClientError::PermissionDenied(denial)) = result else {
+                    panic!("expected permission denial");
+                };
+                assert_eq!(
+                    denial.rejections[0].code,
+                    PermissionDeniedCode::RecipientNotAllowed
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst) > 0, signed);
+        }
     }
 
     #[tokio::test]
