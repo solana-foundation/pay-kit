@@ -251,6 +251,44 @@ class TransactionVerifierTest < Minitest::Test
     assert result.ok?, result.reason
   end
 
+  # A sponsor pays a signature fee per required signer, so the legs of a
+  # split must all be funded by one authority, and no signer may sit in the
+  # transaction that funds nothing.
+  def test_sponsored_split_legs_must_share_one_funding_authority
+    fee_payer = pubkey(1)
+    payer = pubkey(3)
+    other_payer = pubkey(4)
+    split_recipient = pubkey(5)
+    request = charge_request(method_details: {
+      "network" => "localnet",
+      "feePayer" => true,
+      "feePayerKey" => fee_payer,
+      "splits" => [{"recipient" => split_recipient, "amount" => "200"}]
+    })
+    signed = lambda do |signers, split_source|
+      keys = [*signers, pubkey(2), split_recipient, PROGRAMS::SYSTEM_PROGRAM]
+      Base64.strict_encode64(v0_transaction(
+        account_keys: keys,
+        signatures: Array.new(signers.length) { "\x00".b * 64 },
+        instructions: [
+          compiled_instruction(keys.index(PROGRAMS::SYSTEM_PROGRAM), [keys.index(payer), keys.index(pubkey(2))], u32(2) + u64(800)),
+          compiled_instruction(keys.index(PROGRAMS::SYSTEM_PROGRAM), [keys.index(split_source), keys.index(split_recipient)], u32(2) + u64(200))
+        ]
+      ))
+    end
+
+    result = @verifier.verify_transaction_payload(signed.call([fee_payer, payer, other_payer], other_payer), request)
+    refute result.ok?
+    assert_match(/share one funding authority/, result.reason)
+
+    result = @verifier.verify_transaction_payload(signed.call([fee_payer, payer, other_payer], payer), request)
+    refute result.ok?
+    assert_match(/Unexpected signer/, result.reason)
+
+    result = @verifier.verify_transaction_payload(signed.call([fee_payer, payer], payer), request)
+    assert result.ok?, result.reason
+  end
+
   def test_rejects_unexpected_program
     payer = pubkey(1)
     recipient = pubkey(2)
