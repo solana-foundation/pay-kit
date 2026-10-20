@@ -4,6 +4,7 @@
  * beyond the filesystem; entirely separate from the gated routes.
  */
 import type { Express, Request, Response as ExpressResponse } from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,8 +52,11 @@ function safeJoin(root: string, rel: string): string | null {
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 export function registerDocs(app: Express): void {
+  // Each request hits the filesystem; cap it per client.
+  const limiter = rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false })
+
   // GET /api/v1/docs — which languages have generated docs?
-  app.get('/api/v1/docs', async (_req: Request, res: ExpressResponse) => {
+  app.get('/api/v1/docs', limiter, async (_req: Request, res: ExpressResponse) => {
     const available: Record<Lang, boolean> = Object.fromEntries(LANGS.map((l) => [l, false])) as Record<Lang, boolean>
     for (const lang of LANGS) {
       try {
@@ -66,7 +70,7 @@ export function registerDocs(app: Express): void {
   })
 
   // GET /api/v1/docs/:lang/tree — file tree under docs/api/:lang/
-  app.get('/api/v1/docs/:lang/tree', async (req: Request, res: ExpressResponse) => {
+  app.get('/api/v1/docs/:lang/tree', limiter, async (req: Request, res: ExpressResponse) => {
     const lang = String(req.params.lang)
     if (!(LANGS as readonly string[]).includes(lang)) {
       res.status(404).json({ error: 'unknown_lang' })
@@ -87,7 +91,7 @@ export function registerDocs(app: Express): void {
   })
 
   // GET /api/v1/docs/:lang/file?path=foo/bar.md — raw markdown content
-  app.get('/api/v1/docs/:lang/file', async (req: Request, res: ExpressResponse) => {
+  app.get('/api/v1/docs/:lang/file', limiter, async (req: Request, res: ExpressResponse) => {
     const lang = String(req.params.lang)
     if (!(LANGS as readonly string[]).includes(lang)) {
       res.status(404).json({ error: 'unknown_lang' })
