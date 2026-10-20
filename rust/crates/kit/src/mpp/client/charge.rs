@@ -287,6 +287,36 @@ pub fn build_spl_transfer_batch_instructions(
     Ok(instructions)
 }
 
+/// The server fee payer a sponsored challenge names, or `None` when the
+/// signer pays its own fees.
+///
+/// Sponsorship relaxes the split ATA-rent guard, so it must mean a payer other
+/// than the signer: a challenge naming the signer's own key as `feePayerKey`
+/// would make the signer fund that rent while looking sponsored.
+fn server_fee_payer(
+    method_details: &MethodDetails,
+    signer_pubkey: &Pubkey,
+) -> Result<Option<Pubkey>, Error> {
+    if !method_details.fee_payer.unwrap_or(false) {
+        return Ok(None);
+    }
+    let Some(key) = method_details.fee_payer_key.as_deref() else {
+        return Ok(None);
+    };
+    let fee_payer =
+        Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?;
+    if fee_payer == *signer_pubkey {
+        return Err(signer_as_fee_payer());
+    }
+    Ok(Some(fee_payer))
+}
+
+fn signer_as_fee_payer() -> Error {
+    Error::InvalidConfig(
+        "feePayerKey names the signer; a sponsored charge needs a separate server fee payer".into(),
+    )
+}
+
 /// Build the unsigned message for a non-confidential Solana charge: one
 /// primary transfer plus any validated splits, compiled against a resolved
 /// blockhash. This is the prepared-message half of
@@ -332,15 +362,7 @@ pub async fn build_prepared_charge(
     let recipient_pubkey =
         Pubkey::from_str(recipient).map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
 
-    let use_fee_payer =
-        method_details.fee_payer.unwrap_or(false) && method_details.fee_payer_key.is_some();
-
-    let fee_payer_pubkey = if use_fee_payer {
-        let key = method_details.fee_payer_key.as_ref().unwrap();
-        Some(Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?)
-    } else {
-        None
-    };
+    let fee_payer_pubkey = server_fee_payer(method_details, &signer_pubkey)?;
 
     // Bounded compute-unit price/limit instead of the
     // historical hardcoded 1 micro-lamport / 200,000 units.
@@ -491,6 +513,9 @@ pub async fn build_charge_transaction_with_options(
             })?;
             let fee_payer = Pubkey::from_str(fee_payer_key)
                 .map_err(|e| Error::Other(format!("invalid feePayerKey `{fee_payer_key}`: {e}")))?;
+            if fee_payer == signer.pubkey() {
+                return Err(signer_as_fee_payer());
+            }
             // Resolve a currency SYMBOL (e.g. "USDPT") to its mint address, the
             // same way the non-confidential path does — the bundle builder feeds
             // this straight to Pubkey::from_str, so a bare symbol would fail.
@@ -3887,5 +3912,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ata_create_count(&payload), 8);
+    }
+
+    #[tokio::test]
+    async fn build_charge_rejects_the_signer_posing_as_server_fee_payer() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+
+        // A challenge naming the signer as its sponsor would have the signer
+        // fund the split ATA rent without the opt-in.
+        let md = ata_split_details(Some(signer.pubkey()));
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("names the signer"), "{err}");
+
+        // Also without ATA creation: sponsorship must mean another payer.
+        let md = MethodDetails {
+            splits: None,
+            ..ata_split_details(Some(signer.pubkey()))
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("names the signer"), "{err}");
+
+        let md = MethodDetails {
+            splits: None,
+            ..ata_split_details(Some(Pubkey::new_unique()))
+        };
+        assert!(build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md
+        )
+        .await
+        .is_ok());
     }
 }
