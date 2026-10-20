@@ -28,6 +28,9 @@ pub async fn build_payment(
     requirements: &PaymentRequirements,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<PaymentPayload, Error> {
+    // Only the nonblocking client is reachable here: a blocking call panics
+    // on a current-thread runtime.
+    let rpc = rpc.get_inner_client().as_ref();
     if !requirements.is_exact_scheme() {
         return Err(Error::InvalidPayloadType(
             "refusing to sign a non-exact offer as an exact payment".into(),
@@ -84,6 +87,7 @@ pub async fn build_payment(
         Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
     } else {
         rpc.get_latest_blockhash()
+            .await
             .map_err(|e| Error::Rpc(e.to_string()))?
     };
 
@@ -419,7 +423,7 @@ pub fn payment_decimals(rpc: &RpcClient, requirements: &PaymentRequirements) -> 
 
 /// [`payment_decimals`] without blocking the async runtime on the mint read.
 async fn payment_decimals_async(
-    rpc: &RpcClient,
+    rpc: &solana_rpc_client::nonblocking::rpc_client::RpcClient,
     requirements: &PaymentRequirements,
 ) -> Result<u8, Error> {
     if let Some(decimals) = requirements.decimals {
@@ -427,7 +431,6 @@ async fn payment_decimals_async(
     }
     let mint = decimals_mint(requirements)?;
     let account = rpc
-        .get_inner_client()
         .get_account(&mint)
         .await
         .map_err(|e| Error::Rpc(format!("failed to read mint {mint}: {e}")))?;
@@ -1581,5 +1584,24 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blockhash_fallback_does_not_block_the_runtime() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let mut requirements = test_requirements("USDC");
+        requirements.recent_blockhash = None;
+        let payload = build_payment(
+            &signer,
+            &mint_rpc(programs::TOKEN_PROGRAM, 6),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(transfer_decimals(payload), 6);
     }
 }
