@@ -100,7 +100,8 @@ module PayKit
     def self.format_decimal(value)
       s = value.to_s("F")
       whole, _, fraction = s.partition(".")
-      fraction = fraction.sub(/0+\z/, "")
+      last_significant = fraction.rindex(/[^0]/)
+      fraction = last_significant ? fraction[0..last_significant] : ""
       fraction.empty? ? whole : "#{whole}.#{fraction}"
     end
 

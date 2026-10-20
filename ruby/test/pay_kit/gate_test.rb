@@ -207,6 +207,15 @@ class PayKitGateTest < Minitest::Test
     end
   end
 
+  def test_format_decimal_trims_trailing_zeros
+    assert_equal "1", PayKit::Gate.format_decimal(BigDecimal("1.000"))
+    assert_equal "0.1", PayKit::Gate.format_decimal(BigDecimal("0.100"))
+    assert_equal "10.05", PayKit::Gate.format_decimal(BigDecimal("10.0500"))
+    assert_equal "0", PayKit::Gate.format_decimal(BigDecimal(0))
+    long = "0." + ("0" * 20_000) + "1"
+    assert_equal long, PayKit::Gate.format_decimal(BigDecimal(long))
+  end
+
   private
 
   def build(name, amount:, pay_to: nil, accept: nil, fee_within: nil, fee_on_top: nil, description: nil)
