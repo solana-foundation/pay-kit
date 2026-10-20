@@ -31,6 +31,7 @@ from solana_pay_kit import (
     require_payment,
 )
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
+from solana_pay_kit._paycore.store import ConsumedSignatures
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import (
     ChallengeExpiredError,
@@ -112,14 +113,22 @@ async def test_settled_signature_not_replayable_across_requests(monkeypatch):
     by one request's core stays consumed for the next request's core."""
     cfg = _cfg(accept=(Protocol.MPP,))
     store = PayCore.for_config(cfg)._mpp._replay_store
-    key = "solana-charge:consumed:sig-xyz"
     # First request settles the signature (marks it consumed).
-    assert await store.put_if_absent(key, True) is True
+    assert await ConsumedSignatures(store).claim("sig-xyz") is True
     # A later request resolves the SAME core/store, so the marker persists and
-    # a replay of the same signature is rejected (put_if_absent returns False).
+    # a replay of the same signature is rejected (claim returns False).
     store_again = PayCore.for_config(cfg)._mpp._replay_store
     assert store_again is store
-    assert await store_again.put_if_absent(key, True) is False
+    assert await ConsumedSignatures(store_again).claim("sig-xyz") is False
+
+
+def test_mpp_and_x402_share_one_replay_store():
+    """One payment authorizes one request across protocols: both adapters of a
+    dual gate claim signatures in the same store, so an MPP-settled signature
+    is consumed for x402 too (and vice versa)."""
+    core = PayCore(_cfg(accept=(Protocol.MPP, Protocol.X402)))
+    assert core._x402 is not None
+    assert core._mpp._replay_store is core._x402._store
 
 
 # -- gate resolution ---------------------------------------------------------

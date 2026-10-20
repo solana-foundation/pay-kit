@@ -187,3 +187,54 @@ class FileReplayStore:
             await self._flush_off_loop(next_data)
             self._data = next_data
             return True
+
+
+def consumed_signature_key(signature: str) -> str:
+    """Store key of the protocol-independent consumed-signature ledger.
+
+    MPP charge and x402 ``exact`` both reserve a settled Solana signature under
+    this one key, so one on-chain payment authorizes one request whichever
+    protocol presents it. The key matches the Rust SDK's, so deployments that
+    share a store across SDKs share the ledger too. A signature commits to a
+    cluster-specific blockhash, so scoping by network would add nothing.
+    """
+    return f"solana:consumed-signature:{signature}"
+
+
+#: Keys under which MPP charge and x402 ``exact`` claimed signatures before
+#: they shared the ledger.
+_LEGACY_CONSUMED_PREFIXES = ("solana-charge:consumed:", "x402-svm-exact:consumed:")
+
+
+async def consumed_before_ledger(store: Store, signature: str) -> bool:
+    """Whether ``signature`` was claimed under a pre-ledger MPP or x402 key.
+
+    Such a record was written by a replica running an older release, or by
+    this one before it upgraded. Read only and fail closed: the signature
+    stays consumed, it is never migrated or claimed again.
+    """
+    for prefix in _LEGACY_CONSUMED_PREFIXES:
+        if await store.get(prefix + signature) is not None:
+            return True
+    return False
+
+
+class ConsumedSignatures:
+    """Protocol-independent ledger of signatures that authorized a response.
+
+    A transaction settled through MPP cannot be presented again as an x402
+    proof on a gate sharing the store, and vice versa.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self._store = store
+
+    async def claim(self, signature: str, value: Any = True) -> bool:
+        """Atomically claim ``signature``; ``False`` means any protocol already did."""
+        if await consumed_before_ledger(self._store, signature):
+            return False
+        return await self._store.put_if_absent(consumed_signature_key(signature), value)
+
+    async def release(self, signature: str) -> None:
+        """Release a claim on a transaction that provably never landed."""
+        await self._store.delete(consumed_signature_key(signature))

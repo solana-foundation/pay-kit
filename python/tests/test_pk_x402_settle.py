@@ -33,6 +33,7 @@ from solana_pay_kit import (
     configure,
 )
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.store import ConsumedSignatures, consumed_signature_key
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402 import (
@@ -227,12 +228,68 @@ async def test_replay_same_signature_with_different_transaction_rejected(monkeyp
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
     await store.put(
-        f"x402-svm-exact:consumed:{signature}",
+        consumed_signature_key(signature),
         {"binding": "different-wire", "leaseUntil": 0, "state": "confirmed"},
     )
     with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
     assert exc.value.code == "signature_consumed"
+
+
+@pytest.mark.asyncio
+async def test_signature_settled_through_mpp_is_rejected_by_x402(monkeypatch):
+    """MPP charge and x402 share one consumed-signature ledger: a transaction
+    already settled through MPP cannot be presented again as an x402 proof."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    assert await ConsumedSignatures(store).claim(signature) is True  # MPP settled it
+
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
+    assert not rpcs or rpcs[0].send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_signature_settled_through_x402_is_consumed_for_mpp(monkeypatch):
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    # The claim MPP charge makes before granting a receipt now fails.
+    assert await ConsumedSignatures(store).claim(payment.transaction) is False
+    # An unrelated payment is still accepted.
+    assert await ConsumedSignatures(store).claim("other-signature") is True
+
+
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+@pytest.mark.asyncio
+async def test_pre_ledger_consumed_record_stays_consumed(monkeypatch, legacy_prefix):
+    """A signature claimed under a pre-ledger MPP or x402 key (by an older
+    replica, or just before an upgrade) stays consumed for both protocols; the
+    legacy record is only read, never rewritten."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    await store.put(legacy_prefix + signature, True)
+
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
+    assert not rpcs or rpcs[0].send_calls == 0
+    assert await ConsumedSignatures(store).claim(signature) is False
+    assert await store.get(consumed_signature_key(signature)) is None
+    assert await store.get(legacy_prefix + signature) is True
+
+    # Signatures without a legacy record settle normally.
+    await store.delete(legacy_prefix + signature)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == signature
 
 
 @pytest.mark.asyncio
@@ -279,7 +336,7 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     assert "confirmation failed" in str(exc.value)
     # Broadcast was accepted, so a timeout is ambiguous: the transaction may
     # still land. Keep the reservation to prevent a later duplicate fulfillment.
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
 
@@ -300,7 +357,7 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     assert payment.transaction == signature
     assert recovered_rpcs[0].confirm_calls == 1
     assert recovered_rpcs[0].send_calls == 0
-    confirmed_record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    confirmed_record = await store.get(consumed_signature_key(signature))
     assert isinstance(confirmed_record, dict)
     assert confirmed_record["state"] == "confirmed"
 
@@ -335,7 +392,7 @@ async def test_recovery_does_not_replace_concurrently_confirmed_state(monkeypatc
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == signature
     assert recovery_rpcs == []
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "confirmed"
 
@@ -354,7 +411,7 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
     signature = await _settlement_signature(header, op_kp)
     with pytest.raises(InvalidProofError):
         await adapter.verify_and_settle(gate, _Req(header))
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
 

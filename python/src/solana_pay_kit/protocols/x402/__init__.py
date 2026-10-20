@@ -3,7 +3,8 @@
 Self-hosted x402 ``exact`` scheme for the Solana SVM. ``X402Adapter`` (this
 module) issues 402 challenges, runs the structural 11-rule verifier on
 submitted credentials, cosigns as the facilitator fee payer, broadcasts via
-the configured RPC, and namespaces the consumed signature in the replay store.
+the configured RPC, and reserves the consumed signature in the replay store
+under the ledger key it shares with MPP charge.
 The verifier, module constants, and ``X402*`` wire TypedDicts live under
 :mod:`solana_pay_kit.protocols.x402.exact`; the client builder lives under
 :mod:`solana_pay_kit.protocols.x402.client`.
@@ -28,7 +29,7 @@ from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store
+from solana_pay_kit._paycore.store import MemoryStore, Store, consumed_before_ledger, consumed_signature_key
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.extensions import PaymentIdentifierError, verify_payment_identifier
@@ -66,7 +67,6 @@ _RESPONSE_HEADER = "payment-response"
 # server must echo it there when it accepted a v1 credential (rust
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
-_REPLAY_PREFIX = "x402-svm-exact:consumed:"
 # `SolanaRpc.await_confirmation` performs at most 40 requests, each with the
 # client's 30-second timeout, plus polling delays. Keep the recovery lease past
 # that complete worst-case window so a takeover cannot overlap the original
@@ -190,7 +190,9 @@ class X402Adapter:
                 check_network_blockhash(self._config.network.mints_label(), blockhash)
 
         signature = _transaction_signature(cosigned_wire)
-        replay_key = _REPLAY_PREFIX + signature
+        # The ledger shared with MPP charge, so a payment settled through either
+        # protocol cannot authorize a second request through the other.
+        replay_key = consumed_signature_key(signature)
         binding = hashlib.sha256(cosigned_wire).hexdigest()
         now = time.time()
         replay_record: dict[str, object] = {
@@ -199,6 +201,8 @@ class X402Adapter:
             "state": "pending",
         }
 
+        if await consumed_before_ledger(self._store, signature):
+            raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
         current = await self._store.get(replay_key)
         should_broadcast = current is None
         skip_confirmation = False

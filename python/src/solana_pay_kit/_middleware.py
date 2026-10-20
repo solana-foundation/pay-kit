@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from solana_pay_kit._paycore.protocol import Protocol
+from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.errors import (
     InvalidProofError,
     PaymentRequiredError,
@@ -95,13 +96,18 @@ class PayCore:
     ) -> None:
         """Bind to ``config`` and resolve (or inject) the scheme adapters."""
         self._config = config
-        self._mpp = mpp if mpp is not None else MppAdapter(config)
+        # One replay store for both protocols: MPP charge and x402 exact claim
+        # settled signatures in the same consumed-signature ledger, so a
+        # payment settled through one cannot authorize a request through the
+        # other. Injected adapters keep the store they were built with.
+        replay_store = MemoryStore()
+        self._mpp = mpp if mpp is not None else MppAdapter(config, replay_store=replay_store)
         # Auto-wire the x402 adapter only when the config accept list includes
         # it; mirrors the PHP constructor. An explicit adapter always wins.
         if x402 is not None:
             self._x402: X402Adapter | None = x402
         elif Protocol.X402 in config.accept:
-            self._x402 = X402Adapter(config)
+            self._x402 = X402Adapter(config, replay_store=replay_store)
         else:
             self._x402 = None
 

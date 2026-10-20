@@ -41,7 +41,7 @@ from solana_pay_kit._paycore.solana import (
     validate_network,
     validate_splits,
 )
-from solana_pay_kit._paycore.store import Store
+from solana_pay_kit._paycore.store import ConsumedSignatures, Store
 from solana_pay_kit._paycore.transaction import require_reported_version
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
@@ -76,7 +76,6 @@ from solana_pay_kit.protocols.mpp.server._verify import (
 logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
-_CONSUMED_PREFIX = "solana-charge:consumed:"
 
 # Re-exported from the decoder / verifier modules so the historical
 # ``solana_pay_kit.protocols.mpp.server.charge`` import surface stays intact.
@@ -603,8 +602,7 @@ class Mpp:
         # retry of the same credential always tries to insert the same key,
         # so the second attempt fails fast and the network is never asked
         # to settle the same transaction twice.
-        consumed_key = _CONSUMED_PREFIX + signature
-        inserted = await self._store.put_if_absent(consumed_key, True)
+        inserted = await ConsumedSignatures(self._store).claim(signature)
         if not inserted:
             raise ReplayError()
 
@@ -670,8 +668,7 @@ class Mpp:
         require_reported_version(tx.get("version"), error=_invalid_payload)
         self._verify_confirmed_transaction(tx, request, details)
 
-        consumed_key = _CONSUMED_PREFIX + payload.signature
-        inserted = await self._store.put_if_absent(consumed_key, True)
+        inserted = await ConsumedSignatures(self._store).claim(payload.signature)
         if not inserted:
             raise ReplayError()
 
