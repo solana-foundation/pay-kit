@@ -6,6 +6,9 @@ language = "php"
 vector = ["charge", "x402-exact"]
 protocol = true
 flow = false
+# Whether the testee drives the SDK at the clock a vector pins; claims no session intent, so no clock-pinned case runs.
+# Cross-checked against the testee `capabilities` op.
+honours_clock = false
 
 [[unsupported]]
 reason = "php is server-only: build-transaction is not supported (no client build path)"

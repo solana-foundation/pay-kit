@@ -1,5 +1,6 @@
-//! Deterministic Solana JSON-RPC fixture, the Rust twin of
-//! `harness/src/conformance/fixture-rpc.ts`.
+//! Deterministic Solana JSON-RPC fixture. `pkc fill` runs the kit against
+//! it, and `pkc run` serves one per vector to the SDK testee as
+//! `input.rpcUrl` (it replaced `harness/src/conformance/fixture-rpc.ts`).
 //!
 //! The filler runs the kit's real builders and verifiers against the same
 //! chain state every SDK runner sees: the vector's `input.rpcFixtures`
@@ -62,8 +63,8 @@ pub struct Fixtures {
 
 impl Fixtures {
     /// Parse `input.rpcFixtures`, defaulting the blockhash to the charge
-    /// request's `methodDetails.recentBlockhash` exactly as the TS driver does
-    /// (`fixturesFor` in `test/conformance.test.ts`).
+    /// request's `methodDetails.recentBlockhash` (what the retired TS driver
+    /// did, so every SDK sees the chain state it always saw).
     pub fn from_input(input: &Value) -> Result<Self, String> {
         let raw = input.get("rpcFixtures").cloned().unwrap_or(json!({}));
         let mut mints = BTreeMap::new();
@@ -359,7 +360,35 @@ fn dispatch(fixtures: &Fixtures, log: &CallLog, request: &Value) -> Value {
     }
 }
 
-/// Minimal HTTP/1.1: keep-alive, `Content-Length` bodies only.
+/// Read a `Transfer-Encoding: chunked` body.
+fn read_chunked(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut size = String::new();
+        reader.read_line(&mut size)?;
+        let size = usize::from_str_radix(size.trim().split(';').next().unwrap_or("0"), 16)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if size == 0 {
+            // Trailers end with an empty line.
+            loop {
+                let mut trailer = String::new();
+                if reader.read_line(&mut trailer)? == 0 || trailer.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..])?;
+        let mut crlf = String::new();
+        reader.read_line(&mut crlf)?;
+    }
+}
+
+/// Minimal HTTP/1.1 (the subset SDK HTTP clients send to a JSON-RPC
+/// endpoint, as Node's server in the retired TS fixture accepted it):
+/// keep-alive unless `Connection: close`, `Content-Length` or chunked
+/// bodies, `Expect: 100-continue`.
 fn serve_connection(stream: TcpStream, fixtures: &Fixtures, log: &CallLog) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
@@ -372,6 +401,9 @@ fn serve_connection(stream: TcpStream, fixtures: &Fixtures, log: &CallLog) -> st
             continue;
         }
         let mut content_length = 0usize;
+        let mut chunked = false;
+        let mut close = line.trim_end().ends_with("HTTP/1.0");
+        let mut expect_continue = false;
         loop {
             let mut header = String::new();
             if reader.read_line(&mut header)? == 0 {
@@ -382,13 +414,34 @@ fn serve_connection(stream: TcpStream, fixtures: &Fixtures, log: &CallLog) -> st
                 break;
             }
             if let Some((name, value)) = header.split_once(':') {
+                let value = value.trim();
                 if name.eq_ignore_ascii_case("content-length") {
-                    content_length = value.trim().parse().unwrap_or(0);
+                    content_length = value.parse().unwrap_or(0);
+                } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                    chunked = value.to_ascii_lowercase().contains("chunked");
+                } else if name.eq_ignore_ascii_case("connection") {
+                    let value = value.to_ascii_lowercase();
+                    if value.contains("close") {
+                        close = true;
+                    } else if value.contains("keep-alive") {
+                        close = false;
+                    }
+                } else if name.eq_ignore_ascii_case("expect") {
+                    expect_continue = value.eq_ignore_ascii_case("100-continue");
                 }
             }
         }
-        let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body)?;
+        if expect_continue {
+            writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+            writer.flush()?;
+        }
+        let body = if chunked {
+            read_chunked(&mut reader)?
+        } else {
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body)?;
+            body
+        };
         let response = match serde_json::from_slice::<Value>(&body) {
             Ok(Value::Array(batch)) => {
                 Value::Array(batch.iter().map(|r| dispatch(fixtures, log, r)).collect())
@@ -403,11 +456,15 @@ fn serve_connection(stream: TcpStream, fixtures: &Fixtures, log: &CallLog) -> st
         let payload = response.to_string();
         write!(
             writer,
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{}\r\n{}",
             payload.len(),
+            if close { "connection: close\r\n" } else { "" },
             payload
         )?;
         writer.flush()?;
+        if close {
+            return Ok(());
+        }
     }
 }
 
@@ -471,6 +528,27 @@ mod tests {
             .unwrap();
         assert_eq!(account.data[44], 6);
         assert_eq!(log.calls(), vec!["getAccountInfo".to_string()]);
+    }
+
+    // SDK HTTP clients differ: chunked bodies, `Expect: 100-continue` and
+    // `Connection: close` must all be served like Node's server did.
+    #[test]
+    fn http_fixture_accepts_chunked_expect_continue_and_close() {
+        let fixture = HttpFixture::start(&fixtures()).unwrap();
+        let addr = fixture.url().trim_start_matches("http://").to_string();
+        let mut stream = TcpStream::connect(&addr).unwrap();
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"getSlot"}"#;
+        write!(
+            stream,
+            "POST / HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 100 Continue"), "{response}");
+        assert!(response.contains(r#""result":100"#), "{response}");
+        assert_eq!(fixture.calls(), vec!["getSlot"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

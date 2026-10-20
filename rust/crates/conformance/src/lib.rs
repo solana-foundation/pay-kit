@@ -13,6 +13,7 @@ pub mod keys;
 pub mod mutate;
 pub mod realize;
 pub mod reqlint;
+pub mod run;
 pub mod tx;
 
 use std::path::PathBuf;

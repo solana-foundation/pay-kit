@@ -57,6 +57,8 @@ export type Expectations = {
   language: string;
   // suite -> claimed capability buckets
   capabilities: Record<Suite, Set<string>>;
+  // Required when vectors are claimed; `pkc run` cross-checks it.
+  honoursClock?: boolean;
   // Each entry lists exact case keys (`ids`) or one glob (`pattern`).
   unsupported: { label: string; suite: Suite; reason: string; matches: (key: string) => boolean }[];
   knownFailing: Map<string, { reason: string; tracking: string }>;
@@ -110,7 +112,15 @@ export function parseExpectations(text: string, source: string): Expectations {
     SUITES.map((s) => [s, new Set<string>()]),
   ) as Record<Suite, Set<string>>;
   const caps = (raw.capabilities ?? {}) as Record<string, unknown>;
+  let honoursClock: boolean | undefined;
   for (const [suite, value] of Object.entries(caps)) {
+    // Whether the testee drives the SDK at the clock a vector pins; checked
+    // by `pkc run` against the testee's `capabilities` op.
+    if (suite === "honours_clock") {
+      if (typeof value !== "boolean") fail(source, "capabilities.honours_clock must be a boolean");
+      honoursClock = value;
+      continue;
+    }
     if (!SUITES.includes(suite as Suite)) fail(source, `unknown capability suite "${suite}"`);
     if (suite === "vector") {
       for (const intent of asStringArray(value, source, "capabilities.vector")) {
@@ -124,6 +134,10 @@ export function parseExpectations(text: string, source: string): Expectations {
     } else if (value !== false) {
       fail(source, `capabilities.${suite} must be a boolean`);
     }
+  }
+  // No default: an SDK claiming vectors states whether it honours pinned clocks.
+  if (capabilities.vector.size > 0 && honoursClock === undefined) {
+    fail(source, "claims vector intents, so capabilities.honours_clock must say whether the testee honours the clock a vector pins");
   }
 
   const unsupported: Expectations["unsupported"] = [];
@@ -197,6 +211,7 @@ export function parseExpectations(text: string, source: string): Expectations {
   return {
     language: raw.language as string,
     capabilities,
+    honoursClock,
     unsupported,
     knownFailing,
     source,

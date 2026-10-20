@@ -134,100 +134,145 @@ pub fn transaction(tx: &VersionedTransaction) -> String {
     }
     let _ = writeln!(out, "  instructions");
     for (n, ix) in tx.message.instructions().iter().enumerate() {
-        let program = keys
-            .get(ix.program_id_index as usize)
-            .map(|k| k.to_string())
-            .unwrap_or_default();
-        let account = |i: usize| -> String {
-            ix.accounts
-                .get(i)
-                .and_then(|a| keys.get(*a as usize))
-                .map(|k| name(&labels, &k.to_string()))
-                .unwrap_or_else(|| "<missing>".into())
-        };
-        let data = ix.data.as_slice();
-        let mut fields: Vec<(String, String)> = Vec::new();
-        let title = match program.as_str() {
-            keys::COMPUTE_BUDGET_PROGRAM if data.first() == Some(&2) => {
-                fields.push((
-                    "units".into(),
-                    le_u32(data, 1).map(|v| v.to_string()).unwrap_or_default(),
-                ));
-                "ComputeBudget SetComputeUnitLimit".to_string()
-            }
-            keys::COMPUTE_BUDGET_PROGRAM if data.first() == Some(&3) => {
-                fields.push((
-                    "microLamports".into(),
-                    le_u64(data, 1).map(|v| v.to_string()).unwrap_or_default(),
-                ));
-                "ComputeBudget SetComputeUnitPrice".to_string()
-            }
-            keys::SYSTEM_PROGRAM if le_u32(data, 0) == Some(2) => {
-                fields.push((
-                    "lamports".into(),
-                    le_u64(data, 4).map(|v| v.to_string()).unwrap_or_default(),
-                ));
-                fields.push(("from".into(), account(0)));
-                fields.push(("to".into(), account(1)));
-                "System Transfer".to_string()
-            }
-            keys::TOKEN_PROGRAM | keys::TOKEN_2022_PROGRAM if data.len() == 10 && data[0] == 12 => {
-                fields.push((
-                    "amount".into(),
-                    le_u64(data, 1).map(|v| v.to_string()).unwrap_or_default(),
-                ));
-                fields.push(("decimals".into(), data[9].to_string()));
-                fields.push(("source".into(), account(0)));
-                fields.push(("mint".into(), account(1)));
-                fields.push(("destination".into(), account(2)));
-                fields.push(("authority".into(), account(3)));
-                let program_name = if program == keys::TOKEN_PROGRAM {
-                    "SPL Token"
-                } else {
-                    "Token-2022"
-                };
-                format!("{program_name} TransferChecked")
-            }
-            keys::ATA_PROGRAM if data == [1] => {
-                for (i, role) in [
-                    "payer",
-                    "ata",
-                    "owner",
-                    "mint",
-                    "system program",
-                    "token program",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    fields.push(((*role).into(), account(i)));
-                }
-                "Associated Token Account CreateIdempotent".to_string()
-            }
-            keys::MEMO_PROGRAM => {
-                fields.push((
-                    "text".into(),
-                    format!("{:?}", String::from_utf8_lossy(data)),
-                ));
-                for i in 0..ix.accounts.len() {
-                    fields.push((format!("signer[{i}]"), account(i)));
-                }
-                "Memo".to_string()
-            }
-            _ => {
-                fields.push(("data".into(), hex(data)));
-                for i in 0..ix.accounts.len() {
-                    fields.push((format!("account[{i}]"), account(i)));
-                }
-                format!("unknown program {}", name(&labels, &program))
-            }
-        };
+        let (title, fields) = decode_instruction(&labels, keys, ix);
         let _ = writeln!(out, "    #{n} {title}");
         for (k, v) in fields {
             let _ = writeln!(out, "         {k:<14} {v}");
         }
     }
     out
+}
+
+/// The decoded transaction as a tree, for diffs that name the first
+/// divergent field: fee payer, signer set, and every instruction's title and
+/// decoded fields (accounts by name).
+pub fn transaction_tree(tx: &VersionedTransaction) -> Value {
+    let labels = labels();
+    let keys = tx.message.static_account_keys();
+    let signed = tx.message.header().num_required_signatures as usize;
+    let instructions: Vec<Value> = tx
+        .message
+        .instructions()
+        .iter()
+        .map(|ix| {
+            let (title, fields) = decode_instruction(&labels, keys, ix);
+            let mut obj = serde_json::Map::new();
+            obj.insert("instruction".into(), Value::String(title));
+            for (k, v) in fields {
+                obj.insert(k, Value::String(v));
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    serde_json::json!({
+        "feePayer": keys.first().map(|k| name(&labels, &k.to_string())).unwrap_or_default(),
+        "signers": keys.iter().take(signed).map(|k| name(&labels, &k.to_string())).collect::<Vec<_>>(),
+        "recentBlockhash": tx.message.recent_blockhash().to_string(),
+        "instructions": instructions,
+    })
+}
+
+/// Human name of an address (`<address> (<label>)` for fixed addresses).
+pub fn address_name(address: &str) -> String {
+    name(&labels(), address)
+}
+
+/// One instruction as a title (program and instruction name) and its decoded
+/// fields with named accounts.
+fn decode_instruction(
+    labels: &BTreeMap<String, String>,
+    account_keys: &[solana_pubkey::Pubkey],
+    ix: &solana_message::compiled_instruction::CompiledInstruction,
+) -> (String, Vec<(String, String)>) {
+    let program = account_keys
+        .get(ix.program_id_index as usize)
+        .map(|k| k.to_string())
+        .unwrap_or_default();
+    let account = |i: usize| -> String {
+        ix.accounts
+            .get(i)
+            .and_then(|a| account_keys.get(*a as usize))
+            .map(|k| name(labels, &k.to_string()))
+            .unwrap_or_else(|| "<missing>".into())
+    };
+    let data = ix.data.as_slice();
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let title = match program.as_str() {
+        keys::COMPUTE_BUDGET_PROGRAM if data.first() == Some(&2) => {
+            fields.push((
+                "units".into(),
+                le_u32(data, 1).map(|v| v.to_string()).unwrap_or_default(),
+            ));
+            "ComputeBudget SetComputeUnitLimit".to_string()
+        }
+        keys::COMPUTE_BUDGET_PROGRAM if data.first() == Some(&3) => {
+            fields.push((
+                "microLamports".into(),
+                le_u64(data, 1).map(|v| v.to_string()).unwrap_or_default(),
+            ));
+            "ComputeBudget SetComputeUnitPrice".to_string()
+        }
+        keys::SYSTEM_PROGRAM if le_u32(data, 0) == Some(2) => {
+            fields.push((
+                "lamports".into(),
+                le_u64(data, 4).map(|v| v.to_string()).unwrap_or_default(),
+            ));
+            fields.push(("from".into(), account(0)));
+            fields.push(("to".into(), account(1)));
+            "System Transfer".to_string()
+        }
+        keys::TOKEN_PROGRAM | keys::TOKEN_2022_PROGRAM if data.len() == 10 && data[0] == 12 => {
+            fields.push((
+                "amount".into(),
+                le_u64(data, 1).map(|v| v.to_string()).unwrap_or_default(),
+            ));
+            fields.push(("decimals".into(), data[9].to_string()));
+            fields.push(("source".into(), account(0)));
+            fields.push(("mint".into(), account(1)));
+            fields.push(("destination".into(), account(2)));
+            fields.push(("authority".into(), account(3)));
+            let program_name = if program == keys::TOKEN_PROGRAM {
+                "SPL Token"
+            } else {
+                "Token-2022"
+            };
+            format!("{program_name} TransferChecked")
+        }
+        keys::ATA_PROGRAM if data == [1] => {
+            for (i, role) in [
+                "payer",
+                "ata",
+                "owner",
+                "mint",
+                "system program",
+                "token program",
+            ]
+            .iter()
+            .enumerate()
+            {
+                fields.push(((*role).into(), account(i)));
+            }
+            "Associated Token Account CreateIdempotent".to_string()
+        }
+        keys::MEMO_PROGRAM => {
+            fields.push((
+                "text".into(),
+                format!("{:?}", String::from_utf8_lossy(data)),
+            ));
+            for i in 0..ix.accounts.len() {
+                fields.push((format!("signer[{i}]"), account(i)));
+            }
+            "Memo".to_string()
+        }
+        _ => {
+            fields.push(("data".into(), hex(data)));
+            for i in 0..ix.accounts.len() {
+                fields.push((format!("account[{i}]"), account(i)));
+            }
+            format!("unknown program {}", name(labels, &program))
+        }
+    };
+    (title, fields)
 }
 
 fn bytes_of(expect: &Value) -> Option<Vec<u8>> {

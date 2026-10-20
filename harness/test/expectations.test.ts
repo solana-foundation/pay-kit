@@ -13,6 +13,7 @@ language = "fake"
 [capabilities]
 vector = ["charge"]
 protocol = true
+honours_clock = true
 [[unsupported]]
 pattern = "vector/charge-verify-*"
 reason = "client-only"
@@ -47,7 +48,15 @@ describe("expectations parsing", () => {
     expect(() =>
       parseExpectations(`language="x"\n[capabilities]\nvector=["x402-exat"]`, "x.toml"),
     ).toThrow(/unknown vector intent "x402-exat"/);
-    expect(parseExpectations(`language="x"\n[capabilities]\nvector=["x402-exact"]`, "x.toml").capabilities.vector.has("x402-exact")).toBe(true);
+    expect(parseExpectations(`language="x"\n[capabilities]\nvector=["x402-exact"]\nhonours_clock=false`, "x.toml").capabilities.vector.has("x402-exact")).toBe(true);
+  });
+
+  it("requires honours_clock when vectors are claimed (no default)", () => {
+    expect(() => parseExpectations(`language="x"\n[capabilities]\nvector=["charge"]`, "x.toml")).toThrow(/honours_clock/);
+    expect(() =>
+      parseExpectations(`language="x"\n[capabilities]\nvector=["charge"]\nhonours_clock="yes"`, "x.toml"),
+    ).toThrow(/must be a boolean/);
+    expect(parseExpectations(`language="x"\n[capabilities]\nvector=["charge"]\nhonours_clock=true`, "x.toml").honoursClock).toBe(true);
   });
 
   it("rejects entries for an unclaimed suite", () => {
@@ -137,7 +146,7 @@ describe("dangling entries", () => {
 
 describe("unsupported id lists", () => {
   const listed = parseExpectations(
-    `language="y"\n[capabilities]\nvector=["charge"]\n[[unsupported]]\nids=["vector/a","vector/b"]\nreason="server-only"`,
+    `language="y"\n[capabilities]\nvector=["charge"]\nhonours_clock=true\n[[unsupported]]\nids=["vector/a","vector/b"]\nreason="server-only"`,
     "y.toml",
   );
   it("matches exactly the listed ids", () => {
@@ -167,7 +176,7 @@ describe("file-level completeness", () => {
     resetRecordersForTest();
   });
 
-  const claimed = parseExpectations(`language="a"\n[capabilities]\nvector=["charge"]`, "a.toml");
+  const claimed = parseExpectations(`language="a"\n[capabilities]\nvector=["charge"]\nhonours_clock=true`, "a.toml");
   const refs = [ref("c1"), ref("c2")];
 
   it("fails when a whole language was filtered out", () => {

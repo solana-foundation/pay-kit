@@ -96,7 +96,7 @@
         "amount": "1000",
         "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
         },
         "maxTimeoutSeconds": 300,
         "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",

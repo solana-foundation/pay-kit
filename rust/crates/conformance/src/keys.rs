@@ -36,8 +36,11 @@ pub const MAINNET_USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const X402_PAY_TO: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
 /// A second x402 merchant (cross-route and wrong-recipient cases).
 pub const X402_OTHER_PAY_TO: &str = "Stake11111111111111111111111111111111111111";
-/// `extra.feePayer` advertised by the x402 build offers.
-pub const X402_OFFER_FEE_PAYER: &str = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ";
+/// `extra.feePayer` advertised by the x402 build offers, seed `[11; 32]`.
+/// The harness holds its secret so `pkc run --cross` can configure every
+/// server SDK (most refuse a sponsor without a key) to verify the builds.
+pub const X402_OFFER_FEE_PAYER_SEED: [u8; 32] = [11; 32];
+pub const X402_OFFER_FEE_PAYER: &str = "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9";
 
 pub const DEVNET_CAIP2: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 pub const MAINNET_CAIP2: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
@@ -96,6 +99,10 @@ mod tests {
         assert_eq!(
             pubkey_of_seed(X402_SERVER_FEE_PAYER_SEED).to_string(),
             X402_SERVER_FEE_PAYER
+        );
+        assert_eq!(
+            pubkey_of_seed(X402_OFFER_FEE_PAYER_SEED).to_string(),
+            X402_OFFER_FEE_PAYER
         );
     }
 

@@ -6,3 +6,6 @@ language = "python"
 vector = ["charge", "x402-exact", "session"]
 protocol = true
 flow = false
+# Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
+# Cross-checked against the testee `capabilities` op.
+honours_clock = true

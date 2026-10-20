@@ -6,6 +6,9 @@ language = "go"
 vector = ["charge", "x402-exact", "session"]
 protocol = true
 flow = false
+# Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
+# Cross-checked against the testee `capabilities` op.
+honours_clock = true
 
 [[unsupported]]
 reason = "Go session wire types are on the superseded draft, not mpp-specs e702dd8: intents.OpenPayload carries recentSlot instead of openSlot and SignedVoucher nests the voucher under data instead of voucher (go/protocols/mpp/intents/session.go)"

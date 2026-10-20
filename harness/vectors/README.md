@@ -1,10 +1,17 @@
 # Conformance vectors
 
 Deterministic, offline cross-SDK parity layer. Each vector is one case every
-SDK's conformance runner must agree on. The driver
-(`harness/test/conformance.test.ts`) spawns one runner process per SDK per
-vector over stdin/stdout, serves the vector's chain state from a fixture RPC,
-and asserts the runner output against the vector's `expect` block.
+SDK's conformance testee must agree on. The driver, `pkc run`
+(`rust/crates/conformance/src/run/`), keeps one testee process per SDK
+(testee ABI v2, `harness/README.md#testee-abi`), serves each vector's chain
+state from a fixture RPC, judges the result against the vector's `expect`
+block and, for builds, with the Rust kit's verifier and its own build of the
+same case, then reconciles against `harness/expectations/<sdk>.toml`.
+
+```sh
+cd rust
+cargo run -q -p paykit-conformance --bin pkc -- run --sdk all --tier offline --require
+```
 
 It does NOT replace on-chain settlement tests: RPC simulation, real
 Token-2022 extension behaviour, rent and confirmation stay in the surfpool
@@ -60,8 +67,8 @@ test.
 
 ### Traceability fields
 
-On top of the runner ABI each vector carries (the driver strips these before
-a runner sees the vector, so runners need no change):
+On top of the runner ABI each vector carries (the driver strips these, and
+`expect`, before a testee sees the vector):
 
 | Field | Meaning |
 | --- | --- |
@@ -88,17 +95,26 @@ a runner sees the vector, so runners need no change):
    - Verify vectors always pin a real transaction (`Input::ChargeTransaction`,
      `Input::X402Header`), so server-only SDKs verify the same bytes.
 3. `cargo test -p paykit-conformance`, then `pkc fill`, then `pkc req-lint`.
-4. Run every SDK against the new vector (see `CONTRIBUTING.md`).
+4. Run every SDK against the new vector: `pkc run --sdk all --tier offline
+   --discover` (see `CONTRIBUTING.md`), then `pkc case show <id>` to review
+   it.
 
 ## Runner ABI
 
-Types live in `harness/src/conformance/schema.ts` and are validated at the
-process boundary by `contract-schema.ts`.
+Types live in `harness/src/conformance/schema.ts`; `pkc` validates every
+result at the process boundary (`rust/crates/conformance/src/run/result.rs`,
+no unknown keys). Testees speak ABI v2 (`serve`, one process, newline JSON
+`{id, op, input}` -> `{id, ok, result}`); the one-shot form below is the v1
+shim (`pkc run --legacy`) and the payload of both.
 
-- stdin: one vector `{ id, intent, mode, description, input, expect }`, with
-  `input.rpcUrl` injected by the driver.
-- stdout: one `RunnerResult` line `{ id, outcome, transactionShape?,
-  x402EnvelopeShape?, exactBytes?, error?, rejectCode? }`.
+- input: one vector `{ id, intent, mode, description, input }` (no `expect`),
+  with `input.rpcUrl` injected by the driver.
+- result: one `RunnerResult` `{ id, outcome, transactionShape?,
+  x402EnvelopeShape?, exactBytes?, error?, rejectCode?, transaction?,
+  x402PaymentHeader? }`. An accepted charge build carries the built
+  `transaction`, an accepted x402 build the built `x402PaymentHeader`; `pkc`
+  runs the Rust verifier on it and compares its instruction multiset with the
+  kit's own build.
 - `outcome: "unsupported-mode"` declares that the SDK has no equivalent (for
   example a server-only SDK asked to build); whether that is allowed is
   decided by `harness/expectations/<language>.toml`.
@@ -108,8 +124,8 @@ process boundary by `contract-schema.ts`.
 ### Fixture RPC
 
 `input.rpcFixtures` (`{ recentBlockhash?, mints?: { <mint>: { owner,
-decimals } } }`) is served by `src/conformance/fixture-rpc.ts` (and its Rust
-twin `rust/crates/conformance/src/fixture_rpc.rs`, which the filler uses):
+decimals } } }`) is served by `rust/crates/conformance/src/fixture_rpc.rs`,
+the same fixture the filler runs the kit against:
 `getLatestBlockhash`, `getAccountInfo` / `getMultipleAccounts` (mints in the
 82-byte SPL layout), `getMinimumBalanceForRentExemption`, `getSlot`,
 `getHealth`. Anything else is refused with an error naming the method. A
@@ -118,6 +134,11 @@ charge request's `methodDetails.recentBlockhash`.
 
 ## Oracles
 
+- Every accepted `charge` / `x402-exact` build: the Rust kit's verifier must
+  accept it against the vector's request (or the offer's route), and its
+  instruction multiset (program, set of accounts, data; signatures excluded,
+  ordering free; an x402 hex memo nonce compares as a nonce) must equal the
+  kit's own build. Then the shape checks below.
 - `charge` build / verify: the decoded transaction shape
   (`transactionShape`). SPL transfers are expressed by `destinationOwner`
   (the driver derives the ATA); `maxComputeUnitLimit` and

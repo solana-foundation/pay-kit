@@ -8,18 +8,66 @@
 //!                               magnitudes, same verdicts) into DIR, never the committed tree
 //! pkc req-lint                  requirements lint over the pinned spec repositories
 //! pkc req-lint --list mpp|x402  print every extracted normative sentence with its id
+//! pkc run --sdk <lang>[,..]|all --tier offline [--require] [...]   drive SDK testees
+//! pkc run --cross [--sdk <servers>] [--check]                      client x server matrix
+//! pkc case show <id>            input, decoded expectation, mutation, spec, reference
+//! pkc case run --sdk <lang> <id>
+//! pkc next --sdk <lang>         the smallest failing class, blocking classes first
+//! pkc scaffold --lang <template> [--sdk <name>] [--dir <path>]
 //! ```
+//!
+//! See `pkc help` and `harness/AGENTS.md`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use paykit_conformance::case::SpecRepo;
-use paykit_conformance::{cases, fill, realize, repo_root, reqlint};
+use paykit_conformance::run::driver::{self, Options};
+use paykit_conformance::run::testee::{Abi, Manifest};
+use paykit_conformance::run::{cross, explain, next, scaffold, vectors};
+use paykit_conformance::{annotate, cases, fill, realize, repo_root, reqlint};
+
+const HELP: &str = "pkc: pay-kit conformance
+
+  pkc fill [--check | --list | --seed N --out DIR]
+  pkc req-lint [--list mpp|x402]
+
+  pkc run --sdk <lang>[,<lang>...]|all --tier offline [options]
+      --require              every claimed case must execute (also HARNESS_REQUIRE=1)
+      --discover             run every vector regardless of claims, judge nothing
+                             (also HARNESS_EXPECTATIONS_DISCOVER=1); seeds expectations
+      --case <id>            only this vector (repeatable); incompatible with --require
+      --diff-expectations    print newly_passing / newly_failing / still_failing
+      --legacy               one process per case (ABI v1 shim) instead of --serve
+      --timeout <secs>       per-case timeout (default 10)
+      --startup-timeout <s>  testee start + first case (default 600)
+      --seed <n>             fill a seeded variant corpus and run against it
+      --vectors <dir>        corpus directory (default harness/vectors)
+      --results <dir>        results directory (default harness/results)
+      --prebuilt <dir>       prebuilt native runners (default $HARNESS_PREBUILT_DIR)
+      --cross                after the run, cross-verify every build on every server
+      --verbose              full decoded trees in failure output
+  pkc run --cross [--sdk <servers>] [--check]
+      feed every saved build (harness/results/<sdk>/builds) to every server-capable
+      SDK's verify; writes harness/results/cross.json and the README table
+      (--check: fail if the table in harness/README.md is stale)
+
+  pkc case show <id>
+  pkc case run --sdk <lang> <id> [--legacy] [--verbose]
+  pkc next --sdk <lang> [--cached] [--all]
+  pkc scaffold --lang <python|typescript|go|ruby|php|lua> [--sdk <name>] [--dir <path>]
+
+examples:
+  pkc run --sdk python --tier offline              # one SDK, under a minute
+  pkc run --sdk all --tier offline --require       # what CI runs, per language
+  pkc next --sdk python                            # smallest failing class + fix brief
+  pkc case run --sdk python charge-verify-wrong-amount-reject
+  pkc run --sdk python --diff-expectations         # what flipped vs the toml
+";
 
 fn usage() -> ExitCode {
-    eprintln!(
-        "usage: pkc fill [--check | --list | --seed N --out DIR]\n       pkc req-lint [--list mpp|x402]"
-    );
+    eprint!("{HELP}");
     ExitCode::from(2)
 }
 
@@ -29,7 +77,479 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("fill") => fill_cmd(&root, &args[1..]),
         Some("req-lint") => req_lint_cmd(&root, &args[1..]),
+        Some("run") => run_cmd(&root, &args[1..]),
+        Some("case") => case_cmd(&root, &args[1..]),
+        Some("next") => next_cmd(&root, &args[1..]),
+        Some("scaffold") => scaffold_cmd(&root, &args[1..]),
+        Some("help" | "--help" | "-h") => {
+            print!("{HELP}");
+            ExitCode::SUCCESS
+        }
         _ => usage(),
+    }
+}
+
+fn flag_values(args: &[String], flag: &str) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .filter(|(_, a)| *a == flag)
+        .filter_map(|(i, _)| args.get(i + 1).cloned())
+        .collect()
+}
+
+fn has(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// Positional arguments (not flags and not flag values).
+fn positionals(args: &[String], valued: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if valued.contains(&a.as_str()) {
+            skip = true;
+            continue;
+        }
+        if !a.starts_with("--") {
+            out.push(a.clone());
+        }
+    }
+    out
+}
+
+const RUN_VALUED: [&str; 9] = [
+    "--sdk",
+    "--tier",
+    "--case",
+    "--timeout",
+    "--startup-timeout",
+    "--seed",
+    "--vectors",
+    "--results",
+    "--prebuilt",
+];
+
+fn options(root: &Path, args: &[String]) -> Result<Options, String> {
+    let mut opts = Options::new(root);
+    let manifests = Manifest::discover(root)?;
+    for sdk in flag_values(args, "--sdk") {
+        for s in sdk.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if s == "all" {
+                opts.sdks
+                    .extend(manifests.iter().map(|m| m.language.clone()));
+            } else {
+                opts.sdks.push(s.to_string());
+            }
+        }
+    }
+    opts.sdks.dedup();
+    if let Some(tier) = flag_values(args, "--tier").pop() {
+        if tier != "offline" {
+            return Err(format!(
+                "--tier {tier}: only the offline tier exists yet (interop and onchain are phase 3)"
+            ));
+        }
+    }
+    opts.require |= has(args, "--require");
+    opts.discover |= has(args, "--discover");
+    opts.verbose = has(args, "--verbose");
+    opts.diff_expectations = has(args, "--diff-expectations");
+    if has(args, "--legacy") {
+        opts.abi = Abi::Legacy;
+    }
+    opts.cases = flag_values(args, "--case");
+    let secs = |flag: &str| -> Result<Option<Duration>, String> {
+        flag_values(args, flag)
+            .pop()
+            .map(|v| {
+                v.parse::<f64>()
+                    .map(Duration::from_secs_f64)
+                    .map_err(|_| format!("{flag} {v}: not a number of seconds"))
+            })
+            .transpose()
+    };
+    if let Some(t) = secs("--timeout")? {
+        opts.timeout = t;
+    }
+    if let Some(t) = secs("--startup-timeout")? {
+        opts.startup_timeout = t;
+    }
+    if let Some(dir) = flag_values(args, "--vectors").pop() {
+        opts.vectors_dir = PathBuf::from(dir);
+    }
+    if let Some(dir) = flag_values(args, "--results").pop() {
+        opts.results_dir = PathBuf::from(dir);
+    }
+    if let Some(dir) = flag_values(args, "--prebuilt").pop() {
+        opts.prebuilt = Some(PathBuf::from(dir)).filter(|p| !p.as_os_str().is_empty());
+    }
+    if opts.require && !opts.cases.is_empty() {
+        return Err("--require runs every claimed case; it cannot be combined with --case".into());
+    }
+    Ok(opts)
+}
+
+fn seeded_corpus(opts: &mut Options, seed: &str) -> Result<(), String> {
+    let seed: u64 = seed
+        .parse()
+        .map_err(|_| format!("--seed {seed}: not a number"))?;
+    realize::set_seed(seed);
+    let files = driver::runtime()
+        .block_on(fill::generate(&cases::all()))
+        .map_err(|errors| errors.join("\n"))?;
+    let dir = opts
+        .results_dir
+        .join(format!("seed-{seed}"))
+        .join("vectors");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fill::write(&dir, &files)?;
+    eprintln!("pkc: seeded corpus (seed {seed}) in {}", dir.display());
+    opts.vectors_dir = dir;
+    Ok(())
+}
+
+fn run_cmd(root: &Path, args: &[String]) -> ExitCode {
+    let mut opts = match options(root, args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("pkc run: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(seed) = flag_values(args, "--seed").pop() {
+        if let Err(e) = seeded_corpus(&mut opts, &seed) {
+            eprintln!("pkc run --seed: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let wants_cross = has(args, "--cross");
+    let mut failed = false;
+    let cross_check_only = wants_cross && has(args, "--check");
+    if !opts.sdks.is_empty() && !cross_check_only {
+        match driver::run(&opts) {
+            Ok(reports) => {
+                for r in &reports {
+                    driver::print_report(r, opts.verbose);
+                    failed |= r.failed();
+                }
+            }
+            Err(e) => {
+                eprintln!("pkc run: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if !wants_cross {
+        eprintln!("pkc run: --sdk is required (or --cross)");
+        return ExitCode::from(2);
+    }
+    if wants_cross {
+        failed |= cross_cmd(root, &opts, has(args, "--check")).is_err();
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn cross_cmd(root: &Path, opts: &Options, check: bool) -> Result<(), ()> {
+    let report = cross::cross(opts).map_err(|e| eprintln!("pkc run --cross: {e}"))?;
+    let disagreements: Vec<&cross::Cell> = report
+        .cells
+        .iter()
+        .filter(|c| !c.agree && c.observed != "unsupported")
+        .collect();
+    println!(
+        "cross: {} builds x servers checked, {} disagree",
+        report.cells.len(),
+        disagreements.len()
+    );
+    for c in &disagreements {
+        println!(
+            "  {} {} built by {} verified by {}: expected {}, got {} {}",
+            c.intent,
+            c.case,
+            c.client,
+            c.server,
+            c.expected,
+            c.observed,
+            c.detail.as_deref().unwrap_or_default()
+        );
+    }
+    let _ = std::fs::create_dir_all(&opts.results_dir);
+    let _ = std::fs::write(
+        opts.results_dir.join("cross.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        ),
+    );
+    let readme_path = root.join("harness/README.md");
+    let readme = std::fs::read_to_string(&readme_path).map_err(|e| eprintln!("{e}"))?;
+    let next = cross::rewrite(&readme, &cross::render(&report)).map_err(|e| eprintln!("{e}"))?;
+    if check {
+        if next != readme {
+            eprintln!("harness/README.md cross-verification table is stale; run `pkc run --cross`");
+            return Err(());
+        }
+    } else if next != readme {
+        std::fs::write(&readme_path, next).map_err(|e| eprintln!("{e}"))?;
+        println!("cross: rewrote the table in harness/README.md");
+    }
+    Ok(())
+}
+
+fn case_cmd(root: &Path, args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("show") => {
+            let Some(id) = args.get(1) else {
+                return usage();
+            };
+            case_show(root, id)
+        }
+        Some("run") => {
+            let ids = positionals(&args[1..], &RUN_VALUED);
+            let [id] = ids.as_slice() else {
+                eprintln!("pkc case run --sdk <lang> <id>");
+                return ExitCode::from(2);
+            };
+            let mut rest: Vec<String> = args[1..].to_vec();
+            rest.retain(|a| a != id);
+            let mut opts = match options(root, &rest) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("pkc case run: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            if opts.sdks.len() != 1 {
+                eprintln!("pkc case run needs exactly one --sdk");
+                return ExitCode::from(2);
+            }
+            opts.cases = vec![id.clone()];
+            opts.require = false;
+            opts.write = false;
+            opts.verbose = true;
+            match driver::run(&opts) {
+                Ok(reports) => {
+                    let r = &reports[0];
+                    let mut failed = false;
+                    for c in r.cases.iter().filter(|c| c.observed.is_some()) {
+                        println!(
+                            "{} {}: decision {}, observed {} ({} ms)",
+                            r.language,
+                            c.key,
+                            c.decision,
+                            c.observed.unwrap_or_default(),
+                            c.duration_ms.unwrap_or(0)
+                        );
+                        if let Some(e) = &c.explanation {
+                            println!("{}", e.markdown(true));
+                        } else if let Some(d) = &c.detail {
+                            println!("{d}");
+                        }
+                        if let Some(p) = &c.problem {
+                            println!("reconciliation: {p}");
+                        }
+                        failed |= !c.ok;
+                    }
+                    if r.cases.iter().all(|c| c.observed.is_none()) {
+                        println!(
+                            "{} does not claim {id}; nothing executed (use --discover to run it anyway)",
+                            r.language
+                        );
+                    }
+                    for p in &r.problems {
+                        eprintln!("FAIL {p}");
+                        failed = true;
+                    }
+                    if failed {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    }
+                }
+                Err(e) => {
+                    eprintln!("pkc case run: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => usage(),
+    }
+}
+
+fn case_show(root: &Path, id: &str) -> ExitCode {
+    let vectors = match vectors::load(&root.join("harness/vectors")) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(vector) = vectors.iter().find(|v| v.id == id) else {
+        eprintln!("no vector with id {id:?} (pkc fill --list prints them)");
+        return ExitCode::FAILURE;
+    };
+    let ctx = explain::Context::load(root);
+    let case = ctx.cases.get(id);
+    println!(
+        "# {id}\n{} {} -> expect {}{}\nfile harness/vectors/{}\n",
+        vector.intent,
+        vector.mode,
+        vector.expect_outcome(),
+        vector
+            .reject_code()
+            .map(|c| format!(" {c}"))
+            .unwrap_or_default(),
+        vector.file
+    );
+    if let Some(d) = vector.raw["description"].as_str() {
+        println!("{d}\n");
+    }
+    let req = ctx.requirement(vector);
+    println!(
+        "## Spec\n> {}\n`{}` § {} (pinned {})",
+        req["quote"].as_str().unwrap_or_default(),
+        req["doc"].as_str().unwrap_or_default(),
+        req["section"].as_str().unwrap_or_default(),
+        req["pinnedSha"].as_str().unwrap_or("unknown")
+    );
+    for r in req["requirements"].as_array().into_iter().flatten() {
+        println!(
+            "- {}: {}",
+            r["id"].as_str().unwrap_or_default(),
+            r["text"].as_str().unwrap_or_default()
+        );
+    }
+    println!(
+        "\n## Mutation\n{}",
+        case.and_then(explain::mutation_words)
+            .unwrap_or_else(|| "none".into())
+    );
+    let provenance = match case.map(|c| &c.provenance) {
+        Some(paykit_conformance::case::Provenance::Authored {
+            kit_divergence: Some(reason),
+        }) => format!("authored (the Rust kit diverges: {reason})"),
+        Some(paykit_conformance::case::Provenance::Authored { .. }) => "authored".into(),
+        _ => "generated (expected value computed by the Rust kit)".into(),
+    };
+    println!(
+        "\n## Provenance\n{provenance}, bugType {}",
+        vector.bug_type()
+    );
+    println!("\n## Reference");
+    for r in ctx.references(vector) {
+        println!("- {r}");
+    }
+    println!(
+        "\n## Input\n```json\n{}\n```",
+        serde_json::to_string_pretty(vector.input()).unwrap_or_default()
+    );
+    println!(
+        "\n## Expected\n```json\n{}\n```",
+        serde_json::to_string_pretty(vector.expect()).unwrap_or_default()
+    );
+    let reference = if vector.mode == "build-transaction" && vector.intent == "charge" {
+        let input = vector.input().clone();
+        match driver::runtime().block_on(realize::run(
+            paykit_conformance::case::Intent::Charge,
+            paykit_conformance::case::Mode::BuildTransaction,
+            &input,
+        )) {
+            realize::Observed::Accept(o) => o.transaction,
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(text) = annotate::vector(&vector.raw, reference.as_deref()) {
+        println!("\n## Decoded\n```\n{text}```");
+    }
+    println!("\nreplay: pkc case run --sdk <lang> {id}");
+    ExitCode::SUCCESS
+}
+
+fn next_cmd(root: &Path, args: &[String]) -> ExitCode {
+    let opts = match options(root, args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("pkc next: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let [sdk] = opts.sdks.as_slice() else {
+        eprintln!("pkc next needs exactly one --sdk");
+        return ExitCode::from(2);
+    };
+    let path = opts.results_dir.join(format!("{sdk}.json"));
+    if !has(args, "--cached") || !path.exists() {
+        if let Err(e) = driver::run(&opts) {
+            eprintln!("pkc next: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let results: serde_json::Value = match std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let groups = next::groups(&results);
+    if groups.is_empty() {
+        println!("{sdk}: nothing failing and nothing known_failing. Claim the next intent or remove an [[unsupported]] entry.");
+        return ExitCode::SUCCESS;
+    }
+    let ctx = explain::Context::load(root);
+    let vectors = vectors::load(&opts.vectors_dir).unwrap_or_default();
+    println!("{sdk}: {} failing class(es)\n", groups.len());
+    let shown = if has(args, "--all") { groups.len() } else { 1 };
+    for g in groups.iter().take(shown) {
+        println!("{}", next::brief(sdk, g, &ctx, &vectors));
+    }
+    if shown < groups.len() {
+        println!("({} more; --all prints every class)", groups.len() - shown);
+    }
+    ExitCode::SUCCESS
+}
+
+fn scaffold_cmd(root: &Path, args: &[String]) -> ExitCode {
+    let Some(lang) = flag_values(args, "--lang").pop() else {
+        eprintln!(
+            "pkc scaffold --lang <{}> [--sdk <name>] [--dir <path>]",
+            scaffold::TEMPLATES.join("|")
+        );
+        return ExitCode::from(2);
+    };
+    let sdk = flag_values(args, "--sdk")
+        .pop()
+        .unwrap_or_else(|| lang.clone());
+    let dir = flag_values(args, "--dir")
+        .pop()
+        .unwrap_or_else(|| sdk.clone());
+    match scaffold::write(root, &lang, &sdk, &dir) {
+        Ok(files) => {
+            for f in files {
+                println!("wrote {}", f.display());
+            }
+            println!(
+                "next: pkc run --sdk {sdk} --tier offline --discover   (every vector reports unsupported)"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("pkc scaffold: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
