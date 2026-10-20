@@ -8,7 +8,7 @@ protocol = false
 flow = false
 
 [[unsupported]]
-reason = "session wire vectors are not implemented for the Swift runner yet"
+reason = "swift session wire types (SessionTypes.swift) model the superseded draft; the SDK has no parser for the final session wire contract"
 ids = [
   "vector/session-wire-action-close-frozen",
   "vector/session-wire-action-open-draft-slot-echo-reject",
@@ -47,11 +47,4 @@ ids = [
   "vector/x402-exact-v2-verify-accept",
   "vector/x402-ext-server-accepts-valid-id",
   "vector/x402-ext-server-rejects-required-missing-id",
-]
-
-[[unsupported]]
-reason = "swift x402 runner only builds v2 envelopes; got 1"
-ids = [
-  "vector/x402-exact-v1-build-devnet",
-  "vector/x402-exact-v1-build-mainnet-network-name",
 ]

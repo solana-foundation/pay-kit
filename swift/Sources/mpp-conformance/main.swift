@@ -8,7 +8,8 @@
 //
 // Swift is a CLIENT-only SDK. It implements:
 //   - charge build-transaction        (Charge.buildChargeTransaction)
-//   - x402-exact build-transaction    (X402 v2 PAYMENT-SIGNATURE envelope,
+//   - x402-exact build-transaction    (buildX402PaymentHeader v2 /
+//                                       buildX402LegacyPaymentHeader v1,
 //                                       incl. the v2 extensions echo-and-append)
 //   - canonical-bytes                 (JCS / base64url / challenge-id HMAC)
 // It does NOT implement the server pre-broadcast verifier, so every
@@ -20,11 +21,11 @@
 // vectors it is the DECODED ENVELOPE SHAPE (x402Version, accepted offer
 // fields, the v2 extensions object); canonical-bytes pins exact bytes.
 //
-// The run is deterministic and RPC-free: build vectors pin a recent
-// blockhash and resolve the token program ahead of time, and x402 build
-// vectors carry a pinned placeholder transaction (the conformance oracle is
-// the envelope, not the signed tx), so the SDK build paths are invoked with
-// rpc == nil and never contact a live validator.
+// The runner hands the vector's request / offer to the SDK verbatim and
+// points the SDK's RpcClient at the driver's fixture RPC (input.rpcUrl).
+// It never fills defaults, resolves token programs or decimals, applies
+// field precedence, or pins transactions: chain state comes from the
+// fixture RPC (harness/expectations/RULINGS.md).
 
 import CryptoKit
 import Foundation
@@ -37,9 +38,6 @@ private let token2022ProgramId = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 private let systemProgramId = "11111111111111111111111111111111"
 private let computeBudgetProgramId = "ComputeBudget111111111111111111111111111111"
 private let memoProgramId = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-private let defaultNetwork = "mainnet"
-private let defaultSPLDecimals = 6
-private let x402DefaultPinnedTransaction = "AA=="
 
 // MARK: - Vector decoding (mirror schema.ts ConformanceVector)
 
@@ -51,10 +49,13 @@ private struct Vector: Decodable {
 }
 
 private struct VectorInput: Decodable {
-    let request: VectorChargeRequest?
+    // The decoded charge request, kept as raw JSON so it reaches the SDK's
+    // own `ChargeRequest` decoder unchanged.
+    let request: JSONValue?
     let transaction: String?
     let signerSecretKey: [UInt8]?
-    let rpcFixtures: RPCFixtures?
+    // Injected by the driver: the fixture JSON-RPC serving rpcFixtures.
+    let rpcUrl: String?
     // canonical-bytes payloads are decoded lazily from the raw JSON because
     // `value` is an arbitrary JSON document Codable cannot model directly.
     let encodeBase64Url: EncodeBase64URL?
@@ -62,53 +63,27 @@ private struct VectorInput: Decodable {
     // session canonical-bytes: the 50-byte Ed25519 voucher preimage.
     let voucherPreimage: VoucherPreimage?
     // session canonical-bytes: the authentication-message and wire-shape
-    // vectors. The Swift session credential layer is still on the superseded
-    // draft (OpenPayload mode/deposit/signature), so these are declared only
-    // to be skipped explicitly (unsupported-mode) instead of failing on
-    // empty exactBytes. Tracked follow-up: implement once SessionTypes.swift
-    // is on the final wire contract.
+    // vectors. The Swift session wire types (SessionTypes.swift) still model
+    // the superseded draft (request cap/programId, open mode/deposit/
+    // recentSlot, voucher data/cumulative), so the SDK has no parser for the
+    // final contract to round-trip. Declared only so these vectors are
+    // skipped explicitly (unsupported-mode) instead of failing on empty
+    // exactBytes.
     let sessionAuthenticationMessage: JSONValue?
     let sessionWire: JSONValue?
     // x402-exact build inputs.
     let x402Version: Int?
     let x402Offer: JSONValue?
-    let x402PinnedTransaction: String?
     let x402AdvertisedExtensions: JSONValue?
     let x402PaymentIdentifierId: String?
 }
 
-private struct VectorChargeRequest: Decodable {
-    let amount: String
-    let currency: String
-    let externalId: String?
-    let recipient: String?
-    let payTo: String?
-    let asset: String?
-    let methodDetails: MethodDetails?
+// Build-time compute-budget overrides a vector carries next to the request
+// (schema.ts VectorChargeRequest.computeUnitLimit / computeUnitPrice). They
+// are runner options, not request fields; the SDK decoder ignores them.
+private struct BuildOverrides: Decodable {
     let computeUnitLimit: UInt32?
     let computeUnitPrice: String?
-}
-
-private struct MethodDetails: Decodable {
-    let network: String?
-    let decimals: Int?
-    let tokenProgram: String?
-    let recentBlockhash: String?
-    let feePayer: Bool?
-    let feePayerKey: String?
-    let splits: [Split]?
-}
-
-private struct Split: Decodable {
-    let recipient: String
-    let amount: String
-    let ataCreationRequired: Bool?
-    let memo: String?
-}
-
-private struct RPCFixtures: Decodable {
-    let recentBlockhash: String?
-    let mintOwners: [String: String]?
 }
 
 private struct EncodeBase64URL: Decodable {
@@ -277,10 +252,9 @@ private struct RunnerResult: Encodable {
 // The harness asserts a normalized reject CATEGORY per reject vector. Map the
 // Swift SDK's native reject message (the `PayKitError` payload string) onto the
 // shared RejectCode vocabulary so the driver can compare categories across
-// SDKs rather than brittle prose. Swift is a CLIENT-only SDK, so the only
-// harness reject vector it actually processes is the splits-consume-amount
-// build vector; the rest of the vocabulary is mapped for completeness and
-// future build-path rejects. Returns nil for messages outside the vocabulary
+// SDKs rather than brittle prose. Swift is a CLIENT-only SDK, so it only
+// processes build-path rejects (splits, invalid challenges); the rest of the
+// vocabulary is mapped for completeness. Returns nil for messages outside the vocabulary
 // (e.g. the unsupported-mode skip), and the runner omits `rejectCode` then.
 private func classifyReject(_ message: String) -> String? {
     let m = message.lowercased()
@@ -312,6 +286,17 @@ private func classifyReject(_ message: String) -> String? {
     }
     if has("payment-identifier") && (has("required") || has("missing")) {
         return "payment-identifier-required"
+    }
+    // The challenge itself violates the method spec: decimals missing for a
+    // mint (C2), or tokenProgram omitted and the mint lookup failed or
+    // returned an unexpected owner (C3). Checked before the generic
+    // "invalid" fallback, which every PayKitError description matches.
+    if (has("decimals") && has("required"))
+        || has("does not exist")
+        || has("owned by unsupported program")
+        || has("not an initialized spl mint")
+        || (has("tokenprogram omitted") && has("no rpcclient")) {
+        return "invalid-challenge"
     }
     if has("invalid") || has("malformed") || has("decode") || has("payload") {
         return "invalid-payload"
@@ -359,81 +344,6 @@ private func base64Url(_ data: Data) -> String {
         .replacingOccurrences(of: "=", with: "")
 }
 
-// MARK: - Request flattening (mirror ts-runner / go flattenRequest)
-
-private func resolveTokenProgram(
-    currency: String,
-    network: String,
-    explicit: String?,
-    mintOwners: [String: String]?
-) -> String? {
-    if let explicit { return explicit }
-    if currency.lowercased() == "sol" { return nil }
-    let resolvedMint = Charge.resolveStablecoinMint(currency: currency, network: network) ?? currency
-    if let owner = mintOwners?[resolvedMint] { return owner }
-    return Mints.defaultTokenProgram(currency: currency, cluster: network)
-}
-
-// Apply the precedence rules a vector can probe: top-level asset / payTo win
-// over currency / recipient; methodDetails carry the rest. Resolve the token
-// program ahead of time so the SDK build path stays RPC-free, mirroring the
-// TS and Go reference runners. The flattened request is decoded through the
-// SDK's own `ChargeRequest` Decodable path (the model has no cross-module
-// public initializer), so the runner exercises the same decode the SDK
-// uses on the wire.
-private func flattenRequest(
-    _ request: VectorChargeRequest,
-    mintOwners: [String: String]?
-) throws -> ChargeRequest {
-    let currency = request.asset ?? request.currency
-    guard let recipient = request.payTo ?? request.recipient else {
-        throw RunnerError.message("vector request is missing recipient/payTo")
-    }
-    let md = request.methodDetails
-    let network = md?.network ?? defaultNetwork
-
-    let tokenProgram = resolveTokenProgram(
-        currency: currency,
-        network: network,
-        explicit: md?.tokenProgram,
-        mintOwners: mintOwners
-    )
-
-    let isSOL = currency.lowercased() == "sol"
-    let decimals = md?.decimals ?? (isSOL ? nil : defaultSPLDecimals)
-
-    var methodDetails: [String: Any] = [:]
-    methodDetails["network"] = network
-    if let decimals { methodDetails["decimals"] = decimals }
-    if let tokenProgram { methodDetails["tokenProgram"] = tokenProgram }
-    if let bh = md?.recentBlockhash { methodDetails["recentBlockhash"] = bh }
-    if let fp = md?.feePayer { methodDetails["feePayer"] = fp }
-    if let fpk = md?.feePayerKey { methodDetails["feePayerKey"] = fpk }
-    if let splits = md?.splits {
-        methodDetails["splits"] = splits.map { split -> [String: Any] in
-            var out: [String: Any] = ["recipient": split.recipient, "amount": split.amount]
-            if let req = split.ataCreationRequired { out["ataCreationRequired"] = req }
-            if let memo = split.memo { out["memo"] = memo }
-            return out
-        }
-    }
-
-    var object: [String: Any] = [
-        "amount": request.amount,
-        "currency": currency,
-        "recipient": recipient,
-        "methodDetails": methodDetails,
-    ]
-    if let externalId = request.externalId { object["externalId"] = externalId }
-
-    let data = try JSONSerialization.data(withJSONObject: object)
-    do {
-        return try JSONDecoder().decode(ChargeRequest.self, from: data)
-    } catch {
-        throw RunnerError.message("failed to decode flattened ChargeRequest: \(error)")
-    }
-}
-
 // MARK: - Charge build path
 
 private func buildChargeTransaction(_ vector: Vector) async throws -> String {
@@ -445,77 +355,87 @@ private func buildChargeTransaction(_ vector: Vector) async throws -> String {
         throw RunnerError.message("build/verify vector is missing input.signerSecretKey")
     }
     let signer = try ConformanceSigner(secretKey: secret)
-    let charge = try flattenRequest(request, mintOwners: input.rpcFixtures?.mintOwners)
+    let charge: ChargeRequest
+    let overrides: BuildOverrides
+    do {
+        // The SDK's own wire decoder, fed the vector request verbatim.
+        charge = try request.decode(ChargeRequest.self)
+        overrides = try request.decode(BuildOverrides.self)
+    } catch {
+        throw RunnerError.message("invalid payload: ChargeRequest does not decode: \(error)")
+    }
 
     var options = Charge.Options()
-    if let limit = request.computeUnitLimit { options.computeUnitLimit = limit }
-    if let priceStr = request.computeUnitPrice {
+    if let limit = overrides.computeUnitLimit { options.computeUnitLimit = limit }
+    if let priceStr = overrides.computeUnitPrice {
         guard let price = UInt64(priceStr) else {
             throw RunnerError.message("invalid computeUnitPrice \(priceStr)")
         }
         options.computeUnitPrice = price
     }
 
-    // rpc == nil: recentBlockhash is pinned and the token program is resolved
-    // ahead of time, so the SDK never reaches for a live RPC.
     return try await Charge.buildChargeTransaction(
         request: charge,
         signer: signer,
-        rpc: nil,
+        rpc: try fixtureRpc(input),
         options: options
     )
+}
+
+private func fixtureRpc(_ input: VectorInput) throws -> RpcClient {
+    guard let rpcUrl = input.rpcUrl, let url = URL(string: rpcUrl) else {
+        throw RunnerError.message("driver did not inject input.rpcUrl")
+    }
+    return RpcClient(endpoint: url)
 }
 
 // MARK: - x402-exact build path
 //
 // The conformance oracle for x402 build vectors is the decoded ENVELOPE
-// shape, not the signed transaction, so the runner wraps the pinned
-// placeholder transaction (input.x402PinnedTransaction, default "AA==") into
-// a v2 PAYMENT-SIGNATURE envelope using the real SDK types and the
-// echo-and-append helper, then decodes the shape. This mirrors the TS
-// reference runner (`runX402Vector` build branch) exactly and stays
-// RPC-free.
+// shape. The SDK client builds and signs a real exact transaction against
+// the fixture RPC (blockhash, mint decimals and owner), wraps it in the
+// envelope for the requested version, and the runner decodes the shape.
 
-private func buildX402Envelope(_ vector: Vector) throws -> X402EnvelopeShape {
+private func buildX402Envelope(_ vector: Vector) async throws -> X402EnvelopeShape {
     let input = vector.input
     guard let offerValue = input.x402Offer else {
         throw RunnerError.message("invalid payload: x402 build vector missing input.x402Offer")
     }
-    let version = input.x402Version ?? 2
-    guard version == 2 else {
-        // x402/exact/v1 wire support (pay-kit #158) has not landed in Swift
-        // yet; declare the vector unsupported so the harness skips instead
-        // of failing it (same sentinel as verify-transaction above).
-        throw RunnerError.message("unsupported-mode: swift x402 runner only builds v2 envelopes; got \(version)")
+    guard let secret = input.signerSecretKey else {
+        throw RunnerError.message("x402 build vector is missing input.signerSecretKey")
     }
-    let transaction = input.x402PinnedTransaction ?? x402DefaultPinnedTransaction
+    let signer = try ConformanceSigner(secretKey: secret)
+    let rpc = try fixtureRpc(input)
     let offer = try offerValue.decode(X402AcceptsEntry.self)
 
-    // Echo-and-append (x402 v2 §5.1.2): echo the server's advertised
-    // extensions verbatim, preserving unknown keys, and fill the required
-    // client-side payment-identifier.info.id (pinned in the vector for a
-    // deterministic byte assertion, else freshly generated). When the server
-    // advertised nothing, this returns nil and the envelope omits the
-    // `extensions` object entirely.
-    let extensions = try buildX402Extensions(
-        echoing: input.x402AdvertisedExtensions,
-        paymentIdentifierID: input.x402PaymentIdentifierId
-    )
-
-    let envelope = X402PaymentSignatureEnvelope(
-        x402Version: version,
-        accepted: offer,
-        payload: X402PaymentPayload(transaction: transaction),
-        extensions: extensions
-    )
-
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    let header = try encoder.encode(envelope).base64EncodedString()
+    let header: String
+    switch input.x402Version ?? X402Version {
+    case X402Version:
+        // Echo-and-append (x402 v2 §5.1.2): echo the server's advertised
+        // extensions verbatim, preserving unknown keys, and fill the required
+        // client-side payment-identifier.info.id (pinned in the vector for a
+        // deterministic byte assertion, else freshly generated). When the
+        // server advertised nothing, this returns nil and the envelope omits
+        // the `extensions` object entirely.
+        let extensions = try buildX402Extensions(
+            echoing: input.x402AdvertisedExtensions,
+            paymentIdentifierID: input.x402PaymentIdentifierId
+        )
+        header = try await buildX402PaymentHeader(
+            signer: signer, rpc: rpc, offer: offer, extensions: extensions
+        )
+    case X402VersionLegacy:
+        guard input.x402AdvertisedExtensions == nil else {
+            throw RunnerError.message("invalid payload: x402 v1 has no extensions")
+        }
+        header = try await buildX402LegacyPaymentHeader(signer: signer, rpc: rpc, offer: offer)
+    case let other:
+        throw RunnerError.message("unsupported x402Version \(other)")
+    }
     return try decodeX402EnvelopeShape(header)
 }
 
-// Decode an outbound v2 PAYMENT-SIGNATURE header into the conformance
+// Decode an outbound v1/v2 payment header into the conformance
 // envelope-shape oracle (mirror x402.ts decodeEnvelopeShape).
 private func decodeX402EnvelopeShape(_ header: String) throws -> X402EnvelopeShape {
     guard let data = Data(base64Encoded: header) else {
@@ -726,7 +646,7 @@ private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
 private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> ExactBytes {
     if vector.input.sessionAuthenticationMessage != nil || vector.input.sessionWire != nil {
         throw RunnerError.message(
-            "unsupported-mode: session wire vectors are not implemented for the Swift runner yet"
+            "unsupported-mode: swift session wire types (SessionTypes.swift) model the superseded draft; the SDK has no parser for the final session wire contract"
         )
     }
     var eb = ExactBytes()
@@ -808,12 +728,13 @@ private func hexDecode(_ hex: String) throws -> [UInt8] {
 private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
     do {
         // x402-exact: the oracle is the decoded envelope shape. Swift builds
-        // the v2 PAYMENT-SIGNATURE envelope (incl. extensions echo-and-append)
-        // but has no server verifier, so verify vectors are unsupported.
+        // v1 X-PAYMENT and v2 PAYMENT-SIGNATURE envelopes (v2 incl. extensions
+        // echo-and-append) but has no server verifier, so verify vectors are
+        // unsupported.
         if vector.intent == "x402-exact" {
             switch vector.mode {
             case "build-transaction":
-                let shape = try buildX402Envelope(vector)
+                let shape = try await buildX402Envelope(vector)
                 return RunnerResult(id: vector.id, outcome: "accept", x402EnvelopeShape: shape)
             case "verify-transaction":
                 return RunnerResult(
