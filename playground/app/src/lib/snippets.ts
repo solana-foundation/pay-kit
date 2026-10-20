@@ -155,11 +155,15 @@ let app = Router::new()
     "github.com/solana-foundation/pay-kit/go/paykit"
     _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
     _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
+    core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 client, _ := paykit.New(paykit.Config{
     Network: paykit.SolanaLocalnet,
-    MPP:     paykit.MPPConfig{ChallengeBindingSecret: []byte("local-dev-secret")},
+    MPP: paykit.MPPConfig{
+        ChallengeBindingSecret: []byte("local-dev-secret"),
+        Store:                  core.NewMemoryStore(), // shared by every replica
+    },
 })
 gate := paykit.Gate{Amount: paykit.MustParseUSD("0.01")}
 

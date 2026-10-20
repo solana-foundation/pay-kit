@@ -71,6 +71,13 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+      - name: Docs snippets compile and boot
+        working-directory: go
+        run: ./scripts/check_snippets.sh
+      - name: Playground snippet manifest in sync
+        run: |
+          node playground/scripts/gen-snippets.mjs
+          git diff --exit-code playground/app/src/lib/snippets.gen.json
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:

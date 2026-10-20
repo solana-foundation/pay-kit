@@ -36,6 +36,10 @@ lint:
     go vet -composites=false $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
     go run honnef.co/go/tools/cmd/staticcheck@latest $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
 
+# Compile docs snippets and boot each server snippet
+check-snippets:
+    ./scripts/check_snippets.sh
+
 # Run module-deps audit (govulncheck)
 audit:
     go run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -54,7 +58,7 @@ test-cover gate="90":
     @awk -v gate={{gate}} '/^total:/ {pct=$NF+0; if (pct+0 < gate+0) {printf "coverage %s below gate %d%%\n",$NF,gate; exit 1} else {printf "coverage %s meets gate %d%%\n",$NF,gate}}' <(go tool cover -func=build/coverage.out)
 
 # Run every local gate (build + lint + audit + test-cover)
-check: build lint audit test-cover
+check: build lint check-snippets audit test-cover
 
 # Boot the dual-protocol example server
 serve-example port="4567":
