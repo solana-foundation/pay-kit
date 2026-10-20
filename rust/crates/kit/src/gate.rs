@@ -971,7 +971,7 @@ async fn upto_gate_middleware(
     // Recover from poisoning so a handler that panicked *after* recording a
     // charge still settles the amount it consumed (not a silent zero refund).
     let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
-    let mut resp = match metered {
+    let resp = match metered {
         Ok(mut resp) => {
             prevent_shared_caching(&mut resp);
             resp
@@ -988,29 +988,34 @@ async fn upto_gate_middleware(
         }
     };
 
-    // Settle the actual amount and refund the remainder.
-    match settle_served_upto(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await {
-        Some(settlement) => match upto.settlement_header(&settlement) {
-            Ok((name, value)) => {
-                if let (Ok(n), Ok(v)) = (
-                    HeaderName::from_bytes(name.as_bytes()),
-                    HeaderValue::from_str(&value),
-                ) {
-                    resp.headers_mut().insert(n, v);
-                }
-                resp
+    finish_served_upto(&upto, open, actual, resp, UPTO_SETTLEMENT_RETRY).await
+}
+
+/// Settle the actual amount, refund the remainder and attach the receipt. A
+/// settlement left pending in the background still charges `actual`, so the
+/// response is served without a receipt rather than dropped.
+async fn finish_served_upto(
+    upto: &Arc<X402Upto>,
+    open: crate::x402::server::VerifiedUptoOpen,
+    actual: u64,
+    mut resp: Response,
+    retry: UptoSettlementRetry,
+) -> Response {
+    let Some(settlement) = settle_served_upto(upto, open, actual, retry).await else {
+        return resp;
+    };
+    match upto.settlement_header(&settlement) {
+        Ok((name, value)) => {
+            if let (Ok(n), Ok(v)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(&value),
+            ) {
+                resp.headers_mut().insert(n, v);
             }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to encode upto settlement header");
-                resp
-            }
-        },
-        None => (
-            StatusCode::BAD_GATEWAY,
-            "payment settlement is pending; it is being retried in the background",
-        )
-            .into_response(),
+        }
+        Err(e) => tracing::error!(error = %e, "failed to encode upto settlement header"),
     }
+    resp
 }
 
 /// Largest `upto` response body the gate buffers to observe its metering.
@@ -2241,6 +2246,37 @@ mod tests {
         assert!(
             !upto.is_in_flight(&channel),
             "the slot is released once the retries are exhausted"
+        );
+    }
+
+    /// A served response whose settlement is left to the background retry is
+    /// still delivered: the background task charges for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_upto_settlement_still_serves_the_response() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let open = upto.test_open(channel, 1_000);
+        let retry = UptoSettlementRetry {
+            inline_attempts: 1,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(200),
+        };
+
+        let resp =
+            finish_served_upto(&upto, open, 500, Response::new(Body::from("served")), retry).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
+        assert!(
+            upto.is_in_flight(&channel),
+            "the background retry still settles the open"
+        );
+        assert_eq!(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"served"
         );
     }
 
