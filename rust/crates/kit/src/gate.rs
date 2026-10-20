@@ -677,11 +677,8 @@ fn challenge_response(pay: &PayKit, amount: &str, req: &Request) -> Response {
     }
 
     // x402: PAYMENT-REQUIRED.
-    let resource = exact_resource(req);
-    match pay
-        .x402
-        .payment_required_header(amount, exact_options(&resource))
-    {
+    let binding = ExactBinding::of(req);
+    match pay.x402.payment_required_header(amount, binding.options()) {
         Ok((name, value)) => match (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_str(&value),
@@ -810,11 +807,11 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
 
     // x402 path.
     if let Some(header_value) = x402_header {
-        let resource = exact_resource(&req);
+        let binding = ExactBinding::of(&req);
         return match state
             .pay
             .x402
-            .process_payment(&header_value, &amount, exact_options(&resource))
+            .process_payment(&header_value, &amount, binding.options())
             .await
         {
             Ok(verified) => match settle_x402(&state.pay, verified).await {
@@ -1318,11 +1315,38 @@ fn exact_resource(req: &Request) -> String {
     })
 }
 
-fn exact_options(resource: &str) -> ExactOptions<'_> {
-    ExactOptions {
-        resource: Some(resource),
-        ..ExactOptions::default()
+/// What an x402 `exact` payment is challenged and verified against: the
+/// route's resource and HTTP method. The resource in a credential is not
+/// signed, so the binding the transaction carries is its memo
+/// (`extra.memo`), derived from both: a payment made for `GET /x` cannot pay
+/// for `POST /x` at the same price.
+struct ExactBinding {
+    resource: String,
+    memo: String,
+}
+
+impl ExactBinding {
+    fn of(req: &Request) -> Self {
+        let resource = exact_resource(req);
+        let memo = exact_memo(req.method(), &resource);
+        Self { resource, memo }
     }
+
+    fn options(&self) -> ExactOptions<'_> {
+        ExactOptions {
+            resource: Some(&self.resource),
+            memo: Some(&self.memo),
+            ..ExactOptions::default()
+        }
+    }
+}
+
+/// `"<METHOD> <base58 sha256(METHOD SP resource)>"`: within the 256-byte
+/// `extra.memo` limit whatever the URL length.
+fn exact_memo(method: &Method, resource: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{method} {resource}").as_bytes());
+    format!("{method} {}", bs58::encode(digest).into_string())
 }
 
 /// Answer a request whose authorization was already charged and served.
@@ -3403,6 +3427,57 @@ mod tests {
             transaction_header(requirement, requirement.resource_info(), &tx),
             fee_payer,
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn x402_payment_for_get_cannot_pay_for_post_on_the_same_path() {
+        let (rpc_url, sends) = mock_rpc(false).await;
+        let pay = exact_paykit(rpc_url, Some(fee_payer_signer()));
+        let served = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = |method: &'static str| {
+            let served = served.clone();
+            move |_payment: Payment| {
+                let served = served.clone();
+                async move {
+                    served.lock().unwrap().push(method);
+                    "protected-content"
+                }
+            }
+        };
+        let app: Router = Router::new().route(
+            "/paid",
+            paid_get(handler("GET"), "0.01", &pay).merge(paid_post(handler("POST"), "0.01", &pay)),
+        );
+        let challenge_for = |method: Method| {
+            let app = app.clone();
+            async move {
+                let mut request = get_with_host("/paid", None);
+                *request.method_mut() = method;
+                x402_challenge(&app.oneshot(request).await.unwrap())
+            }
+        };
+        let get = challenge_for(Method::GET).await;
+        let post = challenge_for(Method::POST).await;
+        let memo = |challenge: &crate::x402::exact::PaymentRequiredEnvelope| {
+            challenge.accepts[0].extra.as_ref().unwrap()["memo"].clone()
+        };
+        assert_ne!(memo(&get), memo(&post));
+
+        let (header, _) = unsigned_exact_payment(&app).await;
+        let mut replayed = get_with_host("/paid", Some(&header));
+        *replayed.method_mut() = Method::POST;
+        let resp = app.clone().oneshot(replayed).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(served.lock().unwrap().is_empty());
+
+        // The same payment is good for the method it was made for.
+        let resp = app
+            .oneshot(get_with_host("/paid", Some(&header)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(*served.lock().unwrap(), ["GET"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

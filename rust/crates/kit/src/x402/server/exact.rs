@@ -1186,10 +1186,24 @@ pub(crate) mod test_support {
     ) -> VersionedTransaction {
         let amount = requirements.amount.parse().unwrap();
         let decimals = requirements.decimals.unwrap_or(6);
+        let mut instructions = vec![transfer_checked(requirements, owner, amount, decimals)];
+        // An honest client stamps the seller's `extra.memo` on the transfer.
+        if let Some(memo) = requirements
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("memo"))
+            .and_then(|memo| memo.as_str())
+        {
+            instructions.push(Instruction {
+                program_id: Pubkey::from_str(programs::MEMO_PROGRAM).unwrap(),
+                accounts: vec![],
+                data: memo.as_bytes().to_vec(),
+            });
+        }
         crate::core::tx::build_unsigned(
             TxVersion::V0,
             fee_payer,
-            &[transfer_checked(requirements, owner, amount, decimals)],
+            &instructions,
             Hash::new_unique(),
             Some(&crate::core::tx::ComputeBudget::new(20_000, 1)),
         )
