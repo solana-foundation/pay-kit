@@ -455,6 +455,18 @@ impl<S: ChannelStore> ChannelStore for BoundStore<S> {
         })
     }
 
+    fn delete_channel_if(
+        &self,
+        _: &str,
+        _: crate::core::store::ChannelPredicate,
+    ) -> StoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(StoreError::Internal(
+                "request server cannot delete channels".into(),
+            ))
+        })
+    }
+
     fn mark_finalized(&self, _: &str) -> StoreFuture<'_, ()> {
         Box::pin(async {
             Err(StoreError::Internal(

@@ -400,6 +400,10 @@ fn broadcast_and_confirm_deposit(
     }
 }
 
+fn may_drop_absent_record(state: &ChannelState, binding: &ChannelBinding) -> bool {
+    !state.has_in_flight_authorization() && state.check_binding(binding).is_ok()
+}
+
 /// Server configuration for the SVM `batch-settlement` scheme.
 #[derive(Clone)]
 pub struct BatchConfig {
@@ -2537,8 +2541,34 @@ impl X402BatchSettlement {
     /// Whether a record whose channel is confirmed absent onchain may be
     /// dropped: not while it carries in-flight work, and never when it belongs
     /// to another deployment, whose absence this server cannot judge.
-    fn may_drop_absent_record(&self, state: &ChannelState) -> bool {
-        !state.has_in_flight_authorization() && state.check_binding(&self.binding()).is_ok()
+    /// Drop the record of a channel whose account is confirmed gone onchain,
+    /// unless it is in flight or bound to another deployment.
+    ///
+    /// The check runs inside the store's delete: a request can reserve work
+    /// on the record after any earlier read, and deleting it then would erase
+    /// that reservation and its replay state.
+    async fn drop_absent_record(&self, channel_id: &str) -> Result<(), Error> {
+        let binding = self.binding();
+        let dropped = self
+            .store
+            .delete_channel_if(
+                channel_id,
+                Box::new(move |state| may_drop_absent_record(state, &binding)),
+            )
+            .await
+            .map_err(|error| Error::Other(format!("store error: {error}")))?;
+        if dropped {
+            tracing::info!(
+                channel = %channel_id,
+                "channel account is gone onchain; dropping its record"
+            );
+        } else {
+            tracing::debug!(
+                channel = %channel_id,
+                "keeping a record that is in flight, bound to another deployment, or changed"
+            );
+        }
+        Ok(())
     }
 
     /// Durably record that the payer has started a forced close, and return
@@ -2697,27 +2727,7 @@ impl X402BatchSettlement {
             if snapshot.is_some() {
                 continue;
             }
-            let keep = self
-                .store
-                .get_channel(channel_id)
-                .await
-                .map_err(|error| Error::Other(format!("store error: {error}")))?
-                .is_some_and(|state| !self.may_drop_absent_record(&state));
-            if keep {
-                tracing::debug!(
-                    channel = %channel_id,
-                    "keeping a record that is in flight or bound to another deployment"
-                );
-                continue;
-            }
-            tracing::info!(
-                channel = %channel_id,
-                "channel account is gone onchain; dropping its record"
-            );
-            self.store
-                .delete_channel(channel_id)
-                .await
-                .map_err(|error| Error::Other(format!("store error: {error}")))?;
+            self.drop_absent_record(channel_id).await?;
         }
         Ok(snapshots)
     }
@@ -2918,27 +2928,7 @@ impl X402BatchSettlement {
         // authorization with it — losing a charge that was served but not yet
         // committed, or freeing one whose handler already ran to be served a
         // second time.
-        let keep = self
-            .store
-            .get_channel(channel_id)
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?
-            .is_some_and(|state| !self.may_drop_absent_record(&state));
-        if keep {
-            tracing::debug!(
-                channel = %channel_id,
-                "keeping a record that is in flight or bound to another deployment"
-            );
-            return Ok(None);
-        }
-        tracing::info!(
-            channel = %channel_id,
-            "channel account is gone onchain; dropping its record"
-        );
-        self.store
-            .delete_channel(channel_id)
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        self.drop_absent_record(channel_id).await?;
         Ok(None)
     }
 
@@ -5107,7 +5097,7 @@ mod tests {
             .await
             .unwrap();
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
-        assert!(!handler.may_drop_absent_record(&state));
+        assert!(!may_drop_absent_record(&state, &handler.binding()));
         let err = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
@@ -5116,7 +5106,7 @@ mod tests {
 
         let mut own = state.clone();
         own.set_binding(&handler.binding());
-        assert!(handler.may_drop_absent_record(&own));
+        assert!(may_drop_absent_record(&own, &handler.binding()));
     }
 
     /// A record from before bindings is bound from its confirmed channel
@@ -5998,6 +5988,13 @@ mod tests {
         }
         fn delete_channel(&self, channel_id: &str) -> StoreFuture<'_, ()> {
             self.inner.delete_channel(channel_id)
+        }
+        fn delete_channel_if(
+            &self,
+            channel_id: &str,
+            approve: crate::core::store::ChannelPredicate,
+        ) -> StoreFuture<'_, bool> {
+            self.inner.delete_channel_if(channel_id, approve)
         }
         fn update_channel(
             &self,

@@ -1990,6 +1990,10 @@ impl ChannelState {
     }
 }
 
+/// A decision about one channel record, made against the state a store
+/// holds at the moment it acts; see [`ChannelStore::delete_channel_if`].
+pub type ChannelPredicate = Box<dyn FnOnce(&ChannelState) -> bool + Send>;
+
 /// An atomic in-place step on one channel record.
 pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
 
@@ -2065,6 +2069,24 @@ pub trait ChannelStore: Send + Sync {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Atomically delete the record only if `keep_unless` approves the state
+    /// it holds at the moment of deletion. Returns whether it was deleted
+    /// (`false` when absent, refused, or changed concurrently).
+    ///
+    /// A reconciler that decides from an earlier snapshot (no in-flight
+    /// authorization, say) must delete through this, not
+    /// [`Self::delete_channel`]: a request may reserve new work between the
+    /// read and the delete, and the decision has to be re-made against the
+    /// record that is actually removed. A lock-based store evaluates the
+    /// predicate under the lock; an optimistic store evaluates it on a read
+    /// and deletes only if the record is still byte-identical, reporting
+    /// `false` otherwise so the caller retries on its next pass.
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>>;
 
     /// Atomically read-modify-write channel state.
     ///
@@ -2226,6 +2248,14 @@ where
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         (**self).delete_channel(channel_id)
+    }
+
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        (**self).delete_channel_if(channel_id, approve)
     }
 
     fn update_channel(
@@ -2390,6 +2420,23 @@ impl ChannelStore for MemoryChannelStore {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         self.data.remove(channel_id);
         Box::pin(async { Ok(()) })
+    }
+
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        // `remove_if` evaluates the predicate under the key's shard write
+        // guard, so no request can change the record in between.
+        let mut approve = Some(approve);
+        let removed = self
+            .data
+            .remove_if(channel_id, |_, state| {
+                approve.take().is_some_and(|approve| approve(state))
+            })
+            .is_some();
+        Box::pin(async move { Ok(removed) })
     }
 
     fn update_channel(
@@ -2878,6 +2925,37 @@ impl ChannelStore for RedisChannelStore {
         })
     }
 
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let Some(raw) = self.get_raw(&channel_id).await? else {
+                return Ok(false);
+            };
+            if !approve(&Self::decode(&raw)?) {
+                return Ok(false);
+            }
+            // Delete only the exact value the predicate approved.
+            const SCRIPT: &str = r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"#;
+            let mut connection = self.connection.clone();
+            let deleted: i32 = redis::Script::new(SCRIPT)
+                .key(self.key(&channel_id))
+                .arg(raw)
+                .invoke_async(&mut connection)
+                .await
+                .map_err(|e| StoreError::Internal(format!("Redis compare-and-delete: {e}")))?;
+            Ok(deleted == 1)
+        })
+    }
+
     fn update_channel(
         &self,
         channel_id: &str,
@@ -3181,6 +3259,54 @@ pub mod conformance {
         refuses_reservations_on_a_closing_channel(store, fresh).await;
         a_refused_preparation_reserves_nothing(store, fresh).await;
         a_refused_reservation_leaves_the_record_unchanged(store, fresh).await;
+    }
+
+    /// Run the deletion suite against a store a reconciliation worker uses.
+    /// Request-path wrappers that refuse deletion outright skip it.
+    pub async fn check_channel_store_deletion(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        a_conditional_delete_judges_the_record_it_removes(store, fresh).await;
+    }
+
+    /// A reconciler read the record with nothing in flight, then a request
+    /// reserved work before the delete: the delete must see the reservation
+    /// and keep the record.
+    async fn a_conditional_delete_judges_the_record_it_removes(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-conditional-delete";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let snapshot = store.get_channel(id).await.unwrap().unwrap();
+        assert!(!snapshot.has_in_flight_authorization());
+
+        token(reserve(store, id, request("a", 500, 500, 100)).await);
+        let idle =
+            || -> ChannelPredicate { Box::new(|state| !state.has_in_flight_authorization()) };
+        assert!(!store.delete_channel_if(id, idle()).await.unwrap());
+        assert!(store
+            .get_channel(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_in_flight_authorization());
+
+        store
+            .update_channel(
+                id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.pending_deliveries.clear();
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(store.delete_channel_if(id, idle()).await.unwrap());
+        assert!(store.get_channel(id).await.unwrap().is_none());
+        assert!(!store.delete_channel_if(id, idle()).await.unwrap());
     }
 
     /// Two replicas price vouchers from the same watermark and the first
@@ -4755,13 +4881,16 @@ mod tests {
 
     #[tokio::test]
     async fn memory_store_passes_conformance() {
-        conformance::check_channel_store(&MemoryChannelStore::new(), &conformance_state).await;
+        let store = MemoryChannelStore::new();
+        conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[tokio::test]
     async fn arc_store_passes_conformance() {
         let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
         conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[cfg(feature = "redis-store")]
@@ -4780,6 +4909,7 @@ mod tests {
         .await
         .unwrap();
         conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[cfg(feature = "redis-store")]
