@@ -1314,6 +1314,70 @@ class TestAmbiguousBroadcast:
         assert (await store.get(consumed_signature_key(signature)))["state"] == "pending"
 
 
+class _UnconfirmedRPC(_PendingRPC):
+    """Broadcast is accepted, but polling never sees a status until set."""
+
+    async def await_confirmation(self, *_args, **_kwargs):
+        if self.status is None:
+            raise PaymentError("timed out awaiting confirmation", code="transaction-not-found")
+        if self.status.get("err") is not None:
+            raise PaymentError("transaction failed on-chain", code="transaction-failed")
+
+
+class TestMissingStatusNeverFails:
+    """SOLA1-299: a null signature status is never proof the transaction did
+    not execute (the node may lag or lack history), so it never fails a
+    pending charge; only an explicit on-chain error does."""
+
+    _handler = TestAmbiguousBroadcast._handler
+    _credential = TestAmbiguousBroadcast._credential
+
+    async def test_missing_status_keeps_the_charge_pending(self):
+        rpc = _UnconfirmedRPC()
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+
+        for _ in range(2):  # the broadcast, then a reconciling retry
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "settlement-in-progress"
+            assert (await store.get(consumed_signature_key(signature)))["state"] == "pending"
+
+        # When the status does surface, the same retry is granted.
+        rpc.status = {"err": None, "confirmationStatus": "finalized"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+
+    async def test_confirmed_but_unretrievable_transaction_stays_pending(self):
+        rpc = _UnconfirmedRPC()
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        tx = rpc.tx
+        rpc.tx = None
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.tx = tx
+        assert (await _verify(handler, credential, challenge)).reference == signature
+
+    async def test_explicit_on_chain_failure_is_definitive(self):
+        rpc = _UnconfirmedRPC()
+        rpc.status = {"err": {"InstructionError": [0, {"Custom": 1}]}}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "transaction-failed"
+        # A reconciling retry sees the same explicit failure.
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "transaction-failed"
+
+
 class TestCoSignSplitBounds:
     """Greptile follow-up: ``_co_sign_with_fee_payer`` MUST validate that
     the fee-payer account index falls inside the required-signers block

@@ -642,12 +642,19 @@ class Mpp:
                     signature, f"RPC reported signature {sent} for a transaction signed as {signature}"
                 )
 
-        # AWAIT confirmation. A timeout here MUST NOT release the claim: the
-        # signature is on the wire and may finalize asynchronously. Use
-        # ``await_confirmation`` (not ``confirm_transaction``) so an on-chain
-        # failure surfaces as ``transaction-failed`` while a polling timeout
-        # surfaces as ``transaction-not-found``.
-        await self._rpc.await_confirmation(signature)
+        # AWAIT confirmation. Only an explicit on-chain outcome resolves the
+        # charge: ``await_confirmation`` raises ``transaction-failed`` when
+        # the cluster reports an error. A polling timeout (no status) is never
+        # proof of non-execution, since the queried node may lag or lack
+        # history for a transaction that committed in time, so the claim is
+        # kept and the charge stays pending for the same credential to
+        # reconcile; failing it would let the client pay a replacement.
+        try:
+            await self._rpc.await_confirmation(signature)
+        except PaymentError as exc:
+            if exc.code != "transaction-not-found":
+                raise
+            raise _settlement_in_progress(signature, "no confirmed status yet") from exc
         return await self._grant_confirmed(credential, request, details, signature)
 
     async def _reconcile_pending(
@@ -703,7 +710,8 @@ class Mpp:
         tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
-            raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
+            # Confirmed, but this node cannot serve it yet: still pending.
+            raise _settlement_in_progress(signature, "confirmed transaction is not retrievable yet")
         self._verify_confirmed_transaction(tx, request, details)
         key = consumed_signature_key(signature)
         if not await self._store.put_if_absent(f"{key}:receipt", True):
