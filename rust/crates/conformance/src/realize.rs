@@ -15,14 +15,12 @@
 //! Every registry case's `#[test]` calls [`realize_blocking`], so the same
 //! check is the positive control and the filler.
 
-use std::sync::Arc;
-
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use solana_pay_kit::core::session::accept_voucher;
 use solana_pay_kit::core::store::{
-    ChannelState, ChannelStore, MemoryChannelStore, MemoryStore, CHANNEL_STATE_SCHEMA_VERSION,
+    ChannelState, ChannelStore, MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION,
 };
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
@@ -33,21 +31,20 @@ use solana_pay_kit::mpp::protocol::core::{
 use solana_pay_kit::mpp::protocol::intents::session::{SessionAction, SessionRequest, VoucherData};
 use solana_pay_kit::mpp::protocol::intents::ChargeRequest;
 use solana_pay_kit::mpp::protocol::solana::{CredentialPayload, MethodDetails};
-use solana_pay_kit::mpp::server::{Config as MppConfig, Mpp};
-use solana_pay_kit::mpp::PaymentCredential;
+use solana_pay_kit::mpp::server::charge::testkit::verify_transaction_pre_broadcast;
 use solana_pay_kit::solana_keychain::memory::MemorySigner;
-use solana_pay_kit::solana_keychain::{SolanaSigner, TransactionSigner};
+use solana_pay_kit::solana_keychain::SolanaSigner;
 use solana_pay_kit::x402::client::exact::{build_payment_header, build_payment_header_v1};
 use solana_pay_kit::x402::exact::{
     caip2_network_for_cluster, generate_payment_identifier_id, PaymentExtensions,
     PaymentRequirements,
 };
-use solana_pay_kit::x402::server::exact::{Config as X402Config, X402};
+use solana_pay_kit::x402::server::exact::{Config as X402Config, PaymentIdentifierPolicy, X402};
 use solana_pay_kit::x402::server::CurrencyConfig;
 
-use crate::case::{Case, Expect, Input, Intent, KitOptions, Mode, Pin, Provenance, RejectCode};
+use crate::case::{Case, Expect, Input, Intent, Mode, Pin, Provenance, RejectCode};
 use crate::classify::classify;
-use crate::fixture_rpc::{self, refusal, Fixtures, HttpFixture};
+use crate::fixture_rpc::{self, Fixtures, HttpFixture};
 use crate::keys::{self, ata, TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
 use crate::tx::{decode_b64, encode_b64, memo_nonce, x402_static_layout, StaticLayout};
 
@@ -89,9 +86,6 @@ fn seeded(mutation: &crate::mutate::Mutation) -> crate::mutate::Mutation {
         other => other.clone(),
     }
 }
-
-/// Fixed challenge-binding secret for the MPP server verify path.
-const SERVER_SECRET: &str = "conformance-filler-secret-0123456789abcdef";
 
 /// What the kit produced for a case input.
 #[derive(Debug, Clone, PartialEq)]
@@ -158,7 +152,7 @@ pub async fn realize(case: &Case) -> Result<Realized, String> {
     let input = materialize(case)
         .await
         .map_err(|e| format!("{}: materialize input: {e}", case.id))?;
-    let observed = run(case.intent, case.mode, &input, &case.kit).await;
+    let observed = run(case.intent, case.mode, &input).await;
     let expect = expectation(case, &input, &observed).map_err(|e| format!("{}: {e}", case.id))?;
     Ok(Realized {
         input,
@@ -173,7 +167,7 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
     match &case.input {
         Input::Static(value) => Ok(value.clone()),
         Input::ChargeTransaction { base, mutation } => {
-            let transaction = charge_build(base, &case.kit).await?;
+            let transaction = charge_build(base).await?;
             let transaction = match mutation {
                 None => transaction,
                 Some(mutation) => {
@@ -358,17 +352,17 @@ fn x402_header_input(id: &str, spec: &crate::case::X402HeaderSpec) -> Result<Val
 
 // ── kit drivers ────────────────────────────────────────────────────────────
 
-pub async fn run(intent: Intent, mode: Mode, input: &Value, kit: &KitOptions) -> Observed {
+pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
     let result = match (intent, mode) {
         (_, Mode::CanonicalBytes) => canonical_bytes(input),
-        (Intent::Charge, Mode::BuildTransaction) => match charge_build(input, kit).await {
+        (Intent::Charge, Mode::BuildTransaction) => match charge_build(input).await {
             Ok(transaction) => Ok(Observed::Accept(Output {
                 transaction: Some(transaction),
                 ..Default::default()
             })),
             Err(message) => Ok(Observed::reject(message)),
         },
-        (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input, kit).await,
+        (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input).await,
         (Intent::X402Exact, Mode::BuildTransaction) => x402_build(input).await,
         (Intent::X402Exact, Mode::VerifyTransaction) => x402_verify(input).await,
         (Intent::Session, Mode::VerifyTransaction) => session_verify(input).await,
@@ -411,7 +405,7 @@ fn signer_from(input: &Value, key: &str) -> Result<MemorySigner, String> {
 
 /// The kit's client builder against the fixture RPC. `Err` is the kit's
 /// refusal message.
-async fn charge_build(input: &Value, kit: &KitOptions) -> Result<String, String> {
+async fn charge_build(input: &Value) -> Result<String, String> {
     let (charge, details) = charge_request(input)?;
     let signer = signer_from(input, "signerSecretKey")?;
     let request = input.get("request").cloned().unwrap_or(Value::Null);
@@ -430,7 +424,6 @@ async fn charge_build(input: &Value, kit: &KitOptions) -> Result<String, String>
     let options = BuildChargeTransactionOptions {
         external_id: charge.external_id.clone(),
         compute_budget: budget,
-        allow_payer_funded_ata_creation: kit.allow_payer_funded_ata_creation,
         ..Default::default()
     };
     let recipient = charge
@@ -458,73 +451,36 @@ async fn charge_build(input: &Value, kit: &KitOptions) -> Result<String, String>
     }
 }
 
-/// The kit's public MPP verifier (`Mpp::verify_credential_with_expected`):
-/// mint a real challenge for the route, present the transaction, verify.
-/// The server's RPC is the HTTP fixture, which refuses `sendTransaction`; a
-/// refusal of the broadcast is the kit having passed every offline check.
-async fn charge_verify(input: &Value, kit: &KitOptions) -> Result<Observed, String> {
+/// The kit's charge pre-broadcast checks
+/// (`mpp::server::charge::testkit::verify_transaction_pre_broadcast`): the
+/// offline half of `Mpp::verify` (envelope and compute caps, fee-payer
+/// isolation, the exact transfer set), with the server's default accepted
+/// message versions.
+async fn charge_verify(input: &Value) -> Result<Observed, String> {
     let (charge, details) = charge_request(input)?;
-    let transaction = match input.get("transaction").and_then(Value::as_str) {
-        Some(tx) => tx.to_string(),
-        None => match charge_build(input, kit).await {
-            Ok(tx) => tx,
-            Err(message) => return Ok(Observed::reject(message)),
+    let Some(transaction) = input.get("transaction").and_then(Value::as_str) else {
+        return Ok(Observed::NotExpressible(
+            "verify vectors must pin input.transaction".into(),
+        ));
+    };
+    let tx = match decode_b64(transaction) {
+        Ok(tx) => tx,
+        Err(e) => return Ok(Observed::reject(format!("invalid payload: {e}"))),
+    };
+    Ok(
+        match verify_transaction_pre_broadcast(
+            &tx,
+            &charge,
+            &details,
+            solana_pay_kit::core::tx::DEFAULT_ACCEPTED_VERSIONS,
+        ) {
+            Ok(()) => Observed::Accept(Output {
+                transaction: Some(transaction.to_string()),
+                ..Default::default()
+            }),
+            Err(error) => Observed::reject(error.message),
         },
-    };
-    let fee_payer = details.fee_payer.unwrap_or(false);
-    let fee_payer_signer: Option<Arc<dyn TransactionSigner>> = if fee_payer {
-        let signer = signer_from(input, "signerSecretKey")?;
-        let want = details.fee_payer_key.clone().unwrap_or_default();
-        if signer.pubkey().to_string() != want {
-            return Ok(Observed::NotExpressible(format!(
-                "feePayerKey {want} is not the vector signer"
-            )));
-        }
-        Some(Arc::new(signer))
-    } else {
-        None
-    };
-    let fixture = HttpFixture::start(&Fixtures::from_input(input)?).map_err(|e| e.to_string())?;
-    let config = MppConfig {
-        recipient: charge.recipient.clone().unwrap_or_default(),
-        currency: charge.currency.clone(),
-        decimals: details.decimals.unwrap_or(6),
-        network: details.network.clone().unwrap_or_else(|| "mainnet".into()),
-        rpc_url: Some(fixture.url().to_string()),
-        challenge_binding_secret: Some(SERVER_SECRET.to_string()),
-        realm: Some("conformance".to_string()),
-        fee_payer,
-        fee_payer_signer,
-        store: Some(Arc::new(MemoryStore::new())),
-        ..Default::default()
-    };
-    let server = Mpp::new(config).map_err(|e| format!("server config: {e}"))?;
-    let challenge = server
-        .charge_challenge_with_options(&charge, None, None)
-        .map_err(|e| format!("server challenge: {e}"))?;
-    let credential = PaymentCredential::new(
-        challenge.to_echo(),
-        CredentialPayload::Transaction {
-            transaction: transaction.clone(),
-        },
-    );
-    let accepted = Observed::Accept(Output {
-        transaction: Some(transaction),
-        ..Default::default()
-    });
-    match server
-        .verify_credential_with_expected(&credential, &charge)
-        .await
-    {
-        Ok(_) => Ok(accepted),
-        Err(error) if reached_broadcast(&error.message) => Ok(accepted),
-        Err(error) => Ok(Observed::reject(error.message)),
-    }
-}
-
-fn reached_broadcast(message: &str) -> bool {
-    message.contains(&refusal("sendTransaction"))
-        || message.contains(&refusal("simulateTransaction"))
+    )
 }
 
 async fn x402_build(input: &Value) -> Result<Observed, String> {
@@ -571,15 +527,15 @@ async fn x402_build(input: &Value) -> Result<Observed, String> {
 /// against the route the input configures. The route's requirements are its
 /// canonical `accepted` object ([`route_accepted`]) plus the mint's decimals.
 async fn x402_verify(input: &Value) -> Result<Observed, String> {
-    if input
+    let payment_identifier = if input
         .get("x402ServerRequiresPaymentIdentifier")
         .and_then(Value::as_bool)
         == Some(true)
     {
-        return Ok(Observed::NotExpressible(
-            "the Rust x402 server has no option to require a payment-identifier and never validates extensions".into(),
-        ));
-    }
+        PaymentIdentifierPolicy::Required
+    } else {
+        PaymentIdentifierPolicy::NotAdvertised
+    };
     let header = str_field(input, "x402PaymentHeader");
     let network = str_field(input, "x402ServerNetwork");
     let recipient = str_field(input, "x402ServerRecipient");
@@ -604,6 +560,7 @@ async fn x402_verify(input: &Value) -> Result<Observed, String> {
         network: network.to_string(),
         rpc_url: Some(fixture.url().to_string()),
         fee_payer_key: Some(fee_payer.to_string()),
+        payment_identifier,
         ..Default::default()
     })
     .map_err(|e| format!("server config: {e}"))?;

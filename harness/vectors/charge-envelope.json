@@ -1,7 +1,7 @@
 [
   {
     "bugType": "settlement",
-    "description": "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept. The pinned transaction is the Rust kit's build with allow_payer_funded_ata_creation (the kit refuses payer-funded split ATA rent by default; RULINGS C5).",
+    "description": "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept. The pinned transaction is the Rust kit's build (RULINGS C5: the client includes the split ATA creation).",
     "expect": {
       "outcome": "accept",
       "transactionShape": {

@@ -93,6 +93,14 @@ accepts a credential without decoding its transaction does not conform.
 16–128 characters of `[A-Za-z0-9_-]`. A server that advertises the extension
 as required MUST reject a payload without a valid id.
 
+**S5. Overpayment is tolerated by default.** scheme_exact_svm.md §1.4: “A
+matching transfer MAY exceed PaymentRequirements.amount ... it MUST NOT be
+less.” The generic scheme_exact.md SVM bullet (“Amount exactness: the
+transferred amount MUST equal maxAmountRequired”) is listed under “Examples
+include”, uses the v1 field name, and is superseded by the network binding's
+normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
+as an explicit stricter policy; default verifiers MUST accept it.
+
 ## Harness consequences
 
 - Vectors encode these rulings. Runners pass chain state through the fixture

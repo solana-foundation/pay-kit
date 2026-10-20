@@ -353,11 +353,6 @@ export type VectorInput = {
   // echoed `extensions["payment-identifier"].info.id` is missing or does
   // not match ^[A-Za-z0-9_-]{16,128}$.
   x402ServerRequiresPaymentIdentifier?: boolean;
-  // verify-transaction (x402): the route's sponsor. The pinned transaction
-  // names it as fee payer with an empty signature slot; the secret lets a
-  // runner configure a signing sponsor where its SDK requires one.
-  x402ServerFeePayer?: string;
-  x402ServerFeePayerSecretKey?: number[];
   // verify-transaction (x402): the route's `extra.memo`. When present the
   // verifier MUST require exactly one Memo instruction carrying it
   // (scheme_exact_svm §3.1), and the route's accepted object carries it.

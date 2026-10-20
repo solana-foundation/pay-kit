@@ -24,14 +24,18 @@ pub fn classify(message: &str) -> Option<RejectCode> {
         || (has("compute unit limit") && (has("exceed") || has("cap") || has("maximum")))
     {
         ComputeLimitOverCap
-    } else if has("decimals is required")
+    } else if has("invalid challenge")
+        || has("decimals is required")
         || has("failed to determine token program")
         || has("token program lookup")
         || has("failed to fetch mint account")
         || has("unsupported token program")
     {
         InvalidChallenge
-    } else if has("fee payer cannot authorize") || has("fee_payer_transferring_funds") {
+    } else if has("fee payer cannot authorize")
+        || has("fee_payer_transferring_funds")
+        || has("fee_payer_included_in_instruction_accounts")
+    {
         FeePayerNotAuthority
     } else if has("fee payer") && (has("funding source") || has("funds source")) {
         FeePayerIsFundsSource

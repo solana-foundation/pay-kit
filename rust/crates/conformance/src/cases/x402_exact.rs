@@ -237,8 +237,6 @@ fn payment_identifier_header(extension_info: Value) -> X402HeaderSpec {
     h
 }
 
-const NO_PID_OPTION: &str = "the Rust x402 server has no option to require a payment-identifier and never validates extensions (FINDINGS.md#rust-x402-server-ignores-payment-identifier)";
-
 fn lie(field: &'static str, value: &'static str, pays: X402Payment) -> X402HeaderSpec {
     let mut h = header(devnet_route());
     h.accepted_overrides = vec![(field, json!(value))];
@@ -401,18 +399,17 @@ crate::registry! {
         &[PROOF_IN_PAYLOAD],
         "(e) Server ACCEPTS a credential when payment-identifier.info.required=true on the route and the credential echoed a valid pay_-shaped id.",
         payment_identifier_header(json!({ "required": true, "id": "pay_abcdef1234567890abcdef1234567890" })),
-        Expect::AcceptAuthored(json!({ "x402EnvelopeShape": {
-            "x402Version": 2,
-            "hasAccepted": true,
-            "payloadHasTransaction": true,
-            "hasExtensions": true,
-            "hasPaymentIdentifier": true,
-            "paymentIdentifierRequired": true,
-            "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
-            "extensionKeys": ["payment-identifier"]
-        } })),
+        Expect::Accept(Pin::Envelope(vec![
+            "x402Version",
+            "hasAccepted",
+            "payloadHasTransaction",
+            "hasExtensions",
+            "hasPaymentIdentifier",
+            "paymentIdentifierRequired",
+            "paymentIdentifierId",
+            "extensionKeys",
+        ])),
     )
-    .authored(Some(NO_PID_OPTION))
     .build();
     x402_ext_server_rejects_required_missing_id => verify_case(
         "x402-ext-server-rejects-required-missing-id",
@@ -424,7 +421,6 @@ crate::registry! {
         payment_identifier_header(json!({ "required": true })),
         reject(RejectCode::PaymentIdentifierRequired, "payment-identifier required but credential echoed no id"),
     )
-    .authored(Some(NO_PID_OPTION))
     .build();
     x402_exact_v2_verify_wrong_network_reject => mutation_case(
         "x402-exact-v2-verify-wrong-network-reject",
@@ -473,7 +469,6 @@ crate::registry! {
         "The sponsor (fee payer) is listed as a signer account of the Memo instruction, so the sponsor's signature would authorize an instruction other than fee payment.",
         Mutation::FeePayerAsAccount { memo: 0 },
     )
-    .authored(Some("the Rust static-layout verifier (verify_exact_instructions) checks the fee payer only as transfer authority and never inspects Memo/Lighthouse instruction accounts, so it accepts this transaction"))
     .build();
     x402_exact_verify_memo_match_accept => verify_case(
         "x402-exact-verify-memo-match-accept",
@@ -506,11 +501,10 @@ crate::registry! {
         BugType::Settlement,
         spec(SVM, "1.4 Exactly One Matching Transfer (MUST)", "A matching transfer MAY exceed PaymentRequirements.amount (overpayment is tolerated to accommodate smart wallets with internal fee rounding); it MUST NOT be less."),
         &[NOT_LESS, EXACTLY_ONE],
-        "The transfer pays one base unit more than the route amount; §1.4 tolerates overpayment. Note the pinned spec is inconsistent here: scheme_exact.md (SVM) says the transferred amount MUST equal the requirement and §3.1 enforces an exact amount on the static path.",
+        "The transfer pays one base unit more than the route amount; §1.4 tolerates overpayment. See RULINGS S5: default verifiers accept overpayment.",
         X402HeaderSpec { mutation: Some(Mutation::OverPay { transfer: 0, delta: 1 }), ..header(devnet_route()) },
-        Expect::AcceptAuthored(json!({ "x402EnvelopeShape": { "x402Version": 2, "hasAccepted": true, "payloadHasTransaction": true } })),
+        Expect::Accept(Pin::Envelope(vec!["x402Version", "hasAccepted", "payloadHasTransaction"])),
     )
-    .authored(Some("the Rust static-layout verifier requires amount == requirement (invalid_exact_svm_payload_amount_mismatch), following scheme_exact.md SVM \"Amount exactness\" and §3.1 rather than §1.4"))
     .build();
     x402_exact_verify_accepted_amount_lie_reject => verify_case(
         "x402-exact-verify-accepted-amount-lie-reject",

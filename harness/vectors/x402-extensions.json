@@ -627,7 +627,7 @@
     },
     "intent": "x402-exact",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-f870a56d25"
     ],
@@ -734,7 +734,7 @@
     },
     "intent": "x402-exact",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-f870a56d25"
     ],

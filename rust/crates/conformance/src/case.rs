@@ -450,16 +450,6 @@ impl Provenance {
     }
 }
 
-/// Builder options the filler passes to the kit when it differs from the
-/// kit's defaults. Every non-default value is a documented decision.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct KitOptions {
-    /// `BuildChargeTransactionOptions::allow_payer_funded_ata_creation`.
-    /// The spec obliges the client to include split ATA creation
-    /// (RULINGS C5); the kit refuses by default.
-    pub allow_payer_funded_ata_creation: bool,
-}
-
 /// How the vector's input is produced.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
@@ -539,7 +529,6 @@ pub struct Case {
     pub input: Input,
     pub expect: Expect,
     pub provenance: Provenance,
-    pub kit: KitOptions,
 }
 
 /// Fluent constructor so registry entries stay readable. Every field without
@@ -579,7 +568,6 @@ impl CaseBuilder {
                 input,
                 expect,
                 provenance: Provenance::Generated,
-                kit: KitOptions::default(),
             },
         }
     }
@@ -596,11 +584,6 @@ impl CaseBuilder {
         self.case.provenance = Provenance::Authored {
             kit_divergence: kit_divergence.map(str::to_string),
         };
-        self
-    }
-
-    pub fn kit(mut self, kit: KitOptions) -> Self {
-        self.case.kit = kit;
         self
     }
 

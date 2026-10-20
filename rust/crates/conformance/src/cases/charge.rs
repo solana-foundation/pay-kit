@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 
 use super::{client_secret, mints};
 use crate::case::{
-    spec, BugType, Case, CaseBuilder, Expect, Input, Intent, KitOptions, Mode, Pin, RejectCode,
-    Role, SpecRef, Suite,
+    spec, BugType, Case, CaseBuilder, Expect, Input, Intent, Mode, Pin, RejectCode, Role, SpecRef,
+    Suite,
 };
 use crate::keys::{
     BLOCKHASH, CHARGE_RECIPIENT, CLIENT, MINT, MINT_2022, OTHER_MINT, SPLIT_RECIPIENT,
@@ -311,7 +311,7 @@ crate::registry! {
             "When the client is the transaction fee payer (feePayer is false or omitted), clients MAY include ATA creation instructions only for split recipients, and MUST include one for each split whose entry sets ataCreationRequired: true.",
         ),
         &[SPLIT_ATA_CLIENT_PAYS, SPLIT_ATA_CONSTRUCTION],
-        "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept. The pinned transaction is the Rust kit's build with allow_payer_funded_ata_creation (the kit refuses payer-funded split ATA rent by default; RULINGS C5).",
+        "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept. The pinned transaction is the Rust kit's build (RULINGS C5: the client includes the split ATA creation).",
         input(spl_request("1000", json!({ "splits": [{
             "recipient": SPLIT_RECIPIENT,
             "amount": "250",
@@ -322,7 +322,6 @@ crate::registry! {
         shape(true, true, false, &[]),
         None,
     )
-    .kit(KitOptions { allow_payer_funded_ata_creation: true })
     .build();
     charge_compute_price_over_cap_reject => verify_case(
         "charge-compute-price-over-cap-reject",

@@ -620,7 +620,7 @@
     },
     "intent": "x402-exact",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-6708749c55",
       "X402-93650bf2e3"
@@ -857,7 +857,7 @@
   },
   {
     "bugType": "settlement",
-    "description": "The transfer pays one base unit more than the route amount; §1.4 tolerates overpayment. Note the pinned spec is inconsistent here: scheme_exact.md (SVM) says the transferred amount MUST equal the requirement and §3.1 enforces an exact amount on the static path. Mutation: transfer #0 pays 1 base units more than required.",
+    "description": "The transfer pays one base unit more than the route amount; §1.4 tolerates overpayment. See RULINGS S5: default verifiers accept overpayment. Mutation: transfer #0 pays 1 base units more than required.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
@@ -952,7 +952,7 @@
     },
     "intent": "x402-exact",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-516a2d7b57",
       "X402-ee90546220"
