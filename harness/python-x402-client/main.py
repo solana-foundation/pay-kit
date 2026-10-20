@@ -39,12 +39,13 @@ if _python_src.is_dir():
 
 import httpx  # noqa: E402
 
-from solana_pay_kit.signer import Signer  # noqa: E402
+from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
 from solana_pay_kit.protocols.x402.client.exact import (  # noqa: E402
     ChallengeSelection,
     build_payment_header,
     parse_x402_challenge,
 )
+from solana_pay_kit.signer import Signer  # noqa: E402
 
 DEFAULT_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 SETTLEMENT_HEADER = "x-fixture-settlement"
@@ -57,42 +58,6 @@ def _require_env(name: str) -> str:
         print(f"{name} is required", file=sys.stderr)
         sys.exit(2)
     return value
-
-
-class _BlockhashRpc:
-    """Minimal RPC exposing ``get_latest_blockhash`` for the build fallback.
-
-    Only used when an offer omits ``extra.recentBlockhash``; the solana_pay_kit x402
-    server stamps the blockhash so this is the rare path.
-    """
-
-    def __init__(self, endpoint: str) -> None:
-        self._endpoint = endpoint
-
-    async def get_latest_blockhash(self) -> Any:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                self._endpoint,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getLatestBlockhash",
-                    "params": [{"commitment": "confirmed"}],
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-        blockhash = data["result"]["value"]["blockhash"]
-
-        class _Value:
-            def __init__(self, bh: str) -> None:
-                self.blockhash = bh
-
-        class _Resp:
-            def __init__(self, bh: str) -> None:
-                self.value = _Value(bh)
-
-        return _Resp(blockhash)
 
 
 def _emit(result: dict[str, Any]) -> None:
@@ -135,7 +100,9 @@ async def _run() -> None:
             )
             return
 
-        rpc = _BlockhashRpc(rpc_url)
+        # The SDK's own RPC client: the x402 client reads the mint for
+        # decimals and token program (scheme_exact_svm.md extra fields).
+        rpc = SolanaRpc(rpc_url)
         payment_header = await build_payment_header(signer, rpc, requirement)
 
         paid = await http.get(target_url, headers={PAYMENT_SIGNATURE_HEADER: payment_header})
