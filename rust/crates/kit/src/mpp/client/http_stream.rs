@@ -171,8 +171,11 @@ pub fn parse_metered_sse_event<T: DeserializeOwned>(event: SseEvent) -> Result<M
 
 #[derive(Default)]
 struct MeteredStreamState {
+    /// The reservation announced by `mpp.metering`.
     directive: Option<MeteringDirective>,
-    final_amount: Option<u64>,
+    /// `directive` settled against the stream's `mpp.usage`; only ever built
+    /// by [`MeteringDirective::settle`], so it never exceeds the reservation.
+    settled: Option<MeteringDirective>,
     done: bool,
 }
 
@@ -180,19 +183,17 @@ impl MeteredStreamState {
     fn apply_event<T: DeserializeOwned>(&mut self, event: SseEvent) -> Result<Option<T>> {
         match parse_metered_sse_event(event)? {
             MeteredSseEvent::Metering(directive) => {
+                // Usage settles the directive it was reported against; a new
+                // reservation starts over.
                 self.directive = Some(directive);
+                self.settled = None;
                 Ok(None)
             }
             MeteredSseEvent::Usage(usage) => {
-                if let Some(ref directive) = self.directive {
-                    if usage.delivery_id != directive.delivery_id {
-                        return Err(Error::Other(format!(
-                            "usage delivery {} does not match directive {}",
-                            usage.delivery_id, directive.delivery_id
-                        )));
-                    }
-                }
-                self.final_amount = Some(usage.amount_base_units()?);
+                let directive = self.directive.as_ref().ok_or_else(|| {
+                    Error::Other("mpp.usage arrived before the mpp.metering event".to_string())
+                })?;
+                self.settled = Some(directive.settle(&usage)?);
                 Ok(None)
             }
             MeteredSseEvent::Message(message) => Ok(Some(message)),
@@ -205,14 +206,10 @@ impl MeteredStreamState {
     }
 
     fn directive_for_commit(&self) -> Result<MeteringDirective> {
-        let mut directive = self
-            .directive
+        self.settled
             .clone()
-            .ok_or_else(|| Error::Other("stream did not include mpp.metering event".to_string()))?;
-        if let Some(amount) = self.final_amount {
-            directive.amount = amount.to_string();
-        }
-        Ok(directive)
+            .or_else(|| self.directive.clone())
+            .ok_or_else(|| Error::Other("stream did not include mpp.metering event".to_string()))
     }
 }
 
@@ -771,6 +768,52 @@ mod tests {
             ))
             .unwrap_err();
         assert!(err.to_string().contains("does not match directive"));
+    }
+
+    #[tokio::test]
+    async fn metered_sse_refuses_usage_above_the_reservation() {
+        let channel_id = Pubkey::new_unique();
+        let session = super::super::session::ActiveSession::new(channel_id, signer());
+        let transport = RecordingTransport {
+            commits: Mutex::new(vec![]),
+        };
+        let mut consumer = SessionConsumer::new(session, transport);
+        let mut stream = consumer.metered_sse::<Delta>();
+        let directive = directive(&stream.consumer.session().channel_id_str());
+        assert_eq!(directive.amount, "1000");
+
+        let err = stream
+            .accept_event(sse_event(
+                Some("mpp.usage"),
+                r#"{"deliveryId":"stream-1","amount":"1"}"#,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("before the mpp.metering"), "{err}");
+
+        stream
+            .accept_event(sse_event(
+                Some("mpp.metering"),
+                serde_json::to_string(&directive).unwrap(),
+            ))
+            .unwrap();
+        let err = stream
+            .accept_event(sse_event(
+                Some("mpp.usage"),
+                r#"{"deliveryId":"stream-1","amount":"1001"}"#,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds the reserved"), "{err}");
+
+        // Usage equal to the reservation is still accepted and committed.
+        stream
+            .accept_event(sse_event(
+                Some("mpp.usage"),
+                r#"{"deliveryId":"stream-1","amount":"1000"}"#,
+            ))
+            .unwrap();
+        let receipt = stream.ack().await.unwrap();
+        assert_eq!(receipt.amount, "1000");
+        assert_eq!(consumer.session().cumulative, 1000);
     }
 
     #[tokio::test]
