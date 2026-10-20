@@ -971,51 +971,73 @@ async fn upto_gate_middleware(
     // Recover from poisoning so a handler that panicked *after* recording a
     // charge still settles the amount it consumed (not a silent zero refund).
     let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
-    let resp = match metered {
-        Ok(mut resp) => {
-            prevent_shared_caching(&mut resp);
-            resp
-        }
-        Err(error) => {
-            // Nothing is delivered; still settle what was metered so far.
-            tracing::warn!(error = %error, "upto response body did not complete");
-            let _ = settle_served_upto_detached(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await;
-            return (
-                StatusCode::BAD_GATEWAY,
-                "resource response body failed or exceeded the metered size limit",
-            )
-                .into_response();
-        }
-    };
-
-    finish_served_upto(&upto, open, actual, resp, UPTO_SETTLEMENT_RETRY).await
+    let metered = metered.map(|mut resp| {
+        prevent_shared_caching(&mut resp);
+        resp
+    });
+    ServedUpto::settle(&upto, open, actual, metered, UPTO_SETTLEMENT_RETRY)
+        .respond(&upto)
+        .await
 }
 
-/// Settle the actual amount, refund the remainder and attach the receipt. A
-/// settlement left pending in the background still charges `actual`, so the
-/// response is served without a receipt rather than dropped.
-async fn finish_served_upto(
-    upto: &Arc<X402Upto>,
-    open: crate::x402::server::VerifiedUptoOpen,
-    actual: u64,
-    mut resp: Response,
-    retry: UptoSettlementRetry,
-) -> Response {
-    let Some(settlement) = settle_served_upto_detached(upto, open, actual, retry).await else {
-        return resp;
-    };
-    match upto.settlement_header(&settlement) {
-        Ok((name, value)) => {
-            if let (Ok(n), Ok(v)) = (
-                HeaderName::from_bytes(name.as_bytes()),
-                HeaderValue::from_str(&value),
-            ) {
-                resp.headers_mut().insert(n, v);
+/// A served `upto` request whose settlement already runs on its own task, so
+/// dropping the request future (a client disconnect) cannot cancel it. The
+/// gate's response is built only by [`ServedUpto::respond`], which delivers
+/// the metered body whatever the settlement outcome.
+struct ServedUpto {
+    body: Result<Response, axum::Error>,
+    settlement: tokio::task::JoinHandle<Option<crate::x402::upto::UptoSettlementResponse>>,
+}
+
+impl ServedUpto {
+    /// Settle `actual` and refund the remainder of `open`.
+    fn settle(
+        upto: &Arc<X402Upto>,
+        open: crate::x402::server::VerifiedUptoOpen,
+        actual: u64,
+        body: Result<Response, axum::Error>,
+        retry: UptoSettlementRetry,
+    ) -> Self {
+        let upto = Arc::clone(upto);
+        let settlement =
+            tokio::spawn(async move { settle_served_upto(&upto, open, actual, retry).await });
+        Self { body, settlement }
+    }
+
+    /// The body, with the receipt when settled inline. A settlement still
+    /// retrying in the background charges `actual`, so the body is served
+    /// without a receipt. Only a body that never completed answers 502.
+    async fn respond(self, upto: &X402Upto) -> Response {
+        let settlement = self.settlement.await.unwrap_or_else(|error| {
+            tracing::error!(error = %error, "upto settlement task failed");
+            None
+        });
+        let mut resp = match self.body {
+            Ok(resp) => resp,
+            Err(error) => {
+                tracing::warn!(error = %error, "upto response body did not complete");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    "resource response body failed or exceeded the metered size limit",
+                )
+                    .into_response();
+            }
+        };
+        if let Some(settlement) = settlement {
+            match upto.settlement_header(&settlement) {
+                Ok((name, value)) => {
+                    if let (Ok(n), Ok(v)) = (
+                        HeaderName::from_bytes(name.as_bytes()),
+                        HeaderValue::from_str(&value),
+                    ) {
+                        resp.headers_mut().insert(n, v);
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "failed to encode upto settlement header"),
             }
         }
-        Err(e) => tracing::error!(error = %e, "failed to encode upto settlement header"),
+        resp
     }
-    resp
 }
 
 /// Largest `upto` response body the gate buffers to observe its metering.
@@ -1071,23 +1093,6 @@ where
         }
     }
     Err(last.unwrap_or_else(|| crate::x402::Error::Other("settlement did not run".into())))
-}
-
-/// Run [`settle_served_upto`] on its own task so dropping the request future
-/// (a client disconnect) cannot cancel it and release the open.
-async fn settle_served_upto_detached(
-    upto: &Arc<X402Upto>,
-    open: crate::x402::server::VerifiedUptoOpen,
-    actual: u64,
-    retry: UptoSettlementRetry,
-) -> Option<crate::x402::upto::UptoSettlementResponse> {
-    let upto = Arc::clone(upto);
-    tokio::spawn(async move { settle_served_upto(&upto, open, actual, retry).await })
-        .await
-        .unwrap_or_else(|error| {
-            tracing::error!(error = %error, "upto settlement task failed");
-            None
-        })
 }
 
 /// Settle a request whose handler already ran. The handler's effects cannot be
@@ -2280,8 +2285,15 @@ mod tests {
             base_delay: std::time::Duration::from_millis(200),
         };
 
-        let resp =
-            finish_served_upto(&upto, open, 500, Response::new(Body::from("served")), retry).await;
+        let resp = ServedUpto::settle(
+            &upto,
+            open,
+            500,
+            Ok(Response::new(Body::from("served"))),
+            retry,
+        )
+        .respond(&upto)
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
         assert!(
@@ -2294,6 +2306,31 @@ mod tests {
                 .unwrap()
                 .as_ref(),
             b"served"
+        );
+    }
+
+    /// A body that never completed has nothing to deliver: 502, while what was
+    /// metered still settles.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incomplete_upto_body_answers_502_and_still_settles() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let open = upto.test_open(channel, 1_000);
+        let retry = UptoSettlementRetry {
+            inline_attempts: 1,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(200),
+        };
+
+        let body = Err(axum::Error::new("body exceeded the metered size limit"));
+        let resp = ServedUpto::settle(&upto, open, 500, body, retry)
+            .respond(&upto)
+            .await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert!(
+            upto.is_in_flight(&channel),
+            "the metered amount still settles"
         );
     }
 
@@ -2311,7 +2348,8 @@ mod tests {
             base_delay: std::time::Duration::from_millis(400),
         };
 
-        let served = finish_served_upto(&upto, open, 500, Response::new(Body::empty()), retry);
+        let served = ServedUpto::settle(&upto, open, 500, Ok(Response::new(Body::empty())), retry)
+            .respond(&upto);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), served)
                 .await
