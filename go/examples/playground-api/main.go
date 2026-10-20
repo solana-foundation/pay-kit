@@ -399,7 +399,7 @@ func registerSPA(mux *http.ServeMux, repoRoot string) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if dist != "" {
 			if root, err := os.OpenRoot(dist); err == nil {
-				defer root.Close()
+				defer func() { _ = root.Close() }()
 				name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 				if info, err := root.Stat(name); err != nil || info.IsDir() {
 					name = "index.html"

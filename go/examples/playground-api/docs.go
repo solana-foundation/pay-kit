@@ -163,7 +163,7 @@ func readInRoot(dir, rel string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	return root.ReadFile(rel)
 }
 
