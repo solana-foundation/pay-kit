@@ -2020,7 +2020,7 @@ func TestVerifySignatureAcceptsLegacyTransaction(t *testing.T) {
 			if receipt.Status != core.ReceiptStatusSuccess {
 				t.Fatalf("unexpected receipt: %#v", receipt)
 			}
-			inserted, err := handler.store.PutIfAbsent(context.Background(), consumedPrefix+signature, true)
+			inserted, err := handler.consumed().Claim(context.Background(), signature)
 			if err != nil {
 				t.Fatalf("store: %v", err)
 			}
@@ -2028,6 +2028,37 @@ func TestVerifySignatureAcceptsLegacyTransaction(t *testing.T) {
 				t.Fatal("settling a legacy transaction must consume the replay marker")
 			}
 		})
+	}
+}
+
+// One on-chain payment authorizes one request across protocols: a
+// signature x402 exact already claimed in the shared store is rejected by
+// MPP charge, while an unclaimed one still settles.
+func TestVerifySignatureRejectsSignatureClaimedByX402(t *testing.T) {
+	handler, rpcClient, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, signature := landLegacyPushTransaction(t, rpcClient, handler.recipient, challenge.ToEcho())
+	x402Ledger := paycore.NewConsumedSignatures(handler.store)
+	if claimed, err := x402Ledger.Claim(context.Background(), signature); err != nil || !claimed {
+		t.Fatalf("x402-side claim: claimed=%v err=%v", claimed, err)
+	}
+	_, err = verifyCredentialEchoed(handler, context.Background(), credential)
+	if code := errCode(t, err); code != core.ErrCodeSignatureConsumed {
+		t.Fatalf("code = %q, want %q", code, core.ErrCodeSignatureConsumed)
+	}
+
+	// Positive control: the same payment on a store x402 never touched.
+	handler, rpcClient, _ = newTestMpp(t)
+	challenge, err = handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, _ = landLegacyPushTransaction(t, rpcClient, handler.recipient, challenge.ToEcho())
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err != nil {
+		t.Fatalf("verify failed: %v", err)
 	}
 }
 

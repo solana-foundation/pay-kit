@@ -17,6 +17,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -437,23 +438,99 @@ func TestVerifyAndSettleReplayRejected(t *testing.T) {
 	}
 }
 
-func TestTransactionReplayKeySkipsSponsoredFeePayerSlot(t *testing.T) {
-	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
-	tx := &solana.Transaction{Signatures: []solana.Signature{{}, clientSig}}
-	key, err := transactionReplayKey(tx)
-	if err != nil {
-		t.Fatalf("transactionReplayKey: %v", err)
+// A payment settled through MPP on a gate sharing the store must not be
+// accepted again as an x402 proof: both protocols claim the co-signed
+// transaction's signature in one ledger.
+func TestVerifyAndSettleRejectsSignatureConsumedByMPP(t *testing.T) {
+	fake := &fakeRPC{sig: solana.MustSignatureFromBase58(sampleSig), confirm: rpc.ConfirmationStatusFinalized}
+	a, gate, sig := settleFixture(t, fake)
+	store := core.NewMemoryStore()
+	a.cfg.MPP.Store = store
+	ledger := paycore.NewConsumedSignatures(store)
+
+	key := settledSignature(t, a, sig)
+	if claimed, err := ledger.Claim(context.Background(), key); err != nil || !claimed {
+		t.Fatalf("MPP-side claim: claimed=%v err=%v", claimed, err)
 	}
-	if key != sampleClientSig {
-		t.Fatalf("replay key = %s, want %s", key, sampleClientSig)
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	var perr *paykit.PaymentError
+	if !errorsAs(err, &perr) || perr.Code != "signature_consumed" {
+		t.Fatalf("expected signature_consumed, got %v", err)
+	}
+
+	// Positive control: on a fresh shared store x402 settles, and its claim
+	// is visible to MPP through the same ledger.
+	a, gate, sig = settleFixture(t, fake)
+	store = core.NewMemoryStore()
+	a.cfg.MPP.Store = store
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	claimed, err := paycore.NewConsumedSignatures(store).Claim(context.Background(), settledSignature(t, a, sig))
+	if err != nil || claimed {
+		t.Fatalf("x402 settlement must claim the shared ledger: claimed=%v err=%v", claimed, err)
 	}
 }
 
-func TestTransactionReplayKeyRejectsUnsignedTransaction(t *testing.T) {
-	tx := &solana.Transaction{Signatures: []solana.Signature{{}}}
-	_, err := transactionReplayKey(tx)
-	if err == nil {
-		t.Fatal("expected unsigned transaction to be rejected")
+// settledSignature is the signature the adapter claims for sig: the first
+// signature of the co-signed wire transaction.
+func settledSignature(t *testing.T, a *Adapter, sig string) string {
+	t.Helper()
+	credJSON, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cred proto.Credential
+	if err := json.Unmarshal(credJSON, &cred); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(cred.Payload.Transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := solanatx.DecodeTransaction(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := a.cosign(context.Background(), tx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := transactionReplayKey(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestTransactionReplayKeyIsTheCosignedFeePayerSignature(t *testing.T) {
+	feePayerSig := solana.MustSignatureFromBase58(sampleSig)
+	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
+	tx := &solana.Transaction{
+		Message:    solana.Message{AccountKeys: solana.PublicKeySlice{solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()}},
+		Signatures: []solana.Signature{feePayerSig, clientSig},
+	}
+	tx.Message.Header.NumRequiredSignatures = 2
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := transactionReplayKey(wire)
+	if err != nil {
+		t.Fatalf("transactionReplayKey: %v", err)
+	}
+	if key != sampleSig {
+		t.Fatalf("replay key = %s, want %s", key, sampleSig)
+	}
+
+	// Not yet co-signed: no on-chain identity to claim.
+	tx.Signatures[0] = solana.Signature{}
+	wire, err = tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transactionReplayKey(wire); err == nil {
+		t.Fatal("expected a transaction without its fee payer signature to be rejected")
 	}
 }
 

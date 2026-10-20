@@ -14,7 +14,9 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -22,8 +24,14 @@ type Adapter struct {
 	cfg               paykit.Config
 	signer            paykit.Signer
 	rpc               proto.RPCClient
-	replay            sync.Map
 	blockhashProvider func() (string, error)
+
+	// ledgerOnce guards ledger, the consumed-signature ledger shared with
+	// MPP charge. It is backed by cfg.MPP.Store when one is configured, so
+	// a transaction settled through MPP on the same gate cannot be
+	// presented again here, and by a process-local store otherwise.
+	ledgerOnce sync.Once
+	ledger     paycore.ConsumedSignatures
 }
 
 func New(cfg paykit.Config) (paykit.Adapter, error) {
@@ -160,23 +168,28 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
 		}
 	}
-	replayKey, err := transactionReplayKey(tx)
+	wire, err := a.cosign(ctx, tx, rawTx)
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
-	if _, loaded := a.replay.LoadOrStore(replayKey, struct{}{}); loaded {
+	replayKey, err := transactionReplayKey(wire)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
+	claimed, err := a.consumed().Claim(ctx, replayKey)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: req.Gate}
+	}
+	if !claimed {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
 	}
 	settled := false
 	defer func() {
 		if !settled {
-			a.replay.Delete(replayKey)
+			// Unsettled: let the payer retry the same transaction.
+			_ = a.consumed().Release(context.WithoutCancel(ctx), replayKey)
 		}
 	}()
-	wire, err := a.cosign(ctx, tx, rawTx)
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
-	}
 	signature, err := a.rpc.SendEncodedTransactionWithOpts(ctx,
 		base64.StdEncoding.EncodeToString(wire),
 		rpc.TransactionOpts{
@@ -215,13 +228,31 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	}, nil
 }
 
-func transactionReplayKey(tx *solana.Transaction) (string, error) {
-	for _, sig := range tx.Signatures {
-		if !sig.IsZero() {
-			return sig.String(), nil
-		}
+// transactionReplayKey is the signature that identifies the fully signed
+// (co-signed) wire transaction on-chain: its first signature. MPP charge
+// claims the same signature, so the shared ledger catches a transaction
+// presented through both protocols.
+func transactionReplayKey(wire []byte) (string, error) {
+	tx, err := solanatx.DecodeTransaction(wire)
+	if err != nil {
+		return "", fmt.Errorf("transaction decode: %w", err)
 	}
-	return "", errors.New("transaction carries no non-zero signer signature")
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+		return "", errors.New("transaction is missing its fee payer signature")
+	}
+	return tx.Signatures[0].String(), nil
+}
+
+// consumed is the consumed-signature ledger shared with MPP charge.
+func (a *Adapter) consumed() paycore.ConsumedSignatures {
+	a.ledgerOnce.Do(func() {
+		var store paycore.ClaimStore = core.NewMemoryStore()
+		if a.cfg.MPP.Store != nil {
+			store = a.cfg.MPP.Store
+		}
+		a.ledger = paycore.NewConsumedSignatures(store)
+	})
+	return a.ledger
 }
 
 func (a *Adapter) verifyAcceptedBinding(gate *paykit.Gate, accepted *proto.AcceptsEntry) error {

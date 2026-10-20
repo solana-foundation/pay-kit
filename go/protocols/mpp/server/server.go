@@ -24,7 +24,6 @@ import (
 
 const (
 	secretKeyEnvVar = "MPP_SECRET_KEY"
-	consumedPrefix  = "solana-charge:consumed:"
 
 	// minSecretKeyBytes is the minimum length of the HMAC-SHA256 secret
 	// that binds challenge IDs. 32 bytes matches NIST SP 800-107 guidance
@@ -656,8 +655,8 @@ func (m *Mpp) verifyTransaction(
 	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
 		return core.Receipt{}, core.NewError(core.ErrCodeMissingSignature, "transaction is missing a primary signature")
 	}
-	consumedKey := consumedPrefix + tx.Signatures[0].String()
-	inserted, err := m.store.PutIfAbsent(ctx, consumedKey, true)
+	finalSignature := tx.Signatures[0].String()
+	inserted, err := m.consumed().Claim(ctx, finalSignature)
 	if err != nil {
 		return core.Receipt{}, err
 	}
@@ -669,7 +668,7 @@ func (m *Mpp) verifyTransaction(
 		if cleanupConsumed {
 			// Detach cancellation but keep trace/values so rollback still
 			// runs when the caller's context is already canceled.
-			_ = m.store.Delete(context.WithoutCancel(ctx), consumedKey)
+			_ = m.consumed().Release(context.WithoutCancel(ctx), finalSignature)
 		}
 	}()
 	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
@@ -696,6 +695,13 @@ func (m *Mpp) verifyTransaction(
 	return successReceipt(signature.String(), credential.Challenge.ID, request.ExternalID), nil
 }
 
+// consumed is the consumed-signature ledger shared with x402 exact, so a
+// payment settled through either protocol cannot authorize a second request
+// through the other on a gate sharing the store.
+func (m *Mpp) consumed() paycore.ConsumedSignatures {
+	return paycore.NewConsumedSignatures(m.store)
+}
+
 func (m *Mpp) verifySignature(
 	ctx context.Context,
 	credential core.PaymentCredential,
@@ -719,7 +725,7 @@ func (m *Mpp) verifySignature(
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
 		return core.Receipt{}, err
 	}
-	inserted, err := m.store.PutIfAbsent(ctx, consumedPrefix+payload.Signature, true)
+	inserted, err := m.consumed().Claim(ctx, payload.Signature)
 	if err != nil {
 		return core.Receipt{}, err
 	}
