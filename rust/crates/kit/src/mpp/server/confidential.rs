@@ -16,8 +16,8 @@ use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{programs, MethodDetails};
 
 use super::charge::{
-    check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, ComputeBudgetOp, Mpp,
-    SettleFailure, VerificationError, COMPUTE_BUDGET_PROGRAM,
+    check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, BroadcastFence,
+    ComputeBudgetOp, Mpp, SettleFailure, VerificationError, COMPUTE_BUDGET_PROGRAM,
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
 };
 
@@ -121,9 +121,10 @@ impl Mpp {
         transactions: &[String],
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        fence: &mut BroadcastFence,
     ) -> Result<String, SettleFailure> {
         match self
-            .settle_confidential_bundle(transactions, request, method_details)
+            .settle_confidential_bundle(transactions, request, method_details, fence)
             .await?
         {
             BundleSettlement::Confirmed(signature) => Ok(signature),
@@ -139,6 +140,7 @@ impl Mpp {
         transactions: &[String],
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        fence: &mut BroadcastFence,
     ) -> Result<BundleSettlement, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use spl_associated_token_account::get_associated_token_address_with_program_id;
@@ -392,7 +394,7 @@ impl Mpp {
             if is_final {
                 // Claim before sending, as pull settlement does, so the
                 // transfer is recorded whatever happens after it leaves.
-                self.consume_signature(&local_signature).await?;
+                fence.begin(self, &local_signature).await?;
             }
             let signature = match crate::core::rpc::send_transaction(
                 &self.rpc,
@@ -413,7 +415,7 @@ impl Mpp {
                                 error,
                             });
                         }
-                        self.release_signature(&local_signature).await;
+                        fence.abandon(self).await;
                     }
                     return Err(error);
                 }
@@ -2004,6 +2006,7 @@ pub(crate) mod tests {
                 &encode_bundle(&[tx]),
                 &request(1_000, &server.mint, server.mpp.recipient()),
                 &server.method_details,
+                &mut server.mpp.test_fence().await,
             )
             .await
             .unwrap_err();
@@ -2026,6 +2029,7 @@ pub(crate) mod tests {
                 &encode_bundle(&[tx]),
                 &request(amount, &server.mint, server.mpp.recipient()),
                 &server.method_details,
+                &mut server.mpp.test_fence().await,
             )
             .await
             .unwrap_err()
@@ -2274,6 +2278,7 @@ pub(crate) mod tests {
                         &bundle,
                         &request(1_000, &server.mint, server.mpp.recipient()),
                         &server.method_details,
+                        &mut server.mpp.test_fence().await,
                     )
                     .await
                     .unwrap_err()

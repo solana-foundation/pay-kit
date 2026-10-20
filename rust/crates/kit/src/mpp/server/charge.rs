@@ -1253,7 +1253,9 @@ impl Mpp {
                     .reconcile_channel_submission(&credential.challenge, transaction)
                     .await?
                 {
-                    if let Err(error) = charge_store.mark_confirmed(&challenge_id, &signature).await
+                    if let Err(error) = charge_store
+                        .record_confirmed(&challenge_id, &signature)
+                        .await
                     {
                         // The immutable receipt claim already consumed this
                         // payment; secondary bookkeeping must not lose its receipt.
@@ -1327,6 +1329,12 @@ impl Mpp {
             }
             ChargeReservation::Reserved { generation } => generation,
         };
+        let mut fence = BroadcastFence {
+            store: charge_store.clone(),
+            challenge_id: challenge_id.clone(),
+            generation,
+            pending: None,
+        };
 
         // Settle, with the consume_signature reservation sitting between
         // broadcast and confirmation polling. If the server crashes or the
@@ -1335,7 +1343,13 @@ impl Mpp {
         // cannot trigger a second broadcast. See PR #85 Greptile P1 and
         // audit gap G05.
         match self
-            .settle_payload(&payload, request, &method_details, &credential.challenge)
+            .settle_payload(
+                &payload,
+                request,
+                &method_details,
+                &credential.challenge,
+                &mut fence,
+            )
             .await
         {
             Ok(signature_str) => {
@@ -1343,36 +1357,33 @@ impl Mpp {
                     self.claim_channel_receipt(&challenge_id, &signature_str)
                         .await?;
                 }
-                if let Err(e) = charge_store
-                    .mark_confirmed(&challenge_id, &signature_str)
+                match charge_store
+                    .mark_confirmed(&challenge_id, fence.generation, &signature_str)
                     .await
                 {
-                    tracing::warn!(
+                    Ok(true) => {}
+                    // A retry reconciled this pending broadcast first and was
+                    // granted its receipt: one receipt per payment.
+                    Ok(false) if method_details.channel_charge.is_none() => {
+                        return Err(VerificationError::signature_consumed(format!(
+                            "Transaction signature already consumed — challenge {challenge_id} \
+                             was already settled (tx {signature_str})"
+                        )));
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(
                         error = %e,
                         challenge_id = %challenge_id,
                         "failed to persist confirmed charge record"
-                    );
+                    ),
                 }
                 Ok(Receipt::success(METHOD_NAME, &signature_str, challenge_id))
             }
             Err(SettleFailure::Unconfirmed { signature, error }) => {
-                // The transaction may still land: keep its signature so a retry
-                // reconciles it instead of the payer paying again.
-                match charge_store
-                    .mark_pending(&challenge_id, generation, &signature)
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => tracing::warn!(
-                        challenge_id = %challenge_id,
-                        "charge reservation was superseded; pending broadcast not recorded"
-                    ),
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        challenge_id = %challenge_id,
-                        "failed to persist pending charge record"
-                    ),
-                }
+                // The transaction may still land. Its signature was recorded as
+                // pending before it was sent, so a retry reconciles it instead
+                // of the payer paying again.
+                debug_assert_eq!(fence.pending.as_deref(), Some(signature.as_str()));
                 Err(VerificationError::settlement_in_progress(format!(
                     "Transaction {signature} was broadcast but not yet confirmed; retry with the \
                      same credential to reconcile, do not pay again: {}",
@@ -1382,7 +1393,7 @@ impl Mpp {
             Err(SettleFailure::Failed(err)) => {
                 if method_details.channel_charge.is_none() {
                     match charge_store
-                        .mark_failed(&challenge_id, generation, &err.message)
+                        .mark_failed(&challenge_id, fence.generation, &err.message)
                         .await
                     {
                         Ok(true) => {}
@@ -1507,6 +1518,7 @@ impl Mpp {
         request: &ChargeRequest,
         method_details: &MethodDetails,
         challenge: &crate::mpp::protocol::core::ChallengeEcho,
+        fence: &mut BroadcastFence,
     ) -> Result<String, SettleFailure> {
         if method_details.channel_charge.is_some() {
             self.validate_channel_policy(request, method_details)
@@ -1523,7 +1535,7 @@ impl Mpp {
                 // Claims the signature before sending, so nothing that can
                 // fail after the broadcast is left to record the payment.
                 let signature = self
-                    .broadcast_pull(transaction, request, method_details, challenge)
+                    .broadcast_pull(transaction, request, method_details, challenge, fence)
                     .await?;
                 if method_details.channel_charge.is_some() {
                     self.await_pull_confirmation(&signature)
@@ -1577,7 +1589,7 @@ impl Mpp {
                 // and the recipient-recovered amount matches the charge.
                 // TODO: pending-delivery semantics — a future Receipt revision
                 // could mark delivery as "pending" for asynchronous flows.
-                self.settle_confidential_bundle_inner(transactions, request, method_details)
+                self.settle_confidential_bundle_inner(transactions, request, method_details, fence)
                     .await
             }
             #[cfg(not(feature = "confidential"))]
@@ -1680,6 +1692,7 @@ impl Mpp {
         request: &ChargeRequest,
         method_details: &MethodDetails,
         challenge: &crate::mpp::protocol::core::ChallengeEcho,
+        fence: &mut BroadcastFence,
     ) -> Result<String, SettleFailure> {
         let tx_bytes =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction_b64)
@@ -1776,12 +1789,12 @@ impl Mpp {
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
 
         // Every signature is in place, so the transaction's identity is known
-        // before it leaves this process. Claim it now: a store failure here
-        // provably sent nothing, while one after the broadcast would leave a
-        // possibly-landed payment unrecorded and the charge free to be paid
-        // again.
+        // before it leaves this process. Record and claim it now: a store
+        // failure here provably sent nothing, while one after the broadcast
+        // would leave a possibly-landed payment unrecorded and the charge free
+        // to be paid again.
         let local_signature = final_signature(&tx)?;
-        self.consume_signature(&local_signature).await?;
+        fence.begin(self, &local_signature).await?;
 
         // Broadcast with the node's preflight simulation (skip_preflight stays
         // off) rather than a separate simulate round-trip: on success the tx is
@@ -1921,7 +1934,7 @@ impl Mpp {
                         // Preflight rejected every attempt: the transaction
                         // was never forwarded, so the payer may present it
                         // again.
-                        self.release_signature(&local_signature).await;
+                        fence.abandon(self).await;
                         return Err(error.into());
                     }
 
@@ -2735,6 +2748,96 @@ fn challenge_route(challenge: &crate::mpp::protocol::core::ChallengeEcho) -> Opt
         .get("route")?
         .as_str()
         .map(str::to_string)
+}
+
+/// The charge-record generation a settlement owns.
+///
+/// A settlement transaction is only sent after [`Self::begin`] recorded its
+/// signature as pending under this generation, which also fences out a stale
+/// owner: once a lease takeover appended a newer generation, `begin` refuses
+/// and nothing is sent. A record that may have been broadcast is therefore
+/// never lease-reclaimed into a second settlement.
+pub(crate) struct BroadcastFence {
+    store: ChargeReplayStore,
+    challenge_id: String,
+    /// Current generation owned by this settlement.
+    generation: u64,
+    /// The signature recorded as pending, once [`Self::begin`] succeeded.
+    pending: Option<String>,
+}
+
+impl BroadcastFence {
+    /// Record `signature` as pending and claim it, before it is sent.
+    pub(crate) async fn begin(
+        &mut self,
+        mpp: &Mpp,
+        signature: &str,
+    ) -> Result<(), VerificationError> {
+        match self
+            .store
+            .mark_pending(&self.challenge_id, self.generation, signature)
+            .await
+        {
+            Ok(true) => {
+                self.generation += 1;
+                self.pending = Some(signature.to_string());
+            }
+            Ok(false) => {
+                return Err(VerificationError::settlement_in_progress(
+                    "This charge is being settled by another request; retry shortly",
+                ))
+            }
+            Err(e) => return Err(VerificationError::new(format!("Store error: {e}"))),
+        }
+        mpp.consume_signature(signature).await
+    }
+
+    /// The pending transaction provably never left this process (preflight
+    /// rejected it): release its signature and the reservation.
+    pub(crate) async fn abandon(&mut self, mpp: &Mpp) {
+        let Some(signature) = self.pending.take() else {
+            return;
+        };
+        mpp.release_signature(&signature).await;
+        match self
+            .store
+            .release_pending(&self.challenge_id, self.generation, &signature)
+            .await
+        {
+            Ok(true) => self.generation += 1,
+            Ok(false) => tracing::warn!(
+                challenge_id = %self.challenge_id,
+                "pending charge was superseded; release not recorded"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                challenge_id = %self.challenge_id,
+                "failed to release unsent pending charge"
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Mpp {
+    /// A fence over a fresh reservation, for calling settlement directly.
+    pub(crate) async fn test_fence(&self) -> BroadcastFence {
+        let store = self.charge_replay_store();
+        let challenge_id = format!("test-{}", solana_pubkey::Pubkey::new_unique());
+        let ChargeReservation::Reserved { generation } = store
+            .reserve(&challenge_id, "test-digest", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap()
+        else {
+            panic!("fresh challenge id must reserve");
+        };
+        BroadcastFence {
+            store,
+            challenge_id,
+            generation,
+            pending: None,
+        }
+    }
 }
 
 /// The signature that identifies `tx` on-chain: its first (fee payer) slot,
@@ -5049,7 +5152,12 @@ mod tests {
                 ..Default::default()
             };
             let err = mpp
-                .settle_confidential_bundle(&["unused".to_string()], &request, &method_details)
+                .settle_confidential_bundle(
+                    &["unused".to_string()],
+                    &request,
+                    &method_details,
+                    &mut mpp.test_fence().await,
+                )
                 .await
                 .unwrap_err();
             assert!(
@@ -5089,6 +5197,7 @@ mod tests {
                 &["unused".to_string(), "unused".to_string()],
                 &request,
                 &method_details,
+                &mut mpp.test_fence().await,
             )
             .await
             .unwrap_err();
@@ -8702,6 +8811,51 @@ mod tests {
         assert_eq!(sends.load(Ordering::SeqCst), 1);
     }
 
+    // An owner whose lease was taken over before it began broadcasting is
+    // fenced out: it sends nothing and claims nothing, so the takeover is the
+    // only settlement and nothing it records can be overwritten.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_owner_cannot_begin_a_broadcast() {
+        let mpp = offline_sol_mpp();
+        let store = mpp.charge_replay_store();
+        let ChargeReservation::Reserved { generation } = store
+            .reserve("chal-fence", "digest", std::time::Duration::ZERO)
+            .await
+            .unwrap()
+        else {
+            panic!("fresh reservation");
+        };
+        let mut stale = BroadcastFence {
+            store: store.clone(),
+            challenge_id: "chal-fence".to_string(),
+            generation,
+            pending: None,
+        };
+        let ChargeReservation::Reserved { generation } = store
+            .reserve("chal-fence", "digest", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap()
+        else {
+            panic!("expired lease is taken over");
+        };
+        let mut owner = BroadcastFence {
+            store,
+            challenge_id: "chal-fence".to_string(),
+            generation,
+            pending: None,
+        };
+
+        let err = stale.begin(&mpp, "sig-stale").await.unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        mpp.consume_signature("sig-stale").await.unwrap();
+
+        // The current owner begins normally.
+        owner.begin(&mpp, "sig-owner").await.unwrap();
+        assert_eq!(owner.pending.as_deref(), Some("sig-owner"));
+        let err = stale.begin(&mpp, "sig-owner").await.unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+    }
+
     // A send error other than a preflight rejection does not prove the node
     // dropped the transaction (the response may be lost after it was
     // accepted), so the charge stays pending under the locally derived
@@ -9265,7 +9419,7 @@ mod tests {
             .await
             .unwrap();
         replay_store
-            .mark_confirmed(&cred.challenge.id, "already-settled-signature")
+            .mark_confirmed(&cred.challenge.id, 0, "already-settled-signature")
             .await
             .unwrap();
 
@@ -9317,7 +9471,7 @@ mod tests {
             .await
             .unwrap();
         replay_store
-            .mark_confirmed(&cred.challenge.id, "other-signature")
+            .mark_confirmed(&cred.challenge.id, 0, "other-signature")
             .await
             .unwrap();
 
@@ -9392,7 +9546,7 @@ mod tests {
             .await
             .unwrap();
         replay_store
-            .mark_confirmed(&cred.challenge.id, "already-settled-signature")
+            .mark_confirmed(&cred.challenge.id, 0, "already-settled-signature")
             .await
             .unwrap();
 

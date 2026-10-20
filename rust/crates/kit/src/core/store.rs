@@ -254,9 +254,9 @@ pub enum ChargeRecordState {
     Confirmed,
     /// Settlement failed terminally; `failure_reason` explains why.
     Failed,
-    /// Broadcast, but confirmation was ambiguous (timeout, RPC error).
-    /// `final_signature` is the broadcast signature; a retry reconciles it
-    /// before any replacement payment is allowed.
+    /// `final_signature` may have been broadcast (it is recorded before the
+    /// send) and its outcome is not yet known. A retry reconciles it before
+    /// any replacement payment is allowed; it is never lease-reclaimed.
     Pending,
 }
 
@@ -457,24 +457,64 @@ impl ChargeReplayStore {
         )))
     }
 
-    /// Record the confirmed settlement signature.
+    /// Record the confirmed settlement signature for the `generation` this
+    /// caller owns: its reservation (a push signature, never broadcast here)
+    /// or the pending broadcast of `final_signature` it recorded.
     ///
-    /// A confirmed signature is an on-chain fact, so it supersedes any
-    /// non-confirmed state whichever owner reports it, and is never replaced.
+    /// Returns `false`, writing nothing, when that generation is no longer
+    /// current. A stale owner whose lease was taken over can therefore never
+    /// rewrite the newer generation's outcome, a recorded failure included.
     /// Fails when the challenge was never reserved.
     pub async fn mark_confirmed(
         &self,
         challenge_id: &str,
+        generation: u64,
         final_signature: &str,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
+        let (tip, record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        let owned = match record.state {
+            ChargeRecordState::Reserved => true,
+            ChargeRecordState::Pending => {
+                record.final_signature.as_deref() == Some(final_signature)
+            }
+            ChargeRecordState::Confirmed | ChargeRecordState::Failed => false,
+        };
+        if tip != generation || !owned {
+            return Ok(false);
+        }
+        let confirmed = terminal(
+            record,
+            ChargeRecordState::Confirmed,
+            Some(final_signature.to_string()),
+            None,
+        );
+        self.append(challenge_id, generation + 1, &confirmed).await
+    }
+
+    /// Record a settlement confirmed outside this ledger's ownership (a
+    /// payment-channel submission found on retry), whichever generation is
+    /// current. It supersedes an unresolved (`Reserved`/`Pending`) record
+    /// only: a recorded failure already released the client and is kept.
+    /// Returns whether the record is now confirmed.
+    pub async fn record_confirmed(
+        &self,
+        challenge_id: &str,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
         for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
             let (generation, record) = self.tip(challenge_id).await?.ok_or_else(|| {
                 StoreError::Internal(format!(
                     "cannot settle charge record `{challenge_id}`: no reservation found"
                 ))
             })?;
-            if record.state == ChargeRecordState::Confirmed {
-                return Ok(());
+            match record.state {
+                ChargeRecordState::Confirmed => return Ok(true),
+                ChargeRecordState::Failed => return Ok(false),
+                ChargeRecordState::Reserved | ChargeRecordState::Pending => {}
             }
             let confirmed = terminal(
                 record,
@@ -486,12 +526,40 @@ impl ChargeReplayStore {
                 .append(challenge_id, generation + 1, &confirmed)
                 .await?
             {
-                return Ok(());
+                return Ok(true);
             }
         }
         Err(StoreError::Internal(format!(
             "charge record `{challenge_id}` is contended"
         )))
+    }
+
+    /// Return the pending record at `generation` to an immediately
+    /// reclaimable reservation, for a broadcast of `final_signature` that
+    /// provably never left this process (a preflight rejection). Returns
+    /// `false`, writing nothing, when that generation is no longer current.
+    pub async fn release_pending(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
+        let (tip, mut record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        if tip != generation
+            || record.state != ChargeRecordState::Pending
+            || record.final_signature.as_deref() != Some(final_signature)
+        {
+            return Ok(false);
+        }
+        record.state = ChargeRecordState::Reserved;
+        record.final_signature = None;
+        record.updated_at = now_unix();
+        record.expires_at = record.updated_at;
+        self.append(challenge_id, generation + 1, &record).await
     }
 
     /// Confirm the pending broadcast at `generation` (from
@@ -546,11 +614,14 @@ impl ChargeReplayStore {
         })
     }
 
-    /// Record that `final_signature` was broadcast but its outcome is unknown,
-    /// for the reservation `generation` returned by [`Self::reserve`].
+    /// Record that `final_signature` is about to be broadcast, for the
+    /// reservation `generation` returned by [`Self::reserve`]. Settlement
+    /// calls this BEFORE sending, so a reservation is only ever reclaimed by a
+    /// lease takeover while nothing has been sent, and a pending record is
+    /// never reclaimed.
     ///
     /// Returns `false`, writing nothing, when that reservation is no longer
-    /// current.
+    /// current: its lease was taken over, and the caller MUST NOT broadcast.
     pub async fn mark_pending(
         &self,
         challenge_id: &str,
@@ -3339,7 +3410,7 @@ mod tests {
             .reserve("chal-3", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
-        store.mark_confirmed("chal-3", "sig-abc").await.unwrap();
+        assert!(store.mark_confirmed("chal-3", 0, "sig-abc").await.unwrap());
 
         // Response-loss-idempotent: an identical retry after the first
         // settled must return the SAME signature instead of erroring or
@@ -3418,7 +3489,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, ChargeReservation::Conflict);
 
-        store.mark_confirmed("chal-p", "sig-pending").await.unwrap();
+        assert!(store
+            .mark_confirmed("chal-p", generation + 1, "sig-pending")
+            .await
+            .unwrap());
         let outcome = store
             .reserve("chal-p", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
@@ -3527,7 +3601,7 @@ mod tests {
         assert_eq!(outcome, ChargeReservation::Conflict);
 
         // ...or already confirmed.
-        store.mark_confirmed("chal-5", "sig-abc").await.unwrap();
+        assert!(store.mark_confirmed("chal-5", 0, "sig-abc").await.unwrap());
         let outcome = store
             .reserve("chal-5", "digest-b", CHARGE_RESERVATION_LEASE)
             .await
@@ -3556,7 +3630,7 @@ mod tests {
     async fn charge_replay_mark_confirmed_without_reservation_errors() {
         let store = replay_store();
         let err = store
-            .mark_confirmed("never-reserved", "sig-abc")
+            .mark_confirmed("never-reserved", 0, "sig-abc")
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::Internal(_)));
@@ -3590,10 +3664,15 @@ mod tests {
             ChargeReservation::InProgress
         );
 
-        store
-            .mark_confirmed("chal-stale", "newer-worker-signature")
+        // ...and so is its late confirmation.
+        assert!(!store
+            .mark_confirmed("chal-stale", 0, "stale-worker-signature")
             .await
-            .unwrap();
+            .unwrap());
+        assert!(store
+            .mark_confirmed("chal-stale", 1, "newer-worker-signature")
+            .await
+            .unwrap());
         // Neither the stale owner nor the confirmed owner can fail it now.
         assert!(!store
             .mark_failed("chal-stale", 0, "stale-worker-rpc-timeout")
@@ -3629,10 +3708,10 @@ mod tests {
                 .unwrap(),
             ChargeReservation::Reserved { generation: 1 }
         );
-        store
-            .mark_confirmed("chal-keep", "confirmed-by-reclaimer")
+        assert!(store
+            .mark_confirmed("chal-keep", 1, "confirmed-by-reclaimer")
             .await
-            .unwrap();
+            .unwrap());
         assert!(!store
             .mark_failed("chal-keep", 0, "stale-owner-settlement-error")
             .await
@@ -3682,14 +3761,18 @@ mod tests {
             .unwrap());
     }
 
+    // A failure recorded by a takeover already let the client move on (the
+    // gate re-challenges it), so a stale owner's late confirmation must not
+    // rewrite it into a second, silent success; and an owner that recorded
+    // its broadcast as pending is never taken over at all.
     #[tokio::test]
-    async fn charge_replay_late_confirmation_supersedes_a_failure() {
+    async fn charge_replay_stale_owner_cannot_confirm_over_a_takeover() {
         let store = replay_store();
         store
             .reserve("chal-late", "digest-a", Duration::ZERO)
             .await
             .unwrap();
-        // B takes over and fails (e.g. A's signature was already consumed).
+        // B takes over A's expired lease and fails.
         assert_eq!(
             store
                 .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
@@ -3701,20 +3784,64 @@ mod tests {
             .mark_failed("chal-late", 1, "signature already consumed")
             .await
             .unwrap());
-        // A's settlement did land: the on-chain fact wins.
-        store.mark_confirmed("chal-late", "sig-a").await.unwrap();
-        store
-            .mark_confirmed("chal-late", "sig-other")
-            .await
-            .unwrap();
+        // A, fenced at generation 0, can neither begin a broadcast nor confirm.
+        assert!(!store.mark_pending("chal-late", 0, "sig-a").await.unwrap());
+        assert!(!store.mark_confirmed("chal-late", 0, "sig-a").await.unwrap());
+        assert!(!store.record_confirmed("chal-late", "sig-a").await.unwrap());
         assert_eq!(
             store
                 .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
                 .await
                 .unwrap(),
-            ChargeReservation::AlreadyConfirmed {
+            ChargeReservation::AlreadyFailed {
+                reason: "signature already consumed".to_string()
+            }
+        );
+
+        // An owner that recorded its broadcast first keeps the record past
+        // its lease, and only its own signature confirms it.
+        store
+            .reserve("chal-own", "digest-a", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(store.mark_pending("chal-own", 0, "sig-a").await.unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-own", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::PendingConfirmation {
+                generation: 1,
                 final_signature: "sig-a".to_string()
             }
+        );
+        assert!(!store
+            .mark_confirmed("chal-own", 1, "sig-other")
+            .await
+            .unwrap());
+        assert!(store.mark_confirmed("chal-own", 1, "sig-a").await.unwrap());
+    }
+
+    // A pending broadcast proven unsent returns to a reclaimable reservation.
+    #[tokio::test]
+    async fn charge_replay_released_pending_record_is_reclaimable() {
+        let store = replay_store();
+        store
+            .reserve("chal-rel", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert!(store.mark_pending("chal-rel", 0, "sig-a").await.unwrap());
+        assert!(!store
+            .release_pending("chal-rel", 1, "sig-other")
+            .await
+            .unwrap());
+        assert!(store.release_pending("chal-rel", 1, "sig-a").await.unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-rel", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 3 }
         );
     }
 
