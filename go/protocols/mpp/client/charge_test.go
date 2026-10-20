@@ -132,6 +132,50 @@ func TestBuildChargeTransactionWithFeePayer(t *testing.T) {
 	}
 }
 
+func TestBuildChargeTransactionRefusesSignerAsSponsorFeePayer(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	mint := testutil.NewPrivateKey().PublicKey()
+	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+	decimals := uint8(6)
+	enabled := true
+	split := testutil.NewPrivateKey().PublicKey().String()
+	details := func(feePayerKey string, splits []paycore.Split) paycore.MethodDetails {
+		return paycore.MethodDetails{
+			Decimals:    &decimals,
+			FeePayer:    &enabled,
+			FeePayerKey: feePayerKey,
+			Splits:      splits,
+		}
+	}
+	required := true
+	ataSplit := []paycore.Split{{Recipient: split, Amount: "100", AtaCreationRequired: &required}}
+
+	for _, splits := range [][]paycore.Split{nil, ataSplit} {
+		_, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient,
+			details(signer.PublicKey().String(), splits), BuildOptions{})
+		if err == nil || !strings.Contains(err.Error(), "feePayerKey names the signer") {
+			t.Fatalf("splits=%v: err = %v, want signer-as-fee-payer refusal", splits, err)
+		}
+		sponsor := testutil.NewPrivateKey().PublicKey()
+		payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient,
+			details(sponsor.String(), splits), BuildOptions{})
+		if err != nil {
+			t.Fatalf("splits=%v: separate sponsor rejected: %v", splits, err)
+		}
+		tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
+		if err != nil || tx.Message.AccountKeys[0] != sponsor {
+			t.Fatalf("splits=%v: fee payer = %v (%v), want the sponsor", splits, tx, err)
+		}
+	}
+	_, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", "sol", recipient,
+		paycore.MethodDetails{FeePayer: &enabled, FeePayerKey: signer.PublicKey().String()}, BuildOptions{})
+	if err == nil || !strings.Contains(err.Error(), "feePayerKey names the signer") {
+		t.Fatalf("sol: err = %v, want signer-as-fee-payer refusal", err)
+	}
+}
+
 func TestBuildChargeTransactionTokenPull(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()
