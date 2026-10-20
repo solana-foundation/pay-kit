@@ -20,6 +20,8 @@ final class ConsumedSignatures
 {
     private const KEY_PREFIX = 'solana:consumed-signature:';
     private const AUTHORIZED_KEY_PREFIX = 'solana:authorized-signature:';
+    /** Keys under which MPP charge and x402 `exact` claimed signatures before they shared this ledger. */
+    private const LEGACY_KEY_PREFIXES = ['solana-charge:consumed:', 'x402-svm-exact:consumed:'];
 
     public function __construct(private readonly Store $store)
     {
@@ -31,6 +33,9 @@ final class ConsumedSignatures
      */
     public function claim(string $signature): bool
     {
+        if ($this->consumedBeforeLedger($signature)) {
+            return false;
+        }
         return $this->store->putIfAbsent(self::KEY_PREFIX . $signature, true);
     }
 
@@ -47,6 +52,25 @@ final class ConsumedSignatures
      */
     public function authorize(string $signature): bool
     {
+        if ($this->consumedBeforeLedger($signature)) {
+            return false;
+        }
         return $this->store->putIfAbsent(self::AUTHORIZED_KEY_PREFIX . $signature, true);
+    }
+
+    /**
+     * Whether `$signature` was claimed under a pre-ledger MPP or x402 key, by
+     * a replica running an older release or before this one upgraded. Read
+     * only and fail closed: such a signature stays consumed, so it can neither
+     * be claimed nor reconciled into an authorization; it is never migrated.
+     */
+    private function consumedBeforeLedger(string $signature): bool
+    {
+        foreach (self::LEGACY_KEY_PREFIXES as $prefix) {
+            if ($this->store->has($prefix . $signature)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

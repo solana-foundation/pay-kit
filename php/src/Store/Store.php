@@ -24,4 +24,11 @@ interface Store
      * return as a replay attempt and rejects the credential.
      */
     public function putIfAbsent(string $key, mixed $value): bool;
+
+    /**
+     * Whether `$key` exists. Read only: never creates or renews the key.
+     * {@see ConsumedSignatures} uses it to honour claims recorded under
+     * pre-ledger keys.
+     */
+    public function has(string $key): bool;
 }

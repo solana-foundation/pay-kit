@@ -50,6 +50,11 @@ final class FileStore implements Store
         return true;
     }
 
+    public function has(string $key): bool
+    {
+        return is_file($this->pathForKey($key));
+    }
+
     private function pathForKey(string $key): string
     {
         return rtrim($this->directory, DIRECTORY_SEPARATOR)
