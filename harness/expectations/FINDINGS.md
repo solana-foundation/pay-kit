@@ -44,18 +44,6 @@ vendored `@x402/svm` 2.26.0 facilitator (`.../exact/facilitator/index.mjs:765`,
 `amount !== BigInt(requirements.amount)`). RULINGS S5: overpayment is
 tolerated by default (scheme_exact_svm.md §1.4).
 
-## python-duplicate-split-memos
-
-**Case:** `vector/charge-split-duplicate-memo-accept`
-**SDKs:** python
-
-The charge verifier keeps the expected split memos in a set
-(`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:356`), so two
-splits with the same memo text accept one Memo instruction and reject the
-second as “unexpected Memo Program instruction”. draft-solana-charge-00
-Method Details: “If the same recipient appears more than once in splits,
-each occurrence is a distinct payment leg and MUST be verified separately”.
-
 ## Resolved on 2026-10-20
 
 Every finding recorded during the harness rework was fixed in the SDKs, with

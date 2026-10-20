@@ -283,10 +283,13 @@ class ExactVerifier:
                 code="invalid_exact_svm_payload_recipient_mismatch",
             )
 
-        # Rule 8: amount match (u64 LE at data[1:9]).
+        # Rule 8: amount (u64 LE at data[1:9]) covers the requirement.
+        # scheme_exact_svm.md §1.4: "A matching transfer MAY exceed
+        # PaymentRequirements.amount ... it MUST NOT be less." Default
+        # verifiers accept overpayment (RULINGS S5).
         amount = _u64_le(data, 1)
         expected_amount = ExactVerifier._amount_field(requirement)
-        if amount != expected_amount:
+        if amount < expected_amount:
             raise InvalidProofError(
                 "invalid_exact_svm_payload_amount_mismatch",
                 code="invalid_exact_svm_payload_amount_mismatch",

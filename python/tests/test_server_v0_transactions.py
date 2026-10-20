@@ -253,6 +253,61 @@ def test_is_v0_wire_bytes_classifies_correctly():
     assert is_v0_wire_bytes(b"\x01") is False
 
 
+def _duplicate_memo_split_charge(recipient, vendor) -> tuple[ChargeRequest, MethodDetails]:
+    from solana_pay_kit._paycore.solana import Split
+
+    request = ChargeRequest(amount="1000", currency="SOL", recipient=str(recipient))
+    details = MethodDetails(
+        network="solana-devnet",
+        splits=[
+            Split(recipient=str(vendor), amount="100", memo="fee"),
+            Split(recipient=str(vendor), amount="100", memo="fee"),
+        ],
+    )
+    return request, details
+
+
+def _memo_ix(text: str):
+    from solders.instruction import Instruction
+    from solders.pubkey import Pubkey
+
+    from solana_pay_kit._paycore.solana import MEMO_PROGRAM
+
+    return Instruction(Pubkey.from_string(MEMO_PROGRAM), text.encode("utf-8"), [])
+
+
+def test_allowlist_accepts_one_memo_per_duplicate_split():
+    """draft-solana-charge-00 Method Details: a recipient repeated in splits is
+    a distinct payment leg that "MUST be verified separately", so two splits
+    with the same memo text each admit their own Memo instruction."""
+    payer, recipient, vendor = Keypair(), Keypair(), Keypair()
+    ixs = [
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=800)),
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=vendor.pubkey(), lamports=100)),
+        _memo_ix("fee"),
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=vendor.pubkey(), lamports=100)),
+        _memo_ix("fee"),
+    ]
+    request, details = _duplicate_memo_split_charge(recipient.pubkey(), vendor.pubkey())
+    M._validate_instruction_allowlist(_v0_tx_b64(payer, ixs), request, details)
+
+
+def test_allowlist_rejects_memo_beyond_duplicate_split_count():
+    """Negative control: the multiset still caps each memo at its leg count."""
+    payer, recipient, vendor = Keypair(), Keypair(), Keypair()
+    ixs = [
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=800)),
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=vendor.pubkey(), lamports=100)),
+        _memo_ix("fee"),
+        transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=vendor.pubkey(), lamports=100)),
+        _memo_ix("fee"),
+        _memo_ix("fee"),
+    ]
+    request, details = _duplicate_memo_split_charge(recipient.pubkey(), vendor.pubkey())
+    with pytest.raises(PaymentError, match="unexpected Memo Program instruction"):
+        M._validate_instruction_allowlist(_v0_tx_b64(payer, ixs), request, details)
+
+
 def test_allowlist_invalid_bytes_rejected_with_invalid_payload_type():
     """Random bytes that never reach a message byte fail the allowlist decode."""
     bogus = base64.b64encode(b"\x00\x01\x02\x03").decode()

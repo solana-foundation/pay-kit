@@ -12,6 +12,7 @@ orchestration that drives broadcast / confirmation lives in
 from __future__ import annotations
 
 import base64
+from collections import Counter
 from typing import Any
 
 from solana_keychain import TransactionSigner
@@ -347,13 +348,14 @@ def _validate_instruction_allowlist(
         )
     allowed_ata_owners, required_ata_owners = _expected_ata_creation_policy(details, fee_payer_pubkey)
     created_ata_owners: set[str] = set()
-    expected_memos = {memo for _label, memo in _expected_memos(request, details)}
-
     # Track which required transfers / memos have been satisfied so each
     # required entry can only be matched once; an attacker cannot replay
-    # a single transfer to cover two required legs.
+    # a single transfer to cover two required legs. Memos are a multiset:
+    # two splits with the same memo text are distinct payment legs that
+    # "MUST be verified separately" (draft-solana-charge-00, Method
+    # Details), so each one admits its own Memo instruction.
     remaining_transfers: list[tuple[str, int]] = list(expected_transfers)
-    remaining_memos: set[str] = set(expected_memos)
+    remaining_memos: Counter[str] = Counter(memo for _label, memo in _expected_memos(request, details))
 
     for instruction in message_instructions:
         try:
@@ -381,12 +383,12 @@ def _validate_instruction_allowlist(
                     "memo instruction is not valid UTF-8",
                     code="invalid-payload",
                 ) from exc
-            if memo_text not in remaining_memos:
+            if remaining_memos[memo_text] <= 0:
                 raise PaymentError(
                     "unexpected Memo Program instruction in payment transaction",
                     code="invalid-payload",
                 )
-            remaining_memos.discard(memo_text)
+            remaining_memos[memo_text] -= 1
             continue
 
         if program_id == _MEMO_V1_PROGRAM:

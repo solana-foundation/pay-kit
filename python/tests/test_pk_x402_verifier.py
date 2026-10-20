@@ -464,6 +464,23 @@ def test_reject_amount_mismatch():
     assert e.value.code == "invalid_exact_svm_payload_amount_mismatch"
 
 
+def test_accept_overpayment():
+    """scheme_exact_svm.md §1.4: "A matching transfer MAY exceed
+    PaymentRequirements.amount ... it MUST NOT be less." (RULINGS S5)."""
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    required = int(_requirement(pay_to)["amount"])
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(
+            source=src, mint=MINT, destination=dest, authority=authority.pubkey(), amount=required + 1
+        ),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    out = ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert out["amount"] == required + 1
+
+
 def test_amount_from_max_amount_required_field():
     tx, req, managed = _happy()
     del req["amount"]  # only maxAmountRequired remains
