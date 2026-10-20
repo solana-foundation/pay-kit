@@ -451,3 +451,46 @@ helper.test('verifier rejects compute-budget over the unit limit cap', function(
     })
   end, 'Compute unit limit')
 end)
+
+-- SOLA1-349: a sponsor pays a signature fee per required signer, so the legs
+-- of a split must all be funded by one authority, and no other client signer
+-- may ride along.
+local function sponsored_split_tx(split_source_index, required_signatures)
+  local fee_payer_bytes = string.rep('\x0a', 32)
+  local payer_bytes = string.rep('\x0b', 32)
+  local other_bytes = string.rep('\x0c', 32)
+  local recipient_bytes = string.rep('\x0d', 32)
+  local split_bytes = string.rep('\x0e', 32)
+  local account_keys = {
+    fee_payer_bytes, payer_bytes, other_bytes, recipient_bytes, split_bytes, SYSTEM_PROGRAM_BYTES,
+  }
+  local primary = encode_instruction(5, { 1, 3 }, string.char(2, 0, 0, 0) .. le_u64(800))
+  local split = encode_instruction(5, { split_source_index, 4 }, string.char(2, 0, 0, 0) .. le_u64(200))
+  local message = build_message(account_keys, string.rep('\xc3', 32), { primary, split }, required_signatures)
+  local request = {
+    amount = '1000',
+    currency = 'SOL',
+    recipient = base58.encode(recipient_bytes),
+    methodDetails = {
+      feePayer = true,
+      feePayerKey = base58.encode(fee_payer_bytes),
+      splits = { { recipient = base58.encode(split_bytes), amount = '200' } },
+    },
+  }
+  return tx_from(message, required_signatures), request
+end
+
+helper.test('verifier requires every payment leg to share one funding authority', function()
+  local tx, request = sponsored_split_tx(2, 3)
+  helper.assert_error(function() verifier.verify_transaction(tx, request) end,
+    'share one funding authority')
+  -- One payer funds both legs and is the only signer besides the fee payer.
+  tx, request = sponsored_split_tx(1, 2)
+  verifier.verify_transaction(tx, request)
+end)
+
+helper.test('verifier rejects a required signer that funds no payment leg', function()
+  local tx, request = sponsored_split_tx(1, 3)
+  helper.assert_error(function() verifier.verify_transaction(tx, request) end,
+    'Unexpected signer')
+end)
