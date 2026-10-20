@@ -463,3 +463,18 @@ impl<S: ChannelStore> ChannelStore for BoundStore<S> {
         })
     }
 }
+
+#[cfg(test)]
+mod store_conformance {
+    use super::*;
+    use crate::core::store::{conformance, MemoryChannelStore};
+
+    #[tokio::test]
+    async fn bound_store_passes_conformance() {
+        let store = BoundStore {
+            inner: MemoryChannelStore::new(),
+            binding: None,
+        };
+        conformance::check_channel_store(&store, &conformance::channel_state).await;
+    }
+}

@@ -44,8 +44,9 @@ use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
 use crate::core::store::{
-    BatchReservation, ChannelBinding, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
-    CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
+    AuthorizationRequest, BatchReservation, ChannelBinding, ChannelState, ChannelStore,
+    MemoryChannelStore, PendingSetup, ReservationToken, CHANNEL_STATE_SCHEMA_VERSION,
+    CHARGE_RESERVATION_LEASE,
 };
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
@@ -87,6 +88,13 @@ fn now_unix() -> u64 {
 
 fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
     BatchError::new(code, detail).into()
+}
+
+fn closing_error(channel_id: &str) -> Error {
+    batch_err(
+        codes::INVALID_CHANNEL_CLOSING,
+        format!("channel {channel_id} is closing; no new charge may be reserved"),
+    )
 }
 
 /// Bound on in-flight `send_and_confirm_transaction` calls inside
@@ -531,6 +539,9 @@ pub struct BatchOutcome {
     /// The authorization this request pays with. `None` for a `refund`, which
     /// pays for nothing and reserves nothing.
     authorization: Option<Authorization>,
+    /// The store's proof that `authorization` was reserved; set only once the
+    /// reservation succeeds, and required to commit.
+    reservation: Option<ReservationToken>,
     _guard: ChannelGuard,
 }
 
@@ -1002,6 +1013,7 @@ impl X402BatchSettlement {
                     deposit_signature: None,
                     opens_channel: false,
                     authorization: None,
+                    reservation: None,
                     _guard: guard,
                 })
             }
@@ -1077,6 +1089,7 @@ impl X402BatchSettlement {
                     deposit_signature: None,
                     opens_channel: false,
                     authorization: Some(authorization),
+                    reservation: None,
                     _guard: guard,
                 })
             }
@@ -1197,6 +1210,7 @@ impl X402BatchSettlement {
                     deposit_signature,
                     opens_channel: matches!(form, SetupForm::Open),
                     authorization: Some(authorization),
+                    reservation: None,
                     _guard: guard,
                 })
             }
@@ -1510,13 +1524,31 @@ impl X402BatchSettlement {
             return Ok(BatchAccess::Replay(response, cached));
         }
         match self.reserve(&outcome, &authorization).await? {
-            BatchReservation::Reserved => Ok(BatchAccess::Serve(outcome)),
-            BatchReservation::HandlerSucceeded => Ok(BatchAccess::Resume(outcome)),
+            BatchReservation::Reserved(token) => {
+                let mut outcome = outcome;
+                outcome.reservation = Some(token);
+                Ok(BatchAccess::Serve(outcome))
+            }
+            BatchReservation::HandlerSucceeded(token) => {
+                let mut outcome = outcome;
+                outcome.reservation = Some(token);
+                Ok(BatchAccess::Resume(outcome))
+            }
+            BatchReservation::Closing => Err(closing_error(&outcome.channel_id)),
             BatchReservation::Committed => {
                 let (response, cached) = self.replay_response(&outcome).await?;
                 Ok(BatchAccess::Replay(response, cached))
             }
             BatchReservation::InProgress => Ok(BatchAccess::InProgress),
+            // Another commit moved the watermark after verification priced
+            // this voucher; serving it would never be charged.
+            BatchReservation::Stale => Err(batch_err(
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+                format!(
+                    "voucher authorizes {}, which no longer steps from the channel's watermark",
+                    outcome.max_claimable
+                ),
+            )),
             BatchReservation::Conflict => Err(batch_err(
                 codes::DUPLICATE_SETTLEMENT,
                 format!(
@@ -1555,6 +1587,7 @@ impl X402BatchSettlement {
     ) -> Result<BatchReservation, Error> {
         let Authorization { id, fingerprint } = authorization.clone();
         let charge = outcome.charged_amount;
+        let cumulative = outcome.max_claimable;
         let now = now_unix() as i64;
         // The reservation has to outlive the request it guards: reclaiming it
         // while a slow handler is still running would let a retry run that
@@ -1577,31 +1610,25 @@ impl X402BatchSettlement {
         });
         let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
-        let reservation = Arc::new(Mutex::new(BatchReservation::InProgress));
-        let out = Arc::clone(&reservation);
-        let closing = Arc::new(Mutex::new(false));
-        let closing_out = Arc::clone(&closing);
-        // In-place reservation: the record is mutated behind the store's shard
-        // guard with no clone. When no record exists yet, only an initial
-        // deposit may create one (via `seed`); a plain voucher on an unknown
-        // channel is refused by the store's missing-channel error. The
-        // reservation outcome is carried out through `out`.
+        let request = AuthorizationRequest {
+            authorization_id: id,
+            request_fingerprint: fingerprint,
+            amount: charge,
+            cumulative,
+            lease,
+            now,
+        };
+        // When no record exists yet, only an initial deposit may create one
+        // (via `seed`); a plain voucher on an unknown channel is refused by the
+        // store's missing-channel error. The store refuses a closing channel
+        // and a voucher priced from a since-moved watermark in the same
+        // transition.
         self.store
-            .mutate_channel(
+            .reserve_authorization(
                 &outcome.channel_id,
                 seed,
+                request,
                 Box::new(move |state| {
-                    // Verification read the record before this transition. If a
-                    // close was recorded in between — by the payer's refund, a
-                    // reconciliation, or `finalize_close` on any replica — no new
-                    // charge may start: the close finalizer snapshots the
-                    // committed watermark only once nothing is reserved, and a
-                    // reservation slipping in here would be sealed out of its
-                    // charge.
-                    if state.sealed || state.close_requested_at.is_some() {
-                        *closing_out.lock().unwrap_or_else(|e| e.into_inner()) = true;
-                        return Ok(());
-                    }
                     if let Some(setup) = setup {
                         match &state.pending_setup {
                             // Another setup transaction is already in flight for
@@ -1615,27 +1642,15 @@ impl X402BatchSettlement {
                             _ => state.pending_setup = Some(setup),
                         }
                     }
-                    *out.lock().unwrap_or_else(|e| e.into_inner()) =
-                        state.reserve_authorization(&id, &fingerprint, charge, lease, now);
                     Ok(())
                 }),
             )
             .await
-            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
-        if *closing.lock().unwrap_or_else(|e| e.into_inner()) {
-            return Err(batch_err(
-                codes::INVALID_CHANNEL_CLOSING,
-                format!(
-                    "channel {} is closing; no new charge may be reserved",
-                    outcome.channel_id
-                ),
-            ));
-        }
-        let reserved = reservation
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        Ok(reserved)
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))
+            .and_then(|reservation| match reservation {
+                BatchReservation::Closing => Err(closing_error(&outcome.channel_id)),
+                reservation => Ok(reservation),
+            })
     }
 
     /// Record that the resource handler succeeded, before the charge is
@@ -1643,13 +1658,13 @@ impl X402BatchSettlement {
     ///
     /// This is the crash boundary: past it, a retry can only finish the charge.
     pub async fn mark_handler_succeeded(&self, outcome: &BatchOutcome) -> Result<(), Error> {
-        let Authorization { id, fingerprint } = self.authorization_of(outcome)?;
+        let token = self.reservation_of(outcome)?;
         self.store
             .mutate_channel(
                 &outcome.channel_id,
                 None,
                 Box::new(move |state| {
-                    state.mark_authorization_handler_succeeded(&id, &fingerprint)?;
+                    state.mark_authorization_handler_succeeded(&token)?;
                     Ok(())
                 }),
             )
@@ -1734,7 +1749,7 @@ impl X402BatchSettlement {
         &self,
         outcome: &BatchOutcome,
     ) -> Result<BatchSettlementResponse, Error> {
-        let Authorization { id, fingerprint } = self.authorization_of(outcome)?;
+        let token = self.reservation_of(outcome)?;
         let voucher = voucher_of(&outcome.payload)
             .ok_or_else(|| batch_err(codes::INVALID_PAYLOAD_TYPE, "payload carries no voucher"))?
             .clone();
@@ -1765,7 +1780,6 @@ impl X402BatchSettlement {
         let network = outcome.requirements.network.clone();
         let commitment_id = voucher.commitment_id();
         let charged = outcome.charged_amount;
-        let max_claimable = outcome.max_claimable;
         let deposit_signature = outcome.deposit_signature.clone();
         let rent_payer = self.fee_payer();
         let binding = self.binding();
@@ -1803,9 +1817,7 @@ impl X402BatchSettlement {
                     state.adopt_binding(&binding)?;
                     state.last_activity_at = now.max(0) as u64;
                     state.commit_authorization(
-                        &id,
-                        &fingerprint,
-                        max_claimable,
+                        &token,
                         &voucher.signature,
                         voucher.expires_at,
                         now,
@@ -1843,6 +1855,15 @@ impl X402BatchSettlement {
                 .await
                 .map(|(response, _)| response),
         }
+    }
+
+    fn reservation_of(&self, outcome: &BatchOutcome) -> Result<ReservationToken, Error> {
+        outcome.reservation.clone().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_PAYLOAD_TYPE,
+                "payment was not reserved; only a reserved authorization commits",
+            )
+        })
     }
 
     fn authorization_of(&self, outcome: &BatchOutcome) -> Result<Authorization, Error> {
@@ -4255,16 +4276,18 @@ mod tests {
             opens_channel: true,
             expires_at: now_unix() as i64 + 300,
         });
-        assert_eq!(
-            opening.reserve_authorization(
-                &authorization.id,
-                &authorization.fingerprint,
-                1_000,
-                std::time::Duration::from_secs(300),
-                now_unix() as i64,
-            ),
-            BatchReservation::Reserved
-        );
+        let BatchReservation::Reserved(token_a) =
+            opening.reserve_authorization(&AuthorizationRequest {
+                authorization_id: authorization.id.clone(),
+                request_fingerprint: authorization.fingerprint.clone(),
+                amount: 1_000,
+                cumulative: 1_000,
+                lease: std::time::Duration::from_secs(300),
+                now: now_unix() as i64,
+            })
+        else {
+            panic!("replica A reserves the opening voucher");
+        };
         store.put_channel(&channel_b58, opening).await.unwrap();
         let outcome_a = BatchOutcome {
             serve: true,
@@ -4281,6 +4304,7 @@ mod tests {
             deposit_signature: Some("opener-a".to_string()),
             opens_channel: true,
             authorization: Some(authorization),
+            reservation: Some(token_a),
             _guard: handler.in_flight.acquire(&channel_b58).unwrap(),
         };
 
@@ -4450,6 +4474,76 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(state.cumulative, 500);
+    }
+
+    /// Two replicas verify vouchers against the same watermark; one commits
+    /// before the other reserves. The second is refused at reserve rather than
+    /// served, charged nothing, and left holding a reservation that blocks the
+    /// channel.
+    #[tokio::test]
+    async fn a_reservation_priced_from_a_moved_watermark_is_refused() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (low_handler, fee_payer) = handler(store.clone());
+        let (high_handler, _) = handler(store.clone());
+        let low_requirements = low_handler.requirements("0.0005").unwrap();
+        let high_requirements = high_handler.requirements("0.002").unwrap();
+        let (key, config, channel) = client(&fee_payer, &low_requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .put_channel(&channel_b58, seeded(&channel, &config, 5_000, 0))
+            .await
+            .unwrap();
+        let voucher_header = |requirements: &BatchRequirements, cumulative| {
+            header(
+                requirements,
+                BatchPayload::Voucher {
+                    channel_config: config.clone(),
+                    voucher: voucher(&key, &channel, cumulative),
+                },
+            )
+        };
+
+        let BatchAccess::Serve(low) = low_handler
+            .verify_and_reserve_payment(&voucher_header(&low_requirements, 500), "0.0005")
+            .await
+            .unwrap()
+        else {
+            panic!("the first voucher is served");
+        };
+        // Replica B verifies against the watermark A has not moved yet.
+        let high = high_handler
+            .verify_payment(&voucher_header(&high_requirements, 2_000), "0.002")
+            .await
+            .unwrap();
+        let high_authorization = high.authorization.clone().unwrap();
+        low_handler.mark_handler_succeeded(&low).await.unwrap();
+        low_handler.finish_commit(&low).await.unwrap();
+        drop(low);
+
+        assert_eq!(
+            high_handler
+                .reserve(&high, &high_authorization)
+                .await
+                .unwrap(),
+            BatchReservation::Stale
+        );
+        drop(high);
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(state.cumulative, 500);
+        assert!(
+            state.pending_deliveries.is_empty(),
+            "a refused reservation must not block the channel"
+        );
+
+        // Positive control: a voucher stepping from the moved watermark serves.
+        let step_requirements = high_handler.requirements("0.0015").unwrap();
+        assert!(matches!(
+            high_handler
+                .verify_and_reserve_payment(&voucher_header(&step_requirements, 2_000), "0.0015")
+                .await
+                .unwrap(),
+            BatchAccess::Serve(_)
+        ));
     }
 
     /// A snapshot past its freshness window cannot rule out a payer's forced
@@ -5396,9 +5490,7 @@ mod tests {
         state.freeze_watermark_at(2_000);
         let refused = state
             .commit_authorization(
-                "access:test:3000",
-                "digest",
-                3_000,
+                &ReservationToken::for_pending(&state, "access:test:3000", "digest", 3_000),
                 "sig-3000",
                 0,
                 now,
@@ -5412,9 +5504,7 @@ mod tests {
         state.final_cumulative = None;
         state
             .commit_authorization(
-                "access:test:3000",
-                "digest",
-                3_000,
+                &ReservationToken::for_pending(&state, "access:test:3000", "digest", 3_000),
                 "sig-3000",
                 0,
                 now,
@@ -5432,9 +5522,7 @@ mod tests {
         state.sealed = true;
         let refused = state
             .commit_authorization(
-                "access:test:4000",
-                "digest",
-                4_000,
+                &ReservationToken::for_pending(&state, "access:test:4000", "digest", 4_000),
                 "sig-4000",
                 0,
                 now,

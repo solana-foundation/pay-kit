@@ -1033,6 +1033,64 @@ pub struct ProcessedUse {
 /// authorization can never be served a second time.
 pub const MAX_COMMITTED_AUTHORIZATIONS: usize = 64;
 
+/// One request asking to reserve an authorization: it would step the channel's
+/// watermark by `amount` to the voucher's `cumulative`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationRequest {
+    pub authorization_id: String,
+    pub request_fingerprint: String,
+    pub amount: u64,
+    pub cumulative: u64,
+    pub lease: Duration,
+    /// Unix seconds.
+    pub now: i64,
+}
+
+/// Proof that a store transition reserved one authorization stepping the
+/// watermark to `cumulative`.
+///
+/// Only [`ChannelState::reserve_authorization`] mints one, after its step
+/// check, and [`ChannelState::commit_authorization`] requires one, so no
+/// caller can commit work that was not reserved through that check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservationToken {
+    authorization_id: String,
+    request_fingerprint: String,
+    cumulative: u64,
+    sequence: u64,
+}
+
+impl ReservationToken {
+    pub fn authorization_id(&self) -> &str {
+        &self.authorization_id
+    }
+
+    pub fn request_fingerprint(&self) -> &str {
+        &self.request_fingerprint
+    }
+
+    /// The voucher cumulative this reservation commits to.
+    pub fn cumulative(&self) -> u64 {
+        self.cumulative
+    }
+}
+
+#[cfg(test)]
+impl ReservationToken {
+    /// The token for the reservation `id` already holds on `state`, as the
+    /// reserve that took it would have returned.
+    pub(crate) fn for_pending(state: &ChannelState, id: &str, fp: &str, cumulative: u64) -> Self {
+        Self {
+            authorization_id: id.to_string(),
+            request_fingerprint: fp.to_string(),
+            cumulative,
+            sequence: state
+                .pending_index(id)
+                .map_or(0, |index| state.pending_deliveries[index].sequence),
+        }
+    }
+}
+
 /// Outcome of [`ChannelState::reserve_authorization`].
 ///
 /// Mirrors [`ChargeReservation`]: only the caller that receives
@@ -1040,14 +1098,14 @@ pub const MAX_COMMITTED_AUTHORIZATIONS: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchReservation {
     /// This caller now owns the authorization: run the handler exactly once,
-    /// then either release it or commit it.
-    Reserved,
+    /// then either release it or commit it with the token.
+    Reserved(ReservationToken),
     /// A live reservation for this authorization is owned by another in-flight
     /// request. Do not run the handler; the client may retry shortly.
     InProgress,
-    /// An earlier attempt's handler already succeeded. Finish commitment and
-    /// return its result; never run the handler again.
-    HandlerSucceeded,
+    /// An earlier attempt's handler already succeeded. Finish commitment with
+    /// the token and return its result; never run the handler again.
+    HandlerSucceeded(ReservationToken),
     /// Already committed. Answer with the response stored on the record —
     /// see [`ChannelState::committed_authorization`].
     Committed,
@@ -1068,6 +1126,14 @@ pub enum BatchReservation {
     /// falls only on a crashed or overrunning request, and it is the price of
     /// never serving a paid request twice.
     Abandoned,
+    /// The voucher does not step the current watermark by the reserved amount:
+    /// it was priced from a watermark another commit has since moved. Do not
+    /// serve it; the client re-signs from the current watermark.
+    Stale,
+    /// The channel is sealed or a close was requested: no new charge may start,
+    /// since the close finalizer seals the committed watermark once nothing is
+    /// reserved.
+    Closing,
 }
 
 impl ChannelState {
@@ -1085,38 +1151,74 @@ impl ChannelState {
             .position(|entry| entry.delivery_id == authorization_id)
     }
 
-    /// Classify `authorization_id` without changing anything.
+    /// Classify `authorization_id` without changing anything; `None` when it
+    /// has no record and is free to reserve.
     ///
     /// `now` is unix seconds. A record whose fingerprint disagrees with
     /// `request_fingerprint` is a different request reusing the id, and is
     /// reported as [`BatchReservation::Conflict`] rather than served.
-    pub fn classify_authorization(
+    fn classify_authorization(
         &self,
         authorization_id: &str,
         request_fingerprint: &str,
+        cumulative: u64,
         now: i64,
-    ) -> BatchReservation {
+    ) -> Option<BatchReservation> {
         if let Some(committed) = self.committed_authorization(authorization_id) {
             if committed.request_fingerprint.as_deref() != Some(request_fingerprint) {
-                return BatchReservation::Conflict;
+                return Some(BatchReservation::Conflict);
             }
-            return BatchReservation::Committed;
+            return Some(BatchReservation::Committed);
         }
-        let Some(index) = self.pending_index(authorization_id) else {
-            return BatchReservation::Reserved;
-        };
+        let index = self.pending_index(authorization_id)?;
         let pending = &self.pending_deliveries[index];
-        if pending.request_fingerprint.as_deref() != Some(request_fingerprint) {
-            BatchReservation::Conflict
-        } else if pending.handler_succeeded {
-            // A succeeded handler outranks the lease. The work is already done;
-            // the only safe continuation is to finish committing it.
-            BatchReservation::HandlerSucceeded
-        } else if pending.expires_at > now {
-            BatchReservation::InProgress
-        } else {
-            BatchReservation::Abandoned
+        Some(
+            if pending.request_fingerprint.as_deref() != Some(request_fingerprint) {
+                BatchReservation::Conflict
+            } else if pending.handler_succeeded {
+                // A succeeded handler outranks the lease. The work is already
+                // done; the only safe continuation is to finish committing it.
+                BatchReservation::HandlerSucceeded(ReservationToken {
+                    authorization_id: authorization_id.to_string(),
+                    request_fingerprint: request_fingerprint.to_string(),
+                    cumulative,
+                    sequence: pending.sequence,
+                })
+            } else if pending.expires_at > now {
+                BatchReservation::InProgress
+            } else {
+                BatchReservation::Abandoned
+            },
+        )
+    }
+
+    /// Whether a later reservation was taken over this one's dead lease. Its
+    /// work can no longer be marked or committed: the later one steps from the
+    /// same watermark.
+    fn is_superseded(&self, sequence: u64) -> bool {
+        self.pending_deliveries
+            .iter()
+            .any(|pending| pending.sequence > sequence)
+    }
+
+    /// The pending entry `token` was minted for.
+    fn token_pending_index(&self, token: &ReservationToken) -> Result<usize, StoreError> {
+        let index = self
+            .owned_pending_index(&token.authorization_id, &token.request_fingerprint)?
+            .filter(|&index| self.pending_deliveries[index].sequence == token.sequence)
+            .ok_or_else(|| {
+                StoreError::Internal(format!(
+                    "authorization {} is no longer reserved",
+                    token.authorization_id
+                ))
+            })?;
+        if self.is_superseded(token.sequence) {
+            return Err(StoreError::Internal(format!(
+                "authorization {} outlived its lease and was superseded",
+                token.authorization_id
+            )));
         }
+        Ok(index)
     }
 
     /// The index of the reservation `request_fingerprint` owns, erroring when
@@ -1159,59 +1261,79 @@ impl ChannelState {
     /// [`BatchReservation::InProgress`]. Both would step from the same
     /// watermark, and whichever committed second could only charge what was
     /// left above the first.
-    pub fn reserve_authorization(
-        &mut self,
-        authorization_id: &str,
-        request_fingerprint: &str,
-        amount: u64,
-        lease: Duration,
-        now: i64,
-    ) -> BatchReservation {
-        let outcome = self.classify_authorization(authorization_id, request_fingerprint, now);
-        if outcome != BatchReservation::Reserved {
+    ///
+    /// The request's `amount` must step the current watermark to its
+    /// `cumulative`; otherwise the reservation is [`BatchReservation::Stale`],
+    /// so a voucher priced from a watermark another commit has since moved is
+    /// never served. A sealed or closing channel is
+    /// [`BatchReservation::Closing`].
+    pub fn reserve_authorization(&mut self, request: &AuthorizationRequest) -> BatchReservation {
+        let AuthorizationRequest {
+            authorization_id,
+            request_fingerprint,
+            amount,
+            cumulative,
+            lease,
+            now,
+        } = request;
+        let (amount, cumulative, now) = (*amount, *cumulative, *now);
+        if self.sealed || self.close_requested_at.is_some() {
+            return BatchReservation::Closing;
+        }
+        if let Some(outcome) =
+            self.classify_authorization(authorization_id, request_fingerprint, cumulative, now)
+        {
             return outcome;
         }
         if self.pending_deliveries.iter().any(|pending| {
-            pending.delivery_id != authorization_id
+            pending.delivery_id != *authorization_id
                 && (pending.handler_succeeded || pending.expires_at > now)
         }) {
             return BatchReservation::InProgress;
         }
+        if self.cumulative.checked_add(amount) != Some(cumulative) {
+            return BatchReservation::Stale;
+        }
         self.prune_authorizations(now);
         self.next_delivery_sequence = self.next_delivery_sequence.saturating_add(1);
+        let sequence = self.next_delivery_sequence;
         self.pending_deliveries.push(PendingDelivery {
-            delivery_id: authorization_id.to_string(),
+            delivery_id: authorization_id.clone(),
             amount,
-            sequence: self.next_delivery_sequence,
+            sequence,
             // Past this the reservation is suspect rather than free: a retry is
             // refused instead of taking it over.
             expires_at: now.saturating_add(lease.as_secs() as i64),
-            request_fingerprint: Some(request_fingerprint.to_string()),
+            request_fingerprint: Some(request_fingerprint.clone()),
             handler_succeeded: false,
         });
-        BatchReservation::Reserved
+        BatchReservation::Reserved(ReservationToken {
+            authorization_id: authorization_id.clone(),
+            request_fingerprint: request_fingerprint.clone(),
+            cumulative,
+            sequence,
+        })
     }
 
     /// Record that the resource handler for `authorization_id` succeeded.
     ///
     /// This is the crash boundary: after it, no retry may run the handler
     /// again, only finish commitment.
+    ///
+    /// A reservation superseded over its dead lease is refused, so it can
+    /// never come to block the channel as handler-succeeded.
     pub fn mark_authorization_handler_succeeded(
         &mut self,
-        authorization_id: &str,
-        request_fingerprint: &str,
+        token: &ReservationToken,
     ) -> Result<(), StoreError> {
         // Already committed: the handler ran and its result is durable.
-        if self.committed_authorization(authorization_id).is_some() {
+        if self
+            .committed_authorization(&token.authorization_id)
+            .is_some()
+        {
             return Ok(());
         }
-        let index = self
-            .owned_pending_index(authorization_id, request_fingerprint)?
-            .ok_or_else(|| {
-                StoreError::Internal(format!(
-                    "authorization {authorization_id} is no longer reserved"
-                ))
-            })?;
+        let index = self.token_pending_index(token)?;
         self.pending_deliveries[index].handler_succeeded = true;
         Ok(())
     }
@@ -1247,32 +1369,28 @@ impl ChannelState {
     /// Idempotent — committing an already-committed authorization leaves the
     /// stored response in place, so a retried transition (a CAS store re-running
     /// its updater) cannot charge twice.
-    #[allow(clippy::too_many_arguments)]
     pub fn commit_authorization(
         &mut self,
-        authorization_id: &str,
-        request_fingerprint: &str,
-        cumulative: u64,
+        token: &ReservationToken,
         voucher_signature: &str,
         voucher_expires_at: i64,
         now: i64,
         response: impl FnOnce(&Self) -> Option<serde_json::Value>,
     ) -> Result<(), StoreError> {
+        let authorization_id = token.authorization_id.as_str();
+        let request_fingerprint = token.request_fingerprint.as_str();
+        let cumulative = token.cumulative;
         if let Some(committed) = self.committed_authorization(authorization_id) {
-            if committed.request_fingerprint.as_deref() != Some(request_fingerprint) {
+            if committed.request_fingerprint.as_deref() != Some(request_fingerprint)
+                || committed.cumulative != cumulative
+            {
                 return Err(StoreError::Internal(format!(
                     "authorization {authorization_id} was committed by a different request"
                 )));
             }
             return Ok(());
         }
-        let index = self
-            .owned_pending_index(authorization_id, request_fingerprint)?
-            .ok_or_else(|| {
-                StoreError::Internal(format!(
-                    "authorization {authorization_id} is no longer reserved"
-                ))
-            })?;
+        let index = self.token_pending_index(token)?;
         // The counterpart of `has_blocking_authorization`: once the finalizer
         // has chosen the amount to seal at (`freeze_watermark_at`), or the
         // seal has landed, the watermark is frozen and a charge written now
@@ -1455,6 +1573,9 @@ impl ChannelState {
 /// This trait deliberately requires the complete lifecycle contract. Custom
 /// stores must implement enumeration, touch, deletion, and finalization rather
 /// than inheriting defaults that fail only when a lifecycle worker runs.
+/// An atomic in-place step on one channel record.
+pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
+
 pub trait ChannelStore: Send + Sync {
     /// Return a weakly-consistent snapshot of every channel in this store's
     /// namespace.
@@ -1556,6 +1677,42 @@ pub trait ChannelStore: Send + Sync {
         seed: Option<ChannelState>,
         mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Atomically check and reserve one authorization on `channel_id`.
+    ///
+    /// One transition runs `prepare` (which may refuse by erroring) and then
+    /// [`ChannelState::reserve_authorization`], whose close fence and
+    /// watermark step check decide the outcome; a commit needs the token only
+    /// that check mints. An override MUST keep all of it in one atomic
+    /// read-modify-write; [`conformance`] exercises it.
+    fn reserve_authorization(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        request: AuthorizationRequest,
+        prepare: ChannelMutator,
+    ) -> Pin<Box<dyn Future<Output = Result<BatchReservation, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let out = Arc::new(std::sync::Mutex::new(None));
+            let sink = Arc::clone(&out);
+            self.mutate_channel(
+                &channel_id,
+                seed,
+                Box::new(move |state| {
+                    if !state.sealed && state.close_requested_at.is_none() {
+                        prepare(state)?;
+                    }
+                    *sink.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(state.reserve_authorization(&request));
+                    Ok(())
+                }),
+            )
+            .await?;
+            let outcome = out.lock().unwrap_or_else(|e| e.into_inner()).take();
+            outcome.ok_or_else(|| StoreError::Internal("reservation did not run".to_string()))
+        })
+    }
 
     /// Persist an idle-close deadline without allowing an older touch to move
     /// an existing deadline backwards. Once close is claimed or the channel is
@@ -1662,6 +1819,16 @@ where
         mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         (**self).mutate_channel(channel_id, seed, mutator)
+    }
+
+    fn reserve_authorization(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        request: AuthorizationRequest,
+        prepare: ChannelMutator,
+    ) -> Pin<Box<dyn Future<Output = Result<BatchReservation, StoreError>> + Send + '_>> {
+        (**self).reserve_authorization(channel_id, seed, request, prepare)
     }
 
     fn touch_channel_lifecycle(
@@ -2444,6 +2611,219 @@ impl ChannelStore for RedisChannelStore {
     }
 }
 
+/// Behaviour every [`ChannelStore`] implementation must show, as one suite
+/// each implementation's tests run.
+#[cfg(any(test, feature = "testkit"))]
+pub mod conformance {
+    use super::*;
+
+    const LEASE: Duration = CHARGE_RESERVATION_LEASE;
+
+    fn request(id: &str, amount: u64, cumulative: u64, now: i64) -> AuthorizationRequest {
+        AuthorizationRequest {
+            authorization_id: id.to_string(),
+            request_fingerprint: format!("fp-{id}"),
+            amount,
+            cumulative,
+            lease: LEASE,
+            now,
+        }
+    }
+
+    async fn reserve(
+        store: &dyn ChannelStore,
+        channel_id: &str,
+        request: AuthorizationRequest,
+    ) -> BatchReservation {
+        store
+            .reserve_authorization(channel_id, None, request, Box::new(|_| Ok(())))
+            .await
+            .unwrap()
+    }
+
+    async fn commit(store: &dyn ChannelStore, channel_id: &str, token: &ReservationToken) {
+        let token = token.clone();
+        store
+            .mutate_channel(
+                channel_id,
+                None,
+                Box::new(move |state| {
+                    state.mark_authorization_handler_succeeded(&token)?;
+                    state.commit_authorization(&token, "sig", 0, 100, |_| None)
+                }),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn token(outcome: BatchReservation) -> ReservationToken {
+        match outcome {
+            BatchReservation::Reserved(token) => token,
+            other => panic!("expected a reservation, got {other:?}"),
+        }
+    }
+
+    /// An open channel record with a 10_000 deposit and a zero watermark.
+    pub fn channel_state(channel_id: &str) -> ChannelState {
+        let deposit = 10_000;
+        ChannelState {
+            channel_id: channel_id.to_string(),
+            authorized_signer: "signer1".to_string(),
+            deposit,
+            cumulative: 0,
+            sealed: false,
+            highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
+            close_requested_at: None,
+            final_cumulative: None,
+            open_slot: None,
+            payer: String::new(),
+            rent_payer: String::new(),
+            opening_challenge_id: String::new(),
+            authentication: None,
+            voucher_signer: "client".to_string(),
+            idle_timeout_seconds: None,
+            last_activity_at: 0,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            distributed_on_chain: 0,
+            processed_uses: vec![],
+            processed_topup_signatures: vec![],
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: Default::default(),
+            pending_setup: None,
+            onchain_checked_at: 0,
+            lifecycle: None,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
+        }
+    }
+
+    /// Run the suite. `fresh` builds an open channel record with a deposit of
+    /// at least 10_000 and a zero watermark that `store` accepts.
+    pub async fn check_channel_store(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        refuses_a_reservation_from_a_moved_watermark(store, fresh).await;
+        refuses_a_reservation_superseded_over_its_dead_lease(store, fresh).await;
+        refuses_reservations_on_a_closing_channel(store, fresh).await;
+        a_refused_preparation_reserves_nothing(store, fresh).await;
+    }
+
+    /// Two replicas price vouchers from the same watermark and the first
+    /// commits before the second reserves: the second is refused before it is
+    /// served, and leaves nothing that blocks the channel.
+    async fn refuses_a_reservation_from_a_moved_watermark(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-moved";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let a = token(reserve(store, id, request("a", 500, 500, 100)).await);
+        assert_eq!(
+            reserve(store, id, request("b", 2_000, 2_000, 100)).await,
+            BatchReservation::InProgress
+        );
+        commit(store, id, &a).await;
+        assert_eq!(
+            reserve(store, id, request("b", 2_000, 2_000, 100)).await,
+            BatchReservation::Stale
+        );
+        let state = store.get_channel(id).await.unwrap().unwrap();
+        assert_eq!(state.cumulative, 500);
+        assert!(state.pending_deliveries.is_empty());
+        let b = token(reserve(store, id, request("b2", 1_500, 2_000, 100)).await);
+        commit(store, id, &b).await;
+        assert_eq!(
+            store.get_channel(id).await.unwrap().unwrap().cumulative,
+            2_000
+        );
+    }
+
+    /// A reservation whose lease ran out may be superseded; the overrunning
+    /// one can then neither commit nor come to block the channel.
+    async fn refuses_a_reservation_superseded_over_its_dead_lease(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-lease";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
+        let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
+        let late = slow.clone();
+        assert!(store
+            .mutate_channel(
+                id,
+                None,
+                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
+            )
+            .await
+            .is_err());
+        let late = slow.clone();
+        assert!(store
+            .mutate_channel(
+                id,
+                None,
+                Box::new(move |state| state.commit_authorization(&late, "sig", 0, 100, |_| None)),
+            )
+            .await
+            .is_err());
+        commit(store, id, &next).await;
+        assert_eq!(
+            store.get_channel(id).await.unwrap().unwrap().cumulative,
+            700
+        );
+    }
+
+    async fn refuses_reservations_on_a_closing_channel(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-closing";
+        let mut state = fresh(id);
+        state.close_requested_at = Some(1);
+        store.put_channel(id, state).await.unwrap();
+        assert_eq!(
+            reserve(store, id, request("a", 500, 500, 100)).await,
+            BatchReservation::Closing
+        );
+        assert!(store
+            .get_channel(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .pending_deliveries
+            .is_empty());
+    }
+
+    async fn a_refused_preparation_reserves_nothing(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-prepare";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        assert!(store
+            .reserve_authorization(
+                id,
+                None,
+                request("a", 500, 500, 100),
+                Box::new(|_| Err(StoreError::Internal("refused".to_string()))),
+            )
+            .await
+            .is_err());
+        assert!(store
+            .get_channel(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .pending_deliveries
+            .is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3033,20 +3413,35 @@ mod tests {
 
     const LEASE: Duration = CHARGE_RESERVATION_LEASE;
 
+    fn req(id: &str, fp: &str, amount: u64, cumulative: u64, now: i64) -> AuthorizationRequest {
+        AuthorizationRequest {
+            authorization_id: id.to_string(),
+            request_fingerprint: fp.to_string(),
+            amount,
+            cumulative,
+            lease: LEASE,
+            now,
+        }
+    }
+
+    fn token_for(state: &ChannelState, id: &str, fp: &str, cumulative: u64) -> ReservationToken {
+        ReservationToken::for_pending(state, id, fp, cumulative)
+    }
+
     /// A handler failure releases the authorization, and the same request may
     /// then reserve it again — the retry the client is entitled to.
     #[test]
     fn a_released_authorization_is_reservable_again() {
         let mut state = make_state("c1", 10_000);
         let reserve = |state: &mut ChannelState| {
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100)
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100))
         };
-        assert_eq!(reserve(&mut state), BatchReservation::Reserved);
+        assert!(matches!(reserve(&mut state), BatchReservation::Reserved(_)));
         // A second attempt while the first is live must not run the handler.
         assert_eq!(reserve(&mut state), BatchReservation::InProgress);
 
         state.release_authorization("access:c1:1000", "fp").unwrap();
-        assert_eq!(reserve(&mut state), BatchReservation::Reserved);
+        assert!(matches!(reserve(&mut state), BatchReservation::Reserved(_)));
         assert_eq!(
             state.cumulative, 0,
             "a released authorization charges nothing"
@@ -3058,22 +3453,22 @@ mod tests {
     #[test]
     fn a_succeeded_handler_outranks_its_lease() {
         let mut state = make_state("c1", 10_000);
-        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100));
         state
-            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .mark_authorization_handler_succeeded(&token_for(&state, "access:c1:1000", "fp", 0))
             .unwrap();
 
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
-        assert_eq!(
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
-            BatchReservation::HandlerSucceeded
-        );
+        assert!(matches!(
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, after_lease)),
+            BatchReservation::HandlerSucceeded(_)
+        ));
         // And it is not swept as an abandoned reservation.
         state.prune_authorizations(after_lease);
-        assert_eq!(
-            state.classify_authorization("access:c1:1000", "fp", after_lease),
-            BatchReservation::HandlerSucceeded
-        );
+        assert!(matches!(
+            state.classify_authorization("access:c1:1000", "fp", 1_000, after_lease),
+            Some(BatchReservation::HandlerSucceeded(_))
+        ));
         // Releasing it would let the same voucher serve twice.
         assert!(state.release_authorization("access:c1:1000", "fp").is_err());
     }
@@ -3088,14 +3483,14 @@ mod tests {
             "a settled record is droppable"
         );
 
-        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100));
         assert!(
             state.has_in_flight_authorization(),
             "a reservation must be kept"
         );
 
         state
-            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .mark_authorization_handler_succeeded(&token_for(&state, "access:c1:1000", "fp", 0))
             .unwrap();
         assert!(
             state.has_in_flight_authorization(),
@@ -3103,7 +3498,13 @@ mod tests {
         );
 
         state
-            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 100, |_| None)
+            .commit_authorization(
+                &token_for(&state, "access:c1:1000", "fp", 1_000),
+                "sig",
+                0,
+                100,
+                |_| None,
+            )
             .unwrap();
         assert!(
             !state.has_in_flight_authorization(),
@@ -3126,15 +3527,15 @@ mod tests {
     #[test]
     fn an_abandoned_reservation_is_never_served_again() {
         let mut state = make_state("c1", 10_000);
-        assert_eq!(
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100),
-            BatchReservation::Reserved
-        );
+        assert!(matches!(
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100)),
+            BatchReservation::Reserved(_)
+        ));
 
         // Its owner crashed mid-request: no release, no success marker.
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
         assert_eq!(
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, after_lease)),
             BatchReservation::Abandoned,
             "an unreported reservation must never be taken over"
         );
@@ -3142,7 +3543,7 @@ mod tests {
         // Pruning must not launder it into a fresh reservation either.
         state.prune_authorizations(after_lease);
         assert_eq!(
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, after_lease)),
             BatchReservation::Abandoned
         );
         assert_eq!(state.cumulative, 0, "and it is never charged");
@@ -3153,20 +3554,26 @@ mod tests {
     #[test]
     fn a_committed_authorization_replays_its_stored_response() {
         let mut state = make_state("c1", 10_000);
-        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100));
         state
-            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .mark_authorization_handler_succeeded(&token_for(&state, "access:c1:1000", "fp", 0))
             .unwrap();
         state
-            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 100, |committed| {
-                Some(serde_json::json!({ "chargedAmount": committed.cumulative.to_string() }))
-            })
+            .commit_authorization(
+                &token_for(&state, "access:c1:1000", "fp", 1_000),
+                "sig",
+                0,
+                100,
+                |committed| {
+                    Some(serde_json::json!({ "chargedAmount": committed.cumulative.to_string() }))
+                },
+            )
             .unwrap();
 
         assert_eq!(state.cumulative, 1_000);
         assert_eq!(state.highest_voucher_signature.as_deref(), Some("sig"));
         assert_eq!(
-            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 200),
+            state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 200)),
             BatchReservation::Committed,
             "a committed authorization must replay, not reserve"
         );
@@ -3177,7 +3584,13 @@ mod tests {
         assert_eq!(stored["chargedAmount"], serde_json::json!("1000"));
         // Re-committing is a no-op: the watermark cannot advance twice.
         state
-            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 200, |_| None)
+            .commit_authorization(
+                &token_for(&state, "access:c1:1000", "fp", 1_000),
+                "sig",
+                0,
+                200,
+                |_| None,
+            )
             .unwrap();
         assert_eq!(state.cumulative, 1_000);
     }
@@ -3188,13 +3601,13 @@ mod tests {
     #[test]
     fn a_different_request_cannot_reuse_an_authorization() {
         let mut state = make_state("c1", 10_000);
-        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state.reserve_authorization(&req("access:c1:1000", "fp", 1_000, 1_000, 100));
         assert_eq!(
-            state.reserve_authorization("access:c1:1000", "other", 1_000, LEASE, 100),
+            state.reserve_authorization(&req("access:c1:1000", "other", 1_000, 1_000, 100)),
             BatchReservation::Conflict
         );
         assert!(state
-            .mark_authorization_handler_succeeded("access:c1:1000", "other")
+            .mark_authorization_handler_succeeded(&token_for(&state, "access:c1:1000", "other", 0))
             .is_err());
         assert!(state
             .release_authorization("access:c1:1000", "other")
@@ -3207,39 +3620,76 @@ mod tests {
     #[test]
     fn one_cumulative_step_is_reserved_at_a_time() {
         let mut state = make_state("c1", 10_000);
+        assert!(matches!(
+            state.reserve_authorization(&req("access:c1:500", "low", 500, 500, 100)),
+            BatchReservation::Reserved(_)
+        ));
         assert_eq!(
-            state.reserve_authorization("access:c1:500", "low", 500, LEASE, 100),
-            BatchReservation::Reserved
-        );
-        assert_eq!(
-            state.reserve_authorization("access:c1:2000", "high", 2_000, LEASE, 100),
+            state.reserve_authorization(&req("access:c1:2000", "high", 2_000, 2_000, 100)),
             BatchReservation::InProgress,
             "a second step from the same watermark must wait"
         );
         state
-            .commit_authorization("access:c1:500", "low", 500, "sig-low", 0, 100, |_| None)
+            .commit_authorization(
+                &token_for(&state, "access:c1:500", "low", 500),
+                "sig-low",
+                0,
+                100,
+                |_| None,
+            )
             .unwrap();
-        // Now the high voucher is a reservation again, but a commit for a
-        // cumulative that no longer steps from the watermark is refused.
+        // The high voucher was priced from the old watermark: it is refused
+        // before serving, not served and then refused at commit.
         assert_eq!(
-            state.reserve_authorization("access:c1:2000", "high", 2_000, LEASE, 100),
-            BatchReservation::Reserved
+            state.reserve_authorization(&req("access:c1:2000", "high", 2_000, 2_000, 100)),
+            BatchReservation::Stale
         );
+        assert!(state.pending_deliveries.is_empty());
+        // Commit keeps its own check for a reservation taken before the move.
+        state.pending_deliveries.push(PendingDelivery {
+            delivery_id: "access:c1:2000".to_string(),
+            amount: 2_000,
+            sequence: 99,
+            expires_at: 100 + LEASE.as_secs() as i64,
+            request_fingerprint: Some("high".to_string()),
+            handler_succeeded: false,
+        });
         assert!(state
-            .commit_authorization("access:c1:2000", "high", 2_000, "sig-high", 0, 100, |_| {
-                None
-            })
+            .commit_authorization(
+                &token_for(&state, "access:c1:2000", "high", 2_000),
+                "sig-high",
+                0,
+                100,
+                |_| { None }
+            )
             .is_err());
         assert_eq!(state.cumulative, 500);
 
         // A dead lease does not block the channel forever.
         let mut state = make_state("c2", 10_000);
-        state.reserve_authorization("access:c2:500", "a", 500, LEASE, 100);
+        state.reserve_authorization(&req("access:c2:500", "a", 500, 500, 100));
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
-        assert_eq!(
-            state.reserve_authorization("access:c2:700", "b", 700, LEASE, after_lease),
-            BatchReservation::Reserved
-        );
+        assert!(matches!(
+            state.reserve_authorization(&req("access:c2:700", "b", 700, 700, after_lease)),
+            BatchReservation::Reserved(_)
+        ));
+
+        // A voucher that does step from the moved watermark reserves.
+        let mut state = make_state("c3", 10_000);
+        state.reserve_authorization(&req("access:c3:500", "a", 500, 500, 100));
+        state
+            .commit_authorization(
+                &token_for(&state, "access:c3:500", "a", 500),
+                "sig-a",
+                0,
+                100,
+                |_| None,
+            )
+            .unwrap();
+        assert!(matches!(
+            state.reserve_authorization(&req("access:c3:2000", "b", 1_500, 2_000, 100)),
+            BatchReservation::Reserved(_)
+        ));
     }
 
     #[test]
@@ -3309,12 +3759,18 @@ mod tests {
         for step in 1..=(MAX_COMMITTED_AUTHORIZATIONS as u64 + 10) {
             let cumulative = step * 1_000;
             let id = format!("access:c1:{cumulative}");
-            state.reserve_authorization(&id, "fp", 1_000, LEASE, 100);
+            state.reserve_authorization(&req(&id, "fp", 1_000, cumulative, 100));
             state
-                .mark_authorization_handler_succeeded(&id, "fp")
+                .mark_authorization_handler_succeeded(&token_for(&state, &id, "fp", 0))
                 .unwrap();
             state
-                .commit_authorization(&id, "fp", cumulative, "sig", 0, 100, |_| None)
+                .commit_authorization(
+                    &token_for(&state, &id, "fp", cumulative),
+                    "sig",
+                    0,
+                    100,
+                    |_| None,
+                )
                 .unwrap();
         }
         assert_eq!(
@@ -3338,12 +3794,18 @@ mod tests {
         for (step, voucher_expiry) in [(1, 1_000), (2, 500), (3, 1_500)] {
             let cumulative = step * 1_000;
             let id = format!("access:c1:{cumulative}");
-            state.reserve_authorization(&id, "fp", 1_000, LEASE, 100);
+            state.reserve_authorization(&req(&id, "fp", 1_000, cumulative, 100));
             state
-                .mark_authorization_handler_succeeded(&id, "fp")
+                .mark_authorization_handler_succeeded(&token_for(&state, &id, "fp", 0))
                 .unwrap();
             state
-                .commit_authorization(&id, "fp", cumulative, "sig", voucher_expiry, 100, |_| None)
+                .commit_authorization(
+                    &token_for(&state, &id, "fp", cumulative),
+                    "sig",
+                    voucher_expiry,
+                    100,
+                    |_| None,
+                )
                 .unwrap();
         }
 
@@ -3640,6 +4102,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn conformance_state(channel_id: &str) -> ChannelState {
+        make_state(channel_id, 10_000)
+    }
+
+    #[tokio::test]
+    async fn memory_store_passes_conformance() {
+        conformance::check_channel_store(&MemoryChannelStore::new(), &conformance_state).await;
+    }
+
+    #[tokio::test]
+    async fn arc_store_passes_conformance() {
+        let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
+        conformance::check_channel_store(&store, &conformance_state).await;
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn redis_store_passes_conformance() {
+        let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
+            .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let store = RedisChannelStore::connect(
+            &redis_url,
+            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+        )
+        .await
+        .unwrap();
+        conformance::check_channel_store(&store, &conformance_state).await;
     }
 
     #[cfg(feature = "redis-store")]
