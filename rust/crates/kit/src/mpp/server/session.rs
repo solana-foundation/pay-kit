@@ -1989,7 +1989,8 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let session_id = request.session_id.clone();
         let amount = request.amount;
-        let currency = self.config.currency.clone();
+        // Same wire currency (the mint) the session challenge carries.
+        let currency = expected_payment_channel_mint(&self.config)?.to_string();
         let commit_url = request.commit_url.clone();
         let proof = request.proof.clone();
         let requested_delivery_id = request.delivery_id.clone();

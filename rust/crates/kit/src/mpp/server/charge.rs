@@ -116,6 +116,27 @@ fn currency_is_native_sol(currency: &str) -> bool {
     currency.eq_ignore_ascii_case("SOL")
 }
 
+/// The wire `currency` for a configured one. Spec: "For native SOL, MUST be
+/// the lowercase string `"sol"`. For SPL tokens, MUST be the base58-encoded
+/// mint address." A symbol (`USDC`, `SOL`, ...) is configuration input only
+/// and is resolved for `network` here, before anything reaches the wire.
+pub(crate) fn wire_currency(currency: &str, network: &str) -> Result<String, Error> {
+    if currency_is_native_sol(currency) {
+        return Ok(NATIVE_SOL_CURRENCY.to_string());
+    }
+    let mint = crate::mpp::protocol::solana::try_resolve_stablecoin_mint(currency, Some(network))?
+        .unwrap_or(currency);
+    Pubkey::from_str(mint).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "Currency {currency} is neither a known symbol nor a valid mint address: {e}"
+        ))
+    })?;
+    Ok(mint.to_string())
+}
+
+/// Wire `currency` for native SOL.
+pub const NATIVE_SOL_CURRENCY: &str = "sol";
+
 fn resolve_server_token_program(
     rpc: &RpcClient,
     currency: &str,
@@ -415,8 +436,8 @@ impl Mpp {
             .transpose()?;
 
         let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
-        let token_program =
-            resolve_server_token_program(&rpc, &config.currency, Some(&config.network))?;
+        let currency = wire_currency(&config.currency, &config.network)?;
+        let token_program = resolve_server_token_program(&rpc, &currency, Some(&config.network))?;
 
         Ok(Mpp {
             // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
@@ -425,7 +446,7 @@ impl Mpp {
             rpc_url,
             realm,
             challenge_binding_secret,
-            currency: config.currency,
+            currency,
             token_program,
             recipient: config.recipient,
             decimals: config.decimals as u32,
@@ -471,6 +492,8 @@ impl Mpp {
         &self.realm
     }
 
+    /// The wire currency this server issues: `"sol"` or a mint address,
+    /// resolved from [`Config::currency`].
     pub fn currency(&self) -> &str {
         &self.currency
     }
@@ -850,8 +873,9 @@ impl Mpp {
         expires: Option<&str>,
         description: Option<&str>,
     ) -> Result<PaymentChallenge, Error> {
-        self.validate_charge_request(request)?;
-        let encoded = Base64UrlJson::from_typed(request)?;
+        let request = self.with_wire_currency(request);
+        self.validate_charge_request(&request)?;
+        let encoded = Base64UrlJson::from_typed(&*request)?;
         let default_expires = crate::mpp::expires::minutes(5);
         let expires = expires.unwrap_or(&default_expires);
 
@@ -873,12 +897,33 @@ impl Mpp {
     /// `amount`, `currency`, `recipient`, and the `methodDetails`
     /// fragments that pin the server-side configuration
     /// (`network`, `decimals`, `tokenProgram`, splits).
+    /// A caller-built request may name the currency the way it is configured
+    /// (a symbol such as `USDC`, or `SOL`). Resolve it to the wire form this
+    /// server issues, so nothing but `"sol"` or a mint reaches the wire and
+    /// caller requests compare equal to issued ones.
+    fn with_wire_currency<'r>(
+        &self,
+        request: &'r ChargeRequest,
+    ) -> std::borrow::Cow<'r, ChargeRequest> {
+        match wire_currency(&request.currency, &self.network) {
+            Ok(currency) if currency != request.currency => {
+                let mut resolved = request.clone();
+                resolved.currency = currency;
+                std::borrow::Cow::Owned(resolved)
+            }
+            _ => std::borrow::Cow::Borrowed(request),
+        }
+    }
+
     fn validate_charge_request(&self, request: &ChargeRequest) -> Result<(), Error> {
         request.parse_amount()?;
 
-        if !request.currency.eq_ignore_ascii_case(&self.currency) {
+        // Exact match: the request goes on the wire as is, so it must carry
+        // the resolved wire currency (`"sol"` or the mint), never a symbol.
+        if request.currency != self.currency {
             return Err(Error::InvalidConfig(format!(
-                "ChargeRequest.currency `{}` does not match server-configured currency `{}`",
+                "ChargeRequest.currency `{}` does not match server wire currency `{}` \
+                 (use \"sol\" or the mint address)",
                 request.currency, self.currency
             )));
         }
@@ -1064,6 +1109,7 @@ impl Mpp {
         request: &ChargeRequest,
         route: Option<&str>,
     ) -> Result<Receipt, VerificationError> {
+        let request = &*self.with_wire_currency(request);
         // Tier 1: Verify HMAC.
         let expected_id = compute_challenge_id(
             &self.challenge_binding_secret,
@@ -6358,7 +6404,7 @@ mod tests {
     fn new_valid_config_succeeds() {
         let mpp = test_mpp();
         assert_eq!(mpp.realm(), "test-realm");
-        assert_eq!(mpp.currency(), "USDC");
+        assert_eq!(mpp.currency(), crate::core::mints::USDC_DEVNET);
         assert_eq!(mpp.recipient(), TEST_RECIPIENT);
         assert_eq!(mpp.decimals(), 6);
     }
@@ -6810,7 +6856,7 @@ mod tests {
         // Decode the request and verify fields.
         let request: ChargeRequest = challenge.request.decode().unwrap();
         assert_eq!(request.amount, "100000"); // 0.10 * 10^6
-        assert_eq!(request.currency, "USDC");
+        assert_eq!(request.currency, crate::core::mints::USDC_DEVNET);
         assert_eq!(request.recipient.as_deref(), Some(TEST_RECIPIENT));
     }
 
@@ -6821,7 +6867,7 @@ mod tests {
 
         let request: ChargeRequest = challenge.request.decode().unwrap();
         assert_eq!(request.amount, "1000000000"); // 1 SOL = 10^9 lamports
-        assert_eq!(request.currency, "SOL");
+        assert_eq!(request.currency, "sol");
     }
 
     #[test]
@@ -7157,7 +7203,7 @@ mod tests {
             ..Default::default()
         };
         let err = mpp.charge_challenge(&request).unwrap_err();
-        assert!(format!("{err}").contains("does not match server-configured currency"));
+        assert!(format!("{err}").contains("does not match server wire currency"));
     }
 
     #[test]
@@ -8727,7 +8773,7 @@ mod tests {
             }
             ChargeRequest {
                 amount: "1000".into(),
-                currency: "SOL".into(),
+                currency: "sol".into(),
                 recipient: Some(TEST_RECIPIENT.into()),
                 method_details: Some(details),
                 ..Default::default()
@@ -10598,8 +10644,9 @@ mod tests {
         assert_eq!(challenges.len(), 1);
     }
 
+    // A configured symbol is resolved to its mint, so ATA creation splits work.
     #[test]
-    fn charge_with_split_ata_creation_rejects_symbol_currency() {
+    fn charge_with_split_ata_creation_accepts_configured_symbol() {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             realm: Some("test-realm".to_string()),
@@ -10628,8 +10675,9 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap_err();
-        assert!(err.to_string().contains("mint address"));
+            .unwrap();
+        let request: ChargeRequest = err.request.decode().unwrap();
+        assert_eq!(request.currency, crate::core::mints::USDC_DEVNET);
     }
 
     // ── Method details include network and decimals ──
@@ -10664,5 +10712,110 @@ mod tests {
         let details = request.method_details.unwrap();
         assert_eq!(details["decimals"], 6);
         assert!(details.get("tokenProgram").is_some(), "{details}");
+    }
+
+    // ── RULINGS C1: wire currency is "sol" or a mint ──
+
+    fn mpp_with_currency(currency: &str, network: &str) -> Result<Mpp, Error> {
+        Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: currency.to_string(),
+            network: network.to_string(),
+            store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
+            ..Default::default()
+        })
+    }
+
+    fn wire_currency_of(mpp: &Mpp) -> String {
+        let request: ChargeRequest = mpp.charge("0.01").unwrap().request.decode().unwrap();
+        request.currency
+    }
+
+    // Regression: the configured symbol used to go on the wire verbatim.
+    #[test]
+    fn configured_symbols_are_resolved_before_the_wire() {
+        for (currency, network, wire) in [
+            ("USDC", "devnet", crate::core::mints::USDC_DEVNET),
+            ("USDC", "mainnet", crate::core::mints::USDC_MAINNET),
+            ("usdc", "mainnet", crate::core::mints::USDC_MAINNET),
+            ("PYUSD", "mainnet", crate::core::mints::PYUSD_MAINNET),
+            ("SOL", "devnet", "sol"),
+            ("Sol", "mainnet", "sol"),
+        ] {
+            let mpp = mpp_with_currency(currency, network).unwrap();
+            assert_eq!(mpp.currency(), wire, "{currency}/{network}");
+            assert_eq!(wire_currency_of(&mpp), wire, "{currency}/{network}");
+        }
+    }
+
+    // Control: a mint address and "sol" pass through unchanged.
+    #[test]
+    fn configured_mint_and_sol_pass_through() {
+        let mint = crate::core::mints::USDC_DEVNET;
+        assert_eq!(
+            wire_currency_of(&mpp_with_currency(mint, "devnet").unwrap()),
+            mint
+        );
+        assert_eq!(
+            wire_currency_of(&mpp_with_currency("sol", "devnet").unwrap()),
+            "sol"
+        );
+    }
+
+    #[test]
+    fn configured_currency_that_is_neither_symbol_nor_mint_is_rejected() {
+        assert!(matches!(
+            mpp_with_currency("NOTACOIN", "devnet"),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    // A caller-built request may name the configured symbol; the challenge
+    // still carries the wire form, and verification compares equal to it.
+    #[test]
+    fn caller_built_request_symbol_is_resolved_on_the_wire() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "500000".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            ..Default::default()
+        };
+        let challenge = mpp.charge_challenge(&request).unwrap();
+        let issued: ChargeRequest = challenge.request.decode().unwrap();
+        assert_eq!(issued.currency, crate::core::mints::USDC_DEVNET);
+    }
+
+    // A credential whose issued request names a symbol is not one this
+    // server issued: it never matches the wire currency.
+    #[tokio::test]
+    async fn credential_with_symbol_currency_is_rejected() {
+        let mpp = test_mpp_sol();
+        let request = ChargeRequest {
+            amount: "1000".into(),
+            currency: "SOL".into(),
+            recipient: Some(TEST_RECIPIENT.into()),
+            method_details: Some(serde_json::json!({ "network": "devnet" })),
+            ..Default::default()
+        };
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
+            TEST_SECRET,
+            "test-realm",
+            METHOD_NAME,
+            "charge",
+            Base64UrlJson::from_typed(&request).unwrap(),
+            Some(&crate::mpp::expires::minutes(5)),
+            None,
+            None,
+            None,
+        );
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+        );
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert!(err.message.contains("Currency mismatch"), "{}", err.message);
     }
 }
