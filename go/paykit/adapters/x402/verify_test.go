@@ -193,9 +193,13 @@ func TestVerifyRejectsTooManyInstructions(t *testing.T) {
 	memoKeyIdx := uint16(len(f.keys))
 	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
 	memo := solana.CompiledInstruction{ProgramIDIndex: memoKeyIdx, Data: []byte("x")}
-	// 3 base + 4 memo = 7 instructions, over the cap of 6.
-	if err := proto.VerifyExactTransaction(f.tx(memo, memo, memo, memo), f.req); err == nil {
-		t.Error("expected rejection for >6 instructions")
+	// 3 base + 5 memo = 8 instructions, over the §3.1 cap of 7.
+	if err := proto.VerifyExactTransaction(f.tx(memo, memo, memo, memo, memo), f.req); err == nil {
+		t.Error("expected rejection for >7 instructions")
+	}
+	// 3 base + 4 memo = 7 instructions is the largest static layout.
+	if err := proto.VerifyExactTransaction(f.tx(memo, memo, memo, memo), f.req); err != nil {
+		t.Errorf("7-instruction layout rejected: %v", err)
 	}
 }
 

@@ -233,9 +233,16 @@ func TestVerifyExactTransactionRejectsAmountMismatch(t *testing.T) {
 		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
 		makeTransferCheckedIx(src, mint, dest, authority, 1000, solana.TokenProgramID),
 	}, feePayer)
-	req := validTransferReq(feePayer, mint, payTo, 999)
+	// Underpayment is rejected (§1.4: MUST NOT be less).
+	req := validTransferReq(feePayer, mint, payTo, 1001)
 	if err := VerifyExactTransaction(tx, req); err == nil {
-		t.Fatal("expected error for amount mismatch")
+		t.Fatal("expected error for an underpayment")
+	}
+	// Overpayment is tolerated (§1.4), and the exact amount is the control.
+	for _, required := range []uint64{999, 1000} {
+		if err := VerifyExactTransaction(tx, validTransferReq(feePayer, mint, payTo, required)); err != nil {
+			t.Fatalf("transfer of 1000 against required %d: %v", required, err)
+		}
 	}
 }
 

@@ -54,26 +54,36 @@ type TransferRequirements struct {
 	ExpectedMemo string
 }
 
-// verifyExactTransaction runs the canonical x402 "exact" structural
-// checks against a decoded Solana transaction BEFORE the facilitator
-// cosigns or broadcasts it. Port of Rust's verify_exact_instructions
-// (rust/crates/x402/src/protocol/schemes/exact/verify.rs):
+// maxExactInstructions is the static-layout cap (scheme_exact_svm.md §3.1):
+// compute limit, compute price, TransferChecked, up to three Lighthouse or
+// Memo instructions, and a final Memo.
+const maxExactInstructions = 7
+
+// VerifyExactTransaction runs the x402 "exact" SVM checks against a decoded
+// Solana transaction BEFORE the sponsor cosigns or broadcasts it. It is the
+// static-layout verification path (scheme_exact_svm.md §3.1) plus the §1
+// payment outcome and §2.1 sponsor MUSTs:
 //
-//  1. instruction count in [3, 6]
+//  1. instruction count in [3, 7]
 //  2. ix[0] = ComputeBudget SetComputeUnitLimit
 //  3. ix[1] = ComputeBudget SetComputeUnitPrice, <= cap
-//  4. ix[2] = transferChecked to ATA(payTo, mint, program) for the
-//     exact amount + mint, authority != fee-payer
-//  5. ix[3..] = only Memo or Lighthouse programs
+//  4. ix[2] = transferChecked of the route mint to ATA(payTo, mint,
+//     program) for AT LEAST amount (overpayment tolerated, §1.4), with an
+//     authority other than the fee payer
+//  5. exactly one transferChecked across the transaction matches (§1.4)
+//  6. the fee payer appears in no instruction's accounts and is never
+//     invoked as a program (§2.1.1)
+//  7. ix[3..5] = Memo or Lighthouse only, ix[6] = Memo only
+//  8. when extra.memo is set, exactly one Memo and it matches
 //
-// Returns a *paykit.PaymentError-friendly error string on the first
-// rule it fails so the caller can surface a canonical code.
+// It returns a *VerifyError carrying a canonical reason code on the first
+// rule it fails.
 func VerifyExactTransaction(tx *solana.Transaction, req TransferRequirements) error {
 	msg := &tx.Message
 	ixs := msg.Instructions
-	if len(ixs) < 3 || len(ixs) > 6 {
+	if len(ixs) < 3 || len(ixs) > maxExactInstructions {
 		return VerifyFail("invalid_exact_svm_payload_transaction_instructions_length",
-			fmt.Sprintf("instruction count %d outside [3,6]", len(ixs)))
+			fmt.Sprintf("instruction count %d outside [3,%d]", len(ixs), maxExactInstructions))
 	}
 	keys := msg.AccountKeys
 
@@ -86,16 +96,28 @@ func VerifyExactTransaction(tx *solana.Transaction, req TransferRequirements) er
 	if err := verifyTransfer(ixs[2], keys, req); err != nil {
 		return err
 	}
+	matching, err := countMatchingTransfers(ixs, keys, req)
+	if err != nil {
+		return err
+	}
+	if matching != 1 {
+		return VerifyFail("invalid_exact_svm_payload_multiple_matching_transfers",
+			fmt.Sprintf("expected exactly one matching transferChecked, found %d", matching))
+	}
+	if err := verifyFeePayerIsolation(ixs, keys, req.FeePayer); err != nil {
+		return err
+	}
 	// Optional trailing instructions: memo / lighthouse only. Wallets inject
-	// Lighthouse guard instructions (Phantom 1, Solflare 2) so those MUST be
-	// allowed; everything else (System / Token / ATA-create / unknown) is
-	// rejected, which keeps a Create-ATA out of the optional slots per spec.
-	// Canonical reason codes are positional (fourth/fifth/sixth), matching
-	// invalid_reason_by_index (verify.rs:257-274).
+	// Lighthouse guard instructions (Phantom up to 3, Solflare 2) so those
+	// MUST be allowed in slots 4-6; slot 7 is Memo only. Everything else
+	// (System / Token / ATA-create / unknown) is rejected, which keeps a
+	// Create-ATA out of the optional slots per spec. Canonical reason codes
+	// are positional, matching invalid_reason_by_index (verify.rs:257-274).
 	invalidReasonByIndex := []string{
 		"invalid_exact_svm_payload_unknown_fourth_instruction",
 		"invalid_exact_svm_payload_unknown_fifth_instruction",
 		"invalid_exact_svm_payload_unknown_sixth_instruction",
+		"invalid_exact_svm_payload_unknown_seventh_instruction",
 	}
 	memoCount := 0
 	for i := 3; i < len(ixs); i++ {
@@ -103,18 +125,14 @@ func VerifyExactTransaction(tx *solana.Transaction, req TransferRequirements) er
 		if err != nil {
 			return err
 		}
-		switch prog.String() {
-		case paycore.MemoProgram:
+		switch {
+		case prog.String() == paycore.MemoProgram:
 			memoCount++
 			continue
-		case LighthouseProgram:
+		case prog.String() == LighthouseProgram && i < maxExactInstructions-1:
 			continue
 		default:
-			code := "invalid_exact_svm_payload_unknown_optional_instruction"
-			if idx := i - 3; idx < len(invalidReasonByIndex) {
-				code = invalidReasonByIndex[idx]
-			}
-			return VerifyFail(code, fmt.Sprintf("unexpected instruction %d program %s", i, prog))
+			return VerifyFail(invalidReasonByIndex[i-3], fmt.Sprintf("unexpected instruction %d program %s", i, prog))
 		}
 	}
 	// When the offer pins extra.memo, exactly one matching Memo instruction
@@ -132,6 +150,70 @@ func VerifyExactTransaction(tx *solana.Transaction, req TransferRequirements) er
 			if prog.String() == paycore.MemoProgram && string(ixs[i].Data) != req.ExpectedMemo {
 				return VerifyFail("invalid_exact_svm_payload_memo_mismatch",
 					fmt.Sprintf("memo instruction %d does not match extra.memo", i))
+			}
+		}
+	}
+	return nil
+}
+
+// countMatchingTransfers counts the top-level transferChecked instructions
+// that pay the route: correct mint, destination ATA(payTo, mint, program)
+// and amount >= required (§1.4). A second match is an ambiguous or double
+// payment and is rejected by the caller.
+func countMatchingTransfers(ixs []solana.CompiledInstruction, keys solana.PublicKeySlice, req TransferRequirements) (int, error) {
+	expectedDest, err := solanatx.FindAssociatedTokenAddressWithProgram(req.PayTo, req.Mint, req.TokenProgram)
+	if err != nil {
+		return 0, fmt.Errorf("x402: derive recipient ATA: %w", err)
+	}
+	count := 0
+	for _, ix := range ixs {
+		prog, err := programIDForIx(ix, keys)
+		if err != nil {
+			return 0, err
+		}
+		if !prog.Equals(req.TokenProgram) || len(ix.Accounts) < 4 || len(ix.Data) != 10 || ix.Data[0] != 12 {
+			continue
+		}
+		mint, err := keyForIndex(ix.Accounts[1], keys)
+		if err != nil {
+			return 0, err
+		}
+		destination, err := keyForIndex(ix.Accounts[2], keys)
+		if err != nil {
+			return 0, err
+		}
+		if mint.Equals(req.Mint) && destination.Equals(expectedDest) && binary.LittleEndian.Uint64(ix.Data[1:9]) >= req.Amount {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// verifyFeePayerIsolation enforces §2.1.1: the fee payer must not be invoked
+// as a program and must not appear in any instruction's accounts. The one
+// allowance, receiving as payTo when feePayer == payTo, needs no carve-out
+// here: a token payment is received by ATA(payTo), never by payTo itself.
+func verifyFeePayerIsolation(ixs []solana.CompiledInstruction, keys solana.PublicKeySlice, feePayer solana.PublicKey) error {
+	if feePayer.IsZero() {
+		return nil
+	}
+	for i, ix := range ixs {
+		prog, err := programIDForIx(ix, keys)
+		if err != nil {
+			return err
+		}
+		if prog.Equals(feePayer) {
+			return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_included_in_instruction_accounts",
+				fmt.Sprintf("instruction %d invokes the fee payer as a program", i))
+		}
+		for _, index := range ix.Accounts {
+			account, err := keyForIndex(index, keys)
+			if err != nil {
+				return err
+			}
+			if account.Equals(feePayer) {
+				return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_included_in_instruction_accounts",
+					fmt.Sprintf("instruction %d references the fee payer in its accounts", i))
 			}
 		}
 	}
@@ -212,10 +294,11 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return VerifyFail("invalid_exact_svm_payload_recipient_mismatch",
 			fmt.Sprintf("recipient ATA mismatch: got %s want %s", destination, expectedDest))
 	}
+	// §1.4: at least the required amount; overpayment is tolerated.
 	amount := binary.LittleEndian.Uint64(ix.Data[1:9])
-	if amount != req.Amount {
+	if amount < req.Amount {
 		return VerifyFail("invalid_exact_svm_payload_amount_mismatch",
-			fmt.Sprintf("amount mismatch: got %d want %d", amount, req.Amount))
+			fmt.Sprintf("amount mismatch: got %d, want at least %d", amount, req.Amount))
 	}
 	return nil
 }
