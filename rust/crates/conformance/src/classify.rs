@@ -1,0 +1,147 @@
+//! Map the Rust kit's reject messages onto the shared [`RejectCode`]
+//! vocabulary.
+//!
+//! This is the filler's half of the reject contract: a generated reject case
+//! declares a code, and its positive-control test passes only when the kit's
+//! actual error classifies to it. The table mirrors
+//! `harness/src/conformance/reject.ts` (the categories' meaning) plus the
+//! kit's x402 `invalid_exact_svm_payload_*` reasons, which all contain the
+//! word "payload" and would otherwise fall through to `invalid-payload`.
+
+use crate::case::RejectCode;
+
+pub fn classify(message: &str) -> Option<RejectCode> {
+    use RejectCode::*;
+    let m = message.to_ascii_lowercase();
+    let has = |needle: &str| m.contains(needle);
+    // Ordered: specific x402 verifier reasons first, then the reject.ts
+    // patterns, then the generic fallback.
+    let code = if has("compute_price_instruction_too_high")
+        || (has("compute unit price") && (has("exceed") || has("cap") || has("maximum")))
+    {
+        ComputePriceOverCap
+    } else if has("compute_limit_instruction_too_high")
+        || (has("compute unit limit") && (has("exceed") || has("cap") || has("maximum")))
+    {
+        ComputeLimitOverCap
+    } else if has("decimals is required")
+        || has("failed to determine token program")
+        || has("token program lookup")
+        || has("failed to fetch mint account")
+        || has("unsupported token program")
+    {
+        InvalidChallenge
+    } else if has("fee payer cannot authorize") || has("fee_payer_transferring_funds") {
+        FeePayerNotAuthority
+    } else if has("fee payer") && (has("funding source") || has("funds source")) {
+        FeePayerIsFundsSource
+    } else if has("splits consume the entire amount") {
+        SplitsExceedAmount
+    } else if has("too many splits") {
+        TooManySplits
+    } else if has("unsupported x402 version") {
+        UnsupportedVersion
+    } else if has("network mismatch") {
+        WrongNetwork
+    } else if has("payment-identifier") || has("payment identifier") {
+        PaymentIdentifierRequired
+    } else if has("voucher has expired") {
+        VoucherExpired
+    } else if has("settlement window") {
+        VoucherExpiresBeforeSettlement
+    } else if has("_amount_mismatch")
+        || (has("amount") && (has("mismatch") || has("does not match")))
+    {
+        AmountMismatch
+    } else if has("_decimals_mismatch") {
+        DecimalsMismatch
+    } else if has("_recipient_mismatch")
+        || has("_mint_mismatch")
+        || has("no_transfer_instruction")
+        || has("recipient mismatch")
+        || has("currency mismatch")
+        || (has("no matching") && has("transfer"))
+        || has("missing split transfer")
+    {
+        NoMatchingTransfer
+    } else if (has("unknown_") && has("instruction"))
+        || has("instructions_length")
+        || (has("unexpected") && (has("instruction") || has("transfer")))
+    {
+        UnexpectedInstruction
+    } else if has("invalid")
+        || has("malformed")
+        || has("decode")
+        || has("payload")
+        || has("memo")
+        || has("signature")
+    {
+        InvalidPayload
+    } else {
+        return None;
+    };
+    Some(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kit_messages_classify() {
+        let table = [
+            (
+                "invalid_exact_svm_payload_amount_mismatch",
+                RejectCode::AmountMismatch,
+            ),
+            (
+                "invalid_exact_svm_payload_recipient_mismatch",
+                RejectCode::NoMatchingTransfer,
+            ),
+            (
+                "invalid_exact_svm_payload_mint_mismatch",
+                RejectCode::NoMatchingTransfer,
+            ),
+            (
+                "invalid_exact_svm_payload_no_transfer_instruction",
+                RejectCode::NoMatchingTransfer,
+            ),
+            (
+                "invalid_exact_svm_payload_unknown_fourth_instruction",
+                RejectCode::UnexpectedInstruction,
+            ),
+            (
+                "invalid_exact_svm_payload_memo_mismatch",
+                RejectCode::InvalidPayload,
+            ),
+            (
+                "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+                RejectCode::FeePayerNotAuthority,
+            ),
+            (
+                "Missing split transfer to X",
+                RejectCode::NoMatchingTransfer,
+            ),
+            (
+                "No matching SPL transferChecked of 1000 to X",
+                RejectCode::NoMatchingTransfer,
+            ),
+            (
+                "Network mismatch: expected a, got b",
+                RejectCode::WrongNetwork,
+            ),
+            (
+                "Unsupported x402 version: 3",
+                RejectCode::UnsupportedVersion,
+            ),
+            (
+                "methodDetails.decimals is required for SPL charges (spec §7.2)",
+                RejectCode::InvalidChallenge,
+            ),
+        ];
+        for (message, code) in table {
+            assert_eq!(classify(message), Some(code), "{message}");
+        }
+        assert_eq!(classify("something else entirely"), None);
+    }
+}

@@ -1,0 +1,31 @@
+[package]
+name = "paykit-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "Conformance case registry and vector filler for pay-kit (not published)"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "pkc"
+path = "src/main.rs"
+
+[dependencies]
+solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "client", "server", "testkit"] }
+base64 = "0.22"
+bs58 = "0.5"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+async-trait = "0.1"
+solana-hash = { version = "4.4", default-features = false }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-rpc-client = { version = "4.1", default-features = false }
+solana-rpc-client-api = { version = "4.1", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }

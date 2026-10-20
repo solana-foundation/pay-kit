@@ -1,0 +1,149 @@
+repo = "x402"
+commit = "03b3919b3d422d2b094ea3539e0b577558e1ae86"
+files = [
+  "specs/x402-specification-v2.md",
+  "specs/schemes/exact/scheme_exact.md",
+  "specs/schemes/exact/scheme_exact_svm.md",
+  "specs/extensions/payment_identifier.md",
+]
+
+# Requirements the vectors cover. id = prefix + sha256(normalised text)[:10];
+# the id changes with the text, which is how `pkc req-lint` detects drift.
+# Cases map ids through `requirements` in the registry (rust/crates/conformance).
+
+[[requirement]]
+id = "X402-2f0d5ef017"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "MUST reject if more than one matching transfer is found (ambiguous / potential double-payment)."
+
+[[requirement]]
+id = "X402-516a2d7b57"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A matching transfer MAY exceed PaymentRequirements.amount (overpayment is tolerated to accommodate smart wallets with internal fee rounding); it MUST NOT be less."
+
+[[requirement]]
+id = "X402-6708749c55"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The feePayer MUST NOT appear in the accounts list of any instruction (top-level or, where resolvable, otherwise referenced), and MUST NOT be invoked as a program."
+
+[[requirement]]
+id = "X402-6b3e9350c8"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Clients MUST include a Memo instruction containing either the value of extra.memo (when present) or a random nonce (at least 16 bytes, hex-encoded for UTF-8 compliance)."
+
+[[requirement]]
+id = "X402-93650bf2e3"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A sponsor that signs a transaction as feePayer MUST enforce all of the following before signing."
+
+[[requirement]]
+id = "X402-bac6bc288a"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "MUST reject if zero matching transfers are found."
+
+[[requirement]]
+id = "X402-c9a227ad88"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "If extra.memo is present, the facilitator MUST verify that exactly one Memo instruction exists and that its data matches extra.memo encoded as UTF-8."
+
+[[requirement]]
+id = "X402-ed41478ffe"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The feePayer MUST NOT be used as an authority, source, or delegate for any transfer."
+
+[[requirement]]
+id = "X402-ee90546220"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Across all top-level instructions and the full CPI trace, exactly one transfer MUST match the requirements (correct mint, correct destination ATA, amount >= required)."
+
+[[requirement]]
+id = "X402-f45fed3f51"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "Destination correctness: the receiver MUST match the payTo derived destination for the specified asset."
+
+[[requirement]]
+id = "X402-f870a56d25"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "The proof artifact MUST be carried in PaymentPayload.payload."
+
+# Noise: normative sentences that do not apply to SVM, with the reason.
+
+[[ignore]]
+id = "X402-07a28e5b57"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Facilitator safety: the facilitator's address MUST NOT appea..."
+
+[[ignore]]
+id = "X402-ff58f97969"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Authorization integrity: auth entries MUST use address-based..."
+
+[[ignore]]
+id = "X402-4775b2d3eb"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): It MUST NOT contain sub-invocations, and expiration MUST NOT..."
+
+[[ignore]]
+id = "X402-16d04ebf89"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Transfer correctness: to MUST equal payTo and amount MUST eq..."
+
+[[ignore]]
+id = "X402-2da0f6d777"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Simulation verification: MUST emit events showing only the e..."
+
+[[ignore]]
+id = "X402-b8ea3928e9"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Signature validity: Ed25519 signature MUST verify against a ..."
+
+[[ignore]]
+id = "X402-0cd5d53b65"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Wallet code validity: contract code MUST match a known W5 wa..."
+
+[[ignore]]
+id = "X402-0b2fe72236"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Replay protection: seqno MUST be strictly equal to on-chain ..."
+
+[[ignore]]
+id = "X402-c0745810cd"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Facilitator safety: the submitting executor MUST come from f..."
+
+[[ignore]]
+id = "X402-f9720fe647"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Transfer correctness: the signed SNIP-9 OutsideExecution MUS..."
+
+[[ignore]]
+id = "X402-93feeeaeb5"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Signature validity: the SNIP-12 hash MUST be computed from t..."
+
+[[ignore]]
+id = "X402-71fe06739c"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Caller binding and expiry: Caller MUST equal extra.feePayer ..."
+
+[[ignore]]
+id = "X402-36c757a38f"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Replay protection: the SNIP-9 nonce MUST be unused at verifi..."
+
+[[ignore]]
+id = "X402-493c7efa04"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Simulation verification: MUST simulate the settlement and fa..."
+
+[[ignore]]
+id = "X402-142c1163b2"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Fee payer safety: the fee payer MUST NOT be debited beyond t..."
+
+[[ignore]]
+id = "X402-d497542ad5"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Under cryptoTransfer it MUST NOT appear as a negative entry ..."
+
+[[ignore]]
+id = "X402-fe274508ad"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Transfer correctness: the net credit to payTo in asset MUST ..."
+
+[[ignore]]
+id = "X402-540ded73c7"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Payer signature validity (cryptoTransfer): the facilitator M..."
+
+[[ignore]]
+id = "X402-bc533772ae"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Executor admission (transferExecutor): the executor is clien..."
+
+[[ignore]]
+id = "X402-84cdebd3a5"
+reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Outcome from the record (transferExecutor): settlement succe..."
