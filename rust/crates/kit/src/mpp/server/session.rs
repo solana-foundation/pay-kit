@@ -2385,13 +2385,13 @@ impl<S: ChannelStore> SessionServer<S> {
                     if state.close_requested_at.is_some() {
                         return Err(StoreError::Internal("Close already requested".to_string()));
                     }
-                    // Unexpired reservations were (or are being) delivered and
+                    // Reservations that were (or may have been) delivered
                     // can't be committed once close is pending, so the final
-                    // voucher must pay for them.
+                    // voucher must pay for them; see `owed_at_close`.
                     let live_pending = state
                         .pending_deliveries
                         .iter()
-                        .filter(|delivery| delivery.expires_at > now as i64)
+                        .filter(|delivery| delivery.owed_at_close(now as i64))
                         .try_fold(0u64, |total, delivery| total.checked_add(delivery.amount))
                         .ok_or_else(|| {
                             StoreError::Internal("pending delivery total overflow".to_string())
@@ -2528,7 +2528,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             })?;
                         state
                             .pending_deliveries
-                            .retain(|delivery| delivery.expires_at <= now as i64);
+                            .retain(|delivery| !delivery.owed_at_close(now as i64));
                     }
 
                     // The client's final voucher is the sealed amount.
@@ -6276,11 +6276,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_reservation_does_not_block_close() {
+    async fn expired_metered_delivery_is_still_owed_at_close() {
         let (server, session, channel_id) = client_server().await;
         let mut request = DeliveryRequest::new(channel_id.clone(), 100);
         request.expires_at = Some(1);
         server.begin_delivery(request).await.unwrap();
+
+        // The directive was handed out, so the response may have been sent:
+        // an expired commit window does not let the close drop the charge.
+        let error = server
+            .process_close(&close_with(session.prepare_increment(1).await.unwrap()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("uncommitted"), "{error}");
+        assert!(stored(&server, &channel_id)
+            .await
+            .close_requested_at
+            .is_none());
+
+        let seal = server
+            .process_close(&close_with(session.prepare_increment(100).await.unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(seal.settled, 100);
+        let state = stored(&server, &channel_id).await;
+        assert!(state.pending_deliveries.is_empty());
+        assert_eq!(state.spent_amount, 100);
+    }
+
+    #[tokio::test]
+    async fn released_expired_delivery_does_not_block_close() {
+        let (server, session, channel_id) = client_server().await;
+        let mut request = DeliveryRequest::new(channel_id.clone(), 100);
+        request.expires_at = Some(1);
+        let directive = server.begin_delivery(request).await.unwrap();
+        // The host knows the handler failed before sending anything.
+        server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 0)
+            .await
+            .unwrap();
         let seal = server
             .process_close(&close_with(session.prepare_increment(1).await.unwrap()))
             .await

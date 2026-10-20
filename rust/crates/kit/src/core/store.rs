@@ -657,6 +657,21 @@ pub struct PendingDelivery {
     pub handler_succeeded: bool,
 }
 
+impl PendingDelivery {
+    /// Whether a close at `now` (unix seconds) must charge this reservation.
+    ///
+    /// A metered delivery (no request fingerprint) handed its directive to
+    /// the host, which may already have sent the response, so it is owed
+    /// until the client commits it or the host releases it with a zero
+    /// usage. Its `expires_at` only bounds the commit window; the passage of
+    /// time never proves the response was not delivered. An authorization is
+    /// owed once its handler succeeded, or while its lease may still lead to
+    /// a commit.
+    pub fn owed_at_close(&self, now: i64) -> bool {
+        self.request_fingerprint.is_none() || self.handler_succeeded || self.expires_at > now
+    }
+}
+
 /// A committed delivery, retained so an exact retry can be answered without
 /// charging or serving twice.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

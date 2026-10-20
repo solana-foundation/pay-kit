@@ -739,6 +739,51 @@ describe('session() verify() close monotonicity', () => {
     });
 });
 
+describe('session() close charges reserved deliveries', () => {
+    async function withExpiredDelivery() {
+        const fixture = await watermarkedFixture();
+        await fixture.f.store.updateChannel(fixture.f.channel.address, current => ({
+            ...current!,
+            // The directive was handed out and its commit window has passed.
+            pendingDeliveries: [{ amount: 100n, deliveryId: 'delivery-1', expiresAt: 1n, sequence: 1n }],
+        }));
+        return fixture;
+    }
+
+    test('a close that does not pay an expired delivery is rejected', async () => {
+        const { f, method, sent, voucher } = await withExpiredDelivery();
+        await expect(
+            verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher })),
+        ).rejects.toThrow(/100 in uncommitted deliveries; the final voucher must reach cumulative 350/);
+
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.closeRequestedAt).toBeUndefined();
+        expect(state?.pendingDeliveries).toHaveLength(1);
+        expect(sent).toHaveLength(0);
+    });
+
+    test('a final voucher covering the delivery settles it', async () => {
+        const { active, f, method, sent } = await withExpiredDelivery();
+        const short = await active.prepareVoucher(349n);
+        await expect(
+            verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher: short })),
+        ).rejects.toThrow(/uncommitted deliveries/);
+
+        const before = await f.store.getChannel(f.channel.address);
+        const finalVoucher = await active.prepareVoucher(350n);
+        const receipt = await verify(
+            method,
+            makeCred(f, { action: 'close', channelId: f.channel.address, voucher: finalVoucher }),
+        );
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.settledOnChain).toBe(350n);
+        expect(state?.pendingDeliveries).toHaveLength(0);
+        expect(state?.spentAmount).toBe(before!.spentAmount + 100n);
+    });
+});
+
 /** Decode a sent wire transaction into program / account addresses / data per instruction. */
 function decodeSent(wire: string): { accounts: string[]; data: Uint8Array; program: string }[] {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(wire));

@@ -974,6 +974,12 @@ interface HandleCloseArgs {
     readonly tokenProgram: string;
 }
 
+function uncommittedDeliveries(owed: bigint, required: bigint): Error {
+    return new Error(
+        `Channel has ${owed.toString()} in uncommitted deliveries; the final voucher must reach cumulative ${required.toString()}`,
+    );
+}
+
 async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     const channelId = args.payload.channelId;
     // Same routing-key invariant as the voucher action: a final voucher
@@ -1024,6 +1030,15 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             throw new Error('Close already requested');
         }
 
+        // Every reserved delivery handed its directive to the host, which may
+        // already have sent the response, and none can be committed once close
+        // is pending, so the final voucher must pay for all of them. Their
+        // `expiresAt` only bounds the commit window: an expired commit never
+        // proves the response was not delivered. Mirrors Rust
+        // `PendingDelivery::owed_at_close`.
+        const owed = current.pendingDeliveries.reduce((sum, p) => sum + p.amount, 0n);
+        const required = current.cumulative + owed;
+
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
             // Route the final voucher (replay AND advancing) through the verifier
@@ -1046,18 +1061,23 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             if (verdict.status === 'replayed') {
                 // Idempotent replay of the current highest voucher: watermark
                 // unchanged; signature + expiry/window already re-verified above.
+                if (owed > 0n) throw uncommittedDeliveries(owed, required);
                 return { ...current, closeRequestedAt: now };
             }
             if (verdict.status === 'accepted') {
+                if (verdict.newCumulative < required) throw uncommittedDeliveries(owed, required);
                 return {
                     ...current,
                     closeRequestedAt: now,
                     cumulative: verdict.newCumulative,
                     highestVoucherExpiresAt: verdict.newExpiresAt,
                     highestVoucherSignature: verdict.newSignature,
+                    pendingDeliveries: [],
+                    spentAmount: current.spentAmount + owed,
                 };
             }
         }
+        if (owed > 0n) throw uncommittedDeliveries(owed, required);
         return { ...current, closeRequestedAt: now };
     });
 
