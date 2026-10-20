@@ -14,6 +14,9 @@ export type WorkflowStep = {
   origin: string; // "<file>#<job>/<step name>"
   run: string;
   env: Record<string, string>;
+  // Set when the step's `env` is an expression such as `${{ matrix.env }}`
+  // rather than a map; `env` is then empty.
+  envExpression?: string;
 };
 
 type RawStep = { name?: string; run?: string; env?: Record<string, unknown> | string };
@@ -40,6 +43,7 @@ export function workflowRunSteps(dir = WORKFLOWS_DIR): WorkflowStep[] {
           origin: `${file}#${jobId}/${step.name ?? index}`,
           run: step.run,
           env: { ...stringEnv(doc.env), ...stringEnv(job.env), ...stringEnv(step.env) },
+          ...(typeof step.env === "string" ? { envExpression: step.env.trim() } : {}),
         });
       }
     }

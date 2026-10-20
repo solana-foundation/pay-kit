@@ -81,16 +81,29 @@ function casesForEnv(env: Record<string, string | undefined>, pattern: string | 
     .filter((c) => !regex || regex.test(`mpp harness ${c.scenario.id}: ${c.client} client pays ${c.server} server`));
 }
 
-export function executedInterop(): { executed: Map<string, string[]>; eligible: Case[] } {
+export function executedInterop(workflowsDir?: string): { executed: Map<string, string[]>; eligible: Case[] } {
   const executed = new Map<string, string[]>();
   const add = (c: Case, origin: string) => executed.set(key(c), [...(executed.get(key(c)) ?? []), origin]);
-  for (const step of workflowRunSteps()) {
+  const steps = workflowRunSteps(workflowsDir);
+  for (const step of steps) {
     if (!step.run.includes(E2E)) continue;
+    // A matrix-driven step's selection lives in its matrix, handled below.
+    if (step.envExpression) continue;
     for (const c of casesForEnv(step.env, testNamePattern(step.run))) add(c, step.origin);
   }
-  // mpp-matrix.yml runs every planned shard with `env: ${{ matrix.env }}`.
-  for (const shard of planChargeMatrix()) {
-    for (const c of casesForEnv(shard.env, undefined)) add(c, `mpp-matrix.yml#${shard.id}`);
+  // Planned charge shards count only if a step actually runs them: e2e.test.ts
+  // with `env: ${{ matrix.env }}` and no test-name filter, so removing or
+  // narrowing that step shows up as lost coverage.
+  const shardSteps = steps.filter(
+    (step) =>
+      step.run.includes(E2E) &&
+      step.envExpression === "${{ matrix.env }}" &&
+      testNamePattern(step.run) === undefined,
+  );
+  for (const step of shardSteps) {
+    for (const shard of planChargeMatrix()) {
+      for (const c of casesForEnv(shard.env, undefined)) add(c, `${step.origin}[${shard.id}]`);
+    }
   }
   return { executed, eligible: cases(harnessScenarios, clientImplementations, serverImplementations) };
 }
@@ -157,8 +170,8 @@ function rewrite(readme: string, table: string): string {
 
 // Charge is enumerated over the full registry by the planner; assert the
 // replay agrees, so the analyzer itself is checked against a known answer.
-export function chargeReplayMatchesPlanner(): boolean {
-  const { executed } = executedInterop();
+export function chargeReplayMatchesPlanner(workflowsDir?: string): boolean {
+  const { executed } = executedInterop(workflowsDir);
   const planned = enumerateChargeCases(
     clientImplementations,
     serverImplementations,

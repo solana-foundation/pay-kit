@@ -33,7 +33,7 @@ import {
   type FlowResult,
 } from "../src/protocol/flow-driver";
 import { type CaseRef, danglingEntries, decide, loadAllExpectations } from "../src/expectations";
-import { CaseRecorder, discoveryMode, observe, requireMode } from "../src/expectations-run";
+import { assertSuiteComplete, CaseRecorder, discoveryMode, observe } from "../src/expectations-run";
 import { typescriptProtocolAdapter } from "../src/protocol/runners/typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -82,6 +82,9 @@ async function waitForServer(baseUrl: string, timeoutMs = 15_000): Promise<void>
   throw new Error("compliance server did not start");
 }
 
+// File-level, so a test-name filter cannot skip the completeness check.
+afterAll(() => assertSuiteComplete("flow"));
+
 describe("flow suite expectations", () => {
   it("only languages with a flow adapter claim flow", () => {
     const claiming = [...EXPECTATIONS.values()]
@@ -94,7 +97,7 @@ describe("flow suite expectations", () => {
 describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", () => {
   const exp = EXPECTATIONS.get("typescript");
   if (!exp) throw new Error("no harness/expectations/typescript.toml");
-  const recorder = new CaseRecorder("flow", "typescript");
+  const recorder = new CaseRecorder("flow", "typescript").expect(flowRefs, exp);
   let server: ChildProcess | undefined;
   let serverStderr = "";
   const resultsByName = new Map<string, FlowResult>();
@@ -142,7 +145,6 @@ describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", 
   afterAll(() => {
     stopServer();
     recorder.flush();
-    if (requireMode() && !discoveryMode()) recorder.assertComplete(flowRefs, exp);
   });
 
   it("covers every canonical flow case exactly once", () => {

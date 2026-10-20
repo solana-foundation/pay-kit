@@ -29,7 +29,7 @@ jobs:
           pnpm exec vitest run
           test/artifacts.test.ts test/build-adapters.test.ts test/conformance-runners.test.ts test/adapter-identity.test.ts
           test/canonical-json.test.ts test/compute-budget-caps.test.ts test/intent-selection.test.ts
-          test/process.test.ts test/x402-amount-base-units.test.ts test/x402-v1-exact.test.ts
+          test/process.test.ts test/x402-amount-base-units.test.ts test/x402-v1-exact.test.ts test/protocol-adversarial.test.ts
       - name: Upload @solana/mpp dist
         uses: actions/upload-artifact@v7
         with:

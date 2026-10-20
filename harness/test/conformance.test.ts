@@ -28,8 +28,9 @@ import {
   danglingEntries,
   decide,
   loadAllExpectations,
+  VECTOR_INTENTS,
 } from "../src/expectations";
-import { CaseRecorder, discoveryMode, observe, requireMode } from "../src/expectations-run";
+import { assertSuiteComplete, CaseRecorder, discoveryMode, observe } from "../src/expectations-run";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -361,7 +362,15 @@ const vectorRefs: CaseRef[] = vectors.map((v) => ({
   capability: v.intent,
 }));
 
+// File-level, so a test-name filter that skips a whole language's block
+// cannot skip its completeness check.
+afterAll(() => assertSuiteComplete("vector"));
+
 describe("cross-SDK conformance vectors", () => {
+  it("every vector intent is a claimable intent", () => {
+    expect([...new Set(vectors.map((v) => v.intent))].filter((i) => !VECTOR_INTENTS.includes(i))).toEqual([]);
+  });
+
   it("loaded at least the seeded vector classes", () => {
     expect(vectors.length).toBeGreaterThanOrEqual(10);
     const modes = new Set(vectors.map((v) => v.mode));
@@ -389,7 +398,7 @@ describe("cross-SDK conformance vectors", () => {
     describe(`${language} reference runner`, () => {
       const exp = EXPECTATIONS.get(language);
       if (!exp) throw new Error(`no harness/expectations/${language}.toml`);
-      const recorder = new CaseRecorder("vector", language);
+      const recorder = new CaseRecorder("vector", language).expect(vectorRefs, exp);
 
       it("expectations have no dangling entries", () => {
         expect(danglingEntries(exp, "vector", vectorRefs)).toEqual([]);
@@ -408,10 +417,7 @@ describe("cross-SDK conformance vectors", () => {
         }, 60_000);
       }
 
-      afterAll(() => {
-        recorder.flush();
-        if (requireMode() && !discoveryMode()) recorder.assertComplete(vectorRefs, exp);
-      });
+      afterAll(() => recorder.flush());
     });
   }
 });

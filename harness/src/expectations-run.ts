@@ -60,13 +60,28 @@ export type RecordedCase = {
   detail?: string;
 };
 
+// Every recorder created in this process, so a file-level hook can check
+// completeness for each selected language even when a test-name filter
+// skipped that language's whole describe block (and its afterAll).
+const RECORDERS: CaseRecorder[] = [];
+
 export class CaseRecorder {
   private readonly cases = new Map<string, RecordedCase>();
+  private claimed?: { refs: readonly CaseRef[]; exp: Expectations };
 
   constructor(
-    private readonly suite: Suite,
-    private readonly language: string,
-  ) {}
+    readonly suite: Suite,
+    readonly language: string,
+  ) {
+    RECORDERS.push(this);
+  }
+
+  // Declare the cases this recorder is responsible for, so the file-level
+  // check knows what "complete" means without the language block's hooks.
+  expect(refs: readonly CaseRef[], exp: Expectations): this {
+    this.claimed = { refs, exp };
+    return this;
+  }
 
   record(ref: CaseRef, decision: Decision, observed: Observed | undefined): void {
     this.cases.set(caseKey(ref), {
@@ -101,6 +116,16 @@ export class CaseRecorder {
     }
   }
 
+  incomplete(): string | undefined {
+    if (!this.claimed) return `${this.language}: recorder never declared its claimed ${this.suite} cases`;
+    try {
+      this.assertComplete(this.claimed.refs, this.claimed.exp);
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   flush(): void {
     mkdirSync(RESULTS_DIR, { recursive: true });
     const sorted = [...this.cases.values()].sort((a, b) => a.key.localeCompare(b.key));
@@ -109,4 +134,20 @@ export class CaseRecorder {
       `${JSON.stringify({ suite: this.suite, language: this.language, discovery: discoveryMode(), cases: sorted }, null, 2)}\n`,
     );
   }
+}
+
+// File-level completeness check for one suite: every recorder created for a
+// selected language must have executed all of its claimed cases. Run from a
+// top-level afterAll so a name filter cannot skip it.
+export function assertSuiteComplete(suite: Suite): void {
+  if (!requireMode() || discoveryMode()) return;
+  const problems = RECORDERS.filter((r) => r.suite === suite)
+    .map((r) => r.incomplete())
+    .filter((p): p is string => p !== undefined);
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+}
+
+// Test-only: forget recorders created by earlier tests in the same process.
+export function resetRecordersForTest(): void {
+  RECORDERS.length = 0;
 }

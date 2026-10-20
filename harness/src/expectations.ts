@@ -28,6 +28,11 @@ export const FINDINGS_FILE = "harness/expectations/FINDINGS.md";
 export type Suite = "vector" | "protocol" | "flow";
 export const SUITES: readonly Suite[] = ["vector", "protocol", "flow"];
 
+// Vector intents an SDK may claim (ConformanceVector["intent"]). A claim
+// outside this list is a typo that would otherwise silently leave every
+// real vector of the intended intent unclaimed.
+export const VECTOR_INTENTS: readonly string[] = ["charge", "x402-exact", "session"];
+
 // A case as seen by the reconciler: its suite, id and (for vectors) intent.
 export type CaseRef = {
   suite: Suite;
@@ -109,6 +114,9 @@ export function parseExpectations(text: string, source: string): Expectations {
     if (!SUITES.includes(suite as Suite)) fail(source, `unknown capability suite "${suite}"`);
     if (suite === "vector") {
       for (const intent of asStringArray(value, source, "capabilities.vector")) {
+        if (!VECTOR_INTENTS.includes(intent)) {
+          fail(source, `unknown vector intent "${intent}" (expected one of ${VECTOR_INTENTS.join(", ")})`);
+        }
         capabilities.vector.add(intent);
       }
     } else if (value === true) {

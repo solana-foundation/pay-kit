@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type CaseRef,
   danglingEntries,
@@ -6,6 +6,7 @@ import {
   parseExpectations,
   reconcile,
 } from "../src/expectations";
+import { assertSuiteComplete, CaseRecorder, resetRecordersForTest } from "../src/expectations-run";
 
 const toml = `
 language = "fake"
@@ -40,6 +41,13 @@ describe("expectations parsing", () => {
         "x.toml",
       ),
     ).toThrow(/tracking/);
+  });
+
+  it("rejects a misspelled vector intent claim", () => {
+    expect(() =>
+      parseExpectations(`language="x"\n[capabilities]\nvector=["x402-exat"]`, "x.toml"),
+    ).toThrow(/unknown vector intent "x402-exat"/);
+    expect(parseExpectations(`language="x"\n[capabilities]\nvector=["x402-exact"]`, "x.toml").capabilities.vector.has("x402-exact")).toBe(true);
   });
 
   it("rejects entries for an unclaimed suite", () => {
@@ -150,5 +158,35 @@ describe("unsupported id lists", () => {
         "y.toml",
       ),
     ).toThrow(/duplicate/);
+  });
+});
+
+describe("file-level completeness", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetRecordersForTest();
+  });
+
+  const claimed = parseExpectations(`language="a"\n[capabilities]\nvector=["charge"]`, "a.toml");
+  const refs = [ref("c1"), ref("c2")];
+
+  it("fails when a whole language was filtered out", () => {
+    vi.stubEnv("HARNESS_REQUIRE", "1");
+    const ran = new CaseRecorder("vector", "ran").expect(refs, claimed);
+    for (const r of refs) ran.record(r, { kind: "pass" }, { kind: "pass" });
+    new CaseRecorder("vector", "filtered").expect(refs, claimed); // its tests never ran
+    expect(() => assertSuiteComplete("vector")).toThrow(/filtered: 2 claimed vector case/);
+  });
+
+  it("passes when every selected language executed its claims (control)", () => {
+    vi.stubEnv("HARNESS_REQUIRE", "1");
+    const ran = new CaseRecorder("vector", "ran").expect(refs, claimed);
+    for (const r of refs) ran.record(r, { kind: "pass" }, { kind: "pass" });
+    expect(() => assertSuiteComplete("vector")).not.toThrow();
+  });
+
+  it("only enforces under HARNESS_REQUIRE=1", () => {
+    new CaseRecorder("vector", "filtered").expect(refs, claimed);
+    expect(() => assertSuiteComplete("vector")).not.toThrow();
   });
 });

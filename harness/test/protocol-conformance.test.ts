@@ -15,11 +15,13 @@
 // ReDoS probe) run for every language with an explicit budget, because
 // ReDoS resistance matters to every parser. For those languages the case
 // asserts the time bound and accepts either the golden result or a
-// parse_error, since the spec does not mandate the golden's leniency.
+// parse_error, since the spec does not mandate the golden's leniency. The
+// time bound applies to both outcomes.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type CaseRef, danglingEntries, decide, loadAllExpectations } from "../src/expectations";
-import { CaseRecorder, discoveryMode, observe, requireMode } from "../src/expectations-run";
+import { assertSuiteComplete, CaseRecorder, discoveryMode, observe } from "../src/expectations-run";
+import { judgeUnassignedCase } from "../src/protocol/adversarial";
 import { caseRunsOnAdapter, collectProtocolCases } from "../src/protocol/vectors";
 import { type ProtocolAdapter, runCase } from "../src/protocol/driver";
 import { typescriptProtocolAdapter } from "../src/protocol/runners/typescript";
@@ -44,6 +46,10 @@ const runners = discoverProtocolRunners();
 // test/ci-coverage.test.ts proves every claiming language runs somewhere.
 const allowlist = parseLanguageAllowlist(process.env.MPP_CONFORMANCE_LANGUAGES);
 const selectedRunners = runners.filter((r) => !allowlist || allowlist.has(r.language));
+
+// File-level, so a test-name filter that skips a whole language's block
+// cannot skip its completeness check.
+afterAll(() => assertSuiteComplete("protocol"));
 
 describe("mpp-protocol conformance (suite)", () => {
   it("expands a non-trivial set of canonical cases with unique ids", () => {
@@ -71,7 +77,7 @@ for (const runner of selectedRunners) {
   describe(`mpp-protocol conformance (${language} runner)`, () => {
     const exp = EXPECTATIONS.get(language);
     if (!exp) throw new Error(`no harness/expectations/${language}.toml`);
-    const recorder = new CaseRecorder("protocol", language);
+    const recorder = new CaseRecorder("protocol", language).expect(protocolRefs, exp);
     let startupMs = 0;
 
     beforeAll(async () => {
@@ -85,10 +91,7 @@ for (const runner of selectedRunners) {
       startupMs = Math.ceil(Math.min(...samples));
     }, 300_000);
 
-    afterAll(() => {
-      recorder.flush();
-      if (requireMode() && !discoveryMode()) recorder.assertComplete(protocolRefs, exp);
-    });
+    afterAll(() => recorder.flush());
 
     it("expectations have no dangling entries", () => {
       expect(danglingEntries(exp, "protocol", protocolRefs)).toEqual([]);
@@ -104,23 +107,21 @@ for (const runner of selectedRunners) {
       const assigned = caseRunsOnAdapter(testCase, language);
       it(`${ref.id} [${decision.kind}]${assigned ? "" : " (adversarial budget)"}`, async () => {
         const observed = await observe(async () => {
+          const budgetMs = ADVERSARIAL_BUDGET_MS + startupMs;
+          const startedAt = performance.now();
           const result = await runCase(
             adapter,
             testCase,
-            assigned ? undefined : { durationLimitMsOverride: ADVERSARIAL_BUDGET_MS + startupMs },
+            assigned ? undefined : { durationLimitMsOverride: budgetMs },
           );
+          const elapsedMs = performance.now() - startedAt;
           if (!result.ok && /unsupported_operation/.test(result.detail ?? "")) {
             return { unsupported: result.detail ?? "unsupported_operation" };
           }
-          // A case the canonical suite assigns to other adapters (the
-          // python-only ReDoS probe) is run here for its time bound. Its
-          // golden encodes one parser's leniency toward a header that
-          // violates the auth-param grammar (an unterminated quoted-string),
-          // which draft-httpauth-payment-00 does not require: rejecting the
-          // malformed header with parse_error is equally conformant. The
-          // duration budget below stays non-waivable either way.
-          if (!assigned && !result.ok && /got error_type=parse_error/.test(result.detail ?? "")) {
-            return "pass";
+          if (!assigned) {
+            const verdict = judgeUnassignedCase(result, elapsedMs, budgetMs);
+            if (verdict.kind === "fail") throw new Error(verdict.detail);
+            if (verdict.kind === "pass") return "pass";
           }
           expect(result.ok, result.detail).toBe(true);
           return "pass";
