@@ -44,7 +44,9 @@ use crate::core::credit_provider::{
     validate_credit_providers, CreditProvider, CreditProviderError,
 };
 use crate::core::tx::TxV1Mode;
-use crate::mpp::server::axum::{is_settlement_in_progress, settlement_in_progress_response};
+use crate::mpp::server::axum::{
+    charge_route, is_settlement_in_progress, settlement_in_progress_response,
+};
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::TransactionSigner;
 use crate::mpp::store::Store;
@@ -550,6 +552,11 @@ fn external_uri(req: &Request) -> &Uri {
         .map_or(req.uri(), |original| &original.0)
 }
 
+/// The route an MPP charge on this request is bound to (see [`charge_route`]).
+fn mpp_route(req: &Request) -> String {
+    charge_route(req.method(), external_uri(req), req.headers())
+}
+
 /// Resolve the route price, or why the request can't be priced.
 fn resolve_amount(price: &Price, req: &Request) -> Result<String, &'static str> {
     let uri = external_uri(req);
@@ -659,7 +666,12 @@ fn challenge_response(pay: &PayKit, amount: &str, req: &Request) -> Response {
 
     // MPP: WWW-Authenticate. A failure here drops the MPP challenge from the
     // 402 (x402 clients are unaffected), so log it for operators.
-    match pay.mpp.charge(amount) {
+    let route = mpp_route(req);
+    let options = crate::mpp::server::ChargeOptions {
+        route: Some(&route),
+        ..Default::default()
+    };
+    match pay.mpp.charge_with_options(amount, options) {
         Ok(challenge) => match format_www_authenticate(&challenge) {
             Ok(www_auth) => match HeaderValue::from_str(&www_auth) {
                 Ok(v) => {
@@ -786,7 +798,7 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
         return match state
             .pay
             .mpp
-            .verify_payment_for_amount(&credential, &amount)
+            .verify_payment_for_route(&credential, &amount, &mpp_route(&req))
             .await
         {
             Ok(receipt) => {
@@ -3103,8 +3115,15 @@ mod tests {
             }
         };
         let credential = || {
+            let options = crate::mpp::server::ChargeOptions {
+                route: Some("GET /r"),
+                ..Default::default()
+            };
             PaymentCredential::new(
-                pay.mpp().charge("0.10").unwrap().to_echo(),
+                pay.mpp()
+                    .charge_with_options("0.10", options)
+                    .unwrap()
+                    .to_echo(),
                 serde_json::json!({"type": "signature", "signature": "fakesig"}),
             )
         };
@@ -3132,6 +3151,75 @@ mod tests {
         let resp = send(credential()).await;
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
+    }
+
+    // An MPP credential is bound to the full host it was issued for: a second
+    // authority serving the same path and price does not accept it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mpp_credential_is_bound_to_the_issuing_host() {
+        use crate::mpp::protocol::solana::CredentialPayload;
+        use crate::mpp::store::{ChargeReplayStore, CHARGE_RESERVATION_LEASE};
+        use crate::mpp::{format_authorization, PaymentCredential};
+
+        let store: Arc<dyn Store> = Arc::new(crate::mpp::store::MemoryStore::new());
+        let pay = PayKit::new(PayKitConfig {
+            store: Some(store.clone()),
+            ..test_paykit_config()
+        })
+        .unwrap();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+
+        // Issued for host A. Hold it in progress so a credential that passes
+        // the route check is observable (409) without settling anything.
+        let mut host_a = HeaderMap::new();
+        host_a.insert(header::HOST, HeaderValue::from_static("api.example"));
+        let route = charge_route(&Method::GET, &"/r".parse().unwrap(), &host_a);
+        let options = crate::mpp::server::ChargeOptions {
+            route: Some(&route),
+            ..Default::default()
+        };
+        let cred = PaymentCredential::new(
+            pay.mpp()
+                .charge_with_options("0.10", options)
+                .unwrap()
+                .to_echo(),
+            serde_json::json!({"type": "signature", "signature": "fakesig"}),
+        );
+        let payload: CredentialPayload = serde_json::from_value(cred.payload.clone()).unwrap();
+        let digest = crate::mpp::server::charge::normalized_request_digest(
+            &cred.challenge.id,
+            cred.challenge.request.raw(),
+            &payload,
+        )
+        .unwrap();
+        ChargeReplayStore::new(store)
+            .reserve(&cred.challenge.id, &digest, CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        let auth = format_authorization(&cred).unwrap();
+        let send = |host: &'static str| {
+            let app = app.clone();
+            let auth = auth.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/r")
+                        .header(header::HOST, host)
+                        .header(header::AUTHORIZATION, auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        assert_eq!(
+            send("api.attacker.example").await,
+            StatusCode::PAYMENT_REQUIRED
+        );
+        assert_eq!(send("API.example").await, StatusCode::CONFLICT);
     }
 
     #[test]

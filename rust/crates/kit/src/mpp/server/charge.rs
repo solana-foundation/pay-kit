@@ -549,6 +549,30 @@ impl Mpp {
         credential_str: &str,
         amount: &str,
     ) -> Result<Receipt, VerificationError> {
+        self.verify_payment_bound(credential_str, amount, None)
+            .await
+    }
+
+    /// [`verify_payment_for_amount`](Self::verify_payment_for_amount) for a
+    /// challenge issued with [`ChargeOptions::route`]: the credential's
+    /// authenticated route must also equal `route`, so a credential paid at
+    /// one route (or host) cannot be spent at another with equal terms.
+    pub async fn verify_payment_for_route(
+        &self,
+        credential_str: &str,
+        amount: &str,
+        route: &str,
+    ) -> Result<Receipt, VerificationError> {
+        self.verify_payment_bound(credential_str, amount, Some(route))
+            .await
+    }
+
+    async fn verify_payment_bound(
+        &self,
+        credential_str: &str,
+        amount: &str,
+        route: Option<&str>,
+    ) -> Result<Receipt, VerificationError> {
         let credential = crate::mpp::protocol::core::headers::parse_authorization(credential_str)
             .map_err(|e| {
             VerificationError::new(format!("Failed to parse Authorization: {e}"))
@@ -559,8 +583,7 @@ impl Mpp {
         let expected: ChargeRequest = challenge.request.decode().map_err(|e| {
             VerificationError::new(format!("Failed to decode expected request: {e}"))
         })?;
-        self.verify_credential_with_expected(&credential, &expected)
-            .await
+        self.verify_bound(&credential, &expected, route).await
     }
 
     /// Generate a charge challenge with additional options.
