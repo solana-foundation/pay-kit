@@ -78,7 +78,7 @@ t.test('tier2 rejects tampered currency', function()
   local server = new_server()
   local challenge = server:charge('0.10')
   local request = challenge.request:decode()
-  request.currency = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+  request.currency = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
   local echo = challenge:to_echo()
   echo.request = mpp.NewBase64URLJSONValue(request)
   resign_echo(echo)

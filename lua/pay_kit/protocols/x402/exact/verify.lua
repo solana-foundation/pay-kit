@@ -212,6 +212,26 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
   }
 end
 
+-- scheme_exact_svm §2.1.1: the fee payer "MUST NOT appear in the `accounts`
+-- list of any instruction ... and MUST NOT be invoked as a program"
+-- (RULINGS S3). The transfer check above only covers ix[2]; this sweeps the
+-- optional Memo / Lighthouse slots too, so an extra instruction cannot name
+-- the sponsor as a signer.
+local function reject_fee_payer_in_any_instruction(instructions, account_keys, managed_signers)
+  local managed = {}
+  for i = 1, #managed_signers do managed[managed_signers[i]] = true end
+  for _, ix in ipairs(instructions) do
+    if managed[program_of(account_keys, ix)] then
+      error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts')
+    end
+    for j = 1, #ix.accounts do
+      if managed[account_keys[ix.accounts[j] + 1]] then
+        error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts')
+      end
+    end
+  end
+end
+
 local function find_memo_match(account_keys, instructions, expected_memo)
   local memo_count, last_memo_data = 0, nil
   for i = 4, #instructions do
@@ -274,6 +294,9 @@ function M.verify(transaction_b64, requirement, managed_signers)
       error(reasons[slot_index + 1] or 'invalid_exact_svm_payload_unknown_optional_instruction')
     end
   end
+
+  reject_fee_payer_in_any_instruction(instructions, parsed.message.account_keys,
+                                      managed_signers)
 
   -- Rule 10: memo binding.
   local expected_memo = string_extra(requirement, 'memo', false)

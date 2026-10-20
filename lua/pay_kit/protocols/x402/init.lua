@@ -32,6 +32,7 @@ local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 local tx_mod     = require('pay_kit.solana.transaction')
 local network_check = require('pay_kit.solana.network_check')
 local json        = require('pay_kit.util.json')
+local mints       = require('pay_kit.solana.mints')
 
 local M = {}
 local Adapter = {}
@@ -66,7 +67,6 @@ local DEFAULT_MAX_TIMEOUT_SECONDS = 60
 local DEFAULT_DECIMALS = 6
 local DEFAULT_CONFIRMATION_ATTEMPTS = 40
 local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
-local TOKEN_PROGRAM_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
 local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
 local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
@@ -189,7 +189,10 @@ end
 -- and `maxTimeoutSeconds` so v2 credentials whose client omitted
 -- amount still match a server offer that includes it.
 local REQUIREMENT_IDENTITY_KEYS       = {'scheme', 'network', 'asset', 'payTo'}
-local REQUIREMENT_EXTRA_IDENTITY_KEYS = {'feePayer', 'tokenProgram', 'memo'}
+-- `tokenProgram` / `decimals` are non-spec hints a client may drop
+-- (RULINGS S1); the verifier binds the transfer to the canonical token
+-- programs and re-derives the payTo ATA itself.
+local REQUIREMENT_EXTRA_IDENTITY_KEYS = {'feePayer', 'memo'}
 
 local function accepted_requirement_matches(client_accepted, server_offer)
   if type(client_accepted) ~= 'table' or type(server_offer) ~= 'table' then
@@ -238,23 +241,36 @@ local function fetch_server_blockhash(config)
   return blockhash
 end
 
-local function exact_requirement(config, gate, resource_path, mint)
+-- Build the route's `exact` offer for settlement coin `coin` (a symbol such
+-- as "USDC" or a mint address). `resource_path`, when non-empty, is bound
+-- into `extra.memo` so a payment built for one resource cannot be replayed
+-- against another (scheme_exact_svm §3.1).
+local function exact_requirement(config, gate, resource_path, coin)
   local op_signer = config:effective_x402_signer()
+  local label = network_label(config.network)
+  -- `asset` is the mint address, never the ticker.
+  local mint = mints.resolve_mint(coin, label)
+  -- `decimals` and `tokenProgram` are non-spec hints (the scheme defines
+  -- feePayer, memo, recentBlockhash and lastValidBlockHeight; RULINGS S1).
+  -- The token program hint is only emitted when the table knows it, so a
+  -- Token-2022 stablecoin is not advertised under the legacy program.
   local extra = {
     feePayer     = op_signer:pubkey(),
     decimals     = DEFAULT_DECIMALS,
-    tokenProgram = TOKEN_PROGRAM_BASE58,
-    memo         = resource_path,
+    tokenProgram = mints.default_token_program_for_currency(mint, label),
   }
+  if resource_path ~= nil and resource_path ~= '' then
+    extra.memo = resource_path
+  end
   local blockhash = fetch_server_blockhash(config)
   if blockhash then extra.recentBlockhash = blockhash end
-  local amount = tostring(gate:total_units())
   return {
     scheme              = 'exact',
     network             = caip2_for(config.network),
     asset               = mint,
-    amount              = amount,
-    maxAmountRequired   = amount,           -- emit both spellings for cross-SDK harness
+    -- v2 `amount` only; `maxAmountRequired` is the v1 spelling and does
+    -- not belong in a v2 PaymentRequirements (RULINGS X1).
+    amount              = tostring(gate:total_units()),
     payTo               = gate:pay_to(),
     maxTimeoutSeconds   = DEFAULT_MAX_TIMEOUT_SECONDS,
     extra               = extra,
@@ -518,13 +534,13 @@ local function resolve_credential(headers)
   return nil, nil, nil, errors.PAYMENT_REQUIRED
 end
 
-function Adapter:verify_and_settle(gate, req)
-  local config = self._config_resolver()
-  local headers = (req and req.headers) or {}
-  local credential, is_legacy, raw_header, err = resolve_credential(headers)
-  if err then return nil, err end
-
-  local resource = (req and req.path) or '/'
+-- Pre-broadcast verification of a decoded credential against the gate's
+-- offer: version gate, requirement binding, the payment-identifier gate and
+-- the structural verifier + client signatures over the transaction (exactly
+-- one TransferChecked of `amount` of `asset` to the payTo ATA, fee payer out
+-- of every instruction, memo binding when the offer sets one). Reads no chain
+-- state and signs nothing. Returns (offer, transfer, payload) or (nil, err).
+local function verify_credential(config, gate, credential, is_legacy, resource)
   local offer = exact_requirement(config, gate, resource, gate:amount():primary_coin())
 
   if is_legacy then
@@ -594,6 +610,30 @@ function Adapter:verify_and_settle(gate, req)
   if not transfer then
     return nil, errors.INVALID_PROOF .. ': ' .. tostring(verify_err)
   end
+  return offer, transfer, payload
+end
+
+-- Public pre-broadcast check: decode the credential carried by `req.headers`
+-- and verify it with `verify_credential`. `resource` is the path bound into
+-- `extra.memo` (nil for a route without a resource memo). verify_and_settle
+-- runs the same check before it cosigns and broadcasts.
+function Adapter:verify_payment(gate, req, resource)
+  local config = self._config_resolver()
+  local credential, is_legacy, _, err = resolve_credential((req and req.headers) or {})
+  if err then return nil, err end
+  return verify_credential(config, gate, credential, is_legacy, resource)
+end
+
+function Adapter:verify_and_settle(gate, req)
+  local config = self._config_resolver()
+  local headers = (req and req.headers) or {}
+  local credential, is_legacy, raw_header, err = resolve_credential(headers)
+  if err then return nil, err end
+
+  local offer, transfer, payload = verify_credential(config, gate, credential,
+    is_legacy, (req and req.path) or '/')
+  if not offer then return nil, transfer end
+  local signer = config:effective_x402_signer()
 
   -- Sign as facilitator. The operator's signer fills the facilitator
   -- slot. The transaction is already partially signed by the client;

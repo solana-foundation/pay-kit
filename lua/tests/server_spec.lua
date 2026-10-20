@@ -29,8 +29,45 @@ t.test('server charge builds challenge', function()
   t.assert_true(challenge.realm ~= '')
   local request = challenge.request:decode()
   t.assert_equal(request.amount, '1000')
-  t.assert_equal(request.currency, 'USDC')
+  t.assert_equal(request.currency, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
   t.assert_equal(request.externalId, 'order-1')
+end)
+
+-- RULINGS C1/C2/C3: a configured symbol reaches the wire as its mint, with
+-- decimals and the token program; SOL reaches it as "sol" without either.
+t.test('server charge puts the mint, decimals and token program on the wire', function()
+  local request = new_server():charge('0.001').request:decode()
+  t.assert_equal(request.currency, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+  t.assert_equal(request.methodDetails.decimals, 6)
+  t.assert_equal(request.methodDetails.tokenProgram, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+end)
+
+t.test('server charge in SOL omits decimals and token program', function()
+  local server = mpp.server.new({
+    recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
+    currency = 'SOL',
+    network = 'localnet',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = mpp.store.memory(),
+    verify_payment = function() return { reference = 'x' } end,
+  })
+  local request = server:charge('0.001').request:decode()
+  t.assert_equal(request.currency, 'sol')
+  t.assert_equal(request.methodDetails.decimals, nil)
+  t.assert_equal(request.methodDetails.tokenProgram, nil)
+end)
+
+t.test('server rejects a currency that is not sol, a symbol or a mint', function()
+  t.assert_error(function()
+    mpp.server.new({
+      recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
+      currency = 'NOTACOIN',
+      network = 'localnet',
+      secret_key = 'test-secret-key-long-enough-for-hmac',
+      store = mpp.store.memory(),
+      verify_payment = function() return { reference = 'x' } end,
+    })
+  end, 'currency')
 end)
 
 t.test('verify credential success', function()

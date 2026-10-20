@@ -522,6 +522,43 @@ helper.test('rule 9: single trailing Lighthouse guard (Phantom) accepted', funct
   helper.assert_equal(transfer.amount, '1000')
 end)
 
+-- scheme_exact_svm §2.1.1 / RULINGS S3: the fee payer must stay out of EVERY
+-- instruction's accounts, not only the transfer's. A memo that lists the
+-- facilitator as a signer account is rejected; the positive control above
+-- (same layout, empty memo accounts) is accepted.
+helper.test('fee payer named in an optional memo instruction is rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = keys_with_extra(facilitator, source, mint, destination, authority,
+                               LIGHTHOUSE_PROGRAM)
+  local raw = assemble(keys, 9, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(7, {0}, '/paid'),
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected the facilitator-in-memo transaction to be rejected')
+  helper.assert_true(tostring(err):find('fee_payer_in_instruction_accounts', 1, true), tostring(err))
+end)
+
+helper.test('fee payer named in a Lighthouse instruction is rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = keys_with_extra(facilitator, source, mint, destination, authority,
+                               LIGHTHOUSE_PROGRAM)
+  local raw = assemble(keys, 9, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(7, {}, '/paid'),
+    build_ix(8, {0}, string.char(1)),
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected the facilitator-in-lighthouse transaction to be rejected')
+  helper.assert_true(tostring(err):find('fee_payer_in_instruction_accounts', 1, true), tostring(err))
+end)
+
 -- Rule 9 (c): two trailing Lighthouse guards (Solflare injects two). Lighthouse
 -- must be allowed in ANY optional slot, not just the first two.
 helper.test('rule 9: two trailing Lighthouse guards (Solflare) accepted', function()

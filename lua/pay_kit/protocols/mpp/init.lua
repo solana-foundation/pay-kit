@@ -295,17 +295,18 @@ function Adapter:verify_and_settle(gate, req)
   -- feePayer/feePayerKey). Mirrors PHP Adapter::chargeRequestFor and Ruby
   -- Mpp::Server::Charge#charge which both pass the route's full request
   -- into verification.
-  local currency = gate:amount():primary_coin()
-  local is_native_sol = string.lower(currency or '') == 'sol'
+  -- The server resolved the configured coin to its wire form ("sol" or the
+  -- mint) at boot; bind verification to that same value.
+  local currency = server.currency
+  local is_native_sol = currency == 'sol'
   local expected_method_details = {
     network = server.network,
   }
   if not is_native_sol then
     expected_method_details.decimals = server.decimals
-    if mpp_protocol.stablecoin_symbol(currency) then
-      expected_method_details.tokenProgram =
-        mpp_protocol.default_token_program_for_currency(currency, server.network)
-    end
+    -- The token program the server resolved at boot and emits on every
+    -- challenge (known stablecoin table or on-chain owner lookup).
+    expected_method_details.tokenProgram = server.token_program
   end
   local expected_splits = splits_for(gate)
   if expected_splits then

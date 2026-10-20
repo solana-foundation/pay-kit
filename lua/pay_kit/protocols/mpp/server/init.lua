@@ -118,7 +118,21 @@ function M.new(config)
   if fee_payer and (config.fee_payer_key == nil or config.fee_payer_key == '') then
     error('fee_payer = true requires fee_payer_key (the server fee-payer pubkey)')
   end
+  -- draft-solana-charge-00 `currency`: "For native SOL, MUST be the
+  -- lowercase string "sol". For SPL tokens, MUST be the base58-encoded mint
+  -- address." A symbol ("USDC") is accepted in configuration and resolved
+  -- here, once, so it never reaches the wire (RULINGS C1).
   local currency = config.currency or 'USDC'
+  if is_native_sol(currency) then
+    currency = 'sol'
+  else
+    currency = protocol.resolve_mint(currency, network)
+    if not protocol.is_pubkey(currency) then
+      error(string.format(
+        "currency '%s' is neither sol, a known stablecoin symbol, nor a mint address",
+        tostring(config.currency)))
+    end
+  end
   -- Default decimals: SOL uses 9, every SPL stablecoin in our table uses 6.
   -- Caller can still override explicitly.
   local default_decimals = is_native_sol(currency) and 9 or 6
