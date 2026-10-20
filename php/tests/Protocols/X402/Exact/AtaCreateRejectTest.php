@@ -172,6 +172,30 @@ final class AtaCreateRejectTest extends TestCase
         $this->assertSame(100000, $result['amount']);
     }
 
+    /**
+     * scheme_exact_svm §2.1.1 / RULINGS S3: the managed fee payer must stay
+     * out of EVERY instruction's accounts, not only the transfer's. The same
+     * transaction verifies when the key is not managed (positive control).
+     */
+    public function testManagedSignerInOptionalInstructionRejected(): void
+    {
+        $sponsor = Keypair::generate()->getPublicKey()->toBase58();
+        foreach ([self::MEMO_PROGRAM, self::LIGHTHOUSE] as $program) {
+            [$tx, $req] = $this->buildTransaction([
+                ['program' => $program, 'data' => 'x', 'accounts' => [$sponsor]],
+            ]);
+            $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
+            $this->assertSame(100000, $result['amount']);
+
+            try {
+                Verifier::verify($tx, $req, [$sponsor]);
+                $this->fail('expected the sponsor-in-' . $program . ' transaction to be rejected');
+            } catch (InvalidProofException $e) {
+                $this->assertStringContainsString('fee_payer_in_instruction_accounts', $e->getMessage());
+            }
+        }
+    }
+
     public function testAtaCreateOptionalInstructionRejected(): void
     {
         // An Associated-Token-Program create instruction must NOT be an

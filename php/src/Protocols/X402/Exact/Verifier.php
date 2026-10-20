@@ -123,6 +123,22 @@ final class Verifier
             }
         }
 
+        // scheme_exact_svm §2.1.1: the fee payer "MUST NOT appear in the
+        // `accounts` list of any instruction ... and MUST NOT be invoked as a
+        // program" (RULINGS S3). verifyTransfer only covers ix[2]; sweep the
+        // optional Memo / Lighthouse slots too.
+        foreach ($instructions as $ix) {
+            $keys = [self::programOf($accountKeys, $ix)];
+            foreach ($ix->accountKeyIndexes as $idx) {
+                $keys[] = $accountKeys[$idx] ?? null;
+            }
+            if (array_intersect($keys, $managedSigners) !== []) {
+                throw new InvalidProofException(
+                    'invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts',
+                );
+            }
+        }
+
         // Rule 10: memo binding.
         $expectedMemo = self::stringExtra($requirement, 'memo', false);
         if ($expectedMemo !== null && $expectedMemo !== '') {
