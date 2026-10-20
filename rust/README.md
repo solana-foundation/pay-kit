@@ -190,6 +190,14 @@ Payment` credential, decodes the client-signed transaction and checks recipient,
 amount, mint, splits, ATA, memos, and compute budget, optionally co-signs as fee
 payer, broadcasts, polls to `confirmed`, and emits `Payment-Receipt`.
 
+**Upgrading with pending session opens.** A session open is adopted only if it
+landed after a slot this ledger recorded before its first broadcast. Pending
+rows written by earlier releases have no such slot; they use the finalized slot
+they recorded before broadcasting instead, a slightly coarser bound. A pending
+row that recorded neither (version 1 intents, or opens whose finalized
+observation failed) is refused with "no recorded broadcast floor" and stays
+pending. Resolve those before upgrading, or refund them out of band.
+
 ### MCP with `rmcp`
 
 Enable the `rmcp` feature to use the Payment Auth MCP transport with the

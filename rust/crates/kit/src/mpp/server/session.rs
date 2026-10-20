@@ -132,8 +132,28 @@ pub fn session_open_is_terminal(state: &ChannelState) -> bool {
     state.extra.contains_key(OPEN_TERMINAL_KEY)
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A cluster slot observed before this ledger's first broadcast of an open.
+/// Only a landing after it proves this ledger opened the channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdoptionFloor {
+    Slot(u64),
+    /// Nothing recorded bounds the first broadcast; the open is never adopted.
+    Unproven,
+}
+
+impl AdoptionFloor {
+    fn slot(self) -> Result<u64> {
+        match self {
+            Self::Slot(slot) => Ok(slot),
+            Self::Unproven => Err(Error::Other(
+                "pending open has no recorded broadcast floor and cannot be adopted".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(from = "StoredOpenIntent", into = "StoredOpenIntent")]
 struct OpenIntent {
     version: u32,
     payload: OpenPayload,
@@ -141,15 +161,76 @@ struct OpenIntent {
     recent_blockhash: String,
     recent_slot: u64,
     /// Positive finalized observation, persisted before any server broadcast.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     finalized_valid_at: Option<u64>,
     /// Fully signed transaction ID (the sponsor signature for sponsored opens).
+    transaction_signature: Option<String>,
+    adoption_floor: AdoptionFloor,
+}
+
+/// The persisted form of [`OpenIntent`].
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredOpenIntent {
+    version: u32,
+    payload: OpenPayload,
+    challenge_id: String,
+    recent_blockhash: String,
+    recent_slot: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finalized_valid_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transaction_signature: Option<String>,
-    /// Cluster slot observed before this ledger's first broadcast. Only a
-    /// landing after it proves this ledger opened the channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     adoption_floor: Option<u64>,
+}
+
+impl From<StoredOpenIntent> for OpenIntent {
+    fn from(stored: StoredOpenIntent) -> Self {
+        // Rows written before floors were recorded still persisted their
+        // finalized observation before broadcasting: a finalized slot is at or
+        // below the cluster slot at that moment, so it is a coarser floor.
+        let adoption_floor = stored
+            .adoption_floor
+            .or(stored.finalized_valid_at)
+            .map_or(AdoptionFloor::Unproven, AdoptionFloor::Slot);
+        Self {
+            version: stored.version,
+            payload: stored.payload,
+            challenge_id: stored.challenge_id,
+            recent_blockhash: stored.recent_blockhash,
+            recent_slot: stored.recent_slot,
+            finalized_valid_at: stored.finalized_valid_at,
+            transaction_signature: stored.transaction_signature,
+            adoption_floor,
+        }
+    }
+}
+
+/// Whether a stored intent is `expected`, compared in its loaded form so a row
+/// written by an older release matches its own migrated intent.
+fn same_open_intent(stored: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    serde_json::from_value::<OpenIntent>(stored.clone())
+        .ok()
+        .and_then(|intent| serde_json::to_value(intent).ok())
+        .is_some_and(|stored| &stored == expected)
+}
+
+impl From<OpenIntent> for StoredOpenIntent {
+    fn from(intent: OpenIntent) -> Self {
+        Self {
+            version: intent.version,
+            payload: intent.payload,
+            challenge_id: intent.challenge_id,
+            recent_blockhash: intent.recent_blockhash,
+            recent_slot: intent.recent_slot,
+            finalized_valid_at: intent.finalized_valid_at,
+            transaction_signature: intent.transaction_signature,
+            adoption_floor: match intent.adoption_floor {
+                AdoptionFloor::Slot(slot) => Some(slot),
+                AdoptionFloor::Unproven => None,
+            },
+        }
+    }
 }
 
 /// Result of accepting a channel top-up action.
@@ -1225,19 +1306,12 @@ impl<S: ChannelStore> SessionServer<S> {
         let finalized_valid_at = stored_intent
             .as_ref()
             .and_then(|intent| intent.finalized_valid_at);
-        let adoption_floor = if fresh_open {
-            observed_floor
-        } else {
-            stored_intent
-                .as_ref()
-                .and_then(|intent| intent.adoption_floor)
+        let adoption_floor = match &stored_intent {
+            Some(intent) if !fresh_open => intent.adoption_floor,
+            _ => observed_floor.map_or(AdoptionFloor::Unproven, AdoptionFloor::Slot),
         };
         let activation_floor = if activating {
-            Some(adoption_floor.ok_or_else(|| {
-                Error::Other(
-                    "pending open has no recorded broadcast floor and cannot be adopted".into(),
-                )
-            })?)
+            Some(adoption_floor.slot()?)
         } else {
             None
         };
@@ -1302,7 +1376,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     Some(existing) => {
                         binding::require_binding(&existing, &expected_binding, true)
                             .map_err(|error| StoreError::Internal(error.to_string()))?;
-                        if existing.extra.get(OPEN_INTENT_KEY).is_some_and(|stored| stored != &expected_intent) {
+                        if existing.extra.get(OPEN_INTENT_KEY).is_some_and(|stored| !same_open_intent(stored, &expected_intent)) {
                             return Err(StoreError::Internal("open intent does not match stored state".into()));
                         }
                         if existing.sealed {
@@ -1348,38 +1422,41 @@ impl<S: ChannelStore> SessionServer<S> {
             &self.config,
         )
         .await;
-        let (transaction_signature, onchain_settled) = match opened? {
-            OpenSubmission::Landed { signature, settled } => (signature, settled),
-            OpenSubmission::OpenedElsewhere => {
-                // Retire the reservation so no retry can activate it.
-                let expected_intent = intent.clone();
-                self.store
-                    .inner
-                    .update_channel(
-                        session_id,
-                        Box::new(move |state| {
-                            let mut state = state.ok_or_else(|| {
-                                StoreError::Internal("open intent disappeared".into())
-                            })?;
-                            if state.extra.get(OPEN_INTENT_KEY) != Some(&expected_intent) {
-                                return Err(StoreError::Internal(
-                                    "open intent changed before retirement".into(),
-                                ));
-                            }
-                            state.extra.insert(
-                                OPEN_TERMINAL_KEY.into(),
-                                serde_json::json!({ "version": 1, "openedElsewhere": true }),
-                            );
-                            state.pending_setup = None;
-                            state.lifecycle = None;
-                            Ok(state)
-                        }),
-                    )
-                    .await
-                    .map_err(store_err)?;
-                return Err(Error::Other(OPENED_ELSEWHERE_ERROR.into()));
-            }
-        };
+        let (transaction_signature, onchain_settled) =
+            match opened? {
+                OpenSubmission::Landed { signature, settled } => (signature, settled),
+                OpenSubmission::OpenedElsewhere => {
+                    // Retire the reservation so no retry can activate it.
+                    let expected_intent = intent.clone();
+                    self.store
+                        .inner
+                        .update_channel(
+                            session_id,
+                            Box::new(move |state| {
+                                let mut state = state.ok_or_else(|| {
+                                    StoreError::Internal("open intent disappeared".into())
+                                })?;
+                                if !state.extra.get(OPEN_INTENT_KEY).is_some_and(|stored| {
+                                    same_open_intent(stored, &expected_intent)
+                                }) {
+                                    return Err(StoreError::Internal(
+                                        "open intent changed before retirement".into(),
+                                    ));
+                                }
+                                state.extra.insert(
+                                    OPEN_TERMINAL_KEY.into(),
+                                    serde_json::json!({ "version": 1, "openedElsewhere": true }),
+                                );
+                                state.pending_setup = None;
+                                state.lifecycle = None;
+                                Ok(state)
+                            }),
+                        )
+                        .await
+                        .map_err(store_err)?;
+                    return Err(Error::Other(OPENED_ELSEWHERE_ERROR.into()));
+                }
+            };
         let expected_binding = self.store.binding.clone();
         let state = self
             .store
@@ -1394,7 +1471,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     if state
                         .extra
                         .get(OPEN_INTENT_KEY)
-                        .is_some_and(|stored| stored != &intent)
+                        .is_some_and(|stored| !same_open_intent(stored, &intent))
                     {
                         return Err(StoreError::Internal(
                             "open intent changed before activation".into(),
@@ -4456,7 +4533,7 @@ mod tests {
                 recent_slot: CHALLENGED_SLOT,
                 finalized_valid_at: Some(42),
                 transaction_signature: Some(prepared.0.signatures[0].to_string()),
-                adoption_floor: Some(CHALLENGED_SLOT),
+                adoption_floor: AdoptionFloor::Slot(CHALLENGED_SLOT),
             })
             .unwrap(),
         );
@@ -5225,6 +5302,102 @@ mod tests {
                 assert!(error.contains("cannot be adopted"), "{error}");
                 assert!(session_open_is_terminal(&state));
                 assert_eq!(state.deposit, 0);
+            }
+            assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
+            rpc.abort();
+        }
+    }
+
+    /// A pending open written before floors were recorded loads its floor
+    /// from the finalized observation it persisted before broadcasting, and is
+    /// resumed only when it landed after that; with neither recorded it is
+    /// never adopted.
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_pending_open_derives_its_floor_from_its_finalized_observation() {
+        use serde_json::json;
+        const FINALIZED: u64 = CHALLENGED_SLOT - 2;
+        for (landed_at, finalized, adopted) in [
+            (FINALIZED, Some(FINALIZED), false),
+            (FINALIZED + 1, Some(FINALIZED), true),
+            (CHALLENGED_SLOT + 1, None, false),
+        ] {
+            let mut server =
+                SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new())
+                    .with_channel_binding(json!({"version": 1}));
+            let (open, params) = signed_open(&server, 4).await;
+            let mut pending = pending_before_broadcast(&server, &open).await;
+            let intent = pending
+                .extra
+                .get_mut(OPEN_INTENT_KEY)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            intent.remove("adoption_floor");
+            match finalized {
+                Some(slot) => intent.insert("finalized_valid_at".into(), json!(slot)),
+                None => intent.remove("finalized_valid_at"),
+            };
+            let signature = intent["transaction_signature"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let loaded: OpenIntent =
+                serde_json::from_value(pending.extra[OPEN_INTENT_KEY].clone()).unwrap();
+            assert_eq!(
+                loaded.adoption_floor,
+                finalized.map_or(AdoptionFloor::Unproven, AdoptionFloor::Slot)
+            );
+            server
+                .store
+                .inner
+                .put_channel(&open.channel_id, pending.clone())
+                .await
+                .unwrap();
+            let (url, rpc, sends) = rpc_for_landed_channel(
+                channel_for_params(&params),
+                CHALLENGED_SLOT + 10,
+                LandedStatus::Finalized,
+                [(signature, landed_at)],
+            )
+            .await;
+            server.config.rpc_url = Some(url);
+            let blockhash = test_blockhash().to_string();
+            let context = SessionOpenContext {
+                challenge_id: "opening",
+                expires: None,
+                recent_blockhash: &blockhash,
+                recent_slot: CHALLENGED_SLOT,
+            };
+            let outcome = server.process_open_with_outcome(&open, context).await;
+            let state = server
+                .store
+                .inner
+                .get_channel(&open.channel_id)
+                .await
+                .unwrap()
+                .unwrap();
+            match (adopted, finalized) {
+                (true, _) => {
+                    assert_eq!(outcome.unwrap().state.deposit, params.deposit);
+                    assert!(state.pending_setup.is_none());
+                }
+                // Landed at or before the floor: opened elsewhere, retired.
+                (false, Some(_)) => {
+                    let error = outcome.unwrap_err().to_string();
+                    assert!(error.contains("cannot be adopted"), "{error}");
+                    assert!(session_open_is_terminal(&state));
+                    assert_eq!(state.deposit, 0);
+                }
+                // Nothing bounds the first broadcast: refused, row untouched.
+                (false, None) => {
+                    let error = outcome.unwrap_err().to_string();
+                    assert!(error.contains("no recorded broadcast floor"), "{error}");
+                    assert_eq!(
+                        serde_json::to_value(&state).unwrap(),
+                        serde_json::to_value(&pending).unwrap()
+                    );
+                }
             }
             assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
             rpc.abort();
