@@ -734,11 +734,7 @@ fn sponsored_activation_rejects_unrelated_authority_init() {
     let tx = fixture.tx(&[unrelated, fixture.subscribe(), fixture.transfer()]);
 
     let err = fixture.validate(&tx).unwrap_err();
-    assert!(
-        err.message.contains("initialize_subscription_authority"),
-        "{}",
-        err.message
-    );
+    assert!(err.message.contains("initialize_subscription_authority"));
 }
 
 #[test]
@@ -770,11 +766,7 @@ fn subscribe_for_another_plan_is_rejected() {
     let tx = fixture.tx(&[subscribe, fixture.transfer()]);
 
     let err = fixture.validate(&tx).unwrap_err();
-    assert!(
-        err.message.contains("subscribe accounts"),
-        "{}",
-        err.message
-    );
+    assert!(err.message.contains("subscribe accounts"));
 }
 
 #[test]
