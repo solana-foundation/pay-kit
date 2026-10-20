@@ -629,6 +629,48 @@ struct FundedAccount {
     written: u64,
 }
 
+/// The spl-record instructions a confidential bundle may carry.
+#[cfg(feature = "confidential")]
+#[derive(Debug, PartialEq, Eq)]
+enum RecordIx {
+    Initialize,
+    /// A write of `length` payload bytes; an empty write is never valid.
+    Write {
+        length: std::num::NonZeroU32,
+    },
+    CloseAccount,
+}
+
+#[cfg(feature = "confidential")]
+impl RecordIx {
+    fn parse(data: &[u8]) -> Result<Self, VerificationError> {
+        let malformed =
+            || VerificationError::credential_mismatch("spl-record write has malformed data");
+        match data.first().copied() {
+            Some(0) => Ok(Self::Initialize),
+            Some(1) => {
+                // tag | offset u64 | length u32 | data
+                let length = data
+                    .get(9..13)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(u32::from_le_bytes)
+                    .ok_or_else(malformed)?;
+                let length = std::num::NonZeroU32::new(length).ok_or_else(|| {
+                    VerificationError::credential_mismatch("spl-record write is empty")
+                })?;
+                if data.len() as u64 != 13 + u64::from(length.get()) {
+                    return Err(malformed());
+                }
+                Ok(Self::Write { length })
+            }
+            Some(3) => Ok(Self::CloseAccount),
+            _ => Err(VerificationError::credential_mismatch(
+                "unsupported spl-record instruction in confidential bundle",
+            )),
+        }
+    }
+}
+
 #[cfg(feature = "confidential")]
 pub(crate) fn verify_confidential_account_lifecycle(
     transactions: &[VersionedTransaction],
@@ -818,8 +860,8 @@ pub(crate) fn verify_confidential_account_lifecycle(
                             "spl-record instruction is missing its record account",
                         )
                     })?;
-                match ix.data.first().copied() {
-                    Some(0) => {
+                match RecordIx::parse(&ix.data)? {
+                    RecordIx::Initialize => {
                         transition(
                             account,
                             FundedAccountKind::Record,
@@ -829,7 +871,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         )?;
                         advances_lifecycle = true;
                     }
-                    Some(1) => {
+                    RecordIx::Write { length } => {
                         let state = funded.get_mut(&account).ok_or_else(|| {
                             VerificationError::credential_mismatch(
                                 "confidential bundle writes a record it did not create",
@@ -843,20 +885,9 @@ pub(crate) fn verify_confidential_account_lifecycle(
                                 "confidential bundle writes outside an initialized record lifecycle",
                             ));
                         }
-                        // Write: tag | offset u64 | length u32 | data. Each
-                        // payload byte is staged once, so the total written
-                        // is bounded by the record's capacity.
-                        let length = ix
-                            .data
-                            .get(9..13)
-                            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                            .map(|bytes| u64::from(u32::from_le_bytes(bytes)))
-                            .ok_or_else(|| {
-                                VerificationError::credential_mismatch(
-                                    "spl-record write has malformed data",
-                                )
-                            })?;
-                        state.written = state.written.saturating_add(length);
+                        // Each payload byte is staged once, so the total
+                        // written is bounded by the record's capacity.
+                        state.written = state.written.saturating_add(u64::from(length.get()));
                         let capacity = state.space.saturating_sub(
                             spl_record::state::RecordData::WRITABLE_START_INDEX as u64,
                         );
@@ -867,18 +898,13 @@ pub(crate) fn verify_confidential_account_lifecycle(
                         }
                         advances_lifecycle = true;
                     }
-                    Some(3) => transition(
+                    RecordIx::CloseAccount => transition(
                         account,
                         FundedAccountKind::Record,
                         true,
                         &created_in_transaction,
                         &mut funded,
                     )?,
-                    _ => {
-                        return Err(VerificationError::credential_mismatch(
-                            "unsupported spl-record instruction in confidential bundle",
-                        ))
-                    }
                 }
             }
         }
@@ -2258,6 +2284,54 @@ pub(crate) mod tests {
             );
         }
         verify_confidential_account_lifecycle(&[setup, final_tx], &gateway).unwrap();
+    }
+
+    // An empty record write advances nothing, so it cannot carry a filler tx.
+    #[test]
+    fn record_writes_must_carry_data() {
+        let gateway = Pubkey::new_unique();
+        let record = Pubkey::new_unique();
+        let space = (100 + spl_record::state::RecordData::WRITABLE_START_INDEX) as u64;
+        let create = solana_system_interface::instruction::create_account(
+            &gateway,
+            &record,
+            1_000,
+            space,
+            &spl_record::id(),
+        );
+        let initialize = spl_record::instruction::initialize(&record, &gateway);
+        let close = spl_record::instruction::close_account(&record, &gateway, &gateway);
+        let p = layout_pieces(&gateway, &Pubkey::new_unique());
+        let bundle = |len: usize| {
+            [
+                v0_tx(&gateway, &[create.clone(), initialize.clone()]),
+                v0_tx(&gateway, &[record_write(&record, &gateway, 0, len)]),
+                v0_tx(&gateway, &[p.create.clone(), p.initialize.clone()]),
+                v0_tx(
+                    &gateway,
+                    &[p.transfer.clone(), p.close.clone(), close.clone()],
+                ),
+            ]
+        };
+        let err = verify_confidential_account_lifecycle(&bundle(0), &gateway).unwrap_err();
+        assert!(
+            err.message.contains("spl-record write is empty"),
+            "{}",
+            err.message
+        );
+        verify_confidential_account_lifecycle(&bundle(1), &gateway).unwrap();
+
+        assert_eq!(
+            RecordIx::parse(&spl_record::instruction::write(&record, &gateway, 0, &[7; 3]).data)
+                .unwrap(),
+            RecordIx::Write {
+                length: std::num::NonZeroU32::new(3).unwrap()
+            }
+        );
+        let mut trailing = spl_record::instruction::write(&record, &gateway, 0, &[7; 3]).data;
+        trailing.push(0);
+        assert!(RecordIx::parse(&trailing).is_err());
+        assert!(RecordIx::parse(&trailing[..12]).is_err());
     }
 
     #[test]
