@@ -107,6 +107,13 @@ jobs:
         id: harness-setup
         with:
           native-artifact: harness-adapters-${{ runner.os }}
+      # The TypeScript x402 runner and the ts-x402 adapters drive the real
+      # @solana/pay-kit, which bundles the vendored @x402 packages.
+      - name: Build @solana/pay-kit against prebuilt MPP
+        working-directory: typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @solana/pay-kit build
       - name: Run typescript offline conformance (vectors + protocol + flows)
         working-directory: harness
         env:
