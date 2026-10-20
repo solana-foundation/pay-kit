@@ -10,6 +10,11 @@ module PayKit::Protocols::Mpp
     def put_if_absent(_key, _value)
       raise NotImplementedError
     end
+
+    # Whether `key` exists. Read only: never creates the key.
+    def key?(_key)
+      raise NotImplementedError
+    end
   end
 
   # Thread-safe in-memory replay store for tests and local development.
@@ -27,6 +32,10 @@ module PayKit::Protocols::Mpp
         @values[key] = value
         true
       end
+    end
+
+    def key?(key)
+      @mutex.synchronize { @values.key?(key) }
     end
   end
 
@@ -53,6 +62,10 @@ module PayKit::Protocols::Mpp
         File.write(@path, JSON.pretty_generate(data))
         true
       end
+    end
+
+    def key?(key)
+      @mutex.synchronize { JSON.parse(File.read(@path)).key?(key) }
     end
   end
 end

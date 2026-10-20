@@ -762,7 +762,7 @@ class ChargeHandlerTest < Minitest::Test
 
   def test_rejects_replayed_signature
     store = PayKit::Protocols::Mpp::MemoryStore.new
-    store.put_if_absent("solana-charge:consumed:#{valid_signature}", true)
+    store.put_if_absent(::PayCore::ConsumedSignatures.key(valid_signature), true)
     handler = handler_with(FakeRpc.new(transaction_response: transaction_response), store: store)
     request = charge_request
     credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(challenge: handler_challenges.create_challenge(request).to_echo, payload: {"signature" => valid_signature})

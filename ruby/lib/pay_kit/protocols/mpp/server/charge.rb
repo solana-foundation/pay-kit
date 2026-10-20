@@ -3,6 +3,7 @@
 require "base64"
 require "digest"
 
+require "pay_core/consumed_signatures"
 require "pay_core/error_codes"
 require "pay_core/solana/base58"
 require "pay_core/solana/transaction"
@@ -189,7 +190,7 @@ module PayKit::Protocols::Mpp
           confirmation_attempts: 40, confirmation_delay: 0.25)
           @challenges = challenges
           @rpc = rpc
-          @replay_store = replay_store
+          @consumed_signatures = ::PayCore::ConsumedSignatures.new(replay_store)
           @fee_payer = fee_payer
           @network = network
           @settlement_header = settlement_header
@@ -312,9 +313,11 @@ module PayKit::Protocols::Mpp
           last
         end
 
+        # Claimed in the ledger shared with x402 exact, so a payment settled
+        # through either protocol cannot authorize a second request through
+        # the other.
         def consume_signature(signature)
-          key = "solana-charge:consumed:#{signature}"
-          inserted = @replay_store.put_if_absent(key, true)
+          inserted = @consumed_signatures.claim(signature)
           raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED) unless inserted
         end
 
