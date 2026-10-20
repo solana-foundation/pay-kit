@@ -164,9 +164,9 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | --- | ---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
-| vector charge | 22 | 22 | — | 20 · 2u | 20 · 2u | 22 | 20 · 2u | 21 · 1k | 17 · 5u | 22 |
+| vector charge | 22 | 22 | — | 14 · 8u | 14 · 8u | 22 | 14 · 8u | 22 | 17 · 5u | 22 |
 | vector session | 17 | 8 · 9u | 3 · 14u | — | — | 17 | — | 17 | 3 · 14u | 17 |
-| vector x402-exact | 16 | 16 | — | 8 · 8u | 8 · 8u | 16 | 8 · 8u | 12 · 2u · 2k | 6 · 10u | 16 |
+| vector x402-exact | 16 | 16 | — | 8 · 8u | 8 · 8u | 16 | 8 · 8u | 16 | 8 · 8u | 9 · 7u |
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
 <!-- coverage:end -->
