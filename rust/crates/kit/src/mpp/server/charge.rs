@@ -1279,7 +1279,6 @@ impl Mpp {
                     &challenge_id,
                     generation,
                     &final_signature,
-                    &payload,
                 )
                 .await;
         }
@@ -1323,7 +1322,6 @@ impl Mpp {
                         &challenge_id,
                         generation,
                         &final_signature,
-                        &payload,
                     )
                     .await;
             }
@@ -1433,7 +1431,6 @@ impl Mpp {
         challenge_id: &str,
         generation: u64,
         final_signature: &str,
-        payload: &CredentialPayload,
     ) -> Result<Receipt, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         let signature = Signature::from_str(final_signature).map_err(|e| {
@@ -1445,16 +1442,11 @@ impl Mpp {
                  again{detail}"
             ))
         };
-        // Read expiry first: once the blockhash cannot land, a later missing
-        // status is definitive.
-        let expired = match pending_blockhash(payload) {
-            Some(blockhash) => self
-                .rpc
-                .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
-                .map(|valid| !valid)
-                .map_err(|e| unresolved(format!(": {e}")))?,
-            None => false,
-        };
+        // Only an explicit on-chain outcome resolves the record. A missing
+        // status is never proof of non-execution, even once the blockhash has
+        // expired: the queried node may lag or lack history for a transaction
+        // that committed in time, and failing here would release the client to
+        // pay a replacement.
         let status = self
             .rpc
             .get_signature_status_with_commitment_and_history(
@@ -1485,9 +1477,6 @@ impl Mpp {
             }
             Some(Err(error)) => VerificationError::transaction_failed(format!(
                 "Transaction landed on-chain but failed: {error}"
-            )),
-            None if expired => VerificationError::transaction_failed(format!(
-                "Transaction {final_signature} expired without landing"
             )),
             None => return Err(unresolved(String::new())),
         };
@@ -2775,19 +2764,6 @@ impl From<VerificationError> for SettleFailure {
     fn from(error: VerificationError) -> Self {
         Self::Failed(error)
     }
-}
-
-/// Blockhash of the transaction whose signature settles `payload` (the final
-/// bundle transaction for a confidential charge).
-fn pending_blockhash(payload: &CredentialPayload) -> Option<solana_hash::Hash> {
-    let encoded = match payload {
-        CredentialPayload::Transaction { transaction } => transaction,
-        CredentialPayload::Bundle { transactions } => transactions.last()?,
-        CredentialPayload::Signature { .. } => return None,
-    };
-    crate::core::tx::decode(encoded)
-        .ok()
-        .map(|tx| *tx.message.recent_blockhash())
 }
 
 /// Audit #3: interpret a post-timeout `get_signature_status` result.
@@ -8879,17 +8855,9 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.reference, charge.signature.to_string());
 
-        let payload: CredentialPayload =
-            serde_json::from_value(charge.credential.payload.clone()).unwrap();
         let err = charge
             .mpp
-            .reconcile_pending_charge(
-                &replay,
-                &challenge_id,
-                generation,
-                &final_signature,
-                &payload,
-            )
+            .reconcile_pending_charge(&replay, &challenge_id, generation, &final_signature)
             .await
             .unwrap_err();
         assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
@@ -8959,20 +8927,28 @@ mod tests {
     async fn ambiguous_confirmation_fails_only_once_definitive() {
         use std::sync::atomic::Ordering;
         let (charge, _) = ambiguous_charge().await;
-        // The blockhash expired and the signature never landed: definitive.
+        // The blockhash expired and the queried node has no status for the
+        // signature. That is not proof it never landed (the node may lag or
+        // lack history), so the charge stays pending and is never failed.
         charge.blockhash_valid.store(false, Ordering::SeqCst);
         let err = charge
             .mpp
             .verify(&charge.credential, &charge.expected)
             .await
             .unwrap_err();
-        assert!(
-            err.message.contains("expired without landing"),
-            "{}",
-            err.message
-        );
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
         let record = charge_record(&charge.store, &charge.credential.challenge.id).await;
-        assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Failed);
+        assert_eq!(record.state, crate::mpp::store::ChargeRecordState::Pending);
+        // When the status does surface, the same retry is granted.
+        charge.status.store(1, Ordering::SeqCst);
+        let receipt = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap();
+        assert_eq!(receipt.reference, charge.signature.to_string());
+
+        // An explicit on-chain failure is definitive.
 
         let (charge, _) = ambiguous_charge().await;
         charge.status.store(2, Ordering::SeqCst);
