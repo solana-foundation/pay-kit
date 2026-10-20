@@ -232,6 +232,11 @@ impl ConsumedSignatures {
 /// replay once it reaches a terminal (`Confirmed`/`Failed`) state. Chosen to
 /// exceed Solana's transaction-history retention and typical client resume
 /// windows; a Redis-backed [`Store`] should set this as the key's TTL.
+///
+/// It is also the floor for how long a [`Store`] keeps charge records and
+/// [`ConsumedSignatures`] claims: an MPP server accepting push credentials
+/// refuses any challenge that expires later than this from now, so a paid
+/// signature cannot outlive its replay record.
 pub const DEFAULT_CHARGE_RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a charge record may sit in [`ChargeRecordState::Reserved`]

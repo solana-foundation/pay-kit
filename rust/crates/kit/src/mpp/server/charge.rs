@@ -50,7 +50,10 @@ use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
     default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
 };
-use crate::mpp::store::{ChargeReplayStore, ChargeReservation, Store, CHARGE_RESERVATION_LEASE};
+use crate::mpp::store::{
+    ChargeReplayStore, ChargeReservation, Store, CHARGE_RESERVATION_LEASE,
+    DEFAULT_CHARGE_RECORD_RETENTION,
+};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
@@ -652,6 +655,7 @@ impl Mpp {
         let encoded = Base64UrlJson::from_typed(&request)?;
         let default_expires = crate::mpp::expires::minutes(5);
         let expires = options.expires.unwrap_or(&default_expires);
+        self.check_push_replay_window(expires)?;
         let opaque = options.route.map(route_opaque).transpose()?;
 
         Ok(PaymentChallenge::with_challenge_binding_secret_full(
@@ -878,6 +882,7 @@ impl Mpp {
         let encoded = Base64UrlJson::from_typed(&*request)?;
         let default_expires = crate::mpp::expires::minutes(5);
         let expires = expires.unwrap_or(&default_expires);
+        self.check_push_replay_window(expires)?;
 
         Ok(PaymentChallenge::with_challenge_binding_secret_full(
             &self.challenge_binding_secret,
@@ -890,6 +895,17 @@ impl Mpp {
             description,
             None,
         ))
+    }
+
+    /// With push mode on, any challenge may be paid by presenting an
+    /// already-landed signature, which stays fetchable long after its
+    /// blockhash expired. Its replay protection is the store's memory of that
+    /// signature, so a challenge must not outlive it.
+    fn check_push_replay_window(&self, expires: &str) -> Result<(), Error> {
+        if !self.accept_push_mode {
+            return Ok(());
+        }
+        within_replay_retention(Some(expires)).map_err(|e| Error::InvalidConfig(e.message))
     }
 
     /// Audit #19: ensure a caller-built `ChargeRequest` parses and binds
@@ -1603,6 +1619,10 @@ impl Mpp {
                         "Push-mode credentials are not allowed when the route uses a server-side fee payer",
                     ).into());
                 }
+                // The consumed-signature record is all that stops this
+                // signature from paying again, so the challenge must expire
+                // while the store still remembers it.
+                within_replay_retention(challenge.expires.as_deref())?;
                 let signature_str = self.verify_push(signature, request, method_details)?;
                 self.consume_signature(&signature_str).await?;
                 Ok(signature_str)
@@ -2801,6 +2821,30 @@ fn challenge_route(challenge: &crate::mpp::protocol::core::ChallengeEcho) -> Opt
         .get("route")?
         .as_str()
         .map(str::to_string)
+}
+
+/// A challenge that expires within [`DEFAULT_CHARGE_RECORD_RETENTION`] from
+/// now, the time a [`Store`] keeps charge records and consumed signatures. A
+/// challenge without an expiry, or one valid for longer, could be presented
+/// again after the store forgot it was paid.
+fn within_replay_retention(expires: Option<&str>) -> Result<(), VerificationError> {
+    let expires = expires.ok_or_else(|| {
+        VerificationError::credential_mismatch(
+            "Push-mode charges require a challenge expiry within the replay retention window",
+        )
+    })?;
+    let expires_at =
+        time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| VerificationError::new("Invalid expires timestamp in challenge"))?;
+    let horizon = time::OffsetDateTime::now_utc()
+        + time::Duration::seconds(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64);
+    if expires_at > horizon {
+        return Err(VerificationError::credential_mismatch(format!(
+            "Push-mode challenge expiry {expires} exceeds the {}s replay retention window",
+            DEFAULT_CHARGE_RECORD_RETENTION.as_secs()
+        )));
+    }
+    Ok(())
 }
 
 /// The charge-record generation a settlement owns.
@@ -5379,6 +5423,65 @@ mod tests {
             err.message.contains("Invalid transaction at index 0"),
             "{err:?}"
         );
+    }
+
+    // A landed push signature stays fetchable indefinitely; only the store's
+    // memory of it prevents a second use. A push challenge must therefore
+    // expire within that memory: no expiry, or a longer one, is refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_challenge_must_expire_within_replay_retention() {
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            accept_push_mode: true,
+            store: Some(Arc::new(MemoryStore::new())),
+            ..Default::default()
+        })
+        .unwrap();
+        let request = expected_from_challenge(&mpp.charge("0.10").unwrap());
+        let in_two_days = (time::OffsetDateTime::now_utc() + time::Duration::days(2))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+
+        let err = mpp
+            .charge_challenge_with_options(&request, Some(&in_two_days), None)
+            .unwrap_err();
+        assert!(err.to_string().contains("replay retention"), "{err}");
+
+        let push = serde_json::json!({"type": "signature", "signature": "1111"});
+        let mut unbounded = sign_unvalidated(&mpp, &request);
+        for expires in [None, Some(in_two_days)] {
+            unbounded.expires = expires;
+            unbounded.id = compute_challenge_id(
+                &mpp.challenge_binding_secret,
+                &mpp.realm,
+                METHOD_NAME,
+                "charge",
+                unbounded.request.raw(),
+                unbounded.expires.as_deref(),
+                None,
+                None,
+            );
+            let credential = PaymentCredential {
+                challenge: unbounded.to_echo(),
+                source: None,
+                payload: push.clone(),
+            };
+            let err = mpp.verify(&credential, &request).await.unwrap_err();
+            assert!(err.message.contains("replay retention"), "{err:?}");
+        }
+
+        // A default five-minute challenge gets past the window check.
+        let credential = PaymentCredential {
+            challenge: mpp.charge_challenge(&request).unwrap().to_echo(),
+            source: None,
+            payload: push,
+        };
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert!(!err.message.contains("replay retention"), "{err:?}");
     }
 
     // ── Pre-broadcast SOL verification tests ──
