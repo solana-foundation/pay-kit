@@ -26,25 +26,29 @@ A bug found in one language is a conformance gap until every SDK is checked. Wor
    - If a vector already covers the bug and passes, the vector or the runner is wrong. Fix that first.
 3. **Run the new case against every SDK.**
    ```sh
-   cd harness
-   HARNESS_EXPECTATIONS_DISCOVER=1 HARNESS_PREBUILT_DIR= pnpm exec vitest run test/conformance.test.ts
+   cd rust
+   cargo run -q -p paykit-conformance --bin pkc -- run --sdk all --tier offline --discover
    ```
-   Read `harness/results/vector.<language>.json`. Every SDK that fails has the same bug. Fix it in this PR, or list it in that SDK's `harness/expectations/<language>.toml` under `[[known_failing]]` with a reason and `tracking` pointing at an issue.
+   Read `harness/results/<language>.json` (and `<language>.failures.json`, which explains every failure). Every SDK that fails has the same bug. `pkc case run --sdk <language> <id>` replays one case; [`harness/AGENTS.md`](harness/AGENTS.md) describes the loop. Fix it in this PR, or list it in that SDK's `harness/expectations/<language>.toml` under `[[known_failing]]` with a reason and `tracking` pointing at an issue.
 4. **Fix the SDK, never the runner.** Runners pass the vector's input to the SDK unchanged, including `input.rpcUrl`. They never fill defaults, resolve token programs, apply field precedence or build envelopes themselves. If a runner needs logic to pass a vector, that logic belongs in the SDK. Validate at the SDK boundary, and add a unit test in the SDK that fails before the fix.
 5. **Reconcile and regenerate.** Remove the entries your fix makes stale. The run fails if a listed known failure passes or an unsupported entry is handled. Then regenerate:
    ```sh
-   cd harness
-   (cd ../rust && cargo test -p paykit-conformance && cargo run -p paykit-conformance --bin pkc -- fill && cargo run -p paykit-conformance --bin pkc -- req-lint)
+   cd rust
+   cargo test -p paykit-conformance && cargo run -p paykit-conformance --bin pkc -- fill && cargo run -p paykit-conformance --bin pkc -- req-lint
+   cargo run -q -p paykit-conformance --bin pkc -- run --sdk <languages you touched> --tier offline --require
+   cargo run -q -p paykit-conformance --bin pkc -- run --sdk all --tier offline --cross   # README cross-verification table
+   cd ../harness
    pnpm coverage && pnpm interop
-   HARNESS_REQUIRE=1 HARNESS_PREBUILT_DIR= MPP_CONFORMANCE_LANGUAGES=<languages you touched> \
-     pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts test/expectations.test.ts
+   HARNESS_REQUIRE=1 MPP_CONFORMANCE_LANGUAGES=<languages you touched> \
+     pnpm exec vitest run test/protocol-conformance.test.ts test/expectations.test.ts
    ```
 
 ### Adding an SDK capability
 
 - **Claim it** in `harness/expectations/<language>.toml`. An unclaimed suite shows as `—` in the README table, never as a pass.
-- **Make sure CI runs it.** Add the language to a CI step with `HARNESS_REQUIRE=1`; `test/ci-coverage.test.ts` fails otherwise.
+- **Make sure CI runs it.** Vectors: a CI step running `pkc run --sdk <language> --tier offline --require`; protocol and flow suites: a vitest step with `HARNESS_REQUIRE=1`. `test/ci-coverage.test.ts` fails otherwise.
 - **Declare what the runner cannot express.** List it under `[[unsupported]]` with a precise reason, for example "server-only SDK, no client builder". The driver still executes those cases and fails if the runner starts handling them.
+- **Declare the testee's clock.** `capabilities.honours_clock` says whether the testee drives the SDK at the clock a vector pins; `pkc` checks it against the testee's `capabilities` answer.
 
 ### Reviewing a conformance change
 

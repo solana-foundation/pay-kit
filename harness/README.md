@@ -57,11 +57,80 @@ Run with `pnpm test:onchain`. Network-gated (see Limitations).
 
 ### 3. Conformance vectors
 
-`test/conformance.test.ts`, `src/protocol/`, `vectors/`, `src/canonical-codes.ts`.
+`pkc run` (`rust/crates/conformance`), `vectors/`, `expectations/`,
+`runners/<lang>.json`; the mpp-tools protocol and flow suites stay in
+`test/protocol-conformance.test.ts` and `test/flow-conformance.test.ts`.
 
-Per-SDK runners (`runners/<lang>.json`) replay shared vectors (canonical JSON,
-wire bytes, frozen voucher preimages, error-code classification) and assert
-every SDK produces byte-identical output. No validator required.
+Every SDK ships one **testee** (`runners/<lang>.json`) that `pkc` drives over
+the vectors `pkc fill` generates from the Rust kit: canonical JSON, wire bytes,
+voucher preimages, charge and x402 builds and verifies, reject codes. No
+validator and no network: each vector's chain state is served by a fixture
+JSON-RPC whose URL the testee receives as `input.rpcUrl`.
+
+```bash
+cd rust
+cargo run -q -p paykit-conformance --bin pkc -- run --sdk python --tier offline   # one SDK, seconds
+cargo run -q -p paykit-conformance --bin pkc -- run --sdk all --tier offline --require
+cargo run -q -p paykit-conformance --bin pkc -- next --sdk python                  # smallest failing class
+cargo run -q -p paykit-conformance --bin pkc -- case run --sdk python <vector-id>
+cargo run -q -p paykit-conformance --bin pkc -- case show <vector-id>
+cargo run -q -p paykit-conformance --bin pkc -- run --sdk python --diff-expectations
+cargo run -q -p paykit-conformance --bin pkc -- run --cross                         # client x server matrix
+cargo run -q -p paykit-conformance --bin pkc -- help
+```
+
+`pkc` judges every result itself (outcome, `rejectCode`, exact bytes, x402
+envelope shape, transaction shape) and, for every accepted build, decodes the
+built transaction, runs the Rust kit's verifier on it against the vector's
+request and compares its instruction multiset (program, set of accounts, data;
+signatures excluded, ordering free) with the kit's own build of the same case.
+It reconciles against `expectations/<lang>.toml` exactly in both directions and
+writes `results/<lang>.json`, `results/<lang>.failures.json` (every failure
+with the requirement, mutation, decoded diff, Rust reference, stderr and replay
+command), `results/junit-<lang>.xml` and `results/<lang>/builds/`. `--require`
+(or `HARNESS_REQUIRE=1`, set in CI) makes a run that skipped any claimed case
+fail; `--discover` (or `HARNESS_EXPECTATIONS_DISCOVER=1`) runs every vector for
+every SDK without judging, to seed an expectations file. `--seed N` fills a
+variant corpus first (the nightly `conformance-seeded.yml` job, reported, not
+gating). See [`AGENTS.md`](AGENTS.md) for the working loop.
+
+### Testee ABI
+
+ABI v2, the default: one long-lived process started with the manifest's
+`serve` command, newline-delimited JSON on stdin and stdout, diagnostics on
+stderr only.
+
+```text
+-> {"id":"1","op":"capabilities","input":{}}
+<- {"id":"1","ok":true,"result":{"abi":2,"language":"go","intents":["charge","x402-exact","session"],"honoursClock":true}}
+-> {"id":"2","op":"verify","input":{"id":"<vector id>","intent":"charge","mode":"verify-transaction","description":"...","input":{...,"rpcUrl":"http://127.0.0.1:..."}}}
+<- {"id":"2","ok":true,"result":{"id":"<vector id>","outcome":"reject","rejectCode":"amount-mismatch","error":"..."}}
+<- {"id":"3","ok":false,"error":"bad-request","detail":"..."}
+```
+
+- `op` is `capabilities`, `build`, `verify` or `canonical-bytes` (the vector's
+  mode); `protocol.*` ops join when the mpp-tools suite moves to `pkc`.
+- `input` is the v1 vector without its `expect` block and traceability
+  metadata; `result` is exactly the v1 `RunnerResult` (`src/conformance/schema.ts`),
+  validated strictly (`additionalProperties: false`). An accepted build also
+  carries the built artifact: `transaction` (charge, base64 wire transaction)
+  or `x402PaymentHeader` (x402, base64 header).
+- `ok: false` is for testee-level errors only; an SDK reject is `ok: true` with
+  `outcome: "reject"`. `outcome: "unsupported-mode"` (or a reject whose `error`
+  starts with it) declares the SDK cannot express the case.
+- `capabilities` must match `expectations/<lang>.toml` (`capabilities.vector`
+  and `capabilities.honours_clock`), or the run fails.
+- Every case has a timeout (`--timeout`, default 10 s; the first case also gets
+  `--startup-timeout`). A testee that times out or exits is killed, the case
+  fails with its stderr attached, and the testee restarts for the next case.
+- A testee keeps no state across cases (reset per-process SDK singletons
+  before each case); `--legacy` runs the manifest's one-shot `command` (one
+  process per case, v1 vector on stdin, one result line on stdout) and must
+  produce identical results.
+
+`pkc scaffold --lang <python|typescript|go|ruby|php|lua> --sdk <name>` writes a
+testee skeleton for this ABI, its manifest and an expectations file claiming
+nothing.
 
 ### Process adapter contract
 
@@ -103,8 +172,10 @@ src/
   intents/            scenario definitions (charge, x402-exact, session, …)
   onchain/surfnet.ts  mainnet-fork bootstrap for the on-chain tier
   protocol/           cross-SDK vector drivers + divergence matrix
-test/                 vitest entrypoints (structural, on-chain, conformance)
-runners/<lang>.json   per-SDK conformance runner configs
+test/                 vitest entrypoints (structural, on-chain, protocol/flow conformance)
+runners/<lang>.json   per-SDK conformance testee (`command` one-shot, `serve` ABI v2)
+expectations/         per-SDK claims, unsupported and known_failing (exact-set)
+vectors/              filled by `pkc fill`; never edited by hand
 <lang>-{client,server}/  per-language process adapters
 ```
 
@@ -170,6 +241,38 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
 <!-- coverage:end -->
+
+### Offline cross-verification (generated)
+
+Every SDK's offline builds (`results/<sdk>/builds/`) fed to every
+server-capable SDK's verifier, with no validator or network (`pkc run
+--cross`). A cell counts the builds on which the server agrees with the Rust
+judge. Regenerate after a full offline run; `pkc run --cross --check` fails
+when the table is stale.
+
+<!-- cross:begin (generated by `pkc run --cross`; do not edit) -->
+**charge**: builds by the client SDK (rows) verified by the server SDK (columns), agreeing with the Rust judge / total.
+
+| client \ server | go | lua | php | python | ruby | rust | typescript |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| go | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| python | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| rust | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| swift | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| typescript | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+
+**x402-exact**: builds by the client SDK (rows) verified by the server SDK (columns), agreeing with the Rust judge / total.
+
+| client \ server | go | lua | php | python | ruby | rust | typescript |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| go | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 · 2u |
+| python | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 · 2u |
+| rust | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 · 2u |
+| swift | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 · 2u |
+| typescript | 4/4 | 4/4 | 4/4 | 4/4 | 4/4 | 4/4 | 4/4 |
+
+A server agrees with a build when it accepts what the Rust judge accepted (verifier plus instruction multiset against the kit's own build) and refuses what it refused; `u` counts builds the server reports it cannot express. Disagreements are listed in `harness/results/cross.json`.
+<!-- cross:end -->
 
 ### Interop in CI (generated)
 
@@ -300,7 +403,7 @@ From this directory:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test                      # structural + conformance (default matrix)
+pnpm test                      # structural + protocol/flow conformance (default matrix)
 pnpm test:onchain              # on-chain settlement tier (HARNESS_ONCHAIN=1)
 pnpm typecheck                 # base typecheck (excludes the on-chain suite)
 pnpm typecheck:onchain         # on-chain suite typecheck (needs pay-kit built)

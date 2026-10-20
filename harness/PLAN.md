@@ -51,6 +51,49 @@ file names under `harness/vectors/` (no `generated/` / `authored/` split;
 `provenance` is a per-vector field), the lint is a `pkc` subcommand rather
 than a Python script, and `run` / `report` are not started.
 
+Phase 2 and 2b landed on `feat/pkc-phase2`:
+
+- `pkc run --sdk <lang>[,..]|all --tier offline [--require]` replaces
+  `harness/test/conformance.test.ts` (deleted) in every CI leg. Rust port of
+  the TS reconciler (`run/expectations.rs`, tests ported), of `judgeVector`
+  (`run/judge.rs`) and of the result schema (`run/result.rs`); per-vector
+  fixture RPC; `harness/results/<sdk>.json`, `<sdk>.failures.json`,
+  `junit-<sdk>.xml`, GitHub `::error` annotations.
+- Testee ABI v2 (`--serve`, newline JSON, `capabilities` / `build` /
+  `verify` / `canonical-bytes`) in all nine runners; manifests gained
+  `serve`; one-shot kept as `--legacy` and checked to give identical results
+  for all eight local languages. `capabilities` is cross-checked against the
+  toml, which gained a required `capabilities.honours_clock`. Per-case
+  timeout, stderr drained per case, process-group kill and restart.
+- Builds are judged by the Rust kit: every accepted charge / x402 build
+  carries `transaction` / `x402PaymentHeader`, is run through the kit's
+  verifier and compared, as an instruction multiset, with the kit's own build.
+  This found the Python x402 runner signing with an ephemeral key instead of
+  the vector's signer (fixed in the runner).
+- `pkc run --cross`: every saved build verified by every server-capable SDK;
+  the x402 build offers now use a sponsor whose seed the harness holds
+  (`[11; 32]`) so server SDKs that need a key can be configured. Matrix in
+  `harness/README.md` (markers, `--check` for staleness); not gating yet.
+- 2b: `pkc case show`, `pkc case run`, `pkc next` (grouping, blocking first),
+  `--diff-expectations`, six-element failure reports (`run/explain.rs`,
+  references resolved from search strings and checked by a test),
+  `pkc scaffold`, `pkc run --seed` with the nightly `conformance-seeded.yml`
+  (reported, not gating), `harness/AGENTS.md`, `skills/sdk-conformance`.
+
+Wall clock for the offline vector suite, local, warm caches (old vitest
+driver, one process per vector, vs `pkc run`): typescript 107 s vs 3 s, rust
+60 s vs 1.3 s, go 15 s vs 0.5 s, python 29 s vs 0.8 s, ruby 16 s vs 0.6 s,
+php 7 s vs 0.3 s, lua 3 s vs 0.4 s, swift 70 s vs 1.5 s.
+
+Not done in phase 2: the protocol and flow suites still run on vitest (their
+`protocol.*` ops are not in the ABI yet), so `src/expectations.ts` stays as
+the TS twin of the Rust parser; `src/conformance/{decode,jcs,reject,x402}.ts`
+stay because the TypeScript runner uses them; the cross matrix is reported,
+not reconciled against expectations; decoders in `annotate.rs` are
+hand-written, not generated from `idl/`; `reference` metadata is derived per
+(intent, mode), not stored per case. The Kotlin testee's `--serve` mode was
+written without a local JVM and is first compiled in CI.
+
 Done:
 
 - Expectations files with exact-set reconciliation for the vector,
