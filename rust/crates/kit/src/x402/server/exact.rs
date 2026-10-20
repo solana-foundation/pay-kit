@@ -903,11 +903,13 @@ impl X402 {
             }
         }
 
-        // The canonical `accepted` object carries no resource, so a v2
-        // credential is bound to its route only through `resource`.
-        if envelope.x402_version == X402_VERSION_V2 {
-            verify_resource_binding(envelope.resource.as_ref(), requirements)?;
-        }
+        // Fail closed on a resource-bound route: whatever the credential
+        // omits, the binding must still hold.
+        verify_resource_binding(
+            envelope.x402_version,
+            envelope.resource.as_ref(),
+            requirements,
+        )?;
 
         match envelope.payload {
             PaymentProof::Transaction { transaction } => {
@@ -1111,10 +1113,17 @@ fn unix_now() -> i64 {
         })
 }
 
-/// Reject a v2 credential that names a resource other than the route's.
-/// `resource` is optional on the v2 payload and unsigned, so an absent one
-/// is accepted; replay across routes is stopped by signature consumption.
+/// Bind a credential to a resource-bound route, failing closed.
+///
+/// The canonical `accepted` object carries no resource, so a v2 credential
+/// names its route only through `resource`: it must be present and equal.
+/// A v1 credential has no resource on the wire at all, so it is bound only by
+/// the memo its signed transaction carries (`extra.memo`, which the
+/// transaction verifier then requires); a resource-bound route without one
+/// cannot bind it and refuses it. Neither field is signed, which is why the
+/// memo, not the resource, is what ties the payment to the route.
 fn verify_resource_binding(
+    x402_version: u64,
     presented: Option<&ResourceInfo>,
     requirements: &PaymentRequirements,
 ) -> Result<(), Error> {
@@ -1124,13 +1133,32 @@ fn verify_resource_binding(
     else {
         return Ok(());
     };
+    if x402_version != X402_VERSION_V2 {
+        let memo_bound = requirements
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("memo"))
+            .and_then(|memo| memo.as_str())
+            .is_some_and(|memo| !memo.is_empty());
+        return if memo_bound {
+            Ok(())
+        } else {
+            Err(Error::Other(format!(
+                "Resource binding missing: a v1 credential cannot name {}, and the route sets no memo",
+                expected.url
+            )))
+        };
+    }
     match presented {
         Some(resource) if resource.url == expected.url => Ok(()),
         Some(resource) => Err(Error::Other(format!(
             "Resource mismatch: expected {}, got {}",
             expected.url, resource.url
         ))),
-        None => Ok(()),
+        None => Err(Error::Other(format!(
+            "Resource binding missing: expected {}",
+            expected.url
+        ))),
     }
 }
 
@@ -2218,14 +2246,104 @@ mod tests {
             assert!(err.to_string().contains("Resource mismatch"), "{err}");
         }
 
-        // Clients that omit the optional resource are not rejected.
+        // Omitting the resource does not escape the binding.
         let unbound = transaction_header(&route_a, None, &tx);
         let omitted = x402
             .process_payment(&unbound, "0.01", resource_options("/route-a"))
-            .await;
+            .await
+            .unwrap_err();
         assert!(
-            matches!(omitted, Ok(VerifiedExactPayment::Transaction(_))),
-            "{omitted:?}"
+            omitted.to_string().contains("Resource binding missing"),
+            "{omitted}"
+        );
+    }
+
+    /// A credential without `accepted` or `resource`, as v1 always is.
+    fn bare_header(
+        version: u64,
+        resource: Option<ResourceInfo>,
+        tx: &VersionedTransaction,
+    ) -> String {
+        let envelope = PaymentSignatureEnvelope {
+            scheme: Some(EXACT_SCHEME.to_string()),
+            network: Some(SOLANA_DEVNET.to_string()),
+            x402_version: version,
+            accepted: None,
+            resource,
+            payload: PaymentProof::Transaction {
+                transaction: crate::core::tx::encode(tx).unwrap(),
+            },
+            extensions: None,
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn bound_route_fails_closed_on_a_missing_resource_or_memo() {
+        let x402 = X402::new(config()).unwrap();
+        let bound = |memo| ExactOptions {
+            resource: Some("/route-a"),
+            memo,
+            ..ExactOptions::default()
+        };
+        let requirements = x402
+            .exact_requirements("0.01", bound(Some("GET route-a")))
+            .unwrap();
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(&requirements, &payer, &payer);
+        let verify = |header: String, options: ExactOptions<'static>| {
+            let x402 = &x402;
+            async move { x402.process_payment(&header, "0.01", options).await }
+        };
+        let accepted = |result: Result<VerifiedExactPayment, Error>| {
+            assert!(
+                matches!(result, Ok(VerifiedExactPayment::Transaction(_))),
+                "{result:?}"
+            );
+        };
+        let rejected = |result: Result<VerifiedExactPayment, Error>, reason: &str| {
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains(reason), "{err}");
+        };
+
+        // v2 must echo `accepted`, and (tested above) the resource.
+        rejected(
+            verify(
+                bare_header(X402_VERSION_V2, requirements.resource_info(), &tx),
+                bound(Some("GET route-a")),
+            )
+            .await,
+            "missing accepted",
+        );
+
+        // v1 carries no resource: the signed memo binds it, so a bound route
+        // without a memo refuses it and one with a memo requires it.
+        rejected(
+            verify(bare_header(X402_VERSION_V1, None, &tx), bound(None)).await,
+            "Resource binding missing",
+        );
+        accepted(
+            verify(
+                bare_header(X402_VERSION_V1, None, &tx),
+                bound(Some("GET route-a")),
+            )
+            .await,
+        );
+        let unmemoed = exact_transaction(
+            &x402.exact_requirements("0.01", bound(None)).unwrap(),
+            &payer,
+            &payer,
+        );
+        rejected(
+            verify(
+                bare_header(X402_VERSION_V1, None, &unmemoed),
+                bound(Some("GET route-a")),
+            )
+            .await,
+            "memo",
         );
     }
 
