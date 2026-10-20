@@ -26,9 +26,15 @@ export const x402ExactScenarios: readonly HarnessScenario[] = [
     expectedStatus: 200,
   },
   {
-    // Network mismatch: client signs against localnet but the challenge
-    // requires devnet (or vice versa). Server must reject the credential
-    // with canonical `wrong_network`.
+    // Network mismatch: the route is labelled mainnet but the client signs
+    // against Surfpool (localnet). x402 binds the network only by its
+    // CAIP-2 label (x402-specification-v2.md PaymentRequirements.network)
+    // and the server settles on its own RPC, so nothing in the x402 spec
+    // detects this. The Lua server rejects it with a pay-kit heuristic
+    // (Surfpool-prefixed blockhash on a mainnet route) that MPP charge
+    // applies in every SDK (charge-network-mismatch). It stays a Lua-only
+    // policy check for x402; the spec rule, accepted.network differing
+    // from the route, is covered by the x402 wrong-network verify vectors.
     id: "x402-exact-network-mismatch",
     intent: "x402-exact",
     network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
@@ -40,7 +46,7 @@ export const x402ExactScenarios: readonly HarnessScenario[] = [
     expectedStatus: 402,
     expectedCode: "wrong_network",
     clientIds: ["ts-x402", "rust-x402"],
-    serverIds: ["ts-x402", "rust-x402", "lua"],
+    serverIds: ["lua"],
   },
   {
     // Cross-route replay: credential issued for /protected/cheap is
@@ -85,8 +91,13 @@ export const x402ExactScenarios: readonly HarnessScenario[] = [
     asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     resourcePath: "/protected",
     settlementHeader: "x-fixture-settlement",
+    // scheme_exact.md "Single-use claim": of two presentations of one proof,
+    // exactly one MUST succeed, so server B must refuse the re-submitted
+    // payment. x402 has no challenge binding, so there is no
+    // challenge_verification_failed here: an independent server B learns of
+    // the replay when settlement of the already-landed transaction fails.
+    // Only the refusal is asserted.
     expectedStatus: 402,
-    expectedCode: "challenge_verification_failed",
     clientIds: ["ts-x402"],
     // Only the TS reference client today implements the
     // capture/re-submit flow that e2e.test.ts's cross-server runner
