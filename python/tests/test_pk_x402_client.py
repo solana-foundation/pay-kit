@@ -457,25 +457,85 @@ async def test_build_payment_rejects_invalid_amount():
         await build_payment(signer, None, _entry(offer))
 
 
+class _MintAccount:
+    def __init__(self, owner: str, decimals: int) -> None:
+        data = bytearray(82)
+        data[44] = decimals
+        data[45] = 1
+        self.owner = owner
+        self.data = bytes(data)
+
+
+class _MintResp:
+    def __init__(self, value: _MintAccount | None) -> None:
+        self.value = value
+
+
+class _MintRpc:
+    """solana-py ``AsyncClient`` shape serving SPL mint accounts."""
+
+    def __init__(self, mints: dict[str, tuple[str, int]]) -> None:
+        self.mints = mints
+        self.calls: list[str] = []
+
+    async def get_account_info(self, pubkey: Any) -> _MintResp:
+        self.calls.append(str(pubkey))
+        entry = self.mints.get(str(pubkey))
+        return _MintResp(None if entry is None else _MintAccount(*entry))
+
+
+def _transfer_ix(env: object) -> tuple[list[str], Any]:
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    keys = [str(k) for k in tx.message.account_keys]
+    return keys, list(tx.message.instructions)[2]
+
+
 @pytest.mark.asyncio
-async def test_build_payment_defaults_token_program_when_offer_omits_it():
-    # Rust ``build_spl_instructions`` defaults the token program via
-    # ``default_token_program_for_currency`` when the offer omits it
-    # (client/exact/payment.rs:445-452); the client must not error. USDC ->
-    # classic Token program, so the built transferChecked uses TP_USDC.
+async def test_build_payment_refuses_when_token_program_cannot_be_read_from_mint():
+    # RULINGS S1/C3: without tokenProgram/decimals the client reads the mint;
+    # with no RPC (or no account) it refuses instead of defaulting by currency.
+    from solana_pay_kit._paycore.errors import InvalidChallengeError
+
     signer = Signer.generate()
     offer = _offer()
     del offer["extra"]["tokenProgram"]
-    env = await build_payment(signer, None, _entry(offer))
-    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
-    instructions = list(tx.message.instructions)
-    keys = [str(k) for k in tx.message.account_keys]
-    transfer_ix = instructions[2]
+    with pytest.raises(InvalidChallengeError, match="no RPC client"):
+        await build_payment(signer, None, _entry(offer))
+    with pytest.raises(InvalidChallengeError, match="not found"):
+        await build_payment(signer, _MintRpc({}), _entry(offer))
+
+
+@pytest.mark.asyncio
+async def test_build_payment_reads_token_program_and_decimals_from_mint():
+    # RULINGS S1: decimals are not in the scheme's `extra`; a spec offer
+    # carries only feePayer, so both values come from the mint account.
+    signer = Signer.generate()
+    offer = _offer()
+    del offer["extra"]["tokenProgram"]
+    del offer["extra"]["decimals"]
+    rpc = _MintRpc({USDC_DEVNET: (TP_USDC, 9)})
+    env = await build_payment(signer, rpc, _entry(offer))
+    keys, transfer_ix = _transfer_ix(env)
+    assert rpc.calls == [USDC_DEVNET]
     assert keys[int(transfer_ix.program_id_index)] == TP_USDC
-    # The transfer's source/dest ATAs are derived off the same defaulted
-    # program, matching what a server that pins extra.tokenProgram=TP_USDC
-    # would re-derive.
+    assert bytes(transfer_ix.data)[9] == 9
     assert keys[int(transfer_ix.accounts[2])] == derive_ata(offer["payTo"], USDC_DEVNET, TP_USDC)
+
+
+@pytest.mark.asyncio
+async def test_build_payment_uses_hints_only_when_complete_and_consistent():
+    from solana_pay_kit._paycore.errors import InvalidChallengeError
+
+    signer = Signer.generate()
+    # Both hints present: no lookup.
+    rpc = _MintRpc({})
+    await build_payment(signer, rpc, _entry(_offer()))
+    assert rpc.calls == []
+    # A partial hint that disagrees with the mint is refused.
+    offer = _offer(decimals=6)
+    del offer["extra"]["tokenProgram"]
+    with pytest.raises(InvalidChallengeError, match="decimals 6 differ"):
+        await build_payment(signer, _MintRpc({USDC_DEVNET: (TP_USDC, 9)}), _entry(offer))
 
 
 @pytest.mark.asyncio
@@ -500,89 +560,81 @@ async def test_build_payment_rejects_missing_pay_to():
 
 
 @pytest.mark.asyncio
-async def test_build_payment_fee_payer_explicit_false_opts_out():
-    # Rust ``use_fee_payer = feePayer.unwrap_or(false) && fee_payer_key.is_some()``
-    # (payment.rs:43-44): an explicit ``feePayer: false`` opts out even when a
-    # key is present, so the client signer becomes the message fee payer
-    # (account[0]) and the only required signer.
+async def test_build_payment_requires_extra_fee_payer():
+    # scheme_exact_svm.md requires `extra.feePayer`; a non-spec top-level
+    # `feePayerKey` does not stand in for it (RULINGS X1/S1).
+    from solana_pay_kit._paycore.errors import InvalidChallengeError
+
     signer = Signer.generate()
     offer = _offer()
-    offer["feePayer"] = False
-    env = await build_payment(signer, None, _entry(offer))
-    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
-    keys = [str(k) for k in tx.message.account_keys]
-    assert keys[0] == str(signer.pubkey)
-    assert int(tx.message.header.num_required_signatures) == 1
+    del offer["extra"]["feePayer"]
+    offer["feePayerKey"] = str(Keypair().pubkey())
+    with pytest.raises(InvalidChallengeError, match="extra.feePayer"):
+        await build_payment(signer, None, _entry(offer))
 
 
 @pytest.mark.asyncio
-async def test_build_payment_fee_payer_key_from_top_level():
-    # Rust sources the fee-payer key from top-level ``feePayerKey`` first
-    # (types.rs:350-351). A top-level key with no extra.feePayer must still be
-    # used as account[0].
+async def test_build_payment_fee_payer_is_extra_fee_payer_and_unsigned():
     signer = Signer.generate()
     fee_payer = str(Keypair().pubkey())
-    offer = _offer()
-    del offer["extra"]["feePayer"]
-    offer["feePayerKey"] = fee_payer
+    offer = _offer(fee_payer=fee_payer)
+    # A non-spec opt-out flag does not make the client the fee payer.
+    offer["feePayer"] = False
     env = await build_payment(signer, None, _entry(offer))
     tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
     keys = [str(k) for k in tx.message.account_keys]
     assert keys[0] == fee_payer
     assert int(tx.message.header.num_required_signatures) == 2
+    assert bytes(tx.signatures[0]) == bytes(64)
 
 
 @pytest.mark.asyncio
-async def test_build_payment_reads_token_program_and_decimals_top_level_first():
-    # Rust reads tokenProgram/decimals/recentBlockhash top-level before extra
-    # (types.rs:344-349). A top-level tokenProgram/decimals must win over extra.
+async def test_build_payment_ignores_non_spec_top_level_fields():
+    # RULINGS X1: clients ignore fields they do not understand; a server-added
+    # top-level currency/recipient/tokenProgram/decimals/recentBlockhash never
+    # overrides asset/payTo/extra.
     signer = Signer.generate()
     pyusd_mint = resolve("PYUSD", "devnet")
     assert pyusd_mint is not None
-    tp_pyusd = token_program_for("PYUSD", "devnet")
-    offer = _offer(asset=pyusd_mint, token_program=tp_pyusd)
-    # Wrong values in extra; correct values at top level must override.
-    offer["extra"]["tokenProgram"] = TP_USDC
-    offer["extra"]["decimals"] = 9
-    offer["tokenProgram"] = tp_pyusd
-    offer["decimals"] = 6
+    other_bh = "11111111111111111111111111111111"
+    offer = _offer()
+    offer["currency"] = pyusd_mint
+    offer["recipient"] = str(Keypair().pubkey())
+    offer["tokenProgram"] = token_program_for("PYUSD", "devnet")
+    offer["decimals"] = 9
+    offer["recentBlockhash"] = other_bh
     env = await build_payment(signer, None, _entry(offer))
-    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
-    instructions = list(tx.message.instructions)
-    keys = [str(k) for k in tx.message.account_keys]
-    transfer_ix = instructions[2]
-    assert keys[int(transfer_ix.program_id_index)] == tp_pyusd
+    keys, transfer_ix = _transfer_ix(env)
+    assert keys[int(transfer_ix.program_id_index)] == TP_USDC
+    assert keys[int(transfer_ix.accounts[1])] == USDC_DEVNET
+    assert keys[int(transfer_ix.accounts[2])] == derive_ata(offer["payTo"], USDC_DEVNET, TP_USDC)
     assert bytes(transfer_ix.data)[9] == 6
-
-
-@pytest.mark.asyncio
-async def test_build_payment_reads_recent_blockhash_top_level_first():
-    signer = Signer.generate()
-    offer = _offer(blockhash=None)
-    offer["recentBlockhash"] = BH
-    env = await build_payment(signer, None, _entry(offer))
     tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
     assert str(tx.message.recent_blockhash) == BH
 
 
 @pytest.mark.asyncio
-async def test_build_payment_currency_and_recipient_aliases_win():
-    # Rust resolves currency/recipient top-level first, then asset/payTo
-    # (types.rs:334-342). A top-level currency/recipient must override the
-    # canonical asset/payTo aliases.
+async def test_build_payment_memo_is_extra_memo_or_random_nonce():
+    # RULINGS S2: Memo = extra.memo when present, else a random >= 16-byte
+    # hex nonce.
+    from solana_pay_kit._paycore.solana import MEMO_PROGRAM
+
+    def memos(env: object) -> list[str]:
+        tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+        keys = [str(k) for k in tx.message.account_keys]
+        return [
+            bytes(ix.data).decode() for ix in tx.message.instructions if keys[int(ix.program_id_index)] == MEMO_PROGRAM
+        ]
+
     signer = Signer.generate()
-    real_pay_to = str(Keypair().pubkey())
-    offer = _offer(asset="SOL", amount="5000")
-    offer["extra"].pop("tokenProgram", None)
-    offer["payTo"] = str(Keypair().pubkey())
-    offer["recipient"] = real_pay_to
-    env = await build_payment(signer, None, _entry(offer))
-    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
-    instructions = list(tx.message.instructions)
-    keys = [str(k) for k in tx.message.account_keys]
-    # System transfer destination is account index 1 of the transfer ix.
-    transfer_ix = instructions[2]
-    assert keys[int(transfer_ix.accounts[1])] == real_pay_to
+    assert memos(await build_payment(signer, None, _entry(_offer(memo="inv-42")))) == ["inv-42"]
+    offer = _offer()
+    del offer["extra"]["memo"]
+    first = memos(await build_payment(signer, None, _entry(offer)))
+    second = memos(await build_payment(signer, None, _entry(offer)))
+    assert len(first) == 1 and len(first[0]) >= 32
+    bytes.fromhex(first[0])
+    assert first != second
 
 
 @pytest.mark.asyncio

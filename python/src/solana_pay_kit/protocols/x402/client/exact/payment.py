@@ -6,15 +6,16 @@ Mirrors the Rust spine client
 operates on the :class:`~solana_pay_kit.protocols.x402.exact.types.X402AcceptsEntry`
 wire shape the solana_pay_kit x402 server emits and the
 :class:`~solana_pay_kit.protocols.x402.exact.verify.ExactVerifier` validates: the
-offer carries the resolved on-chain mint on ``asset`` and the token program /
-decimals / memo on ``extra``.
+offer carries the on-chain mint on ``asset`` and the sponsor on
+``extra.feePayer``. The token program and decimals are read from the mint
+account (``extra.tokenProgram`` / ``extra.decimals`` are optional hints).
 
 The built transaction is a v0 ``VersionedTransaction`` whose fee payer is the
 offer's ``extra.feePayer`` (the facilitator, which cosigns server-side) and
 whose transfer authority is the client signer. Instructions are laid out
 exactly as the verifier expects: ComputeBudget SetComputeUnitLimit(20000) +
 SetComputeUnitPrice, then a ``transferChecked`` (SPL) or System ``transfer``
-(native SOL), then a Memo carrying ``extra.memo``.
+(native SOL), then a Memo carrying ``extra.memo`` or a random 16-byte hex nonce.
 """
 
 from __future__ import annotations
@@ -26,11 +27,14 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from solana_pay_kit._paycore.errors import InvalidChallengeError
+from solana_pay_kit._paycore.mint_account import fetch_mint_account
 from solana_pay_kit._paycore.mints import derive_ata, resolve_stablecoin_mint
 from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
 from solana_pay_kit._paycore.solana import (
     MEMO_PROGRAM,
-    default_token_program_for_currency,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
     is_native_sol,
 )
 from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
@@ -75,8 +79,6 @@ __all__ = [
 _COMPUTE_UNIT_LIMIT = 20_000
 #: ComputeBudget SetComputeUnitPrice microlamports (disc 3, u64 LE, <= MAX).
 _COMPUTE_UNIT_PRICE = 1
-#: Default SPL decimals when the offer omits ``extra.decimals``.
-_DEFAULT_DECIMALS = 6
 #: Random memo nonce length in bytes when the offer omits ``extra.memo``. The
 #: x402 SVM exact contract requires a Memo of at least 16 bytes; it is
 #: hex-encoded to a UTF-8 string for the Memo instruction data.
@@ -395,24 +397,37 @@ def _str_field(mapping: Mapping[str, object], key: str) -> str | None:
 _U64_BOUND = 1 << 64
 
 
-def _str_top_then_extra(
-    req: Mapping[str, object],
-    extra: Mapping[str, object],
-    key: str,
-) -> str | None:
-    """Read a string field top-level first, then ``extra.*``.
+async def _resolve_mint(rpc: Any, asset: str, extra: Mapping[str, object]) -> tuple[str, int]:
+    """Return ``(token_program, decimals)`` for the offer's ``asset`` mint.
 
-    Mirrors the rust ``PaymentRequirements`` deserializer field precedence
-    (``rust/crates/x402/src/protocol/schemes/exact/types.rs:344-351``) where
-    canonical-wire fields (``tokenProgram``/``recentBlockhash``) are read at the
-    top level before falling back to ``extra``.
+    Decimals are not part of the scheme (RULINGS S1): the client reads them,
+    and the owning token program, from the mint account. ``extra.decimals`` /
+    ``extra.tokenProgram`` are non-spec hints a server MAY send; they are used
+    only when both are present, and otherwise the mint is fetched and any hint
+    must agree with it. A failed lookup or a non-token-program owner refuses
+    the offer; nothing defaults by currency.
     """
-    return _str_field(req, key) or _str_field(extra, key)
-
-
-def _bool_field(mapping: Mapping[str, object], key: str) -> bool | None:
-    value = mapping.get(key)
-    return value if isinstance(value, bool) else None
+    hinted_program = _str_field(extra, "tokenProgram")
+    raw_decimals = extra.get("decimals")
+    hinted_decimals = (
+        raw_decimals
+        if isinstance(raw_decimals, int) and not isinstance(raw_decimals, bool) and 0 <= raw_decimals <= 255
+        else None
+    )
+    if hinted_program is not None and hinted_decimals is not None:
+        if hinted_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+            raise InvalidChallengeError(f"solana_pay_kit: x402 offer names unsupported token program {hinted_program}")
+        return hinted_program, hinted_decimals
+    mint = await fetch_mint_account(rpc, asset)
+    if hinted_program is not None and hinted_program != mint.token_program:
+        raise InvalidChallengeError(
+            f"solana_pay_kit: x402 offer tokenProgram {hinted_program} does not own mint {asset} ({mint.token_program})"
+        )
+    if hinted_decimals is not None and hinted_decimals != mint.decimals:
+        raise InvalidChallengeError(
+            f"solana_pay_kit: x402 offer decimals {hinted_decimals} differ from mint {asset} ({mint.decimals})"
+        )
+    return mint.token_program, mint.decimals
 
 
 async def build_payment(
@@ -464,15 +479,16 @@ async def build_payment(
     req = cast("dict[str, object]", requirement)
     extra = _extra_of(requirement)
 
-    # Field precedence mirrors the rust ``PaymentRequirements`` deserializer
-    # (types.rs:334-353): top-level ``currency``/``recipient`` win over the
-    # canonical-wire ``asset``/``payTo`` aliases.
-    asset = _str_field(req, "currency") or _str_field(req, "asset")
+    # Only the x402 v2 ``PaymentRequirements`` fields are read (RULINGS X1):
+    # a field a server adds (``currency``, ``recipient``, ``feePayerKey``, a
+    # top-level ``tokenProgram``...) never overrides ``asset`` / ``payTo`` /
+    # ``extra.feePayer``, because the server verifies against those.
+    asset = _str_field(req, "asset")
     if asset is None:
-        raise ValueError("solana_pay_kit: x402 offer is missing `asset`")
-    pay_to = _str_field(req, "recipient") or _str_field(req, "payTo")
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `asset`")
+    pay_to = _str_field(req, "payTo")
     if pay_to is None:
-        raise ValueError("solana_pay_kit: x402 offer is missing `payTo`")
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `payTo`")
 
     amount_raw = req.get("amount")
     if amount_raw is None:
@@ -480,24 +496,20 @@ async def build_payment(
     try:
         amount = int(cast("str | int", amount_raw))
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"solana_pay_kit: x402 offer has an invalid amount: {amount_raw!r}") from exc
+        raise InvalidChallengeError(f"solana_pay_kit: x402 offer has an invalid amount: {amount_raw!r}") from exc
     # Amount must fit an unsigned u64, matching rust ``amount.parse::<u64>()``
     # (client/exact/payment.rs:33-36). Reject out-of-range here rather than
     # deferring to a later ``int.to_bytes(8, ...)`` OverflowError.
     if amount < 0 or amount >= _U64_BOUND:
-        raise ValueError(f"solana_pay_kit: x402 offer has an invalid amount: {amount_raw!r}")
+        raise InvalidChallengeError(f"solana_pay_kit: x402 offer has an invalid amount: {amount_raw!r}")
 
-    # Fee-payer toggle + precedence (types.rs:350-353, payment.rs:43-51):
-    # key comes from top-level ``feePayerKey`` first, else ``extra.feePayer``;
-    # ``use_fee_payer`` is the explicit ``feePayer`` bool when present, else true
-    # when a key is present. An explicit ``feePayer: false`` opts OUT even with a
-    # key, in which case the client signer is the message fee payer.
-    fee_payer = _str_field(req, "feePayerKey") or _str_field(extra, "feePayer")
-    fee_payer_bool = _bool_field(req, "feePayer")
-    use_fee_payer = (fee_payer_bool if fee_payer_bool is not None else fee_payer is not None) and (
-        fee_payer is not None
-    )
-    fee_payer_key = Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.pubkey
+    # scheme_exact_svm.md "requires the following inside the `extra` field":
+    # ``feePayer``, the sponsor that pays fees and signs last. Its signature
+    # slot (account[0]) is left empty for the sponsor to fill.
+    fee_payer = _str_field(extra, "feePayer")
+    if fee_payer is None:
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing the required `extra.feePayer`")
+    fee_payer_key = Pubkey.from_string(fee_payer)
 
     instructions: list[Any] = [
         _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
@@ -514,29 +526,13 @@ async def build_payment(
             transfer(TransferParams(from_pubkey=signer_pubkey, to_pubkey=recipient_key, lamports=amount))
         )
     else:
-        # tokenProgram: top-level first, then extra (types.rs:346-347). When the
-        # offer omits it entirely, default by currency/cluster like rust
-        # ``default_token_program_for_currency`` (payment.rs:445-452) instead of
-        # erroring, so a canonical offer that elides tokenProgram still builds.
-        token_program = _str_top_then_extra(req, extra, "tokenProgram")
-        if token_program is None:
-            cluster_label = _mints_label_for_caip2(_caip2_for_selection(_str_field(req, "network")))
-            token_program = default_token_program_for_currency(asset, cluster_label)
-        # decimals: top-level first, then extra (types.rs:344-345); default 6.
-        decimals_raw = req.get("decimals")
-        if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
-            decimals_raw = extra.get("decimals")
-        decimals = (
-            int(decimals_raw)
-            if isinstance(decimals_raw, int) and not isinstance(decimals_raw, bool)
-            else _DEFAULT_DECIMALS
-        )
+        token_program, decimals = await _resolve_mint(rpc, asset, extra)
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(asset)
         source_ata = Pubkey.from_string(derive_ata(str(signer_pubkey), asset, token_program))
         dest_ata = Pubkey.from_string(derive_ata(pay_to, asset, token_program))
         # SPL Token TransferChecked (disc 12): amount u64 LE + decimals u8.
-        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals & 0xFF])
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals])
         instructions.append(
             Instruction(
                 token_program_key,
@@ -558,8 +554,7 @@ async def build_payment(
         memo = (memo_nonce or _default_memo_nonce)()
     instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
-    # recentBlockhash: top-level first, then extra (types.rs:348-349).
-    blockhash_str = _str_top_then_extra(req, extra, "recentBlockhash")
+    blockhash_str = _str_field(extra, "recentBlockhash")
     if blockhash_str is None:
         blockhash_str = await _resolve_blockhash(rpc, recent_blockhash_provider)
     blockhash = Hash.from_string(blockhash_str)
