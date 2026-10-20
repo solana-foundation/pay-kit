@@ -5061,7 +5061,7 @@ mod tests {
             .as_nanos();
         let store = RedisChannelStore::connect(
             &redis_url,
-            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+            format!("pay-kit:test:conformance:{}:{unique}:", std::process::id()),
         )
         .await
         .unwrap();
@@ -5080,7 +5080,7 @@ mod tests {
             .as_nanos();
         let store = RedisChannelStore::connect(
             &redis_url,
-            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+            format!("pay-kit:test:roundtrip:{}:{unique}:", std::process::id()),
         )
         .await
         .unwrap();
