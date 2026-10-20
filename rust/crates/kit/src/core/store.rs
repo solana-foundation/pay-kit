@@ -207,11 +207,60 @@ impl ConsumedSignatures {
             .await
     }
 
+    /// Claim `signature` for a transaction about to be broadcast, whose
+    /// outcome may be unknown when the call returns.
+    ///
+    /// The claim is pending until [`Self::confirm`] (it landed) or
+    /// [`Self::release`] (it provably never will). A pending claim is still
+    /// taken: [`Self::claim`] refuses it, so no protocol can present the
+    /// signature while its settlement is unresolved.
+    pub async fn claim_pending(&self, signature: &str) -> Result<PendingClaim, StoreError> {
+        let key = consumed_signature_key(signature);
+        if self.store.put_if_absent(&key, pending_marker()).await? {
+            return Ok(PendingClaim::Fresh);
+        }
+        Ok(if self.store.get(&key).await? == Some(pending_marker()) {
+            PendingClaim::ResumePending
+        } else {
+            PendingClaim::Consumed
+        })
+    }
+
+    /// Turn a pending claim into a consumed signature once its transaction
+    /// landed. `false` means another caller already confirmed it (and served
+    /// the request) or it was never pending.
+    pub async fn confirm(&self, signature: &str) -> Result<bool, StoreError> {
+        self.store
+            .put_if_eq(
+                &consumed_signature_key(signature),
+                Some(pending_marker()),
+                serde_json::json!(true),
+            )
+            .await
+    }
+
     /// Release a claim this caller made for a transaction that provably never
     /// landed (for example a preflight rejection), so the payer may retry it.
     pub async fn release(&self, signature: &str) -> Result<(), StoreError> {
         self.store.delete(&consumed_signature_key(signature)).await
     }
+}
+
+fn pending_marker() -> serde_json::Value {
+    serde_json::json!({ "state": "pending" })
+}
+
+/// Outcome of [`ConsumedSignatures::claim_pending`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingClaim {
+    /// Newly claimed; this caller broadcasts.
+    Fresh,
+    /// An earlier broadcast of this signature has an unknown outcome. The
+    /// same bytes may be broadcast again (a signature lands at most once),
+    /// then confirmed or released.
+    ResumePending,
+    /// Already consumed by a settled presentation.
+    Consumed,
 }
 
 // ── Charge replay / idempotency store ──

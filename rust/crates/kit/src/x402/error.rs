@@ -34,6 +34,11 @@ pub enum Error {
     #[error("Transaction signature already consumed")]
     SignatureConsumed,
 
+    /// The settlement was broadcast but its outcome is unknown. The claim is
+    /// kept; retrying the same payment reconciles it.
+    #[error("Settlement pending: {0}")]
+    SettlementPending(String),
+
     #[error("Simulation failed: {0}")]
     SimulationFailed(String),
 

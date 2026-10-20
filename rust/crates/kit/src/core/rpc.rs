@@ -132,18 +132,119 @@ pub fn send_and_confirm_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
 ) -> Result<Signature, ClientError> {
+    send_and_confirm_with_outcome(rpc, tx).map_err(BroadcastFailure::into_error)
+}
+
+/// Why [`send_and_confirm_with_outcome`] did not confirm a transaction.
+///
+/// Only [`BroadcastFailure::NotLanded`] proves the transaction can no longer
+/// move funds. A caller holding a replay claim on the signature may release
+/// it for that variant alone; on [`BroadcastFailure::Unknown`] the
+/// transaction may still land and the claim must be kept until the
+/// signature's status is reconciled.
+#[derive(Debug)]
+pub enum BroadcastFailure {
+    /// The node refused it before forwarding (preflight or sanitize error), or
+    /// its blockhash expired with no status recorded: it can never land.
+    NotLanded(ClientError),
+    /// It landed and failed; its instructions moved nothing.
+    FailedOnChain(ClientError),
+    /// The outcome is unknown: a transport error after the request may have
+    /// reached the node, or a failed status/blockhash read.
+    Unknown(ClientError),
+}
+
+impl BroadcastFailure {
+    /// The underlying RPC error.
+    pub fn into_error(self) -> ClientError {
+        match self {
+            Self::NotLanded(error) | Self::FailedOnChain(error) | Self::Unknown(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for BroadcastFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotLanded(error) => write!(f, "not landed: {error}"),
+            Self::FailedOnChain(error) => write!(f, "failed on-chain: {error}"),
+            Self::Unknown(error) => write!(f, "outcome unknown: {error}"),
+        }
+    }
+}
+
+/// [`send_and_confirm_transaction`], classifying a failure by whether the
+/// transaction could still land.
+pub fn send_and_confirm_with_outcome(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+) -> Result<Signature, BroadcastFailure> {
     let blockhash = *tx.message.recent_blockhash();
-    let signature = send_transaction(rpc, tx, preflight_config(rpc))?;
+    let signature = match send_transaction(rpc, tx, preflight_config(rpc)) {
+        Ok(signature) => signature,
+        // A JSON-RPC error response is the node refusing the transaction
+        // before forwarding it, unless it refused because the same signature
+        // already landed (a resubmission). Anything else may have reached
+        // the node.
+        Err(error)
+            if matches!(
+                error.kind(),
+                ClientErrorKind::RpcError(
+                    solana_rpc_client_api::request::RpcError::RpcResponseError { .. }
+                )
+            ) =>
+        {
+            let Some(&signature) = tx.signatures.first() else {
+                return Err(BroadcastFailure::NotLanded(error));
+            };
+            match rpc
+                .get_signature_status_with_commitment_and_history(
+                    &signature,
+                    CommitmentConfig::processed(),
+                    true,
+                )
+                .map_err(BroadcastFailure::Unknown)?
+            {
+                None => return Err(BroadcastFailure::NotLanded(error)),
+                Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
+                Some(Ok(())) => signature,
+            }
+        }
+        Err(error) => return Err(BroadcastFailure::Unknown(error)),
+    };
     loop {
-        match rpc.get_signature_status_with_commitment(&signature, rpc.commitment())? {
+        match rpc
+            .get_signature_status_with_commitment(&signature, rpc.commitment())
+            .map_err(BroadcastFailure::Unknown)?
+        {
             Some(Ok(())) => return Ok(signature),
-            Some(Err(e)) => return Err(e.into()),
+            Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
             None => {
-                if !rpc.is_blockhash_valid(&blockhash, CommitmentConfig::processed())? {
-                    return Err(ClientErrorKind::Custom(
-                        "unable to confirm transaction: its blockhash expired".into(),
-                    )
-                    .into());
+                let valid = rpc
+                    .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
+                    .map_err(BroadcastFailure::Unknown)?;
+                if !valid {
+                    // It may have landed between the two reads; only a
+                    // missing status after expiry proves it never will.
+                    match rpc
+                        .get_signature_status_with_commitment_and_history(
+                            &signature,
+                            CommitmentConfig::processed(),
+                            true,
+                        )
+                        .map_err(BroadcastFailure::Unknown)?
+                    {
+                        None => {
+                            return Err(BroadcastFailure::NotLanded(
+                                ClientErrorKind::Custom(
+                                    "unable to confirm transaction: its blockhash expired".into(),
+                                )
+                                .into(),
+                            ))
+                        }
+                        Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
+                        Some(Ok(())) => {}
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }

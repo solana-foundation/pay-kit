@@ -7,7 +7,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
-use crate::core::store::{ConsumedSignatures, MemoryStore, Store};
+use crate::core::store::{ConsumedSignatures, MemoryStore, PendingClaim, Store};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
@@ -746,28 +746,58 @@ impl X402 {
             .await?;
 
         // Claim before broadcasting so concurrent submissions of one
-        // transaction cannot both confirm and both be served.
+        // transaction cannot both confirm and both be served. The claim stays
+        // pending until the outcome is known; only a confirmed landing turns
+        // it into a consumed signature, and only once.
         let signature = tx
             .signatures
             .first()
             .ok_or_else(|| Error::Other("transaction has no signatures".into()))?
             .to_string();
-        self.consume_signature(&signature).await?;
+        let ledger = self.consumed_signatures();
+        let store_err = |e: crate::core::store::StoreError| {
+            Error::Other(format!("x402 replay store error: {e}"))
+        };
+        match ledger.claim_pending(&signature).await.map_err(store_err)? {
+            PendingClaim::Fresh => {}
+            // This same transaction (same bytes, same fee-payer signature)
+            // whose earlier outcome was unknown. Re-broadcasting it is safe:
+            // one signature lands at most once.
+            PendingClaim::ResumePending => {}
+            PendingClaim::Consumed => return Err(Error::SignatureConsumed),
+        }
 
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        match crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx) {
-            Ok(confirmed) => Ok(confirmed.to_string()),
-            Err(e) => {
-                // Unsettled: let the payer retry the same transaction.
-                if let Err(release) = self.consumed_signatures().release(&signature).await {
+        use crate::core::rpc::BroadcastFailure;
+        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx) {
+            Ok(confirmed) => {
+                if ledger.confirm(&signature).await.map_err(store_err)? {
+                    Ok(confirmed.to_string())
+                } else {
+                    Err(Error::SignatureConsumed)
+                }
+            }
+            Err(
+                failure @ (BroadcastFailure::NotLanded(_) | BroadcastFailure::FailedOnChain(_)),
+            ) => {
+                // Definitively unsettled: these bytes moved nothing and never
+                // will, so the payer may retry.
+                if let Err(release) = ledger.release(&signature).await {
                     tracing::warn!(error = %release, "failed to release unsettled x402 payment");
                 }
                 Err(Error::Rpc(format!(
-                    "exact settlement broadcast failed: {e}"
+                    "exact settlement broadcast failed: {failure}"
+                )))
+            }
+            Err(failure @ BroadcastFailure::Unknown(_)) => {
+                // It may still land: keep the claim so neither this payment
+                // nor a fresh challenge settles twice for one request.
+                Err(Error::SettlementPending(format!(
+                    "transaction {signature} {failure}; retry the same payment, do not pay again"
                 )))
             }
         }
@@ -2322,6 +2352,139 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already consumed"), "{err}");
+    }
+
+    /// JSON-RPC stub whose `sendTransaction` is accepted. `status` selects
+    /// `getSignatureStatuses`: 0 errors (outcome unknown), 1 landed, other
+    /// values not found; `blockhash_valid` answers `isBlockhashValid`.
+    async fn accepting_rpc(
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    ) -> RpcClient {
+        use axum::{routing::post, Json, Router};
+        use std::sync::atomic::Ordering;
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let (status, blockhash_valid) = (status.clone(), blockhash_valid.clone());
+                async move {
+                    let id = request["id"].clone();
+                    let context = serde_json::json!({ "slot": 1 });
+                    let result = match request["method"].as_str() {
+                        Some("sendTransaction") => {
+                            let tx =
+                                crate::core::tx::decode(request["params"][0].as_str().unwrap())
+                                    .unwrap();
+                            serde_json::json!(tx.signatures[0].to_string())
+                        }
+                        Some("isBlockhashValid") => serde_json::json!({
+                            "context": context,
+                            "value": blockhash_valid.load(Ordering::SeqCst),
+                        }),
+                        Some("getSignatureStatuses") => match status.load(Ordering::SeqCst) {
+                            0 => {
+                                return Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "error": { "code": -32603, "message": "node behind" },
+                                }))
+                            }
+                            1 => serde_json::json!({ "context": context, "value": [{
+                                "slot": 1, "confirmations": null, "err": null,
+                                "status": { "Ok": null }, "confirmationStatus": "confirmed",
+                            }] }),
+                            _ => serde_json::json!({ "context": context, "value": [null] }),
+                        },
+                        other => panic!("unexpected RPC method {other:?}"),
+                    };
+                    Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        RpcClient::new_with_commitment(url, solana_commitment_config::CommitmentConfig::confirmed())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_broadcast_outcome_keeps_the_claim_until_reconciled() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let status = Arc::new(AtomicU8::new(0));
+        let blockhash_valid = Arc::new(AtomicBool::new(true));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            accepting_rpc(status.clone(), blockhash_valid.clone()).await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let settle = || {
+            x402.settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+        };
+
+        // Accepted for broadcast, then the status read fails: it may land.
+        for _ in 0..2 {
+            let err = settle().await.unwrap_err();
+            assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        }
+
+        // It landed: the same payment settles once, then is consumed.
+        status.store(1, Ordering::SeqCst);
+        let signature = settle().await.unwrap();
+        assert_eq!(signature, {
+            let mut signed = tx.clone();
+            crate::core::signing::cosign_versioned_fee_payer(
+                sponsor.as_ref(),
+                &sponsor.pubkey(),
+                &mut signed,
+            )
+            .await
+            .unwrap();
+            signed.signatures[0].to_string()
+        });
+        assert!(matches!(
+            settle().await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_unlanded_broadcast_releases_the_claim() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let status = Arc::new(AtomicU8::new(2));
+        let blockhash_valid = Arc::new(AtomicBool::new(false));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            accepting_rpc(status.clone(), blockhash_valid).await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+
+        // Not found after its blockhash expired: it can never land.
+        let err = x402
+            .settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not landed"), "{err}");
+        status.store(1, Ordering::SeqCst);
+        x402.settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

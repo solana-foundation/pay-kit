@@ -826,6 +826,15 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
                     attach_x402_response(&mut resp, &reference);
                     resp
                 }
+                // The payment may still land: a fresh challenge would invite
+                // a second payment for this request.
+                Err(e @ crate::x402::Error::SettlementPending(_)) => {
+                    tracing::warn!(amount = %amount, error = %e, "x402 settlement pending");
+                    let mut resp = (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response();
+                    resp.headers_mut()
+                        .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+                    resp
+                }
                 Err(e) => {
                     tracing::warn!(amount = %amount, error = %e, "x402 settlement failed");
                     challenge_response(&state.pay, &amount, &req)
@@ -2150,6 +2159,43 @@ mod tests {
             .unwrap();
     }
 
+    // An x402 settlement whose broadcast outcome is unknown keeps its claim
+    // pending; MPP must treat that signature as taken until it resolves.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mpp_rejects_a_signature_with_a_pending_x402_settlement() {
+        use crate::core::store::{ConsumedSignatures, PendingClaim};
+        let store: Arc<dyn Store> = Arc::new(crate::mpp::store::MemoryStore::new());
+        let pay = PayKit::new(push_config(Some(store.clone()))).unwrap();
+        let ledger = ConsumedSignatures::new(store);
+        let (pending, released) = ("pending-signature", "released-signature");
+
+        for signature in [pending, released] {
+            assert_eq!(
+                ledger.claim_pending(signature).await.unwrap(),
+                PendingClaim::Fresh
+            );
+            let err = pay.mpp().consume_signature(signature).await.unwrap_err();
+            assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
+        }
+        assert_eq!(
+            ledger.claim_pending(pending).await.unwrap(),
+            PendingClaim::ResumePending
+        );
+
+        // It landed: consumed for good, by either protocol.
+        assert!(ledger.confirm(pending).await.unwrap());
+        assert!(!ledger.confirm(pending).await.unwrap());
+        assert_eq!(
+            ledger.claim_pending(pending).await.unwrap(),
+            PendingClaim::Consumed
+        );
+        assert!(pay.mpp().consume_signature(pending).await.is_err());
+
+        // It provably never landed: the signature is free again.
+        ledger.release(released).await.unwrap();
+        pay.mpp().consume_signature(released).await.unwrap();
+    }
+
     #[test]
     fn store_is_required_even_when_push_mode_is_off() {
         let err = PayKit::new(PayKitConfig {
@@ -3327,6 +3373,11 @@ mod tests {
                             let tx = crate::core::tx::decode(encoded).unwrap();
                             ok(serde_json::json!(tx.signatures[0].to_string()))
                         }
+                        // A rejected send never lands.
+                        "getSignatureStatuses" if reject_sends => ok(serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": [null]
+                        })),
                         "getSignatureStatuses" => ok(serde_json::json!({
                             "context": {"slot": 1},
                             "value": [{
