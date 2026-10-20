@@ -27,6 +27,7 @@ import { UptoSvmScheme } from '@x402/svm/upto/client';
 
 import { ConfigurationError } from '../errors.js';
 import type { Protocol } from '../protocol.js';
+import { paymentIdentifierExtension } from './payment-identifier.js';
 import {
     ClientPermissions,
     PermissionDeniedError,
@@ -183,6 +184,7 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         client.setSpendControls(false);
         client.register('solana:*' as Network, new ExactSvmScheme(options.signer, svm));
         client.register('solana:*' as Network, new UptoSvmScheme(options.signer, svm));
+        client.registerExtension(paymentIdentifierExtension);
         http = new x402HTTPClient(client);
     }
 
