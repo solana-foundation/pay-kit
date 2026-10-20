@@ -1116,16 +1116,13 @@ export async function submitSettleAndDistribute(
         tokenProgram,
     });
 
-    // Distribute transfers into the payer, payee, treasury and split ATAs;
-    // create any that are missing so the settlement can land atomically.
     const createAtas = await buildMissingAtaCreateInstructions({
         mint: args.mint,
-        owners: [
-            args.payer,
-            args.payee,
-            treasuryOwnerForNetwork(args.network),
-            ...args.splits.map(split => split.recipient),
-        ],
+        owners: {
+            payee: args.payee,
+            splitRecipients: args.splits.map(split => split.recipient),
+            treasury: treasuryOwnerForNetwork(args.network),
+        },
         payer: args.signer,
         rpc: args.rpc,
         tokenProgram,
@@ -1188,16 +1185,27 @@ function validateComputeBudgetInstructions(
     }
 }
 
+/**
+ * Owners whose ATAs the settling signer may fund. The payer ATA is
+ * client-controlled and deliberately not representable here.
+ */
+interface MerchantAtaOwners {
+    readonly payee: string;
+    readonly splitRecipients: readonly string[];
+    readonly treasury: string;
+}
+
 async function buildMissingAtaCreateInstructions(args: {
     readonly mint: string;
-    readonly owners: readonly string[];
+    readonly owners: MerchantAtaOwners;
     readonly payer: TransactionSigner;
     readonly rpc: SettleRpc;
     readonly tokenProgram: string;
 }): Promise<ServerInstruction[]> {
     const mint = address(args.mint);
     const tokenProgram = address(args.tokenProgram);
-    const owners = [...new Set(args.owners)].map(owner => address(owner));
+    const { payee, splitRecipients, treasury } = args.owners;
+    const owners = [...new Set([payee, treasury, ...splitRecipients])].map(owner => address(owner));
     const atas = await Promise.all(
         owners.map(async owner => (await findAssociatedTokenPda({ mint, owner, tokenProgram }))[0]),
     );

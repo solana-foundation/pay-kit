@@ -800,12 +800,14 @@ describe('session() close settlement destination ATAs', () => {
         return { creates, distributeIndex, f, lastCreateIndex };
     }
 
-    test('missing payer, payee and treasury ATAs are created before distribute', async () => {
-        const { creates, distributeIndex, f, lastCreateIndex } = await closeAndInspect({});
+    test('missing payee and treasury ATAs are created before distribute', async () => {
+        const { creates, distributeIndex, f, lastCreateIndex } = await closeAndInspect({
+            existing: f => [f.payer.address],
+        });
 
         expect(creates).toEqual(
             await Promise.all(
-                [f.payer.address, f.merchant.address, DEVNET_TREASURY].map(async owner => ({
+                [f.merchant.address, DEVNET_TREASURY].map(async owner => ({
                     ata: await usdcAta(owner),
                     data: [1],
                     owner,
@@ -814,6 +816,13 @@ describe('session() close settlement destination ATAs', () => {
             ),
         );
         expect(lastCreateIndex).toBeLessThan(distributeIndex);
+    });
+
+    test('a missing payer ATA is never created by the merchant', async () => {
+        const { creates, f } = await closeAndInspect({ existing: f => [f.merchant.address, DEVNET_TREASURY] });
+
+        expect(creates).toEqual([]);
+        expect(creates.map(create => create.ata)).not.toContain(await usdcAta(f.payer.address));
     });
 
     test('only the missing payee ATA is created', async () => {
