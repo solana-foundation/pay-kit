@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -205,5 +207,74 @@ func assertPreBroadcastCode(t *testing.T, err error, want core.ErrorCode) {
 	}
 	if perr.Code != want {
 		t.Fatalf("expected error code %s, got %s", want, perr.Code)
+	}
+}
+
+// sponsoredSplitTransaction hand-compiles a fee-sponsored SOL split charge:
+// the fee payer, then `signers` (writable, signing), then the two payees and
+// the system program. legs name the funding signer of the primary and split
+// transfer by position in signers.
+func sponsoredSplitTransaction(t *testing.T, feePayer solana.PublicKey, signers []solana.PublicKey, payees [2]solana.PublicKey, legs [2]int, amounts [2]uint64) string {
+	t.Helper()
+	keys := append(solana.PublicKeySlice{feePayer}, signers...)
+	recipientIndex := uint16(len(keys))
+	keys = append(keys, payees[0], payees[1], solana.SystemProgramID)
+	transfer := func(from int, to uint16, lamports uint64) solana.CompiledInstruction {
+		data := make([]byte, 12)
+		binary.LittleEndian.PutUint32(data, 2)
+		binary.LittleEndian.PutUint64(data[4:], lamports)
+		return solana.CompiledInstruction{ProgramIDIndex: recipientIndex + 2, Accounts: []uint16{uint16(from + 1), to}, Data: data}
+	}
+	tx := &solana.Transaction{
+		Message: solana.Message{
+			Header: solana.MessageHeader{
+				NumRequiredSignatures:       uint8(1 + len(signers)),
+				NumReadonlyUnsignedAccounts: 1,
+			},
+			AccountKeys: keys,
+			Instructions: []solana.CompiledInstruction{
+				transfer(legs[0], recipientIndex, amounts[0]),
+				transfer(legs[1], recipientIndex+1, amounts[1]),
+			},
+		},
+		Signatures: make([]solana.Signature, 1+len(signers)),
+	}
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode transaction failed: %v", err)
+	}
+	return encoded
+}
+
+// A sponsor pays a signature fee per required signer, so the legs of a split
+// must all be funded by one authority and no other signer may ride along.
+func TestVerifyChargeTransactionPreBroadcastRequiresOneFundingAuthority(t *testing.T) {
+	feePayer := testutil.NewPrivateKey().PublicKey()
+	payer := testutil.NewPrivateKey().PublicKey()
+	other := testutil.NewPrivateKey().PublicKey()
+	payees := [2]solana.PublicKey{testutil.NewPrivateKey().PublicKey(), testutil.NewPrivateKey().PublicKey()}
+	amounts := [2]uint64{800_000, 200_000}
+	request := intents.ChargeRequest{Amount: "1000000", Currency: "sol", Recipient: payees[0].String()}
+	sponsored := true
+	details := paycore.MethodDetails{
+		FeePayer:    &sponsored,
+		FeePayerKey: feePayer.String(),
+		Splits:      []paycore.Split{{Recipient: payees[1].String(), Amount: "200000"}},
+	}
+	verify := func(encoded string) error {
+		return VerifyChargeTransactionPreBroadcast(encoded, request, details, "localnet")
+	}
+
+	mixed := sponsoredSplitTransaction(t, feePayer, []solana.PublicKey{payer, other}, payees, [2]int{0, 1}, amounts)
+	if err := verify(mixed); err == nil || !strings.Contains(err.Error(), "share one funding authority") {
+		t.Fatalf("mixed funding authorities: got %v", err)
+	}
+	extra := sponsoredSplitTransaction(t, feePayer, []solana.PublicKey{payer, other}, payees, [2]int{0, 0}, amounts)
+	if err := verify(extra); err == nil || !strings.Contains(err.Error(), "unexpected signer") {
+		t.Fatalf("extra signer: got %v", err)
+	}
+	one := sponsoredSplitTransaction(t, feePayer, []solana.PublicKey{payer}, payees, [2]int{0, 0}, amounts)
+	if err := verify(one); err != nil {
+		t.Fatalf("one funding authority must pass: %v", err)
 	}
 }

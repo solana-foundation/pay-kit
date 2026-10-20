@@ -823,6 +823,9 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 		if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
 			return err
 		}
+		if err := verifyRequiredSigners(tx, matched); err != nil {
+			return err
+		}
 		// Native SOL payments never carry a token mint, so ATA-create
 		// instructions are not allowed and there is no token program to pin.
 		return validateInstructionAllowlist(tx, matched, allowlistParams{})
@@ -959,6 +962,9 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 	if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
 		return err
 	}
+	if err := verifyRequiredSigners(tx, matched); err != nil {
+		return err
+	}
 	allowedOwners := make([]solana.PublicKey, 0, len(tokenExpected))
 	for _, want := range tokenExpected {
 		allowedOwners = append(allowedOwners, want.recipient)
@@ -970,6 +976,53 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 		feePayer:             feePayerKey(details),
 		requiredATAOwners:    requiredOwners,
 	})
+}
+
+// verifyRequiredSigners requires every required signer to be the fee payer
+// or the one authority that funds every matched payment transfer. Any other
+// signer authorizes nothing and only adds a signature fee, which a sponsor
+// would pay; letting each leg of a split name its own authority would let a
+// payer multiply those fees. Mirrors the rust verify_required_signers.
+func verifyRequiredSigners(tx *solana.Transaction, matched []bool) error {
+	token2022Program := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	var fundingAuthority *solana.PublicKey
+	for index, compiled := range tx.Message.Instructions {
+		if !matched[index] {
+			continue
+		}
+		programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+		if err != nil {
+			return err
+		}
+		var position int
+		switch {
+		case programID.Equals(solana.SystemProgramID):
+			position = 0
+		case programID.Equals(solana.TokenProgramID), programID.Equals(token2022Program):
+			position = 3
+		default:
+			continue
+		}
+		if position >= len(compiled.Accounts) || int(compiled.Accounts[position]) >= len(tx.Message.AccountKeys) {
+			continue
+		}
+		authority := tx.Message.AccountKeys[compiled.Accounts[position]]
+		if fundingAuthority != nil && !fundingAuthority.Equals(authority) {
+			return core.NewError(core.ErrCodeInvalidPayload, "payment transfers must share one funding authority")
+		}
+		fundingAuthority = &authority
+	}
+	required := int(tx.Message.Header.NumRequiredSignatures)
+	for i, signer := range tx.Message.AccountKeys {
+		if i >= required {
+			break
+		}
+		if i == 0 || (fundingAuthority != nil && signer.Equals(*fundingAuthority)) {
+			continue
+		}
+		return core.NewError(core.ErrCodeInvalidPayload, "unexpected signer in payment transaction")
+	}
+	return nil
 }
 
 // requiredATAOwners returns the split recipients whose challenge pinned

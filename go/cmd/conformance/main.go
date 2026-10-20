@@ -359,6 +359,8 @@ var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)no matching (spl )?(token )?(transfer|transferchecked|sol transfer)`), "no-matching-transfer"},
 	{regexp.MustCompile(`(?i)unexpected .* (instruction|transfer)`), "unexpected-instruction"},
 	{regexp.MustCompile(`(?i)amount .* (mismatch|does not match)`), "amount-mismatch"},
+	{regexp.MustCompile(`(?i)share one funding authority`), "mixed-funding-authority"},
+	{regexp.MustCompile(`(?i)unexpected signer`), "unexpected-signer"},
 	// x402-exact reject categories. `unsupported x402 version` must be
 	// checked before the generic invalid/payload fallback (the message is
 	// "invalid payload: unsupported x402 version: N"). `network mismatch`
