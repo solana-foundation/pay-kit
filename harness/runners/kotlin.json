@@ -5,5 +5,10 @@
     "-c",
     "exec build/install/mpp-kotlin-conformance/bin/mpp-kotlin-conformance"
   ],
+  "serve": [
+    "sh",
+    "-c",
+    "exec build/install/mpp-kotlin-conformance/bin/mpp-kotlin-conformance --serve"
+  ],
   "cwd": "harness/kotlin-conformance"
 }

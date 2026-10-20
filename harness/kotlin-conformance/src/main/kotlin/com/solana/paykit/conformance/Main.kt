@@ -3,6 +3,14 @@ package com.solana.paykit.conformance
 import com.solana.paykit.paycore.PaymentChannels
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import java.util.Base64
 
 /**
@@ -50,15 +58,78 @@ private val json = Json {
     explicitNulls = false
 }
 
-fun main() {
-    val raw = System.`in`.readBytes().decodeToString()
-    val result = try {
-        runVector(json.decodeFromString(Vector.serializer(), raw))
-    } catch (error: Throwable) {
-        System.err.println("kotlin conformance runner error: ${error.message}")
-        RunnerResult(id = "unknown", outcome = "reject", error = error.message ?: "unknown error")
+/** Intents this runner implements; pkc checks them against harness/expectations/kotlin.toml. */
+private val CLAIMED_INTENTS = listOf("session")
+
+private fun resultFor(raw: String): RunnerResult = try {
+    runVector(json.decodeFromString(Vector.serializer(), raw))
+} catch (error: Throwable) {
+    System.err.println("kotlin conformance runner error: ${error.message}")
+    RunnerResult(id = "unknown", outcome = "reject", error = error.message ?: "unknown error")
+}
+
+/**
+ * Testee ABI v2 (harness/README.md): newline JSON `{id, op, input}` in,
+ * `{id, ok, result | error}` out, one long-lived process. `input` is the v1
+ * vector and `result` the v1 RunnerResult.
+ */
+private fun serve() {
+    while (true) {
+        val line = readlnOrNull() ?: break
+        if (line.isBlank()) continue
+        val request: JsonObject? = try {
+            json.parseToJsonElement(line).jsonObject
+        } catch (error: Throwable) {
+            null
+        }
+        val response: JsonElement = if (request == null) {
+            buildJsonObject {
+                put("id", JsonNull)
+                put("ok", false)
+                put("error", "bad-request")
+                put("detail", "request is not a JSON object")
+            }
+        } else {
+            val id = request["id"] ?: JsonNull
+            when ((request["op"] as? JsonPrimitive)?.content) {
+                "capabilities" -> buildJsonObject {
+                    put("id", id)
+                    put("ok", true)
+                    put("result", buildJsonObject {
+                        put("abi", 2)
+                        put("language", "kotlin")
+                        put("intents", buildJsonArray { CLAIMED_INTENTS.forEach { add(JsonPrimitive(it)) } })
+                        put("honoursClock", false)
+                    })
+                }
+                "build", "verify", "canonical-bytes" -> {
+                    val input = request["input"]?.toString() ?: "{}"
+                    buildJsonObject {
+                        put("id", id)
+                        put("ok", true)
+                        put("result", json.encodeToJsonElement(RunnerResult.serializer(), resultFor(input)))
+                    }
+                }
+                else -> buildJsonObject {
+                    put("id", id)
+                    put("ok", false)
+                    put("error", "unknown-op")
+                    put("detail", request["op"]?.toString() ?: "null")
+                }
+            }
+        }
+        println(response.toString())
+        System.out.flush()
     }
-    println(json.encodeToString(RunnerResult.serializer(), result))
+}
+
+fun main(args: Array<String>) {
+    if (args.contains("--serve")) {
+        serve()
+        return
+    }
+    val raw = System.`in`.readBytes().decodeToString()
+    println(json.encodeToString(RunnerResult.serializer(), resultFor(raw)))
 }
 
 private fun runVector(vector: Vector): RunnerResult {

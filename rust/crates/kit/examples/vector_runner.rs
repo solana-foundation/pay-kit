@@ -3,7 +3,8 @@
 //! Speaks the vector ABI defined in `harness/src/conformance/schema.ts`: read
 //! one `ConformanceVector` as JSON on stdin, drive the REAL solana-pay-kit
 //! code for the vector's intent and mode, and write one `RunnerResult` line
-//! as JSON on stdout. The harness driver (`harness/test/conformance.test.ts`)
+//! as JSON on stdout, or (`--serve`, testee ABI v2) one request per line in
+//! a long-lived process. The harness driver (`pkc run`, rust/crates/conformance)
 //! asserts the result and reconciles it against
 //! `harness/expectations/rust.toml`.
 //!
@@ -134,8 +135,16 @@ impl From<solana_pay_kit::x402::Error> for Rejection {
     }
 }
 
+/// Intents this runner implements; `pkc run` checks them against
+/// `harness/expectations/rust.toml`.
+const INTENTS: [&str; 3] = ["charge", "x402-exact", "session"];
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
+    if std::env::args().skip(1).any(|a| a == "--serve") {
+        serve().await;
+        return;
+    }
     let mut raw = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut raw) {
         eprintln!("rust vector runner: failed to read stdin: {error}");
@@ -148,13 +157,55 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    println!("{}", result_for(&vector).await);
+}
+
+/// Testee ABI v2 (`harness/README.md`): newline JSON `{id, op, input}` in,
+/// `{id, ok, result | error}` out, one long-lived process. `input` is the v1
+/// vector and `result` the v1 `RunnerResult`.
+async fn serve() {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Err(error) => {
+                json!({ "id": null, "ok": false, "error": "bad-request", "detail": error.to_string() })
+            }
+            Ok(request) => {
+                let id = request.get("id").cloned().unwrap_or(Value::Null);
+                match request.get("op").and_then(Value::as_str) {
+                    Some("capabilities") => json!({ "id": id, "ok": true, "result": {
+                        "abi": 2, "language": "rust", "intents": INTENTS, "honoursClock": true,
+                    }}),
+                    Some("build" | "verify" | "canonical-bytes") => {
+                        let input = request.get("input").cloned().unwrap_or(Value::Null);
+                        json!({ "id": id, "ok": true, "result": result_for(&input).await })
+                    }
+                    other => {
+                        json!({ "id": id, "ok": false, "error": "unknown-op", "detail": format!("{other:?}") })
+                    }
+                }
+            }
+        };
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "{response}");
+        let _ = stdout.flush();
+    }
+}
+
+/// One vector to one `RunnerResult`.
+async fn result_for(vector: &Value) -> Value {
     let id = vector
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
 
-    let outcome = run_vector(&vector).await.unwrap_or_else(Outcome::Reject);
+    let outcome = run_vector(vector).await.unwrap_or_else(Outcome::Reject);
     let mut result = Map::new();
     result.insert("id".into(), Value::String(id));
     match outcome {
@@ -177,7 +228,7 @@ async fn main() {
             );
         }
     }
-    println!("{}", Value::Object(result));
+    Value::Object(result)
 }
 
 async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
@@ -192,7 +243,9 @@ async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
         (_, "canonical-bytes") => Ok(Outcome::Accept(canonical_bytes(&input)?)),
         ("charge", "build-transaction") => {
             let transaction = charge_build(&input).await?;
-            Ok(Outcome::Accept(shape_fields(&transaction)?))
+            let mut fields = shape_fields(&transaction)?;
+            fields.insert("transaction".into(), Value::String(transaction));
+            Ok(Outcome::Accept(fields))
         }
         ("charge", "verify-transaction") => charge_verify(&input).await,
         (intent, mode) => Ok(Outcome::Unsupported(format!(
@@ -670,7 +723,11 @@ async fn x402_build(input: &Value) -> Result<Outcome, Rejection> {
         }
         build_payment_header(&signer, &rpc, &requirements, extensions, None).await?
     };
-    Ok(Outcome::Accept(envelope_fields(&header)?))
+    let mut fields = envelope_fields(&header)?;
+    // The built header itself, so the driver can verify it with the Rust
+    // kit and compare its transaction with the kit's own build.
+    fields.insert("x402PaymentHeader".into(), Value::String(header));
+    Ok(Outcome::Accept(fields))
 }
 
 /// Drive `X402::verify_payment_signature_for_requirements` against the

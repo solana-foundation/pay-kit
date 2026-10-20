@@ -602,15 +602,18 @@ function run_vector(array $vector): array
     }
 }
 
-try {
-    $vector = json_decode(read_stdin(), true, flags: JSON_THROW_ON_ERROR);
-    if (!is_array($vector)) {
-        throw new InvalidArgumentException('vector must be a JSON object');
-    }
+/**
+ * One v1 vector to one RunnerResult; an SDK error is a classified reject.
+ *
+ * @param array<string, mixed> $vector
+ * @return array<string, mixed>
+ */
+function result_for(array $vector): array
+{
     $vector = Json::object($vector, 'vector');
     $id = Json::optionalString($vector['id'] ?? null, 'id');
     try {
-        emit(run_vector($vector));
+        return run_vector($vector);
     } catch (Throwable $error) {
         $message = $error->getMessage();
         $result = [
@@ -622,8 +625,69 @@ try {
         if ($rejectCode !== null) {
             $result['rejectCode'] = $rejectCode;
         }
-        emit($result);
+        return $result;
     }
+}
+
+/** Intents this runner implements; pkc checks them against harness/expectations/php.toml. */
+const CONFORMANCE_INTENTS = ['charge', 'x402-exact'];
+
+/**
+ * Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
+ * {id, ok, result | error} out, one long-lived process. `input` is the v1
+ * vector and `result` the v1 RunnerResult.
+ */
+function serve(): void
+{
+    while (($line = fgets(STDIN)) !== false) {
+        if (trim($line) === '') {
+            continue;
+        }
+        try {
+            $request = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            emit(['id' => null, 'ok' => false, 'error' => 'bad-request', 'detail' => $error->getMessage()]);
+            fflush(STDOUT);
+            continue;
+        }
+        $requestId = is_array($request) ? ($request['id'] ?? null) : null;
+        $op = is_array($request) ? ($request['op'] ?? null) : null;
+        try {
+            if ($op === 'capabilities') {
+                $response = ['id' => $requestId, 'ok' => true, 'result' => [
+                    'abi' => 2,
+                    'language' => 'php',
+                    'intents' => CONFORMANCE_INTENTS,
+                    'honoursClock' => false,
+                ]];
+            } elseif (in_array($op, ['build', 'verify', 'canonical-bytes'], true)) {
+                $input = $request['input'] ?? null;
+                if (!is_array($input)) {
+                    throw new InvalidArgumentException('input must be a JSON object');
+                }
+                $response = ['id' => $requestId, 'ok' => true, 'result' => result_for($input)];
+            } else {
+                $response = ['id' => $requestId, 'ok' => false, 'error' => 'unknown-op', 'detail' => (string) json_encode($op)];
+            }
+        } catch (Throwable $error) {
+            $response = ['id' => $requestId, 'ok' => false, 'error' => 'bad-request', 'detail' => $error->getMessage()];
+        }
+        emit($response);
+        fflush(STDOUT);
+    }
+}
+
+try {
+    $arguments = $_SERVER['argv'] ?? [];
+    if (is_array($arguments) && in_array('--serve', $arguments, true)) {
+        serve();
+        exit(0);
+    }
+    $vector = json_decode(read_stdin(), true, flags: JSON_THROW_ON_ERROR);
+    if (!is_array($vector)) {
+        throw new InvalidArgumentException('vector must be a JSON object');
+    }
+    emit(result_for($vector));
 } catch (Throwable $fatal) {
     fwrite(STDERR, 'php conformance runner fatal: ' . $fatal->getMessage() . "\n");
     exit(1);

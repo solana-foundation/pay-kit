@@ -2,9 +2,9 @@
 //
 // Reads a single conformance vector as JSON on stdin, drives the real
 // @solana/mpp (+ JCS reference) TS implementation, and emits a
-// RunnerResult as JSON on stdout. The driver (test/conformance.test.ts)
-// spawns one runner process per vector and asserts the runner output
-// against the vector's `expect` block.
+// RunnerResult as JSON on stdout, or with `--serve` speaks testee ABI v2
+// (one long-lived process, newline JSON; harness/README.md). The driver,
+// `pkc run` (rust/crates/conformance), asserts every result.
 //
 // This is the language-complete contract every other SDK's conformance
 // runner must satisfy: same stdin vector shape, same stdout result shape.
@@ -217,7 +217,13 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       }
       throw new Error(`pay-kit client did not pay the 402 (final status ${response.status})`);
     }
-    return { id: vector.id, outcome: "accept", x402EnvelopeShape: decodeEnvelopeShape(captured) };
+    return {
+      id: vector.id,
+      outcome: "accept",
+      x402EnvelopeShape: decodeEnvelopeShape(captured),
+      // The built header, so pkc can verify it with the Rust kit.
+      x402PaymentHeader: captured,
+    };
   } finally {
     server.close();
   }
@@ -486,6 +492,8 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
       id: vector.id,
       outcome: "accept",
       transactionShape: shapeFromDecoded(tx),
+      // The built transaction, so pkc can verify it with the Rust kit.
+      transaction: tx,
     };
   }
 
@@ -502,6 +510,52 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   };
 }
 
+// One vector to one RunnerResult; an SDK error is a classified reject.
+async function resultFor(vector: ConformanceVector): Promise<RunnerResult> {
+  try {
+    return await runVector(vector);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      error: message,
+      id: vector.id,
+      outcome: "reject",
+      rejectCode: classifyReject(message),
+    };
+  }
+}
+
+// Intents this runner implements; pkc checks them against
+// harness/expectations/typescript.toml.
+const INTENTS = ["charge", "x402-exact", "session"];
+
+// Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
+// {id, ok, result | error} out, one long-lived process. `input` is the v1
+// vector and `result` the v1 RunnerResult.
+async function serve(): Promise<void> {
+  const { createInterface } = await import("node:readline");
+  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const write = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let request: { id?: unknown; op?: unknown; input?: unknown };
+    try {
+      request = JSON.parse(line) as typeof request;
+    } catch (error) {
+      write({ id: null, ok: false, error: "bad-request", detail: String(error) });
+      continue;
+    }
+    const id = request.id ?? null;
+    if (request.op === "capabilities") {
+      write({ id, ok: true, result: { abi: 2, language: "typescript", intents: INTENTS, honoursClock: true } });
+    } else if (request.op === "build" || request.op === "verify" || request.op === "canonical-bytes") {
+      write({ id, ok: true, result: await resultFor(request.input as ConformanceVector) });
+    } else {
+      write({ id, ok: false, error: "unknown-op", detail: String(request.op) });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -512,20 +566,7 @@ async function main(): Promise<void> {
     throw new Error("ts-runner received empty stdin");
   }
   const vector = JSON.parse(raw) as ConformanceVector;
-
-  let result: RunnerResult;
-  try {
-    result = await runVector(vector);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    result = {
-      error: message,
-      id: vector.id,
-      outcome: "reject",
-      rejectCode: classifyReject(message),
-    };
-  }
-  process.stdout.write(JSON.stringify(result) + "\n");
+  process.stdout.write(JSON.stringify(await resultFor(vector)) + "\n");
 }
 
-void main();
+void (process.argv.includes("--serve") ? serve() : main());

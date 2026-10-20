@@ -6,5 +6,12 @@
     "python",
     "conformance_runner.py"
   ],
+  "serve": [
+    "uv",
+    "run",
+    "python",
+    "conformance_runner.py",
+    "--serve"
+  ],
   "cwd": "python"
 }

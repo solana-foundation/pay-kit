@@ -4,5 +4,10 @@
     "php",
     "conformance/runner.php"
   ],
+  "serve": [
+    "php",
+    "conformance/runner.php",
+    "--serve"
+  ],
   "cwd": "php"
 }

@@ -19,6 +19,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
@@ -310,6 +311,13 @@ type RunnerResult struct {
 	// classifyReject; empty when the message is unclassified so the
 	// harness can surface it instead of silently passing.
 	RejectCode string `json:"rejectCode,omitempty"`
+	// Transaction is the built base64 wire transaction on an accepted charge
+	// build; pkc verifies it with the Rust kit and compares its instruction
+	// multiset with the kit's own build.
+	Transaction string `json:"transaction,omitempty"`
+	// X402PaymentHeader is the built base64 payment header on an accepted
+	// x402 build, judged the same way.
+	X402PaymentHeader string `json:"x402PaymentHeader,omitempty"`
 }
 
 // rejectPattern pairs a compiled regex with the normalized RejectCode it
@@ -394,10 +402,69 @@ func (s *localSigner) Sign(payload []byte) (solana.Signature, error) {
 }
 
 func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "--serve" {
+			if err := serve(os.Stdin, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// claimedIntents are the intents this runner implements; pkc checks them against
+// harness/expectations/go.toml.
+var claimedIntents = []string{"charge", "x402-exact", "session"}
+
+// serve speaks testee ABI v2 (harness/README.md): newline JSON
+// {id, op, input} in, {id, ok, result | error} out, one long-lived process.
+// input is the v1 vector and result the v1 RunnerResult.
+func serve(in io.Reader, out io.Writer) error {
+	scanner := bufio.NewScanner(in)
+	scanner.Buffer(make([]byte, 1<<20), 64<<20)
+	encoder := json.NewEncoder(out)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var request struct {
+			ID    json.RawMessage `json:"id"`
+			Op    string          `json:"op"`
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal([]byte(line), &request); err != nil {
+			if err := encoder.Encode(map[string]any{"id": nil, "ok": false, "error": "bad-request", "detail": err.Error()}); err != nil {
+				return err
+			}
+			continue
+		}
+		var response map[string]any
+		switch request.Op {
+		case "capabilities":
+			response = map[string]any{"id": request.ID, "ok": true, "result": map[string]any{
+				"abi": 2, "language": "go", "intents": claimedIntents, "honoursClock": true,
+			}}
+		case "build", "verify", "canonical-bytes":
+			var vector Vector
+			if err := json.Unmarshal(request.Input, &vector); err != nil {
+				response = map[string]any{"id": request.ID, "ok": false, "error": "bad-request", "detail": err.Error()}
+				break
+			}
+			response = map[string]any{"id": request.ID, "ok": true, "result": runVector(vector)}
+		default:
+			response = map[string]any{"id": request.ID, "ok": false, "error": "unknown-op", "detail": request.Op}
+		}
+		if err := encoder.Encode(response); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 func run() error {
@@ -464,7 +531,7 @@ func runVector(vector Vector) RunnerResult {
 		if err != nil {
 			return rejected(vector.ID, err)
 		}
-		return RunnerResult{ID: vector.ID, Outcome: "accept", TransactionShape: shape}
+		return RunnerResult{ID: vector.ID, Outcome: "accept", TransactionShape: shape, Transaction: tx}
 	case "verify-transaction":
 		tx := vector.Input.Transaction
 		if tx == "" {

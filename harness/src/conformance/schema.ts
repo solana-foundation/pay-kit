@@ -229,7 +229,7 @@ export type VectorInput = {
   signerSecretKey?: number[];
   rpcFixtures?: VectorRpcFixtures;
   // Injected by the driver, never authored: URL of a fixture JSON-RPC
-  // server built from rpcFixtures (src/conformance/fixture-rpc.ts). Runners
+  // server built from rpcFixtures (rust/crates/conformance/src/fixture_rpc.rs). Runners
   // MUST pass it to their SDK as the RPC endpoint and MUST NOT resolve
   // chain state (token programs, decimals) themselves.
   rpcUrl?: string;
@@ -420,4 +420,11 @@ export type RunnerResult = {
   // Present on reject: the normalized category the runner mapped its native
   // error onto. Asserted against VectorExpect.rejectCode when both are set.
   rejectCode?: RejectCode;
+  // Present on an accepted charge build: the built base64 wire transaction.
+  // `pkc run` runs the Rust kit's verifier on it and compares its
+  // instruction multiset with the kit's own build of the same case.
+  transaction?: string;
+  // Present on an accepted x402 build: the built base64 payment header,
+  // judged the same way.
+  x402PaymentHeader?: string;
 };

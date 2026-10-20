@@ -6,5 +6,12 @@
     "ruby",
     "exe/conformance"
   ],
+  "serve": [
+    "bundle",
+    "exec",
+    "ruby",
+    "exe/conformance",
+    "--serve"
+  ],
   "cwd": "ruby"
 }

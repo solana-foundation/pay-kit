@@ -417,7 +417,7 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
 
     The offer is the vector's ``x402Offer``, passed verbatim. The client
     fetches the blockhash and the mint (token program, decimals) through the
-    fixture RPC and signs a real transfer with an ephemeral signer; the memo
+    fixture RPC and signs a real transfer with the vector's signer; the memo
     is the client's own random nonce. ``x402Version: 1`` drives the legacy
     ``X-PAYMENT`` producer, anything else the canonical v2 one.
     """
@@ -426,7 +426,12 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
     if not offer:
         raise ValueError("x402 build vector is missing input.x402Offer")
 
-    signer = MemorySigner(Keypair())
+    secret = inp.get("signerSecretKey")
+    if not secret:
+        raise ValueError("x402 build vector is missing input.signerSecretKey")
+    # The vector's signer, not an ephemeral one: pkc compares the built
+    # transaction with the Rust kit's build for the same key.
+    signer = _local_signer(secret)
     rpc = _rpc(vector)
     try:
         if inp.get("x402Version") == X402_VERSION_V1:
@@ -507,6 +512,8 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
             "id": vector_id,
             "outcome": "accept",
             "x402EnvelopeShape": _decode_envelope_shape(header),
+            # The built header, so pkc can verify it with the Rust kit.
+            "x402PaymentHeader": header,
         }
 
     if mode == "verify-transaction":
@@ -576,7 +583,13 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 
     if mode == "build-transaction":
         tx = asyncio.run(_build_transaction(vector))
-        return {"id": vector_id, "outcome": "accept", "transactionShape": _shape_from_transaction(tx)}
+        # The built transaction, so pkc can verify it with the Rust kit.
+        return {
+            "id": vector_id,
+            "outcome": "accept",
+            "transactionShape": _shape_from_transaction(tx),
+            "transaction": tx,
+        }
 
     if mode == "verify-transaction":
         inp = vector.get("input") or {}
@@ -644,22 +657,55 @@ def _classify_reject(exc: Exception) -> str | None:
     return None
 
 
-def main() -> None:
-    raw = sys.stdin.read().strip()
-    if not raw:
-        raise SystemExit("python conformance runner received empty stdin")
-    vector = json.loads(raw)
-
+def _result_for(vector: dict[str, Any]) -> dict[str, Any]:
     try:
-        result = _run_vector(vector)
+        return _run_vector(vector)
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         result = {"id": vector.get("id", ""), "outcome": "reject", "error": message}
         code = _classify_reject(exc)
         if code is not None:
             result["rejectCode"] = code
+        return result
 
-    sys.stdout.write(json.dumps(result) + "\n")
+
+# Intents this runner implements; pkc checks them against
+# harness/expectations/python.toml.
+_INTENTS = ["charge", "x402-exact", "session"]
+
+
+def _serve() -> None:
+    """Testee ABI v2 (harness/README.md): newline JSON ``{id, op, input}`` in,
+    ``{id, ok, result | error}`` out, one long-lived process. ``input`` is the
+    v1 vector and ``result`` the v1 RunnerResult."""
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            request = json.loads(line)
+        except ValueError as exc:
+            response: dict[str, Any] = {"id": None, "ok": False, "error": "bad-request", "detail": str(exc)}
+        else:
+            rid, op = request.get("id"), request.get("op")
+            if op == "capabilities":
+                result = {"abi": 2, "language": "python", "intents": _INTENTS, "honoursClock": True}
+                response = {"id": rid, "ok": True, "result": result}
+            elif op in ("build", "verify", "canonical-bytes"):
+                response = {"id": rid, "ok": True, "result": _result_for(request.get("input") or {})}
+            else:
+                response = {"id": rid, "ok": False, "error": "unknown-op", "detail": str(op)}
+        sys.stdout.write(json.dumps(response) + "\n")
+        sys.stdout.flush()
+
+
+def main() -> None:
+    if "--serve" in sys.argv[1:]:
+        _serve()
+        return
+    raw = sys.stdin.read().strip()
+    if not raw:
+        raise SystemExit("python conformance runner received empty stdin")
+    sys.stdout.write(json.dumps(_result_for(json.loads(raw))) + "\n")
 
 
 if __name__ == "__main__":

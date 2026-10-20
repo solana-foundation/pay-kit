@@ -76,11 +76,11 @@ const (
 func runX402(vector Vector) RunnerResult {
 	switch vector.Mode {
 	case "build-transaction":
-		shape, err := buildX402Envelope(vector)
+		shape, header, err := buildX402Envelope(vector)
 		if err != nil {
 			return rejected(vector.ID, err)
 		}
-		return RunnerResult{ID: vector.ID, Outcome: "accept", X402EnvelopeShape: shape}
+		return RunnerResult{ID: vector.ID, Outcome: "accept", X402EnvelopeShape: shape, X402PaymentHeader: header}
 	case "verify-transaction":
 		shape, err := verifyX402Envelope(vector)
 		if err != nil {
@@ -129,23 +129,23 @@ func advertisedExtensions(in VectorInput) (json.RawMessage, error) {
 }
 
 // buildX402Envelope builds and signs a real payment with the Go x402
-// client and returns the decoded envelope shape.
-func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
+// client and returns the decoded envelope shape plus the header itself.
+func buildX402Envelope(vector Vector) (*X402EnvelopeShape, string, error) {
 	in := vector.Input
 	if in.X402Offer == nil {
-		return nil, fmt.Errorf("x402 build vector is missing input.x402Offer")
+		return nil, "", fmt.Errorf("x402 build vector is missing input.x402Offer")
 	}
 	signer, err := newLocalSigner(in.SignerSecretKey)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	rpcClient, err := sdkRPC(in)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	entry, err := offerToAcceptsEntry(in.X402Offer)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	ctx := context.Background()
 	var header string
@@ -156,16 +156,17 @@ func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 		// An absent version exercises the default producer (v2).
 		advertised, aerr := advertisedExtensions(in)
 		if aerr != nil {
-			return nil, aerr
+			return nil, "", aerr
 		}
 		header, err = x402client.BuildPaymentHeaderWithExtensions(ctx, signer, rpcClient, entry, advertised)
 	default:
-		return nil, fmt.Errorf("x402 build vector has unsupported input.x402Version %d", in.X402Version)
+		return nil, "", fmt.Errorf("x402 build vector has unsupported input.x402Version %d", in.X402Version)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return decodeX402EnvelopeShape(header)
+	shape, err := decodeX402EnvelopeShape(header)
+	return shape, header, err
 }
 
 // credentialWire is the decode-side shape of a base64(JSON) x402 envelope.

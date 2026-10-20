@@ -4,5 +4,10 @@
     "luajit",
     "cmd/conformance/main.lua"
   ],
+  "serve": [
+    "luajit",
+    "cmd/conformance/main.lua",
+    "--serve"
+  ],
   "cwd": "lua"
 }

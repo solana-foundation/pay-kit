@@ -528,20 +528,8 @@ local function classify_reject(message)
   return nil
 end
 
-local function main()
-  local raw = read_stdin()
-  raw = raw:gsub('^%s+', ''):gsub('%s+$', '')
-  if raw == '' then
-    io.stderr:write('lua conformance runner received empty stdin\n')
-    os.exit(1)
-  end
-
-  local ok, vector = pcall(json.decode, raw)
-  if not ok then
-    io.stderr:write('failed to parse vector: ' .. tostring(vector) .. '\n')
-    os.exit(1)
-  end
-
+-- One v1 vector to one RunnerResult; an SDK error is a classified reject.
+local function result_for(vector)
   local result
   local run_ok, run_err = pcall(function()
     result = run_vector(vector)
@@ -562,8 +550,76 @@ local function main()
       result.rejectCode = code
     end
   end
+  return result
+end
 
-  emit(result)
+-- Intents this runner implements; pkc checks them against
+-- harness/expectations/lua.toml.
+local INTENTS_JSON = '["charge","x402-exact"]'
+
+local function encode_id(id)
+  if id == nil then
+    return 'null'
+  end
+  return json.encode(id)
+end
+
+-- Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
+-- {id, ok, result | error} out, one long-lived process. `input` is the v1
+-- vector and `result` the v1 RunnerResult. The envelope is concatenated
+-- around the one-shot encoding so both paths emit identical results.
+local function serve()
+  for line in io.stdin:lines() do
+    if line:match('%S') then
+      local ok, request = pcall(json.decode, line)
+      local response
+      if not ok or type(request) ~= 'table' then
+        response = '{"id":null,"ok":false,"error":"bad-request","detail":'
+          .. json.encode(tostring(request)) .. '}'
+      elseif request.op == 'capabilities' then
+        response = '{"id":' .. encode_id(request.id)
+          .. ',"ok":true,"result":{"abi":2,"language":"lua","intents":' .. INTENTS_JSON
+          .. ',"honoursClock":false}}'
+      elseif request.op == 'build' or request.op == 'verify' or request.op == 'canonical-bytes' then
+        -- pay_kit.configure() is once per worker; a one-shot run gets a fresh
+        -- process per case, so give every served case the same fresh state.
+        local loaded = package.loaded['pay_kit']
+        if loaded and loaded._reset_for_tests then
+          loaded._reset_for_tests()
+        end
+        response = '{"id":' .. encode_id(request.id)
+          .. ',"ok":true,"result":' .. json.encode(result_for(request.input or {})) .. '}'
+      else
+        response = '{"id":' .. encode_id(request.id)
+          .. ',"ok":false,"error":"unknown-op","detail":' .. json.encode(tostring(request.op)) .. '}'
+      end
+      io.stdout:write(response, '\n')
+      io.stdout:flush()
+    end
+  end
+end
+
+local function main()
+  for _, a in ipairs(arg or {}) do
+    if a == '--serve' then
+      serve()
+      return
+    end
+  end
+  local raw = read_stdin()
+  raw = raw:gsub('^%s+', ''):gsub('%s+$', '')
+  if raw == '' then
+    io.stderr:write('lua conformance runner received empty stdin\n')
+    os.exit(1)
+  end
+
+  local ok, vector = pcall(json.decode, raw)
+  if not ok then
+    io.stderr:write('failed to parse vector: ' .. tostring(vector) .. '\n')
+    os.exit(1)
+  end
+
+  emit(result_for(vector))
 end
 
 main()

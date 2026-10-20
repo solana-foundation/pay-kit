@@ -8,5 +8,14 @@
     "tsx",
     "src/conformance/ts-runner.ts"
   ],
+  "serve": [
+    "pnpm",
+    "exec",
+    "node",
+    "--import",
+    "tsx",
+    "src/conformance/ts-runner.ts",
+    "--serve"
+  ],
   "cwd": "harness"
 }

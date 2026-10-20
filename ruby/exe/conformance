@@ -293,15 +293,47 @@ def run_vector(vector)
   end
 end
 
-raw = $stdin.read.to_s.strip
-abort "ruby conformance runner received empty stdin" if raw.empty?
-vector = JSON.parse(raw)
+def result_for(vector)
+  run_vector(vector)
+rescue => error
+  reject_result(vector["id"], error.message)
+end
 
-result =
-  begin
-    run_vector(vector)
-  rescue => error
-    reject_result(vector["id"], error.message)
+# Intents this runner implements; pkc checks them against
+# harness/expectations/ruby.toml.
+INTENTS = %w[charge x402-exact].freeze
+
+# Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
+# {id, ok, result | error} out, one long-lived process. `input` is the v1
+# vector and `result` the v1 RunnerResult.
+def serve
+  $stdout.sync = true
+  $stdin.each_line do |line|
+    next if line.strip.empty?
+
+    response =
+      begin
+        request = JSON.parse(line)
+        case request["op"]
+        when "capabilities"
+          {"id" => request["id"], "ok" => true,
+           "result" => {"abi" => 2, "language" => "ruby", "intents" => INTENTS, "honoursClock" => false}}
+        when "build", "verify", "canonical-bytes"
+          {"id" => request["id"], "ok" => true, "result" => result_for(request["input"] || {})}
+        else
+          {"id" => request["id"], "ok" => false, "error" => "unknown-op", "detail" => request["op"].to_s}
+        end
+      rescue JSON::ParserError => error
+        {"id" => nil, "ok" => false, "error" => "bad-request", "detail" => error.message}
+      end
+    $stdout.puts(JSON.generate(response))
   end
+end
 
-$stdout.puts(JSON.generate(result))
+if ARGV.include?("--serve")
+  serve
+else
+  raw = $stdin.read.to_s.strip
+  abort "ruby conformance runner received empty stdin" if raw.empty?
+  $stdout.puts(JSON.generate(result_for(JSON.parse(raw))))
+end

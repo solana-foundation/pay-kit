@@ -7,7 +7,8 @@
 //
 // Unknown keys are rejected (including the retired `intents`).
 //
-// The driver (test/conformance.test.ts) globs these manifests instead of
+// The driver (`pkc run`, rust/crates/conformance/src/run/testee.rs) and
+// build-adapters.ts glob these manifests instead of
 // carrying a hardcoded RUNNERS table, so adding a language is a file drop
 // with no central edit. `cwd` is the runner's working directory relative to
 // the repo root: each non-TypeScript runner must run from its own SDK tree
@@ -22,7 +23,11 @@ import { resolveAdapterCommand } from "../artifacts.js";
 
 export type RunnerManifest = {
   language: string;
+  // Legacy one-shot command: one process per vector (testee ABI v1).
   command: string[];
+  // Testee ABI v2 command: one long-lived process speaking newline JSON
+  // `{id, op, input}` -> `{id, ok, result|error}`, driven by `pkc run`.
+  serve?: string[];
   // Working directory relative to the repo root. Defaults to the repo root.
   cwd?: string;
 };
@@ -42,11 +47,17 @@ function isRunnerManifest(value: unknown): value is RunnerManifest {
   if (!Array.isArray(m.command) || m.command.length === 0) return false;
   if (!m.command.every((c) => typeof c === "string")) return false;
   if (m.cwd !== undefined && typeof m.cwd !== "string") return false;
+  if (
+    m.serve !== undefined &&
+    (!Array.isArray(m.serve) || m.serve.length === 0 || !m.serve.every((c) => typeof c === "string"))
+  ) {
+    return false;
+  }
   // Capabilities moved to harness/expectations/; reject the old field so a
   // stale manifest cannot silently narrow coverage.
   if ("intents" in m) return false;
   for (const key of Object.keys(m)) {
-    if (!["language", "command", "cwd"].includes(key)) return false;
+    if (!["language", "command", "serve", "cwd"].includes(key)) return false;
   }
   return true;
 }

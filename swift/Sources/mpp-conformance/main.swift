@@ -230,9 +230,15 @@ private struct RunnerResult: Encodable {
     var x402EnvelopeShape: X402EnvelopeShape?
     var error: String?
     var rejectCode: String?
+    // The built artifact on an accepted build (charge: the base64 wire
+    // transaction; x402: the base64 payment header), so pkc can verify it
+    // with the Rust kit and compare it with the kit's own build.
+    var transaction: String?
+    var x402PaymentHeader: String?
 
     enum CodingKeys: String, CodingKey {
         case id, outcome, transactionShape, exactBytes, x402EnvelopeShape, error, rejectCode
+        case transaction, x402PaymentHeader
     }
 
     func encode(to encoder: Encoder) throws {
@@ -244,6 +250,8 @@ private struct RunnerResult: Encodable {
         if let x402EnvelopeShape { try c.encode(x402EnvelopeShape, forKey: .x402EnvelopeShape) }
         if let error { try c.encode(error, forKey: .error) }
         if let rejectCode { try c.encode(rejectCode, forKey: .rejectCode) }
+        if let transaction { try c.encode(transaction, forKey: .transaction) }
+        if let x402PaymentHeader { try c.encode(x402PaymentHeader, forKey: .x402PaymentHeader) }
     }
 }
 
@@ -396,7 +404,7 @@ private func fixtureRpc(_ input: VectorInput) throws -> RpcClient {
 // the fixture RPC (blockhash, mint decimals and owner), wraps it in the
 // envelope for the requested version, and the runner decodes the shape.
 
-private func buildX402Envelope(_ vector: Vector) async throws -> X402EnvelopeShape {
+private func buildX402Envelope(_ vector: Vector) async throws -> (X402EnvelopeShape, String) {
     let input = vector.input
     guard let offerValue = input.x402Offer else {
         throw RunnerError.message("invalid payload: x402 build vector missing input.x402Offer")
@@ -432,7 +440,7 @@ private func buildX402Envelope(_ vector: Vector) async throws -> X402EnvelopeSha
     case let other:
         throw RunnerError.message("unsupported x402Version \(other)")
     }
-    return try decodeX402EnvelopeShape(header)
+    return (try decodeX402EnvelopeShape(header), header)
 }
 
 // Decode an outbound v1/v2 payment header into the conformance
@@ -734,8 +742,10 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
         if vector.intent == "x402-exact" {
             switch vector.mode {
             case "build-transaction":
-                let shape = try await buildX402Envelope(vector)
-                return RunnerResult(id: vector.id, outcome: "accept", x402EnvelopeShape: shape)
+                let (shape, header) = try await buildX402Envelope(vector)
+                return RunnerResult(
+                    id: vector.id, outcome: "accept", x402EnvelopeShape: shape, x402PaymentHeader: header
+                )
             case "verify-transaction":
                 return RunnerResult(
                     id: vector.id,
@@ -758,7 +768,7 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
         case "build-transaction":
             let tx = try await buildChargeTransaction(vector)
             let shape = try shapeFromTransaction(tx)
-            return RunnerResult(id: vector.id, outcome: "accept", transactionShape: shape)
+            return RunnerResult(id: vector.id, outcome: "accept", transactionShape: shape, transaction: tx)
         case "verify-transaction":
             // Swift is a client-only SDK: it has no server pre-broadcast
             // verifier. Emit a clear unsupported-mode result the driver
@@ -788,7 +798,77 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
 
 // MARK: - Entry point
 
+// Parse one v1 vector. `value` is an arbitrary JSON document; pull it from
+// the parsed object tree rather than Codable so canonical-bytes vectors can
+// canonicalize any shape.
+private func parseVector(_ raw: Data) throws -> (Vector, Any?) {
+    let vector = try JSONDecoder().decode(Vector.self, from: raw)
+    var rawValue: Any?
+    if let top = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+       let input = top["input"] as? [String: Any] {
+        rawValue = input["value"]
+    }
+    return (vector, rawValue)
+}
+
+private func encodeLine(_ value: Data) -> Data {
+    var line = value
+    line.append(0x0A)
+    return line
+}
+
+// Intents this runner implements; pkc checks them against
+// harness/expectations/swift.toml.
+private let claimedIntents = ["charge", "x402-exact", "session"]
+
+private func jsonString(_ value: Any?) -> String {
+    guard let value, !(value is NSNull),
+          let data = try? JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed]),
+          let text = String(data: data, encoding: .utf8) else { return "null" }
+    // Strip the wrapping array: `[x]` -> `x`.
+    return String(text.dropFirst().dropLast())
+}
+
+// Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
+// {id, ok, result | error} out, one long-lived process. `input` is the v1
+// vector and `result` the v1 RunnerResult; the envelope is concatenated
+// around the one-shot encoding so both paths emit identical results.
+private func serve() async {
+    while let line = readLine(strippingNewline: true) {
+        if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+        let data = Data(line.utf8)
+        var response: String
+        if let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            let id = jsonString(request["id"])
+            let op = request["op"] as? String ?? ""
+            switch op {
+            case "capabilities":
+                let intents = claimedIntents.map { "\"\($0)\"" }.joined(separator: ",")
+                response = "{\"id\":\(id),\"ok\":true,\"result\":{\"abi\":2,\"language\":\"swift\",\"intents\":[\(intents)],\"honoursClock\":false}}"
+            case "build", "verify", "canonical-bytes":
+                do {
+                    let inputData = try JSONSerialization.data(withJSONObject: request["input"] ?? [:])
+                    let (vector, rawValue) = try parseVector(inputData)
+                    let result = try JSONEncoder().encode(await runVector(vector, rawValue: rawValue))
+                    response = "{\"id\":\(id),\"ok\":true,\"result\":\(String(decoding: result, as: UTF8.self))}"
+                } catch {
+                    response = "{\"id\":\(id),\"ok\":false,\"error\":\"bad-request\",\"detail\":\(jsonString(String(describing: error)))}"
+                }
+            default:
+                response = "{\"id\":\(id),\"ok\":false,\"error\":\"unknown-op\",\"detail\":\(jsonString(op))}"
+            }
+        } else {
+            response = "{\"id\":null,\"ok\":false,\"error\":\"bad-request\",\"detail\":\"request is not a JSON object\"}"
+        }
+        FileHandle.standardOutput.write(encodeLine(Data(response.utf8)))
+    }
+}
+
 func main() async {
+    if CommandLine.arguments.dropFirst().contains("--serve") {
+        await serve()
+        return
+    }
     let raw = FileHandle.standardInput.readDataToEndOfFile()
     guard !raw.isEmpty else {
         FileHandle.standardError.write(Data("swift conformance runner received empty stdin".utf8))
@@ -798,16 +878,7 @@ func main() async {
     let vector: Vector
     let rawValue: Any?
     do {
-        vector = try JSONDecoder().decode(Vector.self, from: raw)
-        // `value` is an arbitrary JSON document; pull it from the parsed
-        // object tree rather than Codable so canonical-bytes vectors can
-        // canonicalize any shape.
-        if let top = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
-           let input = top["input"] as? [String: Any] {
-            rawValue = input["value"]
-        } else {
-            rawValue = nil
-        }
+        (vector, rawValue) = try parseVector(raw)
     } catch {
         FileHandle.standardError.write(Data("failed to parse vector: \(error)".utf8))
         exit(1)
@@ -816,10 +887,7 @@ func main() async {
     let result = await runVector(vector, rawValue: rawValue)
     do {
         let encoder = JSONEncoder()
-        let data = try encoder.encode(result)
-        var line = data
-        line.append(0x0A)
-        FileHandle.standardOutput.write(line)
+        FileHandle.standardOutput.write(encodeLine(try encoder.encode(result)))
     } catch {
         FileHandle.standardError.write(Data("failed to encode result: \(error)".utf8))
         exit(1)

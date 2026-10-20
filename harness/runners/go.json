@@ -5,5 +5,11 @@
     "run",
     "./cmd/conformance"
   ],
+  "serve": [
+    "go",
+    "run",
+    "./cmd/conformance",
+    "--serve"
+  ],
   "cwd": "go"
 }

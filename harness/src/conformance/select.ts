@@ -26,13 +26,15 @@ const LANGUAGE_PREFIXES: Record<string, string[]> = {
 
 // Shared paths whose change can shift the cross-SDK contract for every
 // language, so any touch here forces the full matrix. The conformance
-// driver, the contract schema, the shared JCS/decode/reject/x402 reference,
-// the vectors, and the runner manifests are all shared.
+// driver (pkc), the contract schema, the TS reference runner, the vectors,
+// the expectations and the runner manifests are all shared.
 const SHARED_PREFIXES: string[] = [
   "harness/vectors/",
   "harness/runners/",
   "harness/src/conformance/",
-  "harness/test/conformance.test.ts",
+  "harness/expectations/",
+  // The driver (`pkc run`) and the case registry it judges with.
+  "rust/crates/conformance/",
 ];
 
 export const ALL_LANGUAGES: string[] = Object.keys(LANGUAGE_PREFIXES).sort();
