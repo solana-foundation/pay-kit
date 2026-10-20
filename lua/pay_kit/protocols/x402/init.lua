@@ -184,11 +184,13 @@ local function network_label(pay_kit_network)
   return 'localnet'
 end
 
--- Match the cross-SDK identity tuple. Mirrors Ruby's
--- `Types.accepted_requirement_matches?` (PR #138). Excludes `amount`
--- and `maxTimeoutSeconds` so v2 credentials whose client omitted
--- amount still match a server offer that includes it.
-local REQUIREMENT_IDENTITY_KEYS       = {'scheme', 'network', 'asset', 'payTo'}
+-- Bind the credential's `accepted` to the offer. `accepted` is the
+-- "PaymentRequirements object indicating the payment method chosen"
+-- (x402-specification-v2.md §5.2.2), and the chosen method includes its
+-- `amount`: a credential that claims a cheaper amount is an accepted
+-- mismatch, not a transfer that happens to be short. `maxTimeoutSeconds`
+-- is not compared (informational; the verifier does not use it).
+local REQUIREMENT_IDENTITY_KEYS       = {'scheme', 'network', 'amount', 'asset', 'payTo'}
 -- `tokenProgram` / `decimals` are non-spec hints a client may drop
 -- (RULINGS S1); the verifier binds the transfer to the canonical token
 -- programs and re-derives the payTo ATA itself.

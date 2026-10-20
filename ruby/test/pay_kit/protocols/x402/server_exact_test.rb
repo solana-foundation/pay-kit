@@ -323,6 +323,35 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
   end
 
+  # x402-specification-v2.md §5.2.2: `accepted` is the chosen requirement,
+  # amount included. A credential that claims (and pays) a cheaper amount
+  # is an accepted mismatch, caught before the transaction checks.
+  def test_settlement_rejects_accepted_amount_lie
+    state = build_state
+    envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
+    envelope.fetch("accepted")["amount"] = "1"
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+    end
+
+    assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
+  end
+
+  def test_settlement_binds_matching_accepted_amount
+    # Positive control: the unmodified echo (amount included) still matches.
+    state = build_state
+    envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
+
+    begin
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+    rescue RuntimeError => err
+      refute_equal "No matching payment requirements: accepted payment requirement does not match server challenge", err.message
+    end
+  end
+
   def test_settlement_tolerates_unknown_keys_in_accepted_extra
     # Unknown extra keys (drift) must not break matching: clients ship
     # extension fields the server doesn't recognise, the server still
@@ -514,6 +543,8 @@ class X402ServerExactTest < Minitest::Test
     payer_state = build_state(price: "999")
     server_state = build_state(price: "1000")
     envelope = JSON.parse(Base64.decode64(build_payment_header(payer_state)))
+    # The echo names the route's amount; only the transfer underpays.
+    envelope.fetch("accepted")["amount"] = "1000"
     payment_header = Base64.strict_encode64(JSON.generate(envelope))
 
     error = assert_raises(RuntimeError) do
@@ -527,7 +558,10 @@ class X402ServerExactTest < Minitest::Test
   def test_verify_accepts_overpayment
     payer_state = build_state(price: "1001")
     server_state = build_state(price: "1000")
-    payment_header = build_payment_header(payer_state)
+    envelope = JSON.parse(Base64.decode64(build_payment_header(payer_state)))
+    # The echo names the route's amount; only the transfer overpays.
+    envelope.fetch("accepted")["amount"] = "1000"
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
 
     verified = PayKit::Protocols::X402::Server::Exact.verify_exact_payment(server_state, payment_header)
     assert_equal "1000", verified.fetch(:requirement).fetch("amount")

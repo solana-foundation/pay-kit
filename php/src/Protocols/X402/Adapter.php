@@ -493,9 +493,11 @@ final class Adapter
      *
      * The credential echoes the full `accepted` requirement it claims to be
      * paying for; we identity-key match it against the route's offer
-     * (scheme/network/asset/payTo + extra.feePayer/memo) so a
+     * (scheme/network/amount/asset/payTo + extra.feePayer/memo) so a
      * credential that lies about its requirement is rejected before settlement.
-     * Mirrors the rust v2 arm + cross-SDK PR #138 alignment.
+     * `accepted` is the "PaymentRequirements object indicating the payment
+     * method chosen" (x402-specification-v2.md §5.2.2), and the chosen method
+     * includes its amount. maxTimeoutSeconds is informational and not compared.
      *
      * @param array<string, mixed> $envelope
      * @param array<string, mixed> $offer
@@ -506,7 +508,7 @@ final class Adapter
         if (!is_array($accepted)) {
             throw new InvalidProofException('invalid_exact_svm_payload_envelope');
         }
-        foreach (['scheme', 'network', 'asset', 'payTo'] as $key) {
+        foreach (['scheme', 'network', 'amount', 'asset', 'payTo'] as $key) {
             if (($accepted[$key] ?? null) !== ($offer[$key] ?? null)) {
                 throw new InvalidProofException(
                     'pay_kit: charge_request_mismatch: '

@@ -91,21 +91,19 @@ module PayKit::Protocols::X402
           signed
         end
 
-        # Match on identifying fields only (scheme/network/asset/payTo
-        # and the scheme's `extra` fields feePayer/memo). `tokenProgram`
-        # and `decimals` are non-spec hints the server may add to `extra`
-        # (scheme_exact_svm defines feePayer, memo, recentBlockhash and
-        # lastValidBlockHeight only; RULINGS S1), so a client that drops
-        # them still matches; the Verifier binds the transfer to the
-        # canonical token programs and re-derives the payTo ATA itself.
-        # Amount and maxTimeoutSeconds are intentionally excluded: the
-        # TS reference server (harness/src/fixtures/typescript/
-        # exact-server.ts:141-143) only matches scheme/network/asset
-        # and the v2 client leaves `amount` out of `accepted` to allow
-        # a per-request facilitator to fill it in. Comparing them
-        # strictly broke cross-language harness ("No matching payment
-        # requirements" against structurally compatible payloads).
-        REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
+        # Bind the credential's `accepted` to the offer. `accepted` is the
+        # "PaymentRequirements object indicating the payment method chosen"
+        # (x402-specification-v2.md §5.2.2), and the chosen method includes
+        # its `amount`: a credential claiming a cheaper amount is an accepted
+        # mismatch, not a transfer that happens to be short. The scheme's
+        # `extra` fields feePayer/memo are bound when the server issued them.
+        # `tokenProgram` and `decimals` are non-spec hints the server may add
+        # to `extra` (scheme_exact_svm defines feePayer, memo, recentBlockhash
+        # and lastValidBlockHeight only; RULINGS S1), so a client that drops
+        # them still matches; the Verifier binds the transfer to the canonical
+        # token programs and re-derives the payTo ATA itself.
+        # maxTimeoutSeconds is informational and not compared.
+        REQUIREMENT_IDENTITY_KEYS = %w[scheme network amount asset payTo].freeze
         REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer memo].freeze
 
         def accepted_requirement_matches?(left, right)

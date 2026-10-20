@@ -43,11 +43,12 @@ end)
 
 -- --- matcher --------------------------------------------------------
 
-helper.test('matcher: identity tuple match ignores amount/maxTimeoutSeconds', function()
+helper.test('matcher: identity tuple match ignores maxTimeoutSeconds', function()
   local client = {
     scheme  = 'exact',
     network = 'solana:dev',
     asset   = 'MintAddr',
+    amount  = '100',
     payTo   = SELLER,
     extra   = {feePayer = 'Fp', tokenProgram = 'Tk', memo = '/paid'},
   }
@@ -74,6 +75,18 @@ helper.test('matcher: scheme/network/asset/payTo mismatch returns false', functi
     {scheme = 'exact', network = 'solana:dev', asset = 'B', payTo = 'P'}, server), false)
   helper.assert_equal(x402._private.accepted_requirement_matches(
     {scheme = 'exact', network = 'solana:dev', asset = 'A', payTo = 'Q'}, server), false)
+end)
+
+-- x402-specification-v2.md §5.2.2: `accepted` is the chosen requirement,
+-- amount included. A credential claiming a cheaper amount is a mismatch.
+helper.test('matcher: accepted.amount must equal the offered amount', function()
+  local server = {scheme = 'exact', network = 'n', asset = 'a', payTo = 'p', amount = '1000'}
+  helper.assert_equal(x402._private.accepted_requirement_matches(
+    {scheme = 'exact', network = 'n', asset = 'a', payTo = 'p', amount = '1000'}, server), true)
+  helper.assert_equal(x402._private.accepted_requirement_matches(
+    {scheme = 'exact', network = 'n', asset = 'a', payTo = 'p', amount = '1'}, server), false)
+  helper.assert_equal(x402._private.accepted_requirement_matches(
+    {scheme = 'exact', network = 'n', asset = 'a', payTo = 'p'}, server), false)
 end)
 
 helper.test('matcher: tolerates unknown extra keys on the client side', function()

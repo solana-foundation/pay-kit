@@ -7,26 +7,6 @@ section here.
 
 Open findings from the phase-1 vectors (pinned spec text, RULINGS ids):
 
-## x402-accepted-amount-not-bound
-
-**Cases:** `vector/x402-exact-verify-accepted-amount-lie-reject`
-**SDKs:** lua, php, ruby
-
-The v2 credential's `accepted` is matched to the offered requirement by
-scheme, network, asset and payTo only, so a credential that claims a cheaper
-`accepted.amount` (and pays it) is matched to the route and rejected later by
-the transaction amount check (`invalid_exact_svm_payload_amount_mismatch`)
-instead of as an `accepted` mismatch. The payment is still refused, but the
-credential is bound to a requirement it does not echo.
-
-- Lua: `lua/pay_kit/protocols/x402/init.lua:191` (`REQUIREMENT_IDENTITY_KEYS`)
-- PHP: `php/src/Protocols/X402/Adapter.php:509` (`matchCanonicalCredential`)
-- Ruby: `ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/types.rb:108`
-  (`REQUIREMENT_IDENTITY_KEYS`)
-
-Spec: x402-specification-v2.md §5.2.2, “PaymentRequirements object indicating
-the payment method chosen”; the chosen method includes its amount.
-
 ## ts-x402-accepted-not-bound
 
 **Cases:** `vector/x402-exact-v2-verify-wrong-network-reject`,

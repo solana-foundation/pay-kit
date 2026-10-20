@@ -32,8 +32,3 @@ ids = [
   "vector/x402-ext-omit-when-none-advertised",
   "vector/x402-ext-preserve-unknown-verbatim",
 ]
-
-[[known_failing]]
-id = "vector/x402-exact-verify-accepted-amount-lie-reject"
-reason = "the accepted-to-offer match compares scheme/network/asset/payTo only, so a credential whose accepted.amount lies is caught later by the transaction amount check (amount-mismatch) instead of as an accepted mismatch"
-tracking = "FINDINGS.md#x402-accepted-amount-not-bound"

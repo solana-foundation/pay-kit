@@ -196,6 +196,44 @@ final class LegacyWireTest extends TestCase
         self::assertSame('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1', $network);
     }
 
+    // ── matchCanonicalCredential: accepted binds to the offer ──────────────
+
+    /** @return array<string, mixed> */
+    private function offer(): array
+    {
+        return [
+            'scheme'            => 'exact',
+            'network'           => 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+            'asset'             => 'Mint1111111111111111111111111111111111111111',
+            'amount'            => '1000',
+            'payTo'             => 'PayTo111111111111111111111111111111111111111',
+            'maxTimeoutSeconds' => 60,
+            'extra'             => ['feePayer' => 'FeePayer11111111111111111111111111111111111'],
+        ];
+    }
+
+    public function testCanonicalCredentialMatchesHonestAcceptedEcho(): void
+    {
+        $adapter = $this->makeAdapter();
+        $offer = $this->offer();
+        $this->invoke($adapter, 'matchCanonicalCredential', ['accepted' => $offer], $offer);
+        self::assertTrue(true);
+    }
+
+    public function testCanonicalCredentialRejectsAcceptedAmountLie(): void
+    {
+        // x402-specification-v2.md §5.2.2: `accepted` is the chosen
+        // requirement, amount included. A cheaper claimed amount is an
+        // accepted mismatch, not a later transfer-amount failure.
+        $adapter = $this->makeAdapter();
+        $offer = $this->offer();
+        $accepted = $offer;
+        $accepted['amount'] = '1';
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/charge_request_mismatch/');
+        $this->invoke($adapter, 'matchCanonicalCredential', ['accepted' => $accepted], $offer);
+    }
+
     // ── decodeCredential: base64(JSON) decode guards ───────────────────────
 
     public function testDecodeCredentialRejectsBadBase64(): void
