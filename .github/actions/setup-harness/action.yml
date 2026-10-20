@@ -40,6 +40,10 @@ runs:
       working-directory: typescript
       shell: bash
       run: pnpm --filter @solana/mpp build
+    - name: Build @solana/pay-kit
+      working-directory: typescript
+      shell: bash
+      run: pnpm --filter @solana/pay-kit build
 
     - name: Set up Rust toolchain
       if: inputs.cargo-bins != ''
