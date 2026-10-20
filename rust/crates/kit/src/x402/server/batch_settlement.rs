@@ -1630,21 +1630,18 @@ impl X402BatchSettlement {
                 &outcome.channel_id,
                 seed,
                 request,
-                Box::new(move |state| {
-                    if let Some(setup) = setup {
-                        match &state.pending_setup {
-                            // Another setup transaction is already in flight for
-                            // this channel; one of them would be credited twice.
-                            Some(current) if current.payer_signature != setup.payer_signature => {
-                                return Err(crate::core::store::StoreError::Internal(format!(
-                                    "channel {} already has a pending setup transaction",
-                                    state.channel_id
-                                )))
-                            }
-                            _ => state.pending_setup = Some(setup),
-                        }
+                Box::new(move |state| match (&state.pending_setup, setup) {
+                    // Another setup transaction is already in flight for this
+                    // channel; one of them would be credited twice.
+                    (Some(current), Some(setup))
+                        if current.payer_signature != setup.payer_signature =>
+                    {
+                        Err(crate::core::store::StoreError::Internal(format!(
+                            "channel {} already has a pending setup transaction",
+                            state.channel_id
+                        )))
                     }
-                    Ok(())
+                    (_, setup) => Ok(setup),
                 }),
             )
             .await
@@ -4270,6 +4267,72 @@ mod tests {
     /// deleting it in a second, unconditional step: by then another replica
     /// may have reserved and committed the same channel, and the delete would
     /// erase that commitment and reopen its voucher.
+    /// A top-up refused at reserve (priced from a watermark that has since
+    /// moved) must not leave its setup transaction pending: it was never
+    /// broadcast, and a later fresh top-up has to go through.
+    #[tokio::test]
+    async fn a_refused_top_up_does_not_block_a_later_one() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .put_channel(&channel_b58, seeded(&channel, &config, 5_000, 500))
+            .await
+            .unwrap();
+        let top_up = |cumulative: u64, deposit_signature: &str| {
+            let voucher = voucher(&key, &channel, cumulative);
+            BatchOutcome {
+                serve: true,
+                replay: false,
+                channel_id: channel_b58.clone(),
+                payer: config.payer.clone(),
+                charged_amount: 1_000,
+                payload: BatchPayload::Voucher {
+                    channel_config: config.clone(),
+                    voucher: voucher.clone(),
+                },
+                requirements: requirements.clone(),
+                max_claimable: cumulative,
+                deposit_signature: Some(deposit_signature.to_string()),
+                opens_channel: false,
+                authorization: Some(authorization_for(
+                    &channel_b58,
+                    &voucher,
+                    cumulative,
+                    &requirements,
+                )),
+                reservation: None,
+                _guard: handler.in_flight.acquire(&channel_b58).unwrap(),
+            }
+        };
+
+        // Verified against the watermark before it moved to 500.
+        let stale = top_up(1_000, "topup-stale");
+        let authorization = stale.authorization.clone().unwrap();
+        let refused = handler.reserve(&stale, &authorization).await.unwrap();
+        assert_eq!(refused, BatchReservation::Stale);
+        drop(stale);
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(
+            state.pending_setup.is_none(),
+            "the refused setup is not kept"
+        );
+
+        let fresh = top_up(1_500, "topup-fresh");
+        let authorization = fresh.authorization.clone().unwrap();
+        assert!(matches!(
+            handler.reserve(&fresh, &authorization).await.unwrap(),
+            BatchReservation::Reserved(_)
+        ));
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(
+            state.pending_setup.map(|setup| setup.payer_signature),
+            Some("topup-fresh".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn a_released_opener_never_deletes_the_channel_record() {
         let store = Arc::new(MemoryChannelStore::new());

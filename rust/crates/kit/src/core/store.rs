@@ -1268,6 +1268,62 @@ impl ChannelState {
     /// never served. A sealed or closing channel is
     /// [`BatchReservation::Closing`].
     pub fn reserve_authorization(&mut self, request: &AuthorizationRequest) -> BatchReservation {
+        self.refuse_reservation(request)
+            .unwrap_or_else(|| self.take_reservation(request))
+    }
+
+    /// [`Self::reserve_authorization`] with a staged setup: `stage` reads the
+    /// record and returns the pending setup to install, which is applied only
+    /// together with a [`BatchReservation::Reserved`] outcome. Any other
+    /// outcome, or an error from `stage`, leaves the record untouched.
+    pub fn reserve_authorization_staged(
+        &mut self,
+        request: &AuthorizationRequest,
+        stage: impl FnOnce(&Self) -> Result<Option<PendingSetup>, StoreError>,
+    ) -> Result<BatchReservation, StoreError> {
+        if let Some(refused) = self.refuse_reservation(request) {
+            return Ok(refused);
+        }
+        if let Some(setup) = stage(self)? {
+            self.pending_setup = Some(setup);
+        }
+        Ok(self.take_reservation(request))
+    }
+
+    /// The outcome when `request` cannot take a new reservation; `None` when
+    /// it can. Reads only.
+    fn refuse_reservation(&self, request: &AuthorizationRequest) -> Option<BatchReservation> {
+        let AuthorizationRequest {
+            authorization_id,
+            request_fingerprint,
+            amount,
+            cumulative,
+            now,
+            ..
+        } = request;
+        let (amount, cumulative, now) = (*amount, *cumulative, *now);
+        if self.sealed || self.close_requested_at.is_some() {
+            return Some(BatchReservation::Closing);
+        }
+        if let Some(outcome) =
+            self.classify_authorization(authorization_id, request_fingerprint, cumulative, now)
+        {
+            return Some(outcome);
+        }
+        if self.pending_deliveries.iter().any(|pending| {
+            pending.delivery_id != *authorization_id
+                && (pending.handler_succeeded || pending.expires_at > now)
+        }) {
+            return Some(BatchReservation::InProgress);
+        }
+        if self.cumulative.checked_add(amount) != Some(cumulative) {
+            return Some(BatchReservation::Stale);
+        }
+        None
+    }
+
+    /// Take the reservation [`Self::refuse_reservation`] cleared.
+    fn take_reservation(&mut self, request: &AuthorizationRequest) -> BatchReservation {
         let AuthorizationRequest {
             authorization_id,
             request_fingerprint,
@@ -1277,23 +1333,6 @@ impl ChannelState {
             now,
         } = request;
         let (amount, cumulative, now) = (*amount, *cumulative, *now);
-        if self.sealed || self.close_requested_at.is_some() {
-            return BatchReservation::Closing;
-        }
-        if let Some(outcome) =
-            self.classify_authorization(authorization_id, request_fingerprint, cumulative, now)
-        {
-            return outcome;
-        }
-        if self.pending_deliveries.iter().any(|pending| {
-            pending.delivery_id != *authorization_id
-                && (pending.handler_succeeded || pending.expires_at > now)
-        }) {
-            return BatchReservation::InProgress;
-        }
-        if self.cumulative.checked_add(amount) != Some(cumulative) {
-            return BatchReservation::Stale;
-        }
         self.prune_authorizations(now);
         self.next_delivery_sequence = self.next_delivery_sequence.saturating_add(1);
         let sequence = self.next_delivery_sequence;
@@ -1565,6 +1604,18 @@ impl ChannelState {
     }
 }
 
+/// An atomic in-place step on one channel record.
+pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
+
+/// Borrowing reader passed to [`ChannelStore::read_channel`].
+pub type ChannelReader = Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>;
+
+/// Reads a channel record and returns the pending setup a reservation should
+/// install with it; see [`ChannelState::reserve_authorization_staged`]. It
+/// cannot write, so a refused reservation leaves nothing behind.
+pub type ReservationStage =
+    Box<dyn FnOnce(&ChannelState) -> Result<Option<PendingSetup>, StoreError> + Send>;
+
 /// Async store for channel state with compare-and-swap watermark advancement.
 ///
 /// Implementations MUST guarantee that `advance_cumulative` is atomic to
@@ -1573,12 +1624,6 @@ impl ChannelState {
 /// This trait deliberately requires the complete lifecycle contract. Custom
 /// stores must implement enumeration, touch, deletion, and finalization rather
 /// than inheriting defaults that fail only when a lifecycle worker runs.
-/// An atomic in-place step on one channel record.
-pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
-
-/// Borrowing reader passed to [`ChannelStore::read_channel`].
-pub type ChannelReader = Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>;
-
 pub trait ChannelStore: Send + Sync {
     /// Return a weakly-consistent snapshot of every channel in this store's
     /// namespace.
@@ -1683,17 +1728,18 @@ pub trait ChannelStore: Send + Sync {
 
     /// Atomically check and reserve one authorization on `channel_id`.
     ///
-    /// One transition runs `prepare` (which may refuse by erroring) and then
-    /// [`ChannelState::reserve_authorization`], whose close fence and
-    /// watermark step check decide the outcome; a commit needs the token only
-    /// that check mints. An override MUST keep all of it in one atomic
-    /// read-modify-write; [`conformance`] exercises it.
+    /// One transition runs [`ChannelState::reserve_authorization_staged`]:
+    /// its close fence and watermark step check decide the outcome, `prepare`
+    /// (which may refuse by erroring) stages a setup applied only with a
+    /// reservation, and a commit needs the token only that check mints. An
+    /// override MUST keep all of it in one atomic read-modify-write and leave a
+    /// refused record unchanged; [`conformance`] exercises it.
     fn reserve_authorization(
         &self,
         channel_id: &str,
         seed: Option<ChannelState>,
         request: AuthorizationRequest,
-        prepare: ChannelMutator,
+        prepare: ReservationStage,
     ) -> Pin<Box<dyn Future<Output = Result<BatchReservation, StoreError>> + Send + '_>> {
         let channel_id = channel_id.to_string();
         Box::pin(async move {
@@ -1703,11 +1749,8 @@ pub trait ChannelStore: Send + Sync {
                 &channel_id,
                 seed,
                 Box::new(move |state| {
-                    if !state.sealed && state.close_requested_at.is_none() {
-                        prepare(state)?;
-                    }
-                    *sink.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(state.reserve_authorization(&request));
+                    let outcome = state.reserve_authorization_staged(&request, prepare)?;
+                    *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
                     Ok(())
                 }),
             )
@@ -1829,7 +1872,7 @@ where
         channel_id: &str,
         seed: Option<ChannelState>,
         request: AuthorizationRequest,
-        prepare: ChannelMutator,
+        prepare: ReservationStage,
     ) -> Pin<Box<dyn Future<Output = Result<BatchReservation, StoreError>> + Send + '_>> {
         (**self).reserve_authorization(channel_id, seed, request, prepare)
     }
@@ -2639,7 +2682,7 @@ pub mod conformance {
         request: AuthorizationRequest,
     ) -> BatchReservation {
         store
-            .reserve_authorization(channel_id, None, request, Box::new(|_| Ok(())))
+            .reserve_authorization(channel_id, None, request, Box::new(|_| Ok(None)))
             .await
             .unwrap()
     }
@@ -2713,6 +2756,7 @@ pub mod conformance {
         refuses_a_reservation_superseded_over_its_dead_lease(store, fresh).await;
         refuses_reservations_on_a_closing_channel(store, fresh).await;
         a_refused_preparation_reserves_nothing(store, fresh).await;
+        a_refused_reservation_leaves_the_record_unchanged(store, fresh).await;
     }
 
     /// Two replicas price vouchers from the same watermark and the first
@@ -2824,6 +2868,97 @@ pub mod conformance {
             .unwrap()
             .pending_deliveries
             .is_empty());
+    }
+
+    fn staged_setup(signature: &str) -> ReservationStage {
+        let signature = signature.to_string();
+        Box::new(move |_| {
+            Ok(Some(PendingSetup {
+                payer_signature: signature,
+                deposit: 1_000,
+                opens_channel: false,
+                expires_at: i64::MAX,
+            }))
+        })
+    }
+
+    async fn snapshot(store: &dyn ChannelStore, id: &str) -> serde_json::Value {
+        serde_json::to_value(store.get_channel(id).await.unwrap().unwrap()).unwrap()
+    }
+
+    /// Whatever refuses a reservation (a moved watermark, another request in
+    /// flight, a closing channel), the setup it staged is never written, so a
+    /// later reservation is not blocked by it.
+    async fn a_refused_reservation_leaves_the_record_unchanged(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-refused";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let first = token(reserve(store, id, request("a", 500, 500, 100)).await);
+        commit(store, id, &first).await;
+
+        let before = snapshot(store, id).await;
+        let stale = store
+            .reserve_authorization(
+                id,
+                None,
+                request("stale", 1_000, 1_000, 100),
+                staged_setup("topup-stale"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale, BatchReservation::Stale);
+        assert_eq!(snapshot(store, id).await, before);
+
+        let held = token(reserve(store, id, request("held", 500, 1_000, 100)).await);
+        let before = snapshot(store, id).await;
+        let busy = store
+            .reserve_authorization(
+                id,
+                None,
+                request("busy", 1_000, 2_000, 100),
+                staged_setup("topup-busy"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(busy, BatchReservation::InProgress);
+        assert_eq!(snapshot(store, id).await, before);
+        commit(store, id, &held).await;
+
+        // A fresh reservation still installs its own staged setup.
+        let fresh_topup = store
+            .reserve_authorization(
+                id,
+                None,
+                request("fresh", 500, 1_500, 100),
+                staged_setup("topup-fresh"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(fresh_topup, BatchReservation::Reserved(_)));
+        let state = store.get_channel(id).await.unwrap().unwrap();
+        assert_eq!(
+            state.pending_setup.map(|setup| setup.payer_signature),
+            Some("topup-fresh".to_string())
+        );
+
+        let closing = "conformance-refused-closing";
+        let mut state = fresh(closing);
+        state.close_requested_at = Some(1);
+        store.put_channel(closing, state).await.unwrap();
+        let before = snapshot(store, closing).await;
+        let refused = store
+            .reserve_authorization(
+                closing,
+                None,
+                request("a", 500, 500, 100),
+                staged_setup("topup-closing"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused, BatchReservation::Closing);
+        assert_eq!(snapshot(store, closing).await, before);
     }
 }
 
