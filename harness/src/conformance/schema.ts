@@ -29,9 +29,10 @@ export type VectorSplit = {
 };
 
 // The decoded charge offer/request a build/verify vector operates on.
-// Field omission is intentional and meaningful: a missing `decimals`
-// must default to 6, a missing `tokenProgram` must default by currency,
-// etc. Runners MUST NOT inject defaults the SDK would not.
+// Field omission is intentional and meaningful: a mint challenge without
+// `decimals` must be refused, and a missing `tokenProgram` must be resolved
+// from the mint account via the fixture RPC (RULINGS C2, C3). Runners pass
+// the request to the SDK verbatim and MUST NOT inject defaults.
 export type VectorChargeRequest = {
   amount: string;
   currency: string;
@@ -316,10 +317,8 @@ export type VectorInput = {
   // build-transaction (x402): which wire version to build (1 = legacy
   // X-PAYMENT, 2 = canonical PAYMENT-SIGNATURE). Required for x402 builds.
   x402Version?: 1 | 2;
-  // build-transaction (x402): a pinned base64 transaction proof so the
-  // build path is deterministic and RPC-free. The conformance oracle is
-  // the envelope shape, not the signed-transaction bytes; a real SDK
-  // signs a Solana tx here, verified by the harness matrix.
+  // DEPRECATED, absent from every vector: builds must sign a real
+  // transaction. Kept only until the TypeScript runner stops reading it.
   x402PinnedTransaction?: string;
   // verify-transaction (x402): the server's configured route. The server
   // verifies the submitted `paymentHeader` against this network/recipient/
@@ -329,8 +328,13 @@ export type VectorInput = {
   x402ServerCurrency?: string;
   x402ServerAmount?: string;
   // verify-transaction (x402): the base64 PAYMENT-SIGNATURE / X-PAYMENT
-  // header value the server must verify. Pinned so verify needs no build.
+  // header value the server must verify. Its payload carries a real,
+  // partially signed transaction the SDK verifier must inspect (RULINGS S3).
   x402PaymentHeader?: string;
+  // verify-transaction (x402): the server's fee payer, which the
+  // transaction names as message fee payer with an empty signature slot.
+  x402ServerFeePayer?: string;
+  x402ServerFeePayerSecretKey?: number[];
 
   // ── x402-exact extensions inputs (rust PaymentExtensions) ────────────
   // build-transaction (x402): the `extensions` object the server
