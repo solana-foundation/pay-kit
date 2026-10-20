@@ -124,6 +124,33 @@ spec. Add a required `spec` field (`{ doc, section, quote }`) to the vector
 schema and fail at load when it is missing, so each case is traceable to the
 sentence it encodes.
 
+## Backlog: the playground E2E as a gate-level tier
+
+`playground/tests/playground.spec.ts` drives the unified gate through a real
+browser and a real server: quote and fortune over MPP and x402, split charge,
+x402 usage settlement, subscription activation and a metered MPP session. It
+covers flows the harness interop does not (subscription has no interop case,
+session has one), and it exercises discovery, OpenAPI and both protocols on
+one route, which adapter-level tests never see.
+
+Today it runs only against the TypeScript playground API
+(`typescript/examples/playground-api`). Go has an equivalent
+(`go/examples/playground-api`, with its own `playground_e2e_test.go`).
+
+Proposal: treat a playground API as the gate-level server testee.
+
+- **One contract.** Specify its routes, prices and environment
+  (`RPC_URL`, `NETWORK`, fee payer) once, and implement it per server SDK
+  that ships a gate.
+- **One scenario list.** Run the same Playwright and headless-client
+  scenarios against each implementation, always on a local Surfnet.
+- **The same reconciliation.** Claim the `gate` suite in
+  `expectations/<language>.toml` and reconcile it exactly like the offline
+  suites.
+
+Its CI job already found one hermeticity bug: the payment-link variant ran
+against the shared remote sandbox instead of the local Surfnet it started.
+
 ## Phase 0: make the current harness honest (one PR, 1–3 days)
 
 Goal: no code moves, no new crate. After this PR the existing driver cannot
