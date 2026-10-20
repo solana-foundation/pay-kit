@@ -7,7 +7,7 @@
     "-p",
     "solana-pay-kit",
     "--features",
-    "mpp,x402,client,server",
+    "mpp,x402,client,server,testkit",
     "--example",
     "vector_runner"
   ],

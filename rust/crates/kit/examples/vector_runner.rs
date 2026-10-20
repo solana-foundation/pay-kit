@@ -14,27 +14,32 @@
 //!   the transaction-shape DECODER (the oracle's view of a built
 //!   transaction) and the reject-message classifier live in this file, as
 //!   in every other runner.
-//! - Runs are offline. Every RPC client is a mock that refuses all calls
-//!   except an explicitly mocked `getLatestBlockhash` for x402 builds, so an
-//!   under-specified vector surfaces as a reject rather than a live fetch.
-//! - No defaults are injected that the SDK would not apply itself. A vector
-//!   that relies on a default the Rust SDK does not implement fails, and that
-//!   failure is recorded in the expectations file as a finding.
+//! - Chain state comes only from the driver's fixture JSON-RPC
+//!   (`input.rpcUrl`, built from `input.rpcFixtures`), handed to the kit's
+//!   real `RpcClient`. Mint owners and decimals are read by the kit itself; a
+//!   mint the fixture does not serve does not exist.
+//! - The request is passed to the kit verbatim. No defaults are injected that
+//!   the SDK would not apply itself, no field precedence is applied and no
+//!   transaction is pinned or fabricated.
+//! - Verify vectors run the kit's real verifiers: the charge pre-broadcast
+//!   checks (`mpp::server::charge::testkit`, feature `testkit`) and the x402
+//!   exact server's `verify_payment_signature_for_requirements`. Accept means
+//!   that verification passed.
 //! - When the public API cannot express a vector, the runner reports
 //!   `unsupported-mode` with the precise reason.
 //!
 //! Run directly:
-//!   cat vector.json | cargo run -q -p solana-pay-kit --example vector_runner
+//!   cat vector.json | cargo run -q -p solana-pay-kit \
+//!     --features mpp,x402,client,server,testkit --example vector_runner
 
-use std::collections::HashMap;
 use std::io::Read;
-use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 use solana_pay_kit::core::session::accept_voucher;
 use solana_pay_kit::core::store::{
-    ChannelState, ChannelStore, MemoryChannelStore, MemoryStore, CHANNEL_STATE_SCHEMA_VERSION,
+    ChannelState, ChannelStore, MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION,
 };
+use solana_pay_kit::core::tx::TxVersion;
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
 };
@@ -44,19 +49,18 @@ use solana_pay_kit::mpp::protocol::intents::session::{
 };
 use solana_pay_kit::mpp::protocol::intents::ChargeRequest;
 use solana_pay_kit::mpp::protocol::solana::{CredentialPayload, MethodDetails};
-use solana_pay_kit::mpp::server::{Config as MppConfig, Mpp};
+use solana_pay_kit::mpp::server::charge::testkit::verify_transaction_pre_broadcast;
 use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
-use solana_pay_kit::mpp::solana_keychain::{SolanaSigner, TransactionSigner};
-use solana_pay_kit::mpp::PaymentCredential;
+use solana_pay_kit::mpp::solana_keychain::SolanaSigner;
 use solana_pay_kit::x402::client::exact::{build_payment_header, build_payment_header_v1};
 use solana_pay_kit::x402::protocol::schemes::exact::{
     generate_payment_identifier_id, PaymentExtensions, PaymentRequirements,
 };
-use solana_pay_kit::x402::server::exact::{Config as X402Config, ExactOptions, X402};
+use solana_pay_kit::x402::server::exact::{
+    Config as X402Config, ExactOptions, PaymentIdentifierPolicy, X402,
+};
 use solana_pay_kit::x402::server::CurrencyConfig;
-use solana_rpc_client::mock_sender::Mocks;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_rpc_client_api::request::RpcRequest;
 
 const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
 const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
@@ -64,23 +68,69 @@ const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-/// Pinned blockhash served by the mock RPC for x402 builds. The x402 oracle is
-/// the decoded envelope, never the signed transaction bytes, so any valid
-/// hash keeps the build deterministic. Same value as the Python runner.
-const X402_PINNED_BLOCKHASH: &str = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs";
-
-/// Unreachable RPC for server constructors that require a URL. Offline
-/// vectors must reject or finish before any network call.
-const DEAD_RPC_URL: &str = "http://127.0.0.1:1";
-
-/// Fixed challenge-binding secret for the server verify path (>= 32 bytes).
-const SERVER_SECRET: &str = "conformance-runner-secret-0123456789abcdef";
+/// Message versions the verifiers accept: the servers' default (version 0
+/// only until a host opts into version 1).
+const ACCEPTED_TX_VERSIONS: &[TxVersion] = &[TxVersion::V0];
 
 /// Outcome of one vector, rendered as the RunnerResult JSON.
 enum Outcome {
     Accept(Map<String, Value>),
-    Reject(String),
+    Reject(Rejection),
     Unsupported(String),
+}
+
+/// A reject: the kit's message plus, when the kit's error type pins the
+/// category, the shared rejectCode (otherwise the message is classified).
+struct Rejection {
+    message: String,
+    code: Option<&'static str>,
+}
+
+impl From<String> for Rejection {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            code: None,
+        }
+    }
+}
+
+impl From<&str> for Rejection {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+/// Charge client errors: a refused challenge is `invalid-challenge`.
+impl From<solana_pay_kit::mpp::Error> for Rejection {
+    fn from(error: solana_pay_kit::mpp::Error) -> Self {
+        let code = match &error {
+            solana_pay_kit::mpp::Error::InvalidChallenge(_) => Some("invalid-challenge"),
+            _ => None,
+        };
+        Self {
+            message: error.to_string(),
+            code,
+        }
+    }
+}
+
+/// x402 errors: a missing or malformed required id is
+/// `payment-identifier-required`.
+impl From<solana_pay_kit::x402::Error> for Rejection {
+    fn from(error: solana_pay_kit::x402::Error) -> Self {
+        let code = match &error {
+            solana_pay_kit::x402::Error::PaymentIdentifierRequired(_) => {
+                Some("payment-identifier-required")
+            }
+            solana_pay_kit::x402::Error::WrongNetwork { .. } => Some("wrong-network"),
+            _ => None,
+        };
+        Self {
+            message: error.to_string(),
+            code,
+        }
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -111,9 +161,9 @@ async fn main() {
             result.insert("outcome".into(), json!("accept"));
             result.extend(fields);
         }
-        Outcome::Reject(message) => {
+        Outcome::Reject(Rejection { message, code }) => {
             result.insert("outcome".into(), json!("reject"));
-            if let Some(code) = classify_reject(&message) {
+            if let Some(code) = code.or_else(|| classify_reject(&message)) {
                 result.insert("rejectCode".into(), json!(code));
             }
             result.insert("error".into(), Value::String(message));
@@ -129,7 +179,7 @@ async fn main() {
     println!("{}", Value::Object(result));
 }
 
-async fn run_vector(vector: &Value) -> Result<Outcome, String> {
+async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
     let intent = str_field(vector, "intent");
     let mode = str_field(vector, "mode");
     let input = vector.get("input").cloned().unwrap_or(Value::Null);
@@ -137,8 +187,8 @@ async fn run_vector(vector: &Value) -> Result<Outcome, String> {
     match (intent, mode) {
         ("x402-exact", "build-transaction") => x402_build(&input).await,
         ("x402-exact", "verify-transaction") => x402_verify(&input).await,
-        ("session", "verify-transaction") => session_voucher_verify(&input).await,
-        (_, "canonical-bytes") => canonical_bytes(&input).map(Outcome::Accept),
+        ("session", "verify-transaction") => Ok(session_voucher_verify(&input).await?),
+        (_, "canonical-bytes") => Ok(Outcome::Accept(canonical_bytes(&input)?)),
         ("charge", "build-transaction") => {
             let transaction = charge_build(&input).await?;
             Ok(Outcome::Accept(shape_fields(&transaction)?))
@@ -188,15 +238,18 @@ fn signer_from(input: &Value) -> Result<MemorySigner, String> {
     MemorySigner::from_bytes(&bytes).map_err(|e| format!("invalid signerSecretKey: {e}"))
 }
 
-/// RPC client that refuses every call (`"fails"` mock: unmocked requests
-/// return null and error on decode).
-fn offline_rpc(mocks: Mocks) -> RpcClient {
-    RpcClient::new_mock_with_mocks("fails".to_string(), mocks)
+/// The kit's real RPC client on the driver's fixture JSON-RPC.
+fn fixture_rpc(input: &Value) -> Result<RpcClient, String> {
+    let url = input
+        .get("rpcUrl")
+        .and_then(Value::as_str)
+        .ok_or("driver did not inject input.rpcUrl")?;
+    Ok(RpcClient::new(url.to_string()))
 }
 
 /// Drive the real client builder. Compute-budget overrides come from the
 /// vector (reject vectors use them to exercise server caps).
-async fn charge_build(input: &Value) -> Result<String, String> {
+async fn charge_build(input: &Value) -> Result<String, Rejection> {
     let (charge, details) = charge_request(input)?;
     let signer = signer_from(input)?;
     let request = input.get("request").cloned().unwrap_or(Value::Null);
@@ -224,7 +277,7 @@ async fn charge_build(input: &Value) -> Result<String, String> {
         .recipient
         .clone()
         .ok_or("vector request is missing recipient")?;
-    let rpc = offline_rpc(Mocks::default());
+    let rpc = fixture_rpc(input)?;
     let payload = build_charge_transaction_with_options(
         &signer,
         &rpc,
@@ -234,101 +287,37 @@ async fn charge_build(input: &Value) -> Result<String, String> {
         &details,
         options,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     match payload {
         CredentialPayload::Transaction { transaction } => Ok(transaction),
-        other => Err(format!(
-            "builder returned a non-transaction payload: {other:?}"
-        )),
+        other => Err(format!("builder returned a non-transaction payload: {other:?}").into()),
     }
 }
 
-/// Drive the Rust server's public verification path, `Mpp::verify`. The
-/// pre-broadcast checks the vectors target are crate-private
-/// (`verify_versioned_transaction_pre_broadcast`), so the runner mints a real
-/// challenge with a server configured from the vector's route, presents the
-/// vector's transaction as the credential, and verifies. With an unreachable
-/// RPC, a transaction that passes every offline check fails only at the
-/// first network step (co-sign/broadcast); that stage is reported as accept.
-async fn charge_verify(input: &Value) -> Result<Outcome, String> {
+/// Run the server's real pre-broadcast checks (the ones `Mpp::verify` applies
+/// before it co-signs and broadcasts) on the vector's transaction, or on the
+/// kit's own build when the vector carries none.
+async fn charge_verify(input: &Value) -> Result<Outcome, Rejection> {
     let (charge, details) = charge_request(input)?;
     let transaction = match input.get("transaction").and_then(Value::as_str) {
         Some(tx) => tx.to_string(),
         None => charge_build(input).await?,
     };
-
-    let fee_payer = details.fee_payer.unwrap_or(false);
-    let fee_payer_signer: Option<Arc<dyn TransactionSigner>> = if fee_payer {
-        // The server's fee payer must be the key the route advertises. The
-        // vectors set feePayerKey to the vector signer's pubkey.
-        let signer = signer_from(input)?;
-        let want = details.fee_payer_key.clone().unwrap_or_default();
-        if signer.pubkey().to_string() != want {
-            return Ok(Outcome::Unsupported(format!(
-                "feePayerKey {want} is not the vector signer, so no server fee-payer signer can be configured"
-            )));
-        }
-        Some(Arc::new(signer))
-    } else {
-        None
-    };
-
-    let config = MppConfig {
-        recipient: charge.recipient.clone().unwrap_or_default(),
-        currency: charge.currency.clone(),
-        decimals: details.decimals.unwrap_or(6),
-        network: details
-            .network
-            .clone()
-            .unwrap_or_else(|| "mainnet".to_string()),
-        rpc_url: Some(DEAD_RPC_URL.to_string()),
-        challenge_binding_secret: Some(SERVER_SECRET.to_string()),
-        realm: Some("conformance".to_string()),
-        fee_payer,
-        fee_payer_signer,
-        store: Some(Arc::new(MemoryStore::new())),
-        ..Default::default()
-    };
-    let server = Mpp::new(config).map_err(|e| format!("server config: {e}"))?;
-    let challenge = server
-        .charge_challenge_with_options(&charge, None, None)
-        .map_err(|e| format!("server challenge: {e}"))?;
-    let credential = PaymentCredential::new(
-        challenge.to_echo(),
-        CredentialPayload::Transaction {
-            transaction: transaction.clone(),
-        },
-    );
-
-    match server
-        .verify_credential_with_expected(&credential, &charge)
-        .await
-    {
-        Ok(_) => Ok(Outcome::Accept(shape_fields(&transaction)?)),
-        Err(error) => {
-            let message = error.to_string();
-            if reached_network_stage(&message) {
-                eprintln!(
-                    "rust vector runner: offline checks passed; stopped at network step: {message}"
-                );
-                Ok(Outcome::Accept(shape_fields(&transaction)?))
-            } else {
-                Err(message)
-            }
-        }
-    }
+    let tx = decode_transaction(&transaction)?;
+    verify_transaction_pre_broadcast(&tx, &charge, &details, ACCEPTED_TX_VERSIONS)
+        .map_err(|e| Rejection::from(e.message))?;
+    Ok(Outcome::Accept(shape_fields(&transaction)?))
 }
 
-/// True when a verify error comes from the first network step after the
-/// offline checks passed. Matched on the RPC transport failure text, which
-/// no offline check can produce.
-fn reached_network_stage(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    m.contains("connection refused")
-        || m.contains("error sending request")
-        || m.contains("tcp connect error")
-        || m.contains("127.0.0.1:1")
+fn decode_transaction(
+    transaction_b64: &str,
+) -> Result<solana_transaction::versioned::VersionedTransaction, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(transaction_b64)
+        .map_err(|e| format!("invalid payload: transaction base64: {e}"))?;
+    solana_pay_kit::core::tx::decode_bytes(&bytes)
+        .map_err(|e| format!("invalid payload: transaction decode: {e}"))
 }
 
 // ── transaction shape decoder (oracle view; mirrors decode.ts) ──────────────
@@ -342,12 +331,7 @@ fn read_u64(data: &[u8], offset: usize) -> u64 {
 }
 
 fn shape_fields(transaction_b64: &str) -> Result<Map<String, Value>, String> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(transaction_b64)
-        .map_err(|e| format!("invalid payload: transaction base64: {e}"))?;
-    let tx = solana_pay_kit::core::tx::decode_bytes(&bytes)
-        .map_err(|e| format!("invalid payload: transaction decode: {e}"))?;
+    let tx = decode_transaction(transaction_b64)?;
     let keys: Vec<String> = tx
         .message
         .static_account_keys()
@@ -653,38 +637,19 @@ fn fresh_channel(channel_id: &str, signer: &str, deposit: u64) -> ChannelState {
 
 // ── x402 exact ──────────────────────────────────────────────────────────────
 
-/// Fixed ephemeral payer for x402 builds (the envelope, not the signature,
-/// is the oracle).
-fn x402_payer() -> MemorySigner {
-    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-    MemorySigner::from_bytes(&signing.to_keypair_bytes()).expect("fixed payer key")
-}
-
-fn x402_rpc() -> RpcClient {
-    let mut mocks = HashMap::new();
-    mocks.insert(
-        RpcRequest::GetLatestBlockhash,
-        json!({
-            "context": { "slot": 1 },
-            "value": { "blockhash": X402_PINNED_BLOCKHASH, "lastValidBlockHeight": 1_000 },
-        }),
-    );
-    offline_rpc(mocks)
-}
-
-async fn x402_build(input: &Value) -> Result<Outcome, String> {
+/// The client builds and signs a real exact transaction: the kit fetches the
+/// blockhash and reads the mint's decimals over the fixture RPC.
+async fn x402_build(input: &Value) -> Result<Outcome, Rejection> {
     let offer = input
         .get("x402Offer")
         .ok_or("x402 build vector is missing input.x402Offer")?;
     let requirements: PaymentRequirements = serde_json::from_value(offer.clone())
         .map_err(|e| format!("invalid payload: x402Offer: {e}"))?;
-    let signer = x402_payer();
-    let rpc = x402_rpc();
+    let signer = signer_from(input)?;
+    let rpc = fixture_rpc(input)?;
 
     let header = if input.get("x402Version").and_then(Value::as_u64) == Some(1) {
-        build_payment_header_v1(&signer, &rpc, &requirements, None)
-            .await
-            .map_err(|e| e.to_string())?
+        build_payment_header_v1(&signer, &rpc, &requirements, None).await?
     } else {
         // Echo-and-append (x402 v2 §5.1.2) is the caller's job in the Rust
         // SDK: echo the advertised extensions, and fill the id when the server
@@ -702,28 +667,17 @@ async fn x402_build(input: &Value) -> Result<Outcome, String> {
                 .unwrap_or_else(generate_payment_identifier_id);
             extensions = extensions.map(|e| e.with_payment_identifier_id(id));
         }
-        build_payment_header(&signer, &rpc, &requirements, extensions, None)
-            .await
-            .map_err(|e| e.to_string())?
+        build_payment_header(&signer, &rpc, &requirements, extensions, None).await?
     };
     Ok(Outcome::Accept(envelope_fields(&header)?))
 }
 
 /// Drive `X402::verify_payment_signature_for_requirements` against the
-/// route's own requirements (`X402::exact_requirements`). The vectors pin a
-/// placeholder transaction because the x402 oracle is the envelope; the kit
-/// therefore fails at transaction decoding after every envelope check
-/// passed, which is reported as accept.
-async fn x402_verify(input: &Value) -> Result<Outcome, String> {
-    if input
-        .get("x402ServerRequiresPaymentIdentifier")
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        return Ok(Outcome::Unsupported(
-            "the Rust x402 server has no option to require a payment-identifier and never validates extensions".into(),
-        ));
-    }
+/// route's own requirements (`X402::exact_requirements`), configured from the
+/// vector's server route. The kit decodes and verifies the vector's real
+/// partially-signed transaction (pre-broadcast checks; nothing is co-signed
+/// or broadcast).
+async fn x402_verify(input: &Value) -> Result<Outcome, Rejection> {
     let header = input
         .get("x402PaymentHeader")
         .and_then(Value::as_str)
@@ -731,41 +685,60 @@ async fn x402_verify(input: &Value) -> Result<Outcome, String> {
     let network = input
         .get("x402ServerNetwork")
         .and_then(Value::as_str)
-        .unwrap_or("mainnet-beta");
+        .ok_or("x402 verify vector is missing input.x402ServerNetwork")?;
+    let currency = str_field(input, "x402ServerCurrency");
+    // The Rust server takes the route's token decimals as operator config.
+    // The route's token is the fixture mint, so configure its decimals.
+    let decimals = input
+        .pointer(&format!("/rpcFixtures/mints/{currency}/decimals"))
+        .and_then(Value::as_u64)
+        .ok_or("x402 verify vector has no fixture mint for the server currency")?
+        as u8;
+    let payment_identifier = if input
+        .get("x402ServerRequiresPaymentIdentifier")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        PaymentIdentifierPolicy::Required
+    } else {
+        PaymentIdentifierPolicy::NotAdvertised
+    };
     let config = X402Config {
         recipient: str_field(input, "x402ServerRecipient").to_string(),
         currencies: vec![CurrencyConfig {
-            currency: str_field(input, "x402ServerCurrency").to_string(),
-            decimals: 6,
+            currency: currency.to_string(),
+            decimals,
             token_program: None,
         }],
         network: network.to_string(),
-        rpc_url: Some(DEAD_RPC_URL.to_string()),
+        rpc_url: Some(fixture_rpc_url(input)?),
+        fee_payer_key: input
+            .get("x402ServerFeePayer")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        payment_identifier,
         ..Default::default()
     };
     let server = X402::new(config).map_err(|e| format!("server config: {e}"))?;
     // The vector carries the route amount in base units; the server API
     // takes a human decimal price and converts it with `core::parse_units`.
     let base_units = str_field(input, "x402ServerAmount");
-    let price = human_price(base_units, 6)?;
+    let price = human_price(base_units, decimals)?;
     let requirements = server
         .exact_requirements(&price, ExactOptions::default())
         .map_err(|e| format!("route requirements: {e}"))?;
-    match server
+    server
         .verify_payment_signature_for_requirements(header, &requirements)
-        .await
-    {
-        Ok(_) => Ok(Outcome::Accept(envelope_fields(header)?)),
-        Err(error) => {
-            let message = error.to_string();
-            if message.contains("Invalid transaction payload") {
-                eprintln!("rust vector runner: envelope checks passed; stopped at placeholder transaction: {message}");
-                Ok(Outcome::Accept(envelope_fields(header)?))
-            } else {
-                Err(message)
-            }
-        }
-    }
+        .await?;
+    Ok(Outcome::Accept(envelope_fields(header)?))
+}
+
+fn fixture_rpc_url(input: &Value) -> Result<String, String> {
+    input
+        .get("rpcUrl")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "driver did not inject input.rpcUrl".to_string())
 }
 
 /// Render base units as the decimal price the server API expects, and prove
@@ -870,7 +843,9 @@ fn envelope_fields(header_b64: &str) -> Result<Map<String, Value>, String> {
 fn classify_reject(message: &str) -> Option<&'static str> {
     let m = message.to_ascii_lowercase();
     let has = |needle: &str| m.contains(needle);
-    let code = if has("compute unit price") && (has("exceeds") || has("cap") || has("maximum")) {
+    let code = if has("invalid challenge") {
+        "invalid-challenge"
+    } else if has("compute unit price") && (has("exceeds") || has("cap") || has("maximum")) {
         "compute-price-over-cap"
     } else if has("compute unit limit") && (has("exceeds") || has("cap") || has("maximum")) {
         "compute-limit-over-cap"
