@@ -464,7 +464,31 @@ impl ChargeReplayStore {
             updated_at: now,
             expires_at: now + lease.as_secs() as i64,
         };
+        // A record's generations share one lifecycle: a store must expire
+        // them together (the root key and every `:<generation>` key under one
+        // TTL). A root missing while a descendant survives means retention was
+        // applied per key; recreating the root there would hide a confirmed
+        // or pending settlement and let the challenge settle again. Refuse,
+        // both before claiming the root and after, in case the root expired
+        // between the two.
+        let orphaned = || {
+            StoreError::Internal(format!(
+                "charge record `{challenge_id}` lost its root while later generations remain; \
+                 the store must expire a record's generations together"
+            ))
+        };
+        if self.read(challenge_id, 1).await?.is_some()
+            && self.read(challenge_id, 0).await?.is_none()
+        {
+            return Err(orphaned());
+        }
         if self.append(challenge_id, 0, &fresh).await? {
+            if self.read(challenge_id, 1).await?.is_some() {
+                self.store
+                    .delete(&charge_record_key(challenge_id, 0))
+                    .await?;
+                return Err(orphaned());
+            }
             return Ok(ChargeReservation::Reserved { generation: 0 });
         }
         for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
@@ -3787,6 +3811,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome, ChargeReservation::Conflict);
+    }
+
+    // A store that expired the root key of a record independently of its
+    // generations must not let the challenge settle again: the surviving
+    // confirmed generation is authoritative.
+    #[tokio::test]
+    async fn charge_replay_never_recreates_a_root_over_surviving_generations() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let store = ChargeReplayStore::new(raw.clone());
+        store
+            .reserve("chal-ttl", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert!(store.mark_confirmed("chal-ttl", 0, "sig-a").await.unwrap());
+        raw.delete("solana-charge:record:chal-ttl").await.unwrap();
+
+        for digest in ["digest-a", "digest-b"] {
+            let err = store
+                .reserve("chal-ttl", digest, CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("lost its root"), "{err}");
+        }
+        assert!(raw
+            .get("solana-charge:record:chal-ttl")
+            .await
+            .unwrap()
+            .is_none());
+
+        // A challenge with no record at all still reserves normally.
+        assert_eq!(
+            store
+                .reserve("chal-new", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 0 }
+        );
     }
 
     #[tokio::test]
