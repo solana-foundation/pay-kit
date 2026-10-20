@@ -244,6 +244,13 @@ the settlement as the channel's zero-share payee, and doubles as receiver
 authorizer — the voucher signer — by default) and is gated with `paid_upto_get`
 / `paid_upto_post` rather than `paid_get` / `paid_post`.
 
+The `upto` gate reads the meter only once the response body is complete, so it
+buffers the whole body before answering: a streaming handler reaches the client
+in one piece at the end. Bodies over 16 MiB, or bodies that fail mid-stream, are
+not delivered; the request settles at what was metered so far and answers 502.
+If settlement is still being retried in the background when the body is ready,
+the response is served without a `PAYMENT-RESPONSE` header.
+
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /
 `paid_batch_post`) verifies off-chain and serves immediately. The operator
