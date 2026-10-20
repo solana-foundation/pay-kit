@@ -53,12 +53,13 @@ jobs:
       - name: Build the Kotlin conformance runner
         working-directory: harness/kotlin-conformance
         run: gradle installDist --no-daemon
-      - name: Run Kotlin cross-SDK conformance vectors
-        working-directory: harness
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-kotlin
+      - name: Run kotlin offline conformance vectors (pkc)
         env:
-          MPP_CONFORMANCE_LANGUAGES: kotlin
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts
+        run: pkc run --sdk kotlin --tier offline --require
       - name: Pre-warm Gradle for the Kotlin harness client
         working-directory: harness/kotlin-client
         run: gradle installDist --no-daemon

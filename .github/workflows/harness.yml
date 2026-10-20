@@ -119,7 +119,14 @@ jobs:
       - name: Install the TypeScript workspace
         working-directory: typescript
         run: pnpm install --frozen-lockfile
-      - name: Run typescript offline conformance (vectors + protocol + flows)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-typescript
+      - name: Run typescript offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk typescript --tier offline --require
+      - name: Run typescript offline conformance (protocol + flows)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: typescript
@@ -127,7 +134,7 @@ jobs:
         run: >-
           pnpm exec vitest run
           test/expectations.test.ts test/ci-coverage.test.ts test/interop-coverage.test.ts
-          test/conformance.test.ts test/protocol-conformance.test.ts test/flow-conformance.test.ts
+          test/protocol-conformance.test.ts test/flow-conformance.test.ts
       - name: Check generated coverage tables
         working-directory: harness
         run: pnpm coverage:check && pnpm interop:check
@@ -168,12 +175,19 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      - name: Run go offline conformance (vectors + protocol)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-go
+      - name: Run go offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk go --tier offline --require
+      - name: Run go offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: go
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -207,12 +221,19 @@ jobs:
       - name: Sync Python uv environment
         working-directory: python
         run: uv sync --extra dev
-      - name: Run python offline conformance (vectors + protocol)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-python
+      - name: Run python offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk python --tier offline --require
+      - name: Run python offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: python
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness
         env:
@@ -258,12 +279,19 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      - name: Run ruby offline conformance (vectors + protocol)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-ruby
+      - name: Run ruby offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk ruby --tier offline --require
+      - name: Run ruby offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: ruby
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Run harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -309,12 +337,19 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      - name: Run lua offline conformance (vectors + protocol)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-lua
+      - name: Run lua offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk lua --tier offline --require
+      - name: Run lua offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: lua
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: TS-to-Lua focused matrix
         working-directory: harness
         env:
@@ -354,12 +389,19 @@ jobs:
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
-      - name: Run php offline conformance (vectors + protocol)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-php
+      - name: Run php offline conformance vectors (pkc)
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk php --tier offline --require
+      - name: Run php offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: php
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Run PHP server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
@@ -393,12 +435,13 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      - name: Run Swift cross-SDK conformance vectors
-        working-directory: harness
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-swift
+      - name: Run swift offline conformance vectors (pkc)
         env:
-          MPP_CONFORMANCE_LANGUAGES: swift
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts
+        run: pkc run --sdk swift --tier offline --require
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness
         env:
@@ -445,12 +488,13 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
         with:
           native-artifact: harness-adapters-${{ runner.os }}
-      - name: Run Kotlin cross-SDK conformance vectors
-        working-directory: harness
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-kotlin
+      - name: Run kotlin offline conformance vectors (pkc)
         env:
-          MPP_CONFORMANCE_LANGUAGES: kotlin
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts
+        run: pkc run --sdk kotlin --tier offline --require
       - name: Run Kotlin client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
@@ -524,12 +568,18 @@ jobs:
         run: |
           cargo build -q -p solana-pay-kit --example protocol_runner
           cargo build -q -p solana-pay-kit --features mpp,x402,client,server,testkit --example vector_runner
-      - name: Run rust offline conformance (vectors + protocol)
+          cargo build -q -p paykit-conformance --bin pkc
+      - name: Run rust offline conformance vectors (pkc)
+        working-directory: rust
+        env:
+          HARNESS_REQUIRE: "1"
+        run: cargo run -q -p paykit-conformance --bin pkc -- run --sdk rust --tier offline --require
+      - name: Run rust offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts test/protocol-conformance.test.ts
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
 
   onchain:
     name: "Harness: on-chain settlement (mainnet fork)"

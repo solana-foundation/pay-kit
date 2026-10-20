@@ -1,56 +1,108 @@
 // Every SDK that claims a conformance suite in harness/expectations/ must be
-// executed by some CI step, with HARNESS_REQUIRE=1 so a narrowed or aborted
-// run cannot pass. Before this check existed, vector runners for TypeScript,
-// Go, Ruby, Lua and PHP, and every protocol and flow case, were never run in
-// CI at all.
+// executed by some CI step that cannot pass on a narrowed run. Before this
+// check existed, vector runners for TypeScript, Go, Ruby, Lua and PHP, and
+// every protocol and flow case, were never run in CI at all.
+//
+// The vector suite is run by `pkc run --sdk <lang> --tier offline --require`
+// (rust/crates/conformance); the protocol and flow suites are still vitest
+// files gated by HARNESS_REQUIRE=1.
 
 import { describe, expect, it } from "vitest";
 import { testNamePattern, type WorkflowStep, workflowRunSteps } from "../src/ci-workflows";
 import { loadAllExpectations, type Suite } from "../src/expectations";
 
-const SUITE_FILES: Record<Suite, string> = {
-  vector: "test/conformance.test.ts",
+const VITEST_SUITE_FILES: Partial<Record<Suite, string>> = {
   protocol: "test/protocol-conformance.test.ts",
   flow: "test/flow-conformance.test.ts",
 };
 
-// (suite, language | "*") pairs run under HARNESS_REQUIRE=1, with their origin.
-// A step with a test-name filter does not count: it may select only part of
-// a suite, so it cannot prove a language's claims were run.
+// How each suite is run, for failure messages.
+const SUITE_RUNNER: Record<Suite, string> = {
+  vector: "pkc run --sdk <lang> --tier offline --require",
+  protocol: "pnpm exec vitest run test/protocol-conformance.test.ts (HARNESS_REQUIRE=1)",
+  flow: "pnpm exec vitest run test/flow-conformance.test.ts (HARNESS_REQUIRE=1)",
+};
+
+// `pkc run ...` or `cargo run ... --bin pkc -- run ...`.
+const PKC_RUN = /\bpkc\b(?:\s+--)?\s+run\b/;
+
+// The SDKs a `pkc run` step drives, or undefined when the step cannot prove
+// completeness: it is not a pkc run, it is narrowed with --case, it judges
+// nothing (--discover), or it does not require completeness.
+export function pkcVectorLanguages(step: WorkflowStep): string[] | undefined {
+  if (!PKC_RUN.test(step.run)) return undefined;
+  if (/--case\b|--discover\b|--cross\b/.test(step.run)) return undefined;
+  if (!/--require\b/.test(step.run) && step.env.HARNESS_REQUIRE !== "1") return undefined;
+  const sdk = step.run.match(/--sdk[ =](\S+)/)?.[1];
+  if (!sdk) return undefined;
+  return sdk
+    .split(",")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => (l === "all" ? "*" : l));
+}
+
+// (suite, language | "*") pairs run so that a narrowed run fails, with their
+// origin. A vitest step with a test-name filter does not count: it may
+// select only part of a suite, so it cannot prove a language's claims ran.
 function requiredRuns(steps: readonly WorkflowStep[] = workflowRunSteps()): Map<string, string[]> {
   const runs = new Map<string, string[]>();
+  const add = (suite: Suite, language: string, origin: string) => {
+    const key = `${suite}:${language}`;
+    runs.set(key, [...(runs.get(key) ?? []), origin]);
+  };
   for (const step of steps) {
+    for (const language of pkcVectorLanguages(step) ?? []) add("vector", language, step.origin);
     if (step.env.HARNESS_REQUIRE !== "1") continue;
     if (testNamePattern(step.run) !== undefined) continue;
     const languages = (step.env.MPP_CONFORMANCE_LANGUAGES ?? "*")
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    for (const [suite, testFile] of Object.entries(SUITE_FILES)) {
+    for (const [suite, testFile] of Object.entries(VITEST_SUITE_FILES)) {
       if (!step.run.includes(testFile)) continue;
-      for (const language of languages) {
-        const key = `${suite}:${language}`;
-        runs.set(key, [...(runs.get(key) ?? []), step.origin]);
-      }
+      for (const language of languages) add(suite as Suite, language, step.origin);
     }
   }
   return runs;
 }
 
 describe("requiredRuns", () => {
-  const step = (run: string): WorkflowStep => ({
+  const step = (run: string, env: Record<string, string> = { HARNESS_REQUIRE: "1" }): WorkflowStep => ({
     origin: "x.yml#job/step",
     run,
-    env: { HARNESS_REQUIRE: "1", MPP_CONFORMANCE_LANGUAGES: "go" },
+    env: { ...env, MPP_CONFORMANCE_LANGUAGES: "go" },
   });
 
-  it("counts an unfiltered required step (control)", () => {
-    expect(requiredRuns([step("pnpm exec vitest run test/conformance.test.ts")]).get("vector:go")).toHaveLength(1);
-  });
-
-  it("ignores a step with a test-name filter", () => {
+  it("counts a required pkc run (control)", () => {
+    expect(requiredRuns([step("pkc run --sdk go --tier offline --require")]).get("vector:go")).toHaveLength(1);
     expect(
-      requiredRuns([step('pnpm exec vitest run test/conformance.test.ts -t "go reference runner"')]).get("vector:go"),
+      requiredRuns([step("cargo run -q -p paykit-conformance --bin pkc -- run --sdk go,rust --tier offline --require")]).get(
+        "vector:rust",
+      ),
+    ).toHaveLength(1);
+    expect(requiredRuns([step("pkc run --sdk all --tier offline --require")]).get("vector:*")).toHaveLength(1);
+  });
+
+  it("ignores a pkc run that is narrowed, judges nothing or does not require completeness", () => {
+    for (const run of [
+      "pkc run --sdk go --tier offline --require --case charge-sol-native-build",
+      "pkc run --sdk go --tier offline --discover",
+      "pkc run --sdk go --tier offline",
+    ]) {
+      expect(requiredRuns([step(run, {})]).get("vector:go"), run).toBeUndefined();
+    }
+  });
+
+  it("counts an unfiltered required vitest step (control)", () => {
+    expect(
+      requiredRuns([step("pnpm exec vitest run test/protocol-conformance.test.ts")]).get("protocol:go"),
+    ).toHaveLength(1);
+  });
+
+  it("ignores a vitest step with a test-name filter", () => {
+    expect(
+      requiredRuns([step('pnpm exec vitest run test/protocol-conformance.test.ts -t "go"')]).get("protocol:go"),
     ).toBeUndefined();
   });
 });
@@ -60,13 +112,13 @@ describe("CI runs every claimed conformance suite", () => {
   const expectations = loadAllExpectations();
 
   for (const exp of expectations.values()) {
-    for (const suite of Object.keys(SUITE_FILES) as Suite[]) {
+    for (const suite of Object.keys(SUITE_RUNNER) as Suite[]) {
       if (exp.capabilities[suite].size === 0) continue;
       it(`${exp.language} ${suite}`, () => {
         const where = [...(runs.get(`${suite}:${exp.language}`) ?? []), ...(runs.get(`${suite}:*`) ?? [])];
         expect(
           where,
-          `${exp.language} claims the ${suite} suite but no CI step runs ${SUITE_FILES[suite]} for it with HARNESS_REQUIRE=1`,
+          `${exp.language} claims the ${suite} suite but no CI step runs \`${SUITE_RUNNER[suite]}\` for it`,
         ).not.toEqual([]);
       });
     }

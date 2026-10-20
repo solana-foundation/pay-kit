@@ -1,0 +1,32 @@
+name: Build pkc
+description: >-
+  Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) once
+  per job with a cargo cache, and put it on PATH. Language legs then run
+  `pkc run --sdk <lang> --tier offline --require` against their own testee.
+
+inputs:
+  cache-key:
+    description: Namespace for the cargo cache key (one per job keeps caches small).
+    required: false
+    default: pkc
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust/target
+        key: ${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}-
+    - name: Build pkc
+      shell: bash
+      working-directory: rust
+      run: |
+        cargo build -q -p paykit-conformance --bin pkc
+        mkdir -p "$RUNNER_TEMP/pkc-bin"
+        ln -sf "$GITHUB_WORKSPACE/rust/target/debug/pkc" "$RUNNER_TEMP/pkc-bin/pkc"
+        echo "$RUNNER_TEMP/pkc-bin" >> "$GITHUB_PATH"

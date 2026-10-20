@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// fixtureMint mirrors harness/src/conformance/fixture-rpc.ts FixtureMint.
+// fixtureMint mirrors the fixture RPC mint (rust/crates/conformance/src/fixture_rpc.rs).
 type fixtureMint struct {
 	Owner    string `json:"owner"`
 	Decimals uint8  `json:"decimals"`

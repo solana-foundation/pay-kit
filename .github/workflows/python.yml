@@ -121,12 +121,13 @@ jobs:
       # session voucher-preimage byte-vector (runners/python.json declares the
       # session intent). Pins the Python session wire bytes against the frozen
       # cross-SDK vector rather than only the charge path.
-      - name: Run Python cross-SDK conformance vectors
-        working-directory: harness
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-python
+      - name: Run python offline conformance vectors (pkc)
         env:
-          MPP_CONFORMANCE_LANGUAGES: python
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts
+        run: pkc run --sdk python --tier offline --require
       - name: Focused Python session harness
         working-directory: harness
         env:

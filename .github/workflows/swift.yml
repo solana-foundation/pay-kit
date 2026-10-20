@@ -36,12 +36,13 @@ jobs:
       - name: Build Swift harness client
         working-directory: harness/swift-client
         run: swift build
-      - name: Run Swift cross-SDK conformance vectors
-        working-directory: harness
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-swift
+      - name: Run swift offline conformance vectors (pkc)
         env:
-          MPP_CONFORMANCE_LANGUAGES: swift
           HARNESS_REQUIRE: "1"
-        run: pnpm exec vitest run test/conformance.test.ts
+        run: pkc run --sdk swift --tier offline --require
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness
         env:
