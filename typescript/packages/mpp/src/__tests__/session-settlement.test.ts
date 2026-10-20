@@ -57,6 +57,8 @@ function mockRpc(
     options: {
         accountData?: string;
         confirmErr?: unknown;
+        /** Confirmation levels served by successive status polls; the last one repeats. */
+        confirmationLevels?: readonly string[];
         sendErrors?: number;
         /** Addresses served as existing system-owned accounts. */
         foreignAccounts?: ReadonlySet<string>;
@@ -67,29 +69,35 @@ function mockRpc(
     let sendErrors = options.sendErrors ?? 0;
     const sent: string[] = [];
     const statusCalls: string[] = [];
+    const accountCommitments: unknown[] = [];
+    const levels = options.confirmationLevels ?? ['finalized'];
+    let statusPolls = 0;
     const rpc = {
-        getAccountInfo: (account: string) => ({
-            send: () =>
-                options.tokenAccounts?.has(account) || options.foreignAccounts?.has(account)
-                    ? Promise.resolve({
-                          context: { slot: 314n },
-                          value: { owner: options.tokenAccounts?.has(account) ? TOKEN_PROGRAM : SYSTEM_PROGRAM },
-                      })
-                    : Promise.resolve({
-                          context: { slot: 314n },
-                          value:
-                              options.accountData === undefined
-                                  ? null
-                                  : {
-                                        data: [options.accountData, 'base64'],
-                                        executable: false,
-                                        lamports: 1_000_000n,
-                                        owner: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
-                                        rentEpoch: 0n,
-                                        space: BigInt(getBase64Codec().encode(options.accountData).byteLength),
-                                    },
-                      }),
-        }),
+        getAccountInfo: (account: string, config?: { commitment?: unknown }) => {
+            accountCommitments.push(config?.commitment);
+            return {
+                send: () =>
+                    options.tokenAccounts?.has(account) || options.foreignAccounts?.has(account)
+                        ? Promise.resolve({
+                              context: { slot: 314n },
+                              value: { owner: options.tokenAccounts?.has(account) ? TOKEN_PROGRAM : SYSTEM_PROGRAM },
+                          })
+                        : Promise.resolve({
+                              context: { slot: 314n },
+                              value:
+                                  options.accountData === undefined
+                                      ? null
+                                      : {
+                                            data: [options.accountData, 'base64'],
+                                            executable: false,
+                                            lamports: 1_000_000n,
+                                            owner: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+                                            rentEpoch: 0n,
+                                            space: BigInt(getBase64Codec().encode(options.accountData).byteLength),
+                                        },
+                          }),
+            };
+        },
         getLatestBlockhash: () => ({
             send: () =>
                 Promise.resolve({
@@ -100,7 +108,10 @@ function mockRpc(
         getSignatureStatuses: (sigs: readonly string[]) => ({
             send: () => {
                 statusCalls.push(...sigs);
-                return Promise.resolve({ value: sigs.map(() => ({ err: options.confirmErr ?? null })) });
+                const confirmationStatus = levels[Math.min(statusPolls++, levels.length - 1)];
+                return Promise.resolve({
+                    value: sigs.map(() => ({ confirmationStatus, err: options.confirmErr ?? null, slot: 314n })),
+                });
             },
         }),
         sendTransaction: (wire: string) => ({
@@ -114,7 +125,7 @@ function mockRpc(
             },
         }),
     };
-    return { rpc, sent, statusCalls };
+    return { accountCommitments, rpc, sent, statusCalls };
 }
 
 interface Fixture {
@@ -306,6 +317,28 @@ describe('session() verify() topUp', () => {
         expect(statusCalls).toContain('MockSig1');
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.deposit).toBe(5_000n);
+    });
+
+    test('topUp is credited only once its signature finalizes, against finalized state', async () => {
+        const f = await makeFixture();
+        const { accountCommitments, rpc, statusCalls } = mockRpc({
+            accountData: channelAccountData(f, 5_000n),
+            confirmationLevels: ['confirmed', 'finalized'],
+        });
+        const method = makeMethod(f, rpc);
+        await seedChannel(f);
+
+        const wire = await buildTopUpWire(f, rpc, 4_000n);
+        accountCommitments.length = 0;
+        const receipt = await verify(
+            method,
+            makeCred(f, { action: 'topUp', additionalAmount: '4000', channelId: f.channel.address, transaction: wire }),
+        );
+
+        expect(receipt.status).toBe('success');
+        expect(statusCalls.filter(sig => sig === 'MockSig1')).toHaveLength(2);
+        expect(accountCommitments).toEqual(['finalized']);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(5_000n);
     });
 
     test('topUp accepts Compute Budget instructions within the caps', async () => {

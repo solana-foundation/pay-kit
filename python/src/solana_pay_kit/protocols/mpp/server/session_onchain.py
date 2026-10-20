@@ -18,7 +18,7 @@ import struct
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from solana_keychain import TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -603,7 +603,11 @@ def new_top_up_tx_verifier(
             if status is None or status.get("err") is not None:
                 raise
             signature = landed
-        await confirm_transaction_signature(rpc_client, signature, "top-up")
+        # A confirmed top-up can still be forked out: credit only a finalized
+        # signature, against finalized channel state.
+        await confirm_transaction_signature(
+            rpc_client, signature, "top-up", commitment="finalized", timeout_seconds=60.0
+        )
         if amount > _U64_MAX - state.deposit:
             raise PaymentError("top-up deposit overflows u64", code="invalid-payload")
         await _verify_channel_account(
@@ -611,6 +615,7 @@ def new_top_up_tx_verifier(
             state.channel_id,
             program_id=program_id,
             expected={"deposit": state.deposit + amount},
+            commitment="finalized",
         )
 
     return verifier
@@ -625,11 +630,12 @@ async def _verify_channel_account(
     *,
     program_id: Pubkey,
     expected: dict[str, Any],
+    commitment: Literal["confirmed", "finalized"] = "confirmed",
 ) -> None:
     """Fetch and compare the authoritative channel account after confirmation."""
     from solana_pay_kit._paycore.paymentchannels import decode_channel_account
 
-    response = await rpc_client.get_account_info(Pubkey.from_string(channel_id), commitment="confirmed")
+    response = await rpc_client.get_account_info(Pubkey.from_string(channel_id), commitment=commitment)
     info = getattr(response, "value", None)
     if info is None:
         raise PaymentError("confirmed channel account was not found", code="transaction-not-found")
@@ -665,11 +671,12 @@ async def confirm_transaction_signature(
     signature: str,
     label: str,
     *,
+    commitment: Literal["confirmed", "finalized"] = "confirmed",
     timeout_seconds: float = 30.0,
     poll_interval_seconds: float = 1.0,
 ) -> None:
     """Poll ``getSignatureStatuses`` until ``signature`` reaches at least
-    ``confirmed`` commitment, or raise.
+    ``commitment``, or raise.
 
     ``label`` names the transaction in error messages ("open", "top-up",
     "settle"). A freshly broadcast signature commonly returns ``None`` from
@@ -706,17 +713,20 @@ async def confirm_transaction_signature(
                     f"{label} tx {signature!r} failed on-chain: {status['err']}", code="transaction-failed"
                 )
             level = status.get("confirmationStatus")
-            # RPC endpoints that omit ``confirmationStatus`` only report a
-            # status once the transaction has landed; treat that as
-            # confirmed, mirroring the TS helper.
-            if level is None or level in ("confirmed", "finalized"):
+            if commitment == "finalized":
+                if level == "finalized":
+                    return
+            elif level is None or level in ("confirmed", "finalized"):
+                # RPC endpoints that omit ``confirmationStatus`` only report a
+                # status once the transaction has landed; treat that as
+                # confirmed, mirroring the TS helper.
                 return
 
         now = time.monotonic()
         if now >= deadline:
             if saw_status:
                 raise PaymentError(
-                    f"{label} tx {signature!r} not confirmed within {timeout_seconds}s",
+                    f"{label} tx {signature!r} not {commitment} within {timeout_seconds}s",
                     code="transaction-not-confirmed",
                 )
             raise PaymentError(

@@ -523,6 +523,7 @@ export interface VerifyOpenTxExpected {
 export interface SignatureStatus {
     readonly confirmationStatus?: string | null | undefined;
     readonly err: unknown;
+    readonly slot?: bigint | undefined;
 }
 
 /** Minimal RPC shape needed to check transaction signature statuses. */
@@ -857,16 +858,23 @@ export async function submitTopUpTx(args: {
         if (!status || status.err) throw error;
         signature = landed;
     }
-    await waitForSignatureConfirmation({ context: 'submitTopUpTx', rpc: args.rpc, signature });
-    // Post-confirm re-check, mirroring Rust: the confirmed channel account
-    // must be open and reflect at least the recorded deposit plus this
-    // top-up before the deposit cap is raised.
-    const account = await fetchChannel(args.rpc as never, address(args.channelId), { commitment: 'confirmed' });
+    // A confirmed top-up can still be forked out: credit only a finalized
+    // signature, against finalized channel state from that slot.
+    const { slot } = await waitForSignatureConfirmation({
+        context: 'submitTopUpTx',
+        options: { commitment: 'finalized' },
+        rpc: args.rpc,
+        signature,
+    });
+    const account = await fetchChannel(args.rpc as never, address(args.channelId), {
+        commitment: 'finalized',
+        ...(slot === undefined ? {} : { minContextSlot: slot }),
+    });
     if (
         account.data.status !== Number(ChannelStatus.Open) ||
         account.data.deposit < args.currentDeposit + args.additionalAmount
     ) {
-        throw new Error('submitTopUpTx: confirmed channel state does not reflect the submitted top-up');
+        throw new Error('submitTopUpTx: finalized channel state does not reflect the submitted top-up');
     }
     return signature;
 }
@@ -878,11 +886,13 @@ export function transactionSignatureFromWire(transaction: string): Signature {
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
 export interface ConfirmSignatureOptions {
+    /** Commitment the signature must reach. Defaults to `'confirmed'`. */
+    readonly commitment?: 'confirmed' | 'finalized' | undefined;
     /** Delay between status polls in ms. Defaults to 1_000. */
     readonly pollIntervalMs?: number | undefined;
     /** Optional abort signal to cancel the wait early. */
     readonly signal?: AbortSignal | undefined;
-    /** Total time budget in ms. Defaults to 30_000. */
+    /** Total time budget in ms. Defaults to 30_000, or 60_000 when finalized. */
     readonly timeoutMs?: number | undefined;
 }
 
@@ -896,9 +906,10 @@ export async function waitForSignatureConfirmation(args: {
     readonly options?: ConfirmSignatureOptions | undefined;
     readonly rpc: SignatureStatusRpc;
     readonly signature: Signature;
-}): Promise<void> {
+}): Promise<{ readonly slot: bigint | undefined }> {
     const context = args.context ?? 'waitForSignatureConfirmation';
-    const timeoutMs = args.options?.timeoutMs ?? 30_000;
+    const finalized = args.options?.commitment === 'finalized';
+    const timeoutMs = args.options?.timeoutMs ?? (finalized ? 60_000 : 30_000);
     const pollIntervalMs = args.options?.pollIntervalMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
 
@@ -912,14 +923,19 @@ export async function waitForSignatureConfirmation(args: {
                 throw new Error(`${context}: tx ${args.signature} failed on-chain: ${JSON.stringify(status.err)}`);
             }
             const level = status.confirmationStatus;
-            // RPC endpoints that omit confirmationStatus only report a
-            // status once the tx landed — treat that as confirmed.
-            if (level === undefined || level === null || level === 'confirmed' || level === 'finalized') {
-                return;
+            const slot = status.slot;
+            if (finalized) {
+                if (level === 'finalized') return { slot };
+            } else if (level === undefined || level === null || level === 'confirmed' || level === 'finalized') {
+                // RPC endpoints that omit confirmationStatus only report a
+                // status once the tx landed — treat that as confirmed.
+                return { slot };
             }
         }
         if (Date.now() >= deadline) {
-            throw new Error(`${context}: timed out waiting for tx ${args.signature} confirmation`);
+            throw new Error(
+                `${context}: timed out waiting for tx ${args.signature} ${finalized ? 'finalization' : 'confirmation'}`,
+            );
         }
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }

@@ -534,3 +534,39 @@ async def test_top_up_verifier_keeps_broadcast_error_when_signature_never_landed
     verifier = await _seeded_top_up_verifier(rpc, state)
     with pytest.raises(RuntimeError, match="already been processed"):
         await verifier(payload)
+
+
+class _FinalizingRpc(_MainnetLikeRpc):
+    """Reports ``confirmed`` first, then ``finalized``; records read commitments."""
+
+    def __init__(self, *, account: object | None) -> None:
+        super().__init__(account=account, status=None)
+        self.levels = ["confirmed", "finalized"]
+        self.polls = 0
+        self.commitments: list[str] = []
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        del signatures
+        level = self.levels[min(self.polls, len(self.levels) - 1)]
+        self.polls += 1
+        return [{"err": None, "confirmationStatus": level}]
+
+    async def get_account_info(self, _addr: object, commitment: str = "confirmed") -> object:
+        self.commitments.append(commitment)
+        return await super().get_account_info(_addr, commitment)
+
+
+async def test_top_up_verifier_credits_only_a_finalized_signature_against_finalized_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    rpc = _FinalizingRpc(account=account)
+    verifier = await _seeded_top_up_verifier(rpc, state)
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("solana_pay_kit.protocols.mpp.server.session_onchain.asyncio.sleep", no_sleep)
+    await verifier(payload)
+    assert rpc.polls == 2
+    assert rpc.commitments == ["finalized"]
