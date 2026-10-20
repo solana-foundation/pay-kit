@@ -424,7 +424,13 @@ final class SolanaChargeHandler
             }
             usleep($this->confirmationDelayMicros);
         }
-        throw new RuntimeException("Timed out waiting for transaction $signature");
+        // A missing or unconfirmed status is never proof of non-execution:
+        // the node may lag or lack history for a transaction that commits in
+        // time. The charge stays pending and the retry reconciles it; failing
+        // here would release the client to pay a replacement.
+        throw new SettlementInProgressException(
+            "Timed out waiting for transaction $signature; retry the same credential",
+        );
     }
 
     /**

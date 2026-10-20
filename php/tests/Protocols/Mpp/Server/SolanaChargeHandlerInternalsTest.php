@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests\Protocols\Mpp\Server;
 
 use InvalidArgumentException;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\Tests\PayCore\Rpc\FakeRpcGateway;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
@@ -83,7 +84,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
     {
         $rpc = new FakeRpcGateway(statuses: [null]);
         $h = $this->handlerWith($rpc, confirmationAttempts: 2);
-        $this->expectException(RuntimeException::class);
+        $this->expectException(SettlementInProgressException::class);
         $this->expectExceptionMessage('Timed out');
         $this->invoke($h, 'awaitConfirmation', 'sig-timeout');
     }

@@ -707,6 +707,52 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('already consumed', $replayed->body['detail']);
     }
 
+    // A missing signature status is not proof the transaction never landed
+    // (the node may lag or lack history), so an unconfirmed charge stays
+    // pending instead of answering a fresh challenge; only an explicit
+    // on-chain outcome resolves it.
+    public function testMissingSignatureStatusNeverFailsThePendingCharge(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $handler = fn (FakeRpcGateway $rpc) => $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            confirmationAttempts: 2,
+            rpcGateway: $rpc,
+        );
+
+        $unknown = $handler(new FakeRpcGateway(signature: $signature, statuses: [null]));
+        self::assertInstanceOf(SettlementPending::class, $unknown->handle($authorization, $request));
+        // Still no status on the retry: still pending, never failed.
+        self::assertInstanceOf(SettlementPending::class, $unknown->handle($authorization, $request));
+
+        // When the status surfaces, the same retry is granted.
+        $settled = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request);
+        self::assertInstanceOf(ChargeSettlement::class, $settled);
+        self::assertSame($signature, $settled->signature);
+
+        // An explicit on-chain failure is definitive.
+        $failed = $this->minimalV0TransactionBase64();
+        $result = $handler(new FakeRpcGateway(
+            signature: $this->signatureOf($failed),
+            statuses: [['err' => ['InstructionError' => [0, 'Custom']], 'confirmationStatus' => 'confirmed']],
+        ))->handle((new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $failed],
+        ))->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertStringContainsString('failed', $result->body['detail']);
+    }
+
     // A preflight rejection is definitive: the node never forwarded the
     // transaction, so the charge fails with a fresh challenge.
     public function testPreflightRejectionFailsTheCharge(): void
