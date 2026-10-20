@@ -7,36 +7,33 @@
 -- one RunnerResult line as JSON on stdout.
 --
 -- ROLE: the Lua SDK is SERVER-ONLY. It ships a pre-broadcast charge
--- verifier (pay_kit.solana.verifier) and the wire canonical-JSON /
--- base64url encoders, but no client-side transaction builder. The runner
--- therefore supports:
---   * canonical-bytes  -- JCS (RFC 8785) + base64url + fixed-width bytes
---   * verify-transaction WHEN the vector ships a concrete `transaction`
---     base64 (the pure pre-broadcast checks: no live RPC, no HMAC)
--- Build-transaction vectors, and verify-transaction vectors that expect
--- the runner to BUILD the transaction first, have no server-only
--- equivalent. For those the runner emits a clear "unsupported-mode"
--- reject so the driver SKIPs (not fails) the vector for Lua.
---
--- It also handles the x402 `exact` intent (v2): build vectors emit
--- unsupported-mode (server-only SDK, no client builder), and verify
--- vectors drive the real pay_kit.protocols.x402 credential decoder to
--- emit accept/reject (+ rejectCode) plus the decoded X402EnvelopeShape.
---
--- The run is deterministic and RPC-free: the verifier decodes the wire
--- bytes locally and never contacts a validator. A vector that would
--- require a live RPC call is, by construction, a build vector this runner
--- already refuses.
+-- verifier (pay_kit.solana.verifier), the x402 exact server adapter
+-- (pay_kit.protocols.x402) and the wire canonical-JSON / base64url
+-- encoders, but no client-side transaction builder. The runner therefore
+-- supports:
+--   * canonical-bytes     -- JCS (RFC 8785) + base64url + challenge id
+--   * verify-transaction  -- the charge verifier over the vector's pinned
+--     transaction, request passed verbatim
+--   * x402 verify         -- Adapter:verify_payment, the SDK's pre-broadcast
+--     verification, against a PayKit config built from the vector route and
+--     the fixture RPC at input.rpcUrl
+-- Build vectors, and verify vectors that pin no transaction (they need a
+-- client build first), emit "unsupported-mode" so the driver SKIPs them.
+-- The runner fills no defaults, resolves no token programs or decimals and
+-- applies no field precedence (harness/expectations/RULINGS.md).
 --
 -- Run from the `lua/` directory so the `./?.lua` / `./?/init.lua` package
--- path resolves the pay_kit tree (see tests/run.lua and the RUNNER_CWD
--- entry in harness/test/conformance.test.ts).
+-- path resolves the pay_kit tree, and `./lua_modules` (the luarocks tree CI
+-- installs) resolves cjson and luasocket for the x402 adapter.
 
 package.path = table.concat({
   './?.lua',
   './?/init.lua',
+  './lua_modules/share/lua/5.1/?.lua',
+  './lua_modules/share/lua/5.1/?/init.lua',
   package.path,
 }, ';')
+package.cpath = './lua_modules/lib/lua/5.1/?.so;' .. package.cpath
 
 local json = require('pay_kit.util.json')
 local base64url = require('pay_kit.util.base64url')
@@ -45,9 +42,6 @@ local challenge = require('pay_kit.protocol.core.challenge')
 local verifier = require('pay_kit.solana.verifier')
 local transaction = require('pay_kit.solana.transaction')
 local instructions = require('pay_kit.solana.instructions')
-local base58 = require('pay_kit.solana.base58')
-local ata = require('pay_kit.solana.ata')
-local mints = require('pay_kit.solana.mints')
 
 local UNSUPPORTED_MODE = 'unsupported-mode'
 
@@ -84,238 +78,6 @@ end
 local function emit(result)
   io.write(json.encode(result) .. '\n')
 end
-
--- Apply the same precedence rules as the TS / Go reference runners:
--- top-level `asset` / `payTo` win over `currency` / `recipient`, and the
--- methodDetails carry network / decimals / tokenProgram / splits /
--- feePayer. The Lua verifier consumes a request table shaped exactly like
--- the live charge route's decoded request, so we mirror that shape here.
-local function flatten_request(req)
-  local currency = req.currency
-  if req.asset ~= nil and req.asset ~= json.null then
-    currency = req.asset
-  end
-  local recipient = req.recipient
-  if req.payTo ~= nil and req.payTo ~= json.null then
-    recipient = req.payTo
-  end
-
-  local md = req.methodDetails or {}
-  local network = md.network
-  if network == nil or network == json.null then
-    network = 'mainnet'
-  end
-
-  local details = { network = network }
-  -- decimals: the verifier types it as Option<u8>; keep it numeric when
-  -- the vector pins it, leave nil otherwise so the verifier's "any
-  -- decimals" branch applies (it never injects a default).
-  if type(md.decimals) == 'number' then
-    details.decimals = md.decimals
-  end
-  if type(md.tokenProgram) == 'string' then
-    details.tokenProgram = md.tokenProgram
-  end
-  if md.feePayer == true then
-    details.feePayer = true
-  end
-  if type(md.feePayerKey) == 'string' then
-    details.feePayerKey = md.feePayerKey
-  end
-  if type(md.splits) == 'table' then
-    details.splits = md.splits
-  end
-
-  local request = {
-    amount = req.amount,
-    currency = currency,
-    recipient = recipient,
-    methodDetails = details,
-  }
-  if type(req.externalId) == 'string' and req.externalId ~= '' then
-    request.externalId = req.externalId
-  end
-  return request
-end
-
--- ── wire transaction fixture builder ──
---
--- The Lua SDK is server-only: the verifier is the system under test, and a
--- verify vector that omits `input.transaction` only pins the request +
--- signer, expecting the runner to assemble the wire fixture the verifier
--- then accepts. This mirrors the Ruby runner's TxFixtureBuilder and lays
--- out instructions exactly how the Rust client builder emits them and the
--- Lua verifier reads them: transferChecked accounts (source, mint, dest,
--- authority); idempotent ATA create accounts (payer, ata, owner, mint,
--- system, token program); memo program data is the raw memo bytes. No RPC,
--- no signature: the verifier checks transaction shape, not signatures.
-
--- Encode an unsigned decimal-string value as `width` little-endian bytes.
-local function le_bytes(value, width)
-  local digits = {}
-  local text = tostring(value)
-  if not text:match('^%d+$') then
-    error('invalid unsigned integer: ' .. text)
-  end
-  for i = 1, #text do
-    digits[i] = tonumber(text:sub(i, i))
-  end
-  local out = {}
-  for _ = 1, width do
-    -- Long division of the decimal digit array by 256 collects one byte.
-    local remainder = 0
-    local next_digits = {}
-    local started = false
-    for i = 1, #digits do
-      local acc = remainder * 10 + digits[i]
-      local q = math.floor(acc / 256)
-      remainder = acc % 256
-      if started or q ~= 0 then
-        next_digits[#next_digits + 1] = q
-        started = true
-      end
-    end
-    if #next_digits == 0 then
-      next_digits = { 0 }
-    end
-    out[#out + 1] = string.char(remainder)
-    digits = next_digits
-  end
-  for i = 1, #digits do
-    if digits[i] ~= 0 then
-      error('value does not fit in ' .. width .. ' bytes')
-    end
-  end
-  return table.concat(out)
-end
-
--- Build a verify-transaction wire fixture from a flattened request and the
--- vector's 64-byte signer secret key. Returns a standard base64 string.
-local function build_fixture(flat, signer_secret)
-  if #signer_secret ~= 64 then
-    error('signerSecretKey must be 64 bytes')
-  end
-  -- The public key is the trailing 32 bytes of the ed25519 secret key.
-  local pub_bytes = {}
-  for i = 33, 64 do
-    pub_bytes[#pub_bytes + 1] = string.char(signer_secret[i])
-  end
-  local signer = base58.encode(table.concat(pub_bytes))
-
-  local details = flat.methodDetails or {}
-  local currency = flat.currency
-  local recipient = flat.recipient
-  local network = details.network or 'mainnet'
-  local is_sol = type(currency) == 'string' and currency:upper() == 'SOL'
-
-  local splits = details.splits or {}
-  local total = tonumber(flat.amount)
-  local split_total = 0
-  for i = 1, #splits do
-    split_total = split_total + tonumber(splits[i].amount)
-  end
-  local primary = total - split_total
-
-  -- Instruction list: { program = base58, accounts = { base58... }, data = raw }
-  local ixs = {}
-  local function add_ix(program, accounts, data)
-    ixs[#ixs + 1] = { program = program, accounts = accounts, data = data }
-  end
-
-  if is_sol then
-    add_ix(SYSTEM_PROGRAM, { signer, recipient },
-      le_bytes(2, 4) .. le_bytes(primary, 8))
-    for i = 1, #splits do
-      add_ix(SYSTEM_PROGRAM, { signer, splits[i].recipient },
-        le_bytes(2, 4) .. le_bytes(splits[i].amount, 8))
-      if splits[i].memo and splits[i].memo ~= '' then
-        add_ix(MEMO_PROGRAM, {}, splits[i].memo)
-      end
-    end
-  else
-    local mint = mints.resolve_mint(currency, network) or currency
-    local token_program = details.tokenProgram
-      or mints.default_token_program_for_currency(currency, network)
-    local decimals = details.decimals or 6
-    local source_ata = ata.derive(signer, mint, token_program)
-    local dest_ata = ata.derive(recipient, mint, token_program)
-    add_ix(token_program, { source_ata, mint, dest_ata, signer },
-      string.char(12) .. le_bytes(primary, 8) .. string.char(decimals))
-    for i = 1, #splits do
-      local sr = splits[i].recipient
-      local sata = ata.derive(sr, mint, token_program)
-      if splits[i].ataCreationRequired == true then
-        add_ix(instructions.ASSOCIATED_TOKEN_PROGRAM,
-          { signer, sata, sr, mint, SYSTEM_PROGRAM, token_program },
-          string.char(1))
-      end
-      add_ix(token_program, { source_ata, mint, sata, signer },
-        string.char(12) .. le_bytes(splits[i].amount, 8) .. string.char(decimals))
-      if splits[i].memo and splits[i].memo ~= '' then
-        add_ix(MEMO_PROGRAM, {}, splits[i].memo)
-      end
-    end
-  end
-
-  -- Account key set: signer (lone signer / fee payer) at index 0, then every
-  -- instruction account and program id in first-seen order. The verifier
-  -- reads layout by index, so a single read-only-unsigned tail suffices.
-  local keys = { signer }
-  local seen = { [signer] = true }
-  local function push_key(k)
-    if not seen[k] then
-      seen[k] = true
-      keys[#keys + 1] = k
-    end
-  end
-  for _, ix in ipairs(ixs) do
-    for _, a in ipairs(ix.accounts) do
-      push_key(a)
-    end
-    push_key(ix.program)
-  end
-  local index = {}
-  for i, k in ipairs(keys) do
-    index[k] = i - 1
-  end
-
-  local blockhash = details.recentBlockhash or string.rep('1', 32)
-  local ok, blockhash_bytes = pcall(base58.decode, blockhash)
-  if not ok or #blockhash_bytes ~= 32 then
-    blockhash_bytes = base58.decode(string.rep('1', 32))
-  end
-
-  local signer_count = 1
-  local readonly_unsigned = #keys - 1
-
-  -- v0 wire: version prefix, header, keys, blockhash, instructions, and an
-  -- empty address-table-lookup vector. Clients never build legacy messages.
-  local parts = {}
-  parts[#parts + 1] = string.char(0x80)
-  parts[#parts + 1] = string.char(signer_count, 0, readonly_unsigned)
-  parts[#parts + 1] = transaction.compact_u16(#keys)
-  for _, k in ipairs(keys) do
-    parts[#parts + 1] = base58.decode(k)
-  end
-  parts[#parts + 1] = blockhash_bytes
-  parts[#parts + 1] = transaction.compact_u16(#ixs)
-  for _, ix in ipairs(ixs) do
-    parts[#parts + 1] = string.char(index[ix.program])
-    parts[#parts + 1] = transaction.compact_u16(#ix.accounts)
-    for _, a in ipairs(ix.accounts) do
-      parts[#parts + 1] = string.char(index[a])
-    end
-    parts[#parts + 1] = transaction.compact_u16(#ix.data)
-    parts[#parts + 1] = ix.data
-  end
-  parts[#parts + 1] = transaction.compact_u16(0)
-  local message = table.concat(parts)
-
-  local signatures = transaction.compact_u16(signer_count)
-    .. string.rep(string.char(0), 64 * signer_count)
-  return base64_std.encode(signatures .. message)
-end
-
 -- Decode a base64 wire transaction into the semantic shape the conformance
 -- driver asserts against. Mirrors the TS reference decoder
 -- (harness/src/conformance/decode.ts) and the Go shapeFromTransaction:
@@ -424,37 +186,6 @@ local function run_canonical_bytes(vector)
   return { id = vector.id, outcome = 'accept', exactBytes = exact }
 end
 
--- verify-transaction: the Lua SDK is server-only, so the verifier is the
--- system under test. When the vector pins a concrete `transaction` the
--- runner verifies it directly; when it omits one (pinning only request +
--- signerSecretKey) the runner assembles the wire fixture itself via
--- build_fixture, exactly as the Ruby runner does, then runs the verifier
--- over it. Either way the SDK verifier is what is exercised.
-local function run_verify_transaction(vector)
-  local input = vector.input or {}
-  if type(input.request) ~= 'table' then
-    error('verify vector is missing input.request')
-  end
-  local request = flatten_request(input.request)
-
-  local tx = input.transaction
-  if type(tx) ~= 'string' or tx == '' then
-    if type(input.signerSecretKey) ~= 'table' then
-      error('verify vector without input.transaction is missing input.signerSecretKey')
-    end
-    tx = build_fixture(request, input.signerSecretKey)
-  end
-
-  -- Pure pre-broadcast structural verify: decode the wire bytes and assert
-  -- the charge shape. No RPC, no HMAC, no broadcast.
-  verifier.verify_transaction_base64(tx, request)
-  return {
-    id = vector.id,
-    outcome = 'accept',
-    transactionShape = shape_from_transaction(tx),
-  }
-end
-
 -- build-transaction: no server-only equivalent. The Lua SDK ships no
 -- client builder, so report unsupported-mode and let the driver SKIP.
 local function run_build_transaction(vector)
@@ -465,64 +196,113 @@ local function run_build_transaction(vector)
   }
 end
 
--- ── x402 `exact` intent (v2) ──
---
--- The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
--- produces a base64(JSON) payment header and a SERVER verify consumes one.
--- The cross-SDK oracle is therefore the DECODED ENVELOPE shape, not the
--- signed Solana transaction inside `payload.transaction` (that is the
--- harness matrix's job). This mirrors the TS reference
--- (harness/src/conformance/x402.ts) and the Rust spine line-for-line.
---
--- The Lua SDK is SERVER-only, so:
---   * build-transaction (x402) -> unsupported-mode (driver SKIPs).
---   * verify-transaction (x402) -> run the server-side credential decode
---     (version dispatch + per-version network gate) + the v2 accepted-vs-
---     route field comparison, emit accept/reject (+ rejectCode), and
---     surface the decoded X402EnvelopeShape on accept.
---
--- The version dispatch, network gate, and CAIP-2 normalization below
--- mirror pay_kit.protocols.x402 (init.lua decode_payment_signature /
--- caip2_network_for_cluster) line-for-line, which in turn mirrors the
--- Rust spine (parse_payment_signature + verify_envelope_payload). They
--- are inlined here rather than required so the runner stays self-contained
--- under a bare luajit invocation (the x402 adapter module pulls in
--- cjson/rpc/cosocket dependencies the conformance harness does not load),
--- exactly as the charge path uses pay_kit.util.json over cjson.
-
-local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
-local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
-local LEGACY_NETWORK_SOLANA = 'solana'
-local LEGACY_NETWORK_DEVNET = 'solana-devnet'
-
--- x402 v2 `payment-identifier` extension (rust types.rs PaymentExtensions:
--- #[serde(rename = "payment-identifier")]). The id must match the spec
--- pattern ^[A-Za-z0-9_-]{16,128}$ (rust PaymentIdentifierInfo / coinbase
--- payment_identifier.md §5.1.2).
-local PAYMENT_IDENTIFIER_KEY = 'payment-identifier'
-
--- Lua patterns lack regex quantifier bounds, so mirror ^[A-Za-z0-9_-]{16,128}$
--- with an explicit character-class match plus a length window.
-local function payment_identifier_id_valid(id)
-  if type(id) ~= 'string' then return false end
-  if #id < 16 or #id > 128 then return false end
-  return id:match('^[A-Za-z0-9_%-]+$') ~= nil
+-- verify-transaction (charge): run the SDK's pre-broadcast verifier over the
+-- vector's pinned transaction, with the request passed verbatim. A vector
+-- that pins no transaction needs a client build first; the runner never
+-- fabricates one.
+local function run_verify_transaction(vector)
+  local input = vector.input or {}
+  if type(input.request) ~= 'table' then
+    error('verify vector is missing input.request')
+  end
+  local tx = input.transaction
+  if type(tx) ~= 'string' or tx == '' then
+    return {
+      id = vector.id,
+      outcome = UNSUPPORTED_MODE,
+      error = 'lua SDK is server-only: this verify vector pins no transaction, '
+        .. 'so it needs a client build first and lua has no client builder',
+    }
+  end
+  verifier.verify_transaction_base64(tx, input.request)
+  return {
+    id = vector.id,
+    outcome = 'accept',
+    transactionShape = shape_from_transaction(tx),
+  }
 end
 
--- Normalize any network identifier (CAIP-2 or legacy slug) to its CAIP-2
--- form. Mirrors rust caip2_network_for_cluster (types.rs) and the SDK's
--- pay_kit.protocols.x402 caip2_network_for_cluster.
-local function caip2_network_for_cluster(network)
-  if type(network) ~= 'string' then return '' end
-  if network == LEGACY_NETWORK_SOLANA or network == 'mainnet'
-    or network == 'mainnet-beta' or network == CAIP2_MAINNET then
-    return CAIP2_MAINNET
+-- ── x402 `exact` ──
+--
+-- verify-transaction (x402): configure PayKit for the vector's route the way
+-- an operator would (network, recipient, fee payer, rpc_url = the fixture RPC,
+-- payment-identifier requirement) and run the SDK's pre-broadcast verifier
+-- (Adapter:verify_payment: version gate, offer binding, extensions gate,
+-- structural transaction verifier, client signatures). Nothing is signed or
+-- broadcast. The SDK prices in a gate (a human amount of a settlement coin)
+-- and always scales by 10^6, so the route's atomic amount maps back onto that
+-- fixed scale.
+
+local PAYMENT_IDENTIFIER_KEY = 'payment-identifier'
+local decode_envelope_shape
+
+local function pay_kit_network(slug)
+  if slug == 'mainnet' or slug == 'mainnet-beta' or slug == 'solana' then
+    return 'solana_mainnet'
+  elseif slug == 'localnet' then
+    return 'solana_localnet'
   end
-  if network == LEGACY_NETWORK_DEVNET or network == 'devnet'
-    or network == 'localnet' or network == CAIP2_DEVNET then
-    return CAIP2_DEVNET
+  return 'solana_devnet'
+end
+
+-- "1000" atomic units at the SDK's fixed 6 decimals -> "0.001".
+local function units_to_decimal(units)
+  if type(units) ~= 'string' or not units:match('^%d+$') then
+    error('x402ServerAmount must be an atomic-unit integer string')
   end
-  return network
+  local padded = string.rep('0', math.max(0, 7 - #units)) .. units
+  local whole, fraction = padded:sub(1, #padded - 6), padded:sub(-6):gsub('0+$', '')
+  if fraction == '' then return whole end
+  return whole .. '.' .. fraction
+end
+
+local function run_x402_verify(vector)
+  local input = vector.input or {}
+  local header = input.x402PaymentHeader
+  if type(header) ~= 'string' or header == '' then
+    error('invalid payload: x402 verify vector missing input.x402PaymentHeader')
+  end
+  for _, key in ipairs({'x402ServerNetwork', 'x402ServerRecipient', 'x402ServerCurrency',
+                        'x402ServerAmount', 'x402ServerFeePayerSecretKey', 'rpcUrl'}) do
+    if input[key] == nil then
+      error('x402 verify vector missing input.' .. key)
+    end
+  end
+
+  -- The PayKit x402 adapter pulls in cjson and the RPC transport, so it is
+  -- only loaded on this path.
+  local pay_kit = require('pay_kit')
+  local signer = require('pay_kit.signer')
+  local x402 = require('pay_kit.protocols.x402')
+
+  local sgn = assert(signer.bytes(input.x402ServerFeePayerSecretKey))
+  local ok, err = pay_kit.configure({
+    network     = pay_kit_network(input.x402ServerNetwork),
+    accept      = {'x402'},
+    rpc_url     = input.rpcUrl,
+    stablecoins = {input.x402ServerCurrency},
+    operator    = {recipient = input.x402ServerRecipient, signer = sgn, fee_payer = true},
+    x402        = {requires_payment_identifier = input.x402ServerRequiresPaymentIdentifier == true},
+    -- No boot-time preflight (fee-payer balance / ATA provisioning) and no
+    -- generated MPP secret persisted to ./.env: this is a verify-only run.
+    preflight   = false,
+    mpp         = {challenge_binding_secret = 'unused-x402-conformance-secret-0123456789'},
+  })
+  if not ok then error(err) end
+  assert(pay_kit.gate('route', {
+    amount = assert(pay_kit.usd(units_to_decimal(input.x402ServerAmount), input.x402ServerCurrency)),
+  }))
+  local gate = assert(require('pay_kit.internal.registry').materialize('route'))
+
+  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  -- The vector route binds no resource memo.
+  local offer, verify_err = adapter:verify_payment(gate, {headers = {['payment-signature'] = header}}, nil)
+  if not offer then error(verify_err) end
+  return {
+    id = vector.id,
+    outcome = 'accept',
+    x402EnvelopeShape = decode_envelope_shape(header),
+  }
 end
 
 -- Decode the base64(JSON) payment header into the conformance envelope
@@ -532,7 +312,7 @@ end
 -- top-level scheme/network). Only keys actually present on the wire are
 -- set, so the JSON encoder omits the rest and the driver reads them as
 -- absent.
-local function decode_envelope_shape(header)
+function decode_envelope_shape(header)
   local decoded = base64_std.decode(header)
   if not decoded then
     error('invalid payload: payment-signature base64 decode failed')
@@ -603,110 +383,6 @@ local function decode_envelope_shape(header)
   return shape
 end
 
--- verify-transaction (x402): decode the credential, run the version
--- dispatch + per-version network gate (mirroring the SDK's
--- decode_payment_signature / the rust parse_payment_signature), then for
--- v2 also run the accepted-vs-route field comparison (amount / payTo /
--- asset) the rust verify_envelope_payload + TS reference verifyPaymentHeader
--- apply. RPC-free: the signed-transaction settlement is out of scope for
--- the envelope oracle, so a structurally valid, route-matching envelope is
--- accepted. Raises on reject so the shared classifier maps the message
--- onto a RejectCode.
-local function run_x402_verify(vector)
-  local input = vector.input or {}
-  local header = input.x402PaymentHeader
-  if type(header) ~= 'string' or header == '' then
-    error('invalid payload: x402 verify vector missing input.x402PaymentHeader')
-  end
-  if input.x402ServerNetwork == nil
-    or input.x402ServerRecipient == nil
-    or input.x402ServerCurrency == nil
-    or input.x402ServerAmount == nil then
-    error('invalid payload: x402 verify vector missing server route')
-  end
-
-  local expected_caip2 = caip2_network_for_cluster(input.x402ServerNetwork)
-
-  local decoded = base64_std.decode(header)
-  if not decoded then
-    error('invalid payload: payment-signature base64 decode failed')
-  end
-  local env = json.decode(decoded)
-  if type(env) ~= 'table' then
-    error('invalid payload: payment-signature not a JSON object')
-  end
-
-  local version = env.x402Version
-  if version == 1 then
-    -- Legacy v1 dual-accept arm. The v1 envelope carries scheme + network
-    -- as top-level siblings of payload (no accepted object), so the server
-    -- binds only scheme + network and normalizes the plain SVM slug via
-    -- caip2_network_for_cluster before the network gate. Mirrors the rust
-    -- parse_payment_signature v1 arm (server/exact.rs:316-327): there is no
-    -- accepted-vs-route field comparison because v1 has no accepted object.
-    local scheme = env.scheme
-    if scheme ~= 'exact' then
-      error('invalid payload: v1 envelope scheme is not exact')
-    end
-    if caip2_network_for_cluster(env.network or '') ~= expected_caip2 then
-      error('wrong network: credential network does not match server')
-    end
-  elseif version == 2 then
-    local accepted = env.accepted
-    if type(accepted) ~= 'table' then
-      error('invalid payload: v2 envelope missing accepted')
-    end
-    if caip2_network_for_cluster(accepted.network or '') ~= expected_caip2 then
-      error('wrong network: credential network does not match server')
-    end
-    -- accepted-vs-route field comparison (rust verify_envelope_payload).
-    if tostring(accepted.amount or '') ~= tostring(input.x402ServerAmount) then
-      error('Amount mismatch: expected ' .. tostring(input.x402ServerAmount)
-        .. ', got ' .. tostring(accepted.amount))
-    end
-    if tostring(accepted.payTo or '') ~= tostring(input.x402ServerRecipient) then
-      error('Recipient mismatch: credential claims a different recipient')
-    end
-    if tostring(accepted.asset or '') ~= tostring(input.x402ServerCurrency) then
-      error('Currency mismatch: expected ' .. tostring(input.x402ServerCurrency)
-        .. ', got ' .. tostring(accepted.asset))
-    end
-    -- Extensions reject gate (rust PaymentExtensions::requires_payment_identifier
-    -- + the coinbase spec's 400 when required-and-missing; TS reference
-    -- verifyPaymentHeader). When the route requires a payment-identifier, the
-    -- echoed credential MUST carry a valid pay_-shaped id. Missing, empty, or
-    -- pattern-violating ids reject as payment-identifier-required.
-    if input.x402ServerRequiresPaymentIdentifier == true then
-      local extensions = env.extensions
-      local pid = type(extensions) == 'table' and extensions[PAYMENT_IDENTIFIER_KEY] or nil
-      local id = type(pid) == 'table' and type(pid.info) == 'table' and pid.info.id or nil
-      if id == nil or id == '' then
-        error('payment-identifier required but credential echoed no id')
-      end
-      if not payment_identifier_id_valid(id) then
-        error('payment-identifier id is invalid: ' .. tostring(id)
-          .. ' does not match ^[A-Za-z0-9_-]{16,128}$')
-      end
-    end
-  else
-    error('invalid payload: unsupported x402Version ' .. tostring(version))
-  end
-
-  -- Payload must carry a transaction proof (envelope oracle only checks
-  -- presence; the signed-transaction settlement is the harness matrix's job).
-  local payload = env.payload
-  if type(payload) ~= 'table'
-    or type(payload.transaction) ~= 'string'
-    or payload.transaction == '' then
-    error('invalid payload: missing transaction proof')
-  end
-
-  return {
-    id = vector.id,
-    outcome = 'accept',
-    x402EnvelopeShape = decode_envelope_shape(header),
-  }
-end
 
 -- x402-exact dispatch. build vectors have no server-only equivalent
 -- (the Lua SDK ships no client builder), so they emit unsupported-mode
@@ -786,6 +462,16 @@ local function classify_reject(message)
     return 'payment-identifier-required'
   end
 
+  -- x402 exact structural verifier tokens (invalid_exact_svm_payload_*).
+  if has(m, 'compute_price_instruction_too_high') then
+    return 'compute-price-over-cap'
+  end
+  if has(m, 'fee_payer_transferring_funds') or has(m, 'fee_payer_in_instruction_accounts') then
+    return 'fee-payer-not-authority'
+  end
+  if has(m, 'no_transfer_instruction') or has(m, 'recipient_mismatch') or has(m, 'mint_mismatch') then
+    return 'no-matching-transfer'
+  end
   if has(m, 'compute unit price') and has(m, 'exceed')
     and (has(m, 'cap') or has(m, 'maximum')) then
     return 'compute-price-over-cap'

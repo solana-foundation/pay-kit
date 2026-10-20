@@ -255,6 +255,12 @@ function classify_reject(string $message): ?string
         '/no matching (spl )?(token )?(transfer|transferchecked|sol transfer)/i' => 'no-matching-transfer',
         '/unexpected .* (instruction|transfer)/i' => 'unexpected-instruction',
         '/amount .* (mismatch|does not match)/i' => 'amount-mismatch',
+        // x402 exact structural verifier tokens (invalid_exact_svm_payload_*).
+        '/compute_price_instruction_too_high/' => 'compute-price-over-cap',
+        '/fee_payer_transferring_funds|fee_payer_in_instruction_accounts/' => 'fee-payer-not-authority',
+        '/no_transfer_instruction|recipient_mismatch|mint_mismatch/' => 'no-matching-transfer',
+        '/amount_mismatch/' => 'amount-mismatch',
+        '/unknown_(fourth|fifth|sixth|optional)_instruction/' => 'unexpected-instruction',
         // x402-exact reject vocabulary. Ordered before the generic
         // invalid/payload fallback so an unknown version or a network
         // mismatch classifies precisely (mirrors reject.ts).
