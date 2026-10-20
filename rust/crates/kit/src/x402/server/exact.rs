@@ -7,7 +7,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
-use crate::core::store::{MemoryStore, Store};
+use crate::core::store::{ConsumedSignatures, MemoryStore, Store};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
@@ -763,11 +763,7 @@ impl X402 {
             Ok(confirmed) => Ok(confirmed.to_string()),
             Err(e) => {
                 // Unsettled: let the payer retry the same transaction.
-                if let Err(release) = self
-                    .replay_store
-                    .delete(&self.consumed_key(&signature))
-                    .await
-                {
+                if let Err(release) = self.consumed_signatures().release(&signature).await {
                     tracing::warn!(error = %release, "failed to release unsettled x402 payment");
                 }
                 Err(Error::Rpc(format!(
@@ -777,18 +773,17 @@ impl X402 {
         }
     }
 
-    fn consumed_key(&self, signature: &str) -> String {
-        format!(
-            "x402-exact:consumed:{}:{signature}",
-            caip2_network_for_cluster(&self.config.network)
-        )
+    /// The ledger shared with MPP charge, so a payment settled through either
+    /// protocol cannot authorize a second request through the other.
+    fn consumed_signatures(&self) -> ConsumedSignatures {
+        ConsumedSignatures::new(self.replay_store.clone())
     }
 
     /// Atomically mark a payment signature as used.
     pub(crate) async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
         let inserted = self
-            .replay_store
-            .put_if_absent(&self.consumed_key(signature), serde_json::json!(true))
+            .consumed_signatures()
+            .claim(signature)
             .await
             .map_err(|e| Error::Other(format!("x402 replay store error: {e}")))?;
         if inserted {

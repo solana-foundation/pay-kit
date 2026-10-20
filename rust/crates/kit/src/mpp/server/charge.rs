@@ -1619,10 +1619,8 @@ impl Mpp {
         &self,
         signature_str: &str,
     ) -> Result<(), VerificationError> {
-        let consumed_key = format!("solana-charge:consumed:{signature_str}");
-        let inserted = self
-            .store
-            .put_if_absent(&consumed_key, serde_json::json!(true))
+        let inserted = crate::core::store::ConsumedSignatures::new(self.store.clone())
+            .claim(signature_str)
             .await
             .map_err(|e| VerificationError::new(format!("Store error: {e}")))?;
         if !inserted {
@@ -8824,7 +8822,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_protection_marks_and_detects_consumed() {
         let store = Arc::new(MemoryStore::new());
-        let _mpp = Mpp::new(Config {
+        let mpp = Mpp::new(Config {
             realm: Some("test-realm".to_string()),
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
@@ -8834,15 +8832,10 @@ mod tests {
         })
         .unwrap();
 
-        let key = "solana-charge:consumed:testsig123";
-        // Not consumed yet.
-        assert!(store.get(key).await.unwrap().is_none());
-
-        // Mark as consumed.
-        store.put(key, serde_json::json!(true)).await.unwrap();
-
-        // Now it should be detected.
-        assert!(store.get(key).await.unwrap().is_some());
+        mpp.consume_signature("testsig123").await.unwrap();
+        let err = mpp.consume_signature("testsig123").await.unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"));
+        mpp.consume_signature("testsig456").await.unwrap();
     }
 
     // Concurrent-replay regression: race N tasks that all call the real

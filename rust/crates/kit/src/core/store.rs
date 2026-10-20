@@ -173,10 +173,51 @@ impl Store for MemoryStore {
     }
 }
 
+// ── Consumed transaction signatures ──
+
+/// Protocol-independent ledger of Solana transaction signatures that already
+/// authorized a protected response.
+///
+/// MPP charge and x402 `exact` both claim here, so one on-chain payment
+/// authorizes one request whichever protocol presents it: a transaction
+/// settled through MPP cannot be presented again as an x402 signature proof
+/// on a gate that shares the store, and vice versa. The key is the signature
+/// alone; a signature commits to a message carrying a cluster-specific
+/// blockhash, so scoping by network would add nothing but a second
+/// normalization that both protocols would have to agree on.
+#[derive(Clone)]
+pub struct ConsumedSignatures {
+    store: Arc<dyn Store>,
+}
+
+fn consumed_signature_key(signature: &str) -> String {
+    format!("solana:consumed-signature:{signature}")
+}
+
+impl ConsumedSignatures {
+    pub fn new(store: Arc<dyn Store>) -> Self {
+        Self { store }
+    }
+
+    /// Atomically claim `signature`. `false` means an earlier presentation,
+    /// through any protocol, already claimed it.
+    pub async fn claim(&self, signature: &str) -> Result<bool, StoreError> {
+        self.store
+            .put_if_absent(&consumed_signature_key(signature), serde_json::json!(true))
+            .await
+    }
+
+    /// Release a claim this caller made for a transaction that provably never
+    /// landed (for example a preflight rejection), so the payer may retry it.
+    pub async fn release(&self, signature: &str) -> Result<(), StoreError> {
+        self.store.delete(&consumed_signature_key(signature)).await
+    }
+}
+
 // ── Charge replay / idempotency store ──
 //
-// PayKit's original charge replay guard
-// (`solana-charge:consumed:<signature>`, see
+// PayKit's original charge replay guard (the consumed-signature claim in
+// [`ConsumedSignatures`], see
 // `mpp::server::charge::Mpp::consume_signature`) is replay-safe — the same
 // final signature can never be reserved twice — but produces the wrong
 // error for a retry: Ed25519 signing is deterministic, so replaying an

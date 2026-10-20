@@ -2092,8 +2092,33 @@ mod tests {
             .consume_signature("other-signature")
             .await
             .unwrap();
-        // Each protocol keeps its own replay namespace in the shared store.
-        replica_b.mpp().consume_signature(signature).await.unwrap();
+    }
+
+    // One on-chain payment authorizes one request across protocols: a
+    // signature settled through MPP cannot be presented again as an x402
+    // proof on a gate sharing the store, nor the other way round.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signature_consumed_by_one_protocol_is_rejected_by_the_other() {
+        let pay = PayKit::new(push_config(Some(Arc::new(
+            crate::mpp::store::MemoryStore::new(),
+        ))))
+        .unwrap();
+        let mpp_paid = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+        let x402_paid = "other-signature";
+
+        pay.mpp().consume_signature(mpp_paid).await.unwrap();
+        let err = pay.x402().consume_signature(mpp_paid).await.unwrap_err();
+        assert!(err.to_string().contains("already consumed"), "{err}");
+
+        pay.x402().consume_signature(x402_paid).await.unwrap();
+        let err = pay.mpp().consume_signature(x402_paid).await.unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
+
+        // An unrelated payment is still accepted by either protocol.
+        pay.mpp()
+            .consume_signature("third-signature")
+            .await
+            .unwrap();
     }
 
     #[test]
