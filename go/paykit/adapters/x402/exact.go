@@ -13,6 +13,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
@@ -199,23 +200,30 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		}
 		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
-	replayKey, err := transactionReplayKey(tx)
+	wire, err := a.cosign(ctx, tx, rawTx)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
+	// Co-signing patches the wire bytes, not tx.Signatures. Reserve the
+	// primary signature that will actually be broadcast so client-only and
+	// fully signed representations share one replay identity (#365, #236).
+	signedTx, err := solanatx.DecodeTransaction(wire)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
+	replayKey, err := transactionReplayKey(signedTx)
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
 	if _, loaded := a.replay.LoadOrStore(replayKey, struct{}{}); loaded {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
 	}
-	settled := false
+	keepReplay := false
 	defer func() {
-		if !settled {
+		if !keepReplay {
 			a.replay.Delete(replayKey)
 		}
 	}()
-	wire, err := a.cosign(ctx, tx, rawTx)
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
-	}
 	signature, err := a.rpc.SendEncodedTransactionWithOpts(ctx,
 		base64.StdEncoding.EncodeToString(wire),
 		rpc.TransactionOpts{
@@ -224,12 +232,18 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		},
 	)
 	if err != nil {
+		if transactionAlreadyProcessed(err) {
+			keepReplay = true
+			return nil, &paykit.PaymentError{Code: "signature_consumed", Err: err, Gate: req.Gate}
+		}
 		return nil, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: req.Gate}
 	}
+	// Match MPP: an accepted broadcast must remain consumed even if later
+	// confirmation fails or times out, since the transaction may have landed.
+	keepReplay = true
 	if err := a.awaitConfirmation(ctx, signature); err != nil {
 		return nil, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: req.Gate}
 	}
-	settled = true
 	respEnvelope := proto.SettlementResponse{
 		Success:     true,
 		Transaction: signature.String(),
@@ -255,12 +269,22 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 }
 
 func transactionReplayKey(tx *solana.Transaction) (string, error) {
-	for _, sig := range tx.Signatures {
-		if !sig.IsZero() {
-			return sig.String(), nil
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+		return "", errors.New("transaction is missing its primary signature")
+	}
+	return tx.Signatures[0].String(), nil
+}
+
+func transactionAlreadyProcessed(err error) bool {
+	var rpcErr *jsonrpc.RPCError
+	if errors.As(err, &rpcErr) {
+		if data, ok := rpcErr.Data.(map[string]any); ok && data["err"] == "AlreadyProcessed" {
+			return true
 		}
 	}
-	return "", errors.New("transaction carries no non-zero signer signature")
+	// Error text may include client-chosen memo/program logs. Only the
+	// structured transaction error proves this was a consumed signature.
+	return false
 }
 
 func (a *Adapter) verifyLegacyBinding(gate *paykit.Gate, credential *proto.Credential) error {

@@ -434,15 +434,11 @@ func TestVerifyAndSettleReplayRejected(t *testing.T) {
 	}
 }
 
-func TestTransactionReplayKeySkipsSponsoredFeePayerSlot(t *testing.T) {
+func TestTransactionReplayKeyRejectsMissingPrimarySignature(t *testing.T) {
 	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
 	tx := &solana.Transaction{Signatures: []solana.Signature{{}, clientSig}}
-	key, err := transactionReplayKey(tx)
-	if err != nil {
-		t.Fatalf("transactionReplayKey: %v", err)
-	}
-	if key != sampleClientSig {
-		t.Fatalf("replay key = %s, want %s", key, sampleClientSig)
+	if _, err := transactionReplayKey(tx); err == nil {
+		t.Fatal("a client signature must not substitute for the post-cosign primary signature")
 	}
 }
 
