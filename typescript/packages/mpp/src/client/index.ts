@@ -26,6 +26,7 @@ export {
     parseMeteredSseEvent,
     parseSseEventBlock,
     SseDecoder,
+    settleMeteringDirective,
 } from './HttpStream.js';
 export type { MeteredSseEvent, SseEvent } from './HttpStream.js';
 export { solana } from './Methods.js';
