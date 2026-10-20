@@ -21,7 +21,6 @@ Reference adapters:
 - `rust/crates/harness-bins/src/bin/mpp_harness_server.rs`
 - `rust/crates/harness-bins/src/bin/x402_harness_client.rs`
 - `rust/crates/harness-bins/src/bin/x402_harness_server.rs`
-- `harness/rust-client/` — Cargo manifest wrapper used by MPP harness commands.
 
 ## The contract (verbatim from `harness/README.md`)
 
