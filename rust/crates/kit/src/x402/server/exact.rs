@@ -670,12 +670,7 @@ impl X402 {
                             })
                             .unwrap_or(false)
                     })
-                    .ok_or_else(|| {
-                        Error::Other(
-                            "Credential's accepted does not match any offered payment option"
-                                .into(),
-                        )
-                    })
+                    .ok_or(Error::AcceptedMismatch)
             }
             X402_VERSION_V1 => {
                 // v1 has no per-option `accepted` — the envelope only commits
@@ -1956,10 +1951,9 @@ mod tests {
         // rejection surfaces as a no-match error rather than a targeted "amount
         // mismatch" — either way the cross-route replay is rejected before
         // settlement.
-        let msg = err.to_string().to_lowercase();
         assert!(
-            msg.contains("amount") || msg.contains("does not match any offered"),
-            "got: {err:?}"
+            matches!(err, Error::AcceptedMismatch),
+            "a credential for another route must be a typed AcceptedMismatch, got: {err:?}"
         );
     }
 

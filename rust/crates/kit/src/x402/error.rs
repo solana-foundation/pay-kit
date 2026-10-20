@@ -61,6 +61,12 @@ pub enum Error {
     #[error("payment-identifier required: {0}")]
     PaymentIdentifierRequired(String),
 
+    /// A v2 credential's `accepted` requirements match none of the options
+    /// the route offers (for example a credential issued for another route
+    /// or price). The payment is for something this route does not sell.
+    #[error("Credential's accepted does not match any offered payment option")]
+    AcceptedMismatch,
+
     #[error("{0}")]
     Other(String),
 }
