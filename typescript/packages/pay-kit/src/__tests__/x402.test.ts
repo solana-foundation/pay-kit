@@ -305,6 +305,32 @@ describe('x402 exact adapter', () => {
         });
     });
 
+    // x402-specification-v2.md §5.2.2: `accepted` is the chosen requirement.
+    it('rejects an accepted that claims a cheaper amount before the facilitator', async () => {
+        const config = await testConfig();
+        const adapter = createX402ExactAdapter(config);
+        const gate = gateFor(config);
+        const accepted = await adapter.acceptsEntry(gate, new Request('http://localhost/r'));
+        const send = async (claimed: Record<string, unknown>) => {
+            const header = encodePaymentSignatureHeader({
+                accepted: claimed,
+                payload: { transaction: wireTransaction(0) },
+                x402Version: 2,
+            } as never);
+            const request = new Request('http://localhost/r', { headers: { 'payment-signature': header } });
+            return await adapter.verifyAndSettle(gate, request).catch((e: unknown) => e);
+        };
+
+        const lie = await send({ ...accepted, amount: '1' });
+        expect(lie).toBeInstanceOf(InvalidProofError);
+        expect((lie as InvalidProofError).code).toBe('accepted_mismatch');
+
+        // Positive control: the honest echo reaches the facilitator.
+        const honest = await send({ ...accepted });
+        expect(honest).toBeInstanceOf(InvalidProofError);
+        expect((honest as InvalidProofError).code).not.toBe('accepted_mismatch');
+    });
+
     it('rejects a v2 payload without `accepted` as a 402', async () => {
         const error = await verifyHeader({ payload: { transaction: wireTransaction(0) }, x402Version: 2 });
         expect(error).toBeInstanceOf(InvalidProofError);

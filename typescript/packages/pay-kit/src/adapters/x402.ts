@@ -18,6 +18,7 @@ import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { paymentIdentifierDeclaration, readPaymentIdentifier } from '../payment-identifier.js';
 import { caip2 } from '../protocol.js';
+import { verifyX402ExactCredential } from './x402-exact-verify.js';
 import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
@@ -151,6 +152,9 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             if (gate.paymentIdentifier) readPaymentIdentifier(payload.extensions, gate.paymentIdentifier);
 
             const requirements = requirementsFor(gate);
+            // Bind `accepted` to this route and keep the fee payer out of every
+            // instruction (§2.1.1) before the facilitator, which checks neither.
+            verifyX402ExactCredential(payload, requirements);
             const verification = await facilitator.verify(payload, requirements);
             if (!verification.isValid) {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);

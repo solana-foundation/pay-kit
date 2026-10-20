@@ -7,42 +7,29 @@ section here.
 
 Open findings from the phase-1 vectors (pinned spec text, RULINGS ids):
 
-## ts-x402-accepted-not-bound
-
-**Cases:** `vector/x402-exact-v2-verify-wrong-network-reject`,
-`vector/x402-exact-verify-accepted-amount-lie-reject`,
-`vector/x402-exact-verify-accepted-asset-lie-reject`,
-`vector/x402-exact-verify-accepted-payto-lie-reject`
-**SDKs:** typescript
-
-`@solana/pay-kit`'s x402 adapter only checks that `accepted` is an object and
-then verifies the transaction against the route
-(`typescript/packages/pay-kit/src/adapters/x402.ts:146-152`). It never
-compares `accepted` with the route, so each lie surfaces as the transaction
-check that happens to fail (wrong-network, amount, mint, recipient) instead of
-`accepted-mismatch`.
-
-## ts-x402-fee-payer-in-accounts
-
-**Case:** `vector/x402-exact-verify-fee-payer-in-accounts-reject`
-**SDKs:** typescript
-
-The vendored `@x402/svm` 2.26.0 exact facilitator
-(`typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/exact/facilitator/index.mjs:728`)
-checks the fee payer only as the `TransferChecked` authority and lets it sign
-a Memo instruction. scheme_exact_svm.md §2.1.1: “The feePayer MUST NOT appear
-in the accounts list of any instruction”. Upstream reference implementation.
-
 ## x402-overpayment-rejected
 
 **Case:** `vector/x402-exact-verify-overpayment-accept`
-**SDKs:** python, typescript
+**SDKs:** typescript
 
-Both verifiers require the transfer amount to equal the requirement:
-`python/src/solana_pay_kit/protocols/x402/exact/verify.py:289` and the
-vendored `@x402/svm` 2.26.0 facilitator (`.../exact/facilitator/index.mjs:765`,
-`amount !== BigInt(requirements.amount)`). RULINGS S5: overpayment is
-tolerated by default (scheme_exact_svm.md §1.4).
+`@solana/pay-kit` verifies x402 exact payments with the vendored upstream
+reference facilitator, `@x402/svm` 2.26.0. Its static-layout path (Path 1)
+requires the transfer amount to equal the requirement
+(`typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/exact/facilitator/index.mjs:765`,
+`amount !== BigInt(requirements.amount)`), which is what the spec text for
+that path describes: scheme_exact_svm.md §3.1, “Fee payer isolation, compute
+budget validity (compute unit price ≤ 5 lamports/CU on this path),
+destination ATA derivation, and exact amount match are enforced as before.”
+
+The normative outcome is looser: §1.4, “A matching transfer MAY exceed
+`PaymentRequirements.amount` ... it MUST NOT be less.” §2.3 lets a sponsor be
+stricter (“Sponsors MAY introduce stricter limits but MUST NOT relax the §2.1
+MUSTs.”), so RULINGS S5 reads the reference implementation's exact-amount
+check as a stricter sponsor policy, which pay-kit inherits by default.
+Default verifiers accept overpayment; pay-kit does not re-implement the
+facilitator to get there. The fix belongs upstream, in the x402 fork
+(`typescript/external/x402`): accept `amount >= requirements.amount` on the
+static path and align the §3.1 wording with §1.4.
 
 ## Resolved on 2026-10-20
 

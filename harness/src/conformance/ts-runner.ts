@@ -15,7 +15,7 @@ import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
-import { caip2, readPaymentIdentifier, toNetwork } from "@solana/pay-kit";
+import { caip2, readPaymentIdentifier, toNetwork, verifyX402ExactCredential } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import { session as sessionMethod } from "@solana/mpp";
 import {
@@ -283,6 +283,12 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
   }
   if (input.x402ServerRequiresPaymentIdentifier) {
     readPaymentIdentifier(payload.extensions, "required");
+  }
+  // pay-kit's own checks ahead of the facilitator, as its x402 adapter runs
+  // them: `accepted` bound to the route, fee payer out of every instruction.
+  // v1 envelopes carry no `accepted`; the facilitator refuses them below.
+  if (payload.x402Version === 2) {
+    verifyX402ExactCredential(payload, requirements);
   }
   let verification: Awaited<ReturnType<typeof facilitator.verify>>;
   try {

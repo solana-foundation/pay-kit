@@ -13,9 +13,10 @@ import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
   // x402 v2: the credential's `accepted` matches none of the route's
-  // requirements (targeted field checks or a structural offer match).
+  // requirements (targeted field checks or a structural offer match;
+  // `accepted_mismatch` is @solana/pay-kit's x402 adapter reason).
   [
-    /recipient mismatch|currency mismatch|accepted payment requirement does not match|amount mismatch: expected \d+, got \d+/i,
+    /recipient mismatch|currency mismatch|accepted payment requirement does not match|accepted_mismatch|amount mismatch: expected \d+, got \d+/i,
     "accepted-mismatch",
   ],
   // A split memo or the route's extra.memo missing or different.

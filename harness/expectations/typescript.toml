@@ -34,31 +34,6 @@ ids = [
 ]
 
 [[known_failing]]
-id = "vector/x402-exact-v2-verify-wrong-network-reject"
-reason = "pay-kit never compares the credential accepted to the route; the network lie is caught by the facilitator as wrong-network"
-tracking = "FINDINGS.md#ts-x402-accepted-not-bound"
-
-[[known_failing]]
-id = "vector/x402-exact-verify-accepted-amount-lie-reject"
-reason = "pay-kit never compares the credential accepted to the route; the lie is caught only by the transaction amount check"
-tracking = "FINDINGS.md#ts-x402-accepted-not-bound"
-
-[[known_failing]]
-id = "vector/x402-exact-verify-accepted-asset-lie-reject"
-reason = "pay-kit never compares the credential accepted to the route; the lie is caught only by the transaction mint check"
-tracking = "FINDINGS.md#ts-x402-accepted-not-bound"
-
-[[known_failing]]
-id = "vector/x402-exact-verify-accepted-payto-lie-reject"
-reason = "pay-kit never compares the credential accepted to the route; the lie is caught only by the transaction recipient check"
-tracking = "FINDINGS.md#ts-x402-accepted-not-bound"
-
-[[known_failing]]
-id = "vector/x402-exact-verify-fee-payer-in-accounts-reject"
-reason = "the vendored @x402/svm 2.26.0 facilitator checks the fee payer only as transfer authority and accepts it as a signer account of a Memo instruction (§2.1.1)"
-tracking = "FINDINGS.md#ts-x402-fee-payer-in-accounts"
-
-[[known_failing]]
 id = "vector/x402-exact-verify-overpayment-accept"
-reason = "the vendored @x402/svm 2.26.0 facilitator requires transfer amount == requirement and rejects overpayment (RULINGS S5)"
+reason = "the vendored upstream @x402/svm 2.26.0 facilitator enforces an exact amount on its static path (scheme_exact_svm.md §3.1), a stricter sponsor policy pay-kit inherits by default (RULINGS S5); the fix belongs upstream in the x402 fork"
 tracking = "FINDINGS.md#x402-overpayment-rejected"
