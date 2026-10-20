@@ -66,6 +66,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Structural JSON equality: arrays by position, objects by key regardless of order. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]));
+    }
+    if (isRecord(a) && isRecord(b)) {
+        const keys = Object.keys(a);
+        return keys.length === Object.keys(b).length && keys.every(k => k in b && jsonEqual(a[k], b[k]));
+    }
+    return false;
+}
+
 /**
  * Bind a v2 credential's `accepted` to the route's own requirements.
  *
@@ -90,7 +103,8 @@ export function assertX402AcceptedMatchesRoute(accepted: unknown, requirements: 
     for (const [key, value] of Object.entries(routeExtra)) {
         if (TRANSIENT_EXTRA_HINTS.has(key)) continue;
         if (NON_SPEC_EXTRA_HINTS.has(key) && !(key in echoedExtra)) continue;
-        if (echoedExtra[key] !== value) {
+        // Compared by content: a decoded echo is a new object even when equal.
+        if (!jsonEqual(echoedExtra[key], value)) {
             throw acceptedMismatch(`accepted.extra.${key} differs from the route`);
         }
     }

@@ -102,6 +102,25 @@ describe('assertX402AcceptedMatchesRoute', () => {
         );
     });
 
+    it('compares structured extra values by content after a JSON round trip', () => {
+        const route = { ...ROUTE, extra: { ...ROUTE.extra, transactionVersions: [0, 1], policy: { a: 1, b: [2] } } };
+        const echo = JSON.parse(JSON.stringify({ ...ROUTE, extra: { ...route.extra, policy: { b: [2], a: 1 } } }));
+        expect(codeOf(() => assertX402AcceptedMatchesRoute(echo, route))).toBeUndefined();
+        expect(
+            codeOf(() =>
+                assertX402AcceptedMatchesRoute({ ...echo, extra: { ...echo.extra, transactionVersions: [0] } }, route),
+            ),
+        ).toBe(X402_ACCEPTED_MISMATCH);
+        expect(
+            codeOf(() =>
+                assertX402AcceptedMatchesRoute(
+                    { ...echo, extra: { ...echo.extra, transactionVersions: [1, 0] } },
+                    route,
+                ),
+            ),
+        ).toBe(X402_ACCEPTED_MISMATCH);
+    });
+
     it('rejects an issued extra field that differs or is dropped', () => {
         const route = { ...ROUTE, extra: { ...ROUTE.extra, memo: '/paid' } };
         expect(codeOf(() => assertX402AcceptedMatchesRoute({ ...ROUTE, extra: route.extra }, route))).toBeUndefined();
