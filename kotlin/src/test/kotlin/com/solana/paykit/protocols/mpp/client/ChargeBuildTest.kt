@@ -334,6 +334,36 @@ class ChargeBuildTest {
     }
 
     @Test
+    fun refusesSponsoredChargeWhoseFeePayerKeyIsTheSigner() {
+        val split = SolanaChargeSplit(
+            recipient = "5xX4f7yqg3DV8oQiTpkH5dyP5kBTb6oC7B4FmCe3wYMK",
+            amount = "100",
+            ataCreationRequired = true,
+        )
+        for (splits in listOf(null, listOf(split))) {
+            fun request(feePayerKey: String) = ChargeRequest(
+                amount = "1000",
+                currency = Mints.USDC_DEVNET,
+                recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                methodDetails = SolanaChargeMethodDetails(
+                    network = "devnet",
+                    decimals = 6,
+                    tokenProgram = Programs.TOKEN_PROGRAM,
+                    feePayer = true,
+                    feePayerKey = feePayerKey,
+                    splits = splits,
+                ),
+            )
+            val error = assertFailsWith<MppException.InvalidTransaction> {
+                Charge.buildChargeTransaction(signer(), request(Base58.encode(signer().publicKeyBytes)), fixedBlockhash)
+            }
+            assertTrue(error.message!!.contains("feePayerKey names the signer"))
+            // A separate sponsor still builds.
+            Charge.buildChargeTransaction(signer(), request("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"), fixedBlockhash)
+        }
+    }
+
+    @Test
     fun usesRecentBlockhashFromMethodDetailsWhenPresent() {
         val recentBlockhash = "11111111111111111111111111111111"
         val request = ChargeRequest(

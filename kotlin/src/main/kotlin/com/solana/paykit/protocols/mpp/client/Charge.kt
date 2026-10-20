@@ -279,6 +279,15 @@ object Charge {
         val recipientKey = PublicKey.fromBase58(recipient)
         val useFeePayer = md.feePayer == true && md.feePayerKey != null
         val feePayerKey = if (useFeePayer) PublicKey.fromBase58(md.feePayerKey ?: "") else null
+        // draft-solana-charge-00 fee sponsorship: "The client's account is the
+        // transfer authority but NOT the fee payer." A sponsor naming the signer
+        // would have the signer fund fees and split ATA rent while looking sponsored.
+        if (feePayerKey != null && feePayerKey == signerKey) {
+            throw MppException.InvalidTransaction(
+                "Fee payer cannot authorize the payment: feePayerKey names the signer; " +
+                    "a sponsored charge needs a separate server fee payer",
+            )
+        }
 
         val instructions = mutableListOf<Instruction>()
 
