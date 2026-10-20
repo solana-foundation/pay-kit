@@ -8811,6 +8811,51 @@ mod tests {
         assert_eq!(sends.load(Ordering::SeqCst), 1);
     }
 
+    // The receipt names the transaction this server verified and sent, never
+    // whatever signature the RPC answers with. A mismatch leaves the outcome
+    // unknown, so the charge stays pending under the local signature.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rpc_signature_for_another_transaction_is_not_receipted() {
+        use crate::mpp::store::ChargeRecordState;
+        let reported = Signature::from([14u8; 64]);
+        let rpc_url = stub_rpc(
+            reported,
+            Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .await;
+        let store = Arc::new(MemoryStore::new());
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let local = Signature::from([15u8; 64]);
+        let (credential, expected) = signed_pull_credential(&mpp, local);
+        let err = mpp.verify(&credential, &expected).await.unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        assert!(err.message.contains("different transaction"), "{err:?}");
+        let record = charge_record(&store, &credential.challenge.id).await;
+        assert_eq!(record.state, ChargeRecordState::Pending);
+        assert_eq!(
+            record.final_signature.as_deref(),
+            Some(local.to_string().as_str())
+        );
+
+        // When the RPC reports the transaction it was sent, it settles.
+        let (credential, expected) = signed_pull_credential(&mpp, reported);
+        let receipt = mpp.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, reported.to_string());
+    }
+
     // An owner whose lease was taken over before it began broadcasting is
     // fenced out: it sends nothing and claims nothing, so the takeover is the
     // only settlement and nothing it records can be overwritten.

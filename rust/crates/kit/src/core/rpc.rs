@@ -74,19 +74,38 @@ fn encoded(tx: &VersionedTransaction) -> Result<String, ClientError> {
 }
 
 /// Broadcast `tx` with `config`, returning its signature.
+///
+/// The signature is `tx`'s own first (fee-payer) signature, derived locally.
+/// A response naming any other signature is an error: the node (or something
+/// in between) is reporting on a different transaction, and confirming,
+/// claiming or receipting that one would attribute this payment to it.
 pub fn send_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
     config: RpcSendTransactionConfig,
 ) -> Result<Signature, ClientError> {
+    let local = *tx.signatures.first().ok_or_else(|| {
+        ClientError::from(ClientErrorKind::Custom(
+            "transaction is missing its fee-payer signature".into(),
+        ))
+    })?;
     let config = RpcSendTransactionConfig {
         encoding: Some(UiTransactionEncoding::Base64),
         ..config
     };
     let signature: String = rpc.send(RpcRequest::SendTransaction, json!([encoded(tx)?, config]))?;
-    signature
-        .parse()
-        .map_err(|e| ClientErrorKind::Custom(format!("invalid signature in response: {e}")).into())
+    let returned: Signature = signature.parse().map_err(|e| {
+        ClientError::from(ClientErrorKind::Custom(format!(
+            "invalid signature in response: {e}"
+        )))
+    })?;
+    if returned != local {
+        return Err(ClientErrorKind::Custom(format!(
+            "RPC returned signature {returned} for a different transaction (expected {local})"
+        ))
+        .into());
+    }
+    Ok(returned)
 }
 
 /// Simulate `tx` at the client's commitment, signatures unchecked: what
@@ -135,6 +154,46 @@ pub fn send_and_confirm_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn signed_tx(signature: Signature) -> VersionedTransaction {
+        let payer = solana_pubkey::Pubkey::new_unique();
+        let message = solana_message::Message::new(&[], Some(&payer));
+        let mut tx =
+            VersionedTransaction::from(solana_transaction::Transaction::new_unsigned(message));
+        tx.signatures[0] = signature;
+        tx
+    }
+
+    fn rpc_answering(signature: Signature) -> RpcClient {
+        let mut mocks = std::collections::HashMap::new();
+        mocks.insert(
+            RpcRequest::SendTransaction,
+            serde_json::json!(signature.to_string()),
+        );
+        RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+    }
+
+    #[test]
+    fn send_transaction_rejects_a_signature_for_another_transaction() {
+        let local = Signature::from([1u8; 64]);
+        let tx = signed_tx(local);
+
+        let err = send_transaction(
+            &rpc_answering(Signature::from([2u8; 64])),
+            &tx,
+            RpcSendTransactionConfig::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("different transaction"), "{err}");
+
+        let sent = send_transaction(
+            &rpc_answering(local),
+            &tx,
+            RpcSendTransactionConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(sent, local);
+    }
 
     #[test]
     fn skip_preflight_send_policy_only_skips_preflight() {
