@@ -274,6 +274,45 @@ pub fn check_envelope(tx: &VersionedTransaction, accepted: &[TxVersion]) -> Resu
     Ok(version)
 }
 
+/// Verify every signature a client already placed on a transaction the server
+/// is about to co-sign, before it signs, simulates or pays for anything.
+///
+/// The signature slots must match the message's required signers. When
+/// `server_fee_payer` is set it must be account key zero with an empty slot,
+/// left for the server; every other required signature must verify against
+/// the exact message. Signer membership alone proves nothing: a corrupted
+/// signature only surfaces at broadcast, after earlier sponsored transactions
+/// may already have landed.
+pub fn require_presigned(
+    tx: &VersionedTransaction,
+    server_fee_payer: Option<&Pubkey>,
+) -> Result<()> {
+    let required = usize::from(tx.message.header().num_required_signatures);
+    let keys = tx.message.static_account_keys();
+    if tx.signatures.len() != required || keys.len() < required {
+        return Err(Error::Other(
+            "transaction signature slots do not match its required signers".into(),
+        ));
+    }
+    let message = tx.message.serialize();
+    for (index, (signature, key)) in tx.signatures.iter().zip(keys).enumerate() {
+        if server_fee_payer == Some(key) {
+            if index != 0 || *signature != solana_signature::Signature::default() {
+                return Err(Error::Other(
+                    "fee-payer signature slot must be empty before server co-signing".into(),
+                ));
+            }
+            continue;
+        }
+        if !signature.verify(key.as_ref(), &message) {
+            return Err(Error::Other(format!(
+                "invalid client transaction signature for required signer {key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Version policy for a transaction read back from the RPC by signature.
 /// `maxSupportedTransactionVersion` only bounds what the node returns; the
 /// server still accepts only its configured versions, exactly as for a

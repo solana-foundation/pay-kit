@@ -23,7 +23,6 @@
 //! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
-use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
@@ -3202,31 +3201,8 @@ fn verify_client_transaction_signatures(
     tx: &solana_transaction::versioned::VersionedTransaction,
     server_fee_payer: Option<Pubkey>,
 ) -> Result<()> {
-    let required = usize::from(tx.message.header().num_required_signatures);
-    let keys = tx.message.static_account_keys();
-    if tx.signatures.len() != required || keys.len() < required {
-        return Err(Error::Other(
-            "session transaction signature slots do not match its required signers".into(),
-        ));
-    }
-    let message = tx.message.serialize();
-    for (index, (signature, key)) in tx.signatures.iter().zip(keys).take(required).enumerate() {
-        if server_fee_payer == Some(*key) {
-            if index != 0 || *signature != Signature::default() {
-                return Err(Error::Other(
-                    "session fee-payer signature slot must be empty before server co-signing"
-                        .into(),
-                ));
-            }
-            continue;
-        }
-        if !signature.verify(key.as_ref(), &message) {
-            return Err(Error::Other(format!(
-                "invalid client transaction signature for required signer {key}"
-            )));
-        }
-    }
-    Ok(())
+    crate::core::tx::require_presigned(tx, server_fee_payer.as_ref())
+        .map_err(|error| Error::Other(format!("session transaction: {error}")))
 }
 
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
@@ -3330,6 +3306,7 @@ mod tests {
     use crate::mpp::protocol::solana::{mints, programs};
     use crate::mpp::store::MemoryChannelStore;
     use solana_keychain::MemorySigner;
+    use solana_signature::Signature;
     use std::str::FromStr;
 
     fn key(seed: u8) -> ed25519_dalek::SigningKey {
