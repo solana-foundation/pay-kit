@@ -61,7 +61,7 @@ struct X402TransportTests {
 
     static func makeClient(session: URLSession) throws -> PayKit.HttpClient {
         let signer = try MemorySigner(secretKey: Data(repeating: 0x01, count: 32))
-        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!)
+        let rpc = MintFixtureURLProtocol.rpc()
         let selection = X402ChallengeSelection(network: "devnet", currencies: nil)
         return PayKit.HttpClient.x402(signer: signer, rpc: rpc, urlSession: session, selection: selection)
     }
@@ -77,7 +77,7 @@ struct X402TransportTests {
             "amount": "5000",
             "asset": "SOL",
             "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-            "extra": { "recentBlockhash": "\(blockhash)" }
+            "extra": { "feePayer": "\(x402TestFeePayer)", "recentBlockhash": "\(blockhash)" }
           }]
         }
         """
@@ -155,7 +155,7 @@ struct X402TransportTests {
             X402StubResponse(
                 statusCode: 402,
                 headers: ["Content-Type": "application/json"],
-                body: Data(#"{"accepts":[{"scheme":"exact","network":"ethereum:1","amount":"1"}]}"#.utf8)
+                body: Data(#"{"accepts":[{"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"ethereum:1","amount":"1"}]}"#.utf8)
             )
         }
         let session = Self.makeSession()

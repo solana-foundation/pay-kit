@@ -20,7 +20,7 @@ struct X402ChallengeParsingTests {
                 "amount": "1000",
                 "asset": "\(Mints.usdcDevnet)",
                 "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-                "extra": {
+                "extra": { "feePayer": "\(x402TestFeePayer)",
                     "recentBlockhash": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
                     "decimals": 6
                 }
@@ -42,6 +42,7 @@ struct X402ChallengeParsingTests {
         {
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "\(net)",
                 "maxAmountRequired": "5000",
                 "asset": "SOL",
@@ -66,6 +67,7 @@ struct X402ChallengeParsingTests {
         {
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "\(net)",
                 "amount": "1000",
                 "currency": "\(Mints.usdcDevnet)",
@@ -96,6 +98,7 @@ struct X402ChallengeParsingTests {
         {
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "\(net)",
                 "amount": "1000",
                 "currency": "\(Mints.usdcDevnet)",
@@ -126,7 +129,7 @@ struct X402ChallengeParsingTests {
                 "asset": "\(Mints.usdcDevnet)",
                 "payTo": "abc123",
                 "tokenProgram": "\(Mints.token2022Program)",
-                "extra": {
+                "extra": { "feePayer": "\(x402TestFeePayer)",
                     "tokenProgram": "\(Mints.tokenProgram)",
                     "recentBlockhash": "11111111111111111111111111111111"
                 }
@@ -152,7 +155,7 @@ struct X402ChallengeParsingTests {
                 "asset": "\(Mints.usdcDevnet)",
                 "payTo": "abc123",
                 "decimals": 9,
-                "extra": {
+                "extra": { "feePayer": "\(x402TestFeePayer)",
                     "decimals": 6,
                     "recentBlockhash": "11111111111111111111111111111111"
                 }
@@ -180,7 +183,7 @@ struct X402ChallengeParsingTests {
                 "asset": "\(Mints.usdcDevnet)",
                 "payTo": "abc123",
                 "recentBlockhash": "\(topHash)",
-                "extra": {
+                "extra": { "feePayer": "\(x402TestFeePayer)",
                     "recentBlockhash": "\(extraHash)"
                 }
             }]
@@ -200,6 +203,7 @@ struct X402ChallengeParsingTests {
         {
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "\(net)",
                 "amount": "1000",
                 "asset": "\(Mints.usdcDevnet)",
@@ -215,10 +219,10 @@ struct X402ChallengeParsingTests {
     @Test
     func prefersHeaderOverBody() throws {
         let net = SolanaNetwork.devnet
-        let headerEnvelope = "{\"accepts\": [{\"scheme\": \"exact\",\"network\": \"\(net)\",\"amount\": \"100\",\"asset\": \"SOL\",\"payTo\": \"from-header\"}]}"
+        let headerEnvelope = "{\"accepts\": [{\"scheme\": \"exact\",\"network\": \"\(net)\",\"amount\": \"100\",\"asset\": \"SOL\",\"payTo\": \"from-header\", \"extra\": {\"feePayer\": \"\(x402TestFeePayer)\"}}]}"
         let encoded = Data(headerEnvelope.utf8).base64EncodedString()
         let headers = [(name: "payment-required", value: encoded)]
-        let body = "{\"accepts\": [{\"scheme\": \"exact\",\"network\": \"\(net)\",\"amount\": \"999\",\"asset\": \"SOL\",\"payTo\": \"from-body\"}]}"
+        let body = "{\"accepts\": [{\"scheme\": \"exact\",\"network\": \"\(net)\",\"amount\": \"999\",\"asset\": \"SOL\",\"payTo\": \"from-body\", \"extra\": {\"feePayer\": \"\(x402TestFeePayer)\"}}]}"
         let offer = parseX402Challenge(headers: headers, body: body)
         #expect(offer?.effectivePayTo == "from-header")
         #expect(offer?.effectiveAmount == "100")
@@ -227,6 +231,38 @@ struct X402ChallengeParsingTests {
     @Test
     func returnsNilWhenNoSolanaOffer() {
         let body = "{\"accepts\": [{\"network\": \"ethereum:1\", \"amount\": \"100\"}]}"
+        #expect(parseX402Challenge(headers: [], body: body) == nil)
+    }
+
+    // MARK: - extra.feePayer is required (RULINGS S1)
+
+    /// Regression: an offer without `extra.feePayer` used to be selectable
+    /// (and then signed with the client as fee payer). It is skipped, so the
+    /// conforming sibling wins even though it is more expensive.
+    @Test
+    func skipsOfferWithoutFeePayer() {
+        let net = SolanaNetwork.devnet
+        let body = """
+        {
+            "accepts": [
+                {"scheme":"exact","network":"\(net)","amount":"10","asset":"SOL","payTo":"no-fee-payer"},
+                {"scheme":"exact","network":"\(net)","amount":"20","asset":"SOL","payTo":"bad-fee-payer","extra":{"feePayer":"not-a-pubkey"}},
+                {"extra":{"feePayer":"\(x402TestFeePayer)"},"scheme":"exact","network":"\(net)","amount":"5000","asset":"SOL","payTo":"conforming"}
+            ]
+        }
+        """
+        let offer = parseX402Challenge(headers: [], body: body)
+        #expect(offer?.effectivePayTo == "conforming")
+    }
+
+    /// Regression: when the only offer lacks `extra.feePayer`, nothing is
+    /// payable.
+    @Test
+    func returnsNilWhenOnlyOfferLacksFeePayer() {
+        let net = SolanaNetwork.devnet
+        let body = """
+        {"accepts": [{"scheme":"exact","network":"\(net)","amount":"10","asset":"SOL","payTo":"x","feePayerKey":"\(x402TestFeePayer)"}]}
+        """
         #expect(parseX402Challenge(headers: [], body: body) == nil)
     }
 
@@ -244,8 +280,8 @@ struct X402ChallengeParsingTests {
         let body = """
         {
             "accepts": [
-                {"scheme":"exact","network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"},
-                {"scheme":"exact","network":"\(net)","amount":"1000000","asset":"\(Mints.pyusdDevnet)","payTo":"x"}
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"},
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000000","asset":"\(Mints.pyusdDevnet)","payTo":"x"}
             ]
         }
         """
@@ -260,7 +296,7 @@ struct X402ChallengeParsingTests {
         let body = """
         {
             "accepts": [
-                {"scheme":"exact","network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"}
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"}
             ]
         }
         """
@@ -275,7 +311,7 @@ struct X402ChallengeParsingTests {
         let body = """
         {
             "accepts": [
-                {"scheme":"exact","network":"\(net)","amount":"1000","asset":"SOL","payTo":"x"}
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000","asset":"SOL","payTo":"x"}
             ]
         }
         """
@@ -290,8 +326,8 @@ struct X402ChallengeParsingTests {
         let body = """
         {
             "accepts": [
-                {"scheme":"exact","network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"},
-                {"scheme":"exact","network":"\(net)","amount":"5000","asset":"SOL","payTo":"x"}
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"},
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"5000","asset":"SOL","payTo":"x"}
             ]
         }
         """
@@ -306,7 +342,7 @@ struct X402ChallengeParsingTests {
         let body = """
         {
             "accepts": [
-                {"scheme":"exact","network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"}
+                {"scheme":"exact","extra": {"feePayer": "\(x402TestFeePayer)"},"network":"\(net)","amount":"1000000","asset":"\(Mints.usdcDevnet)","payTo":"x"}
             ]
         }
         """
@@ -325,13 +361,14 @@ struct X402PaymentBuildingTests {
     }
 
     static func makeRpc() -> RpcClient {
-        RpcClient(endpoint: URL(string: "http://localhost:8899")!)
+        MintFixtureURLProtocol.rpc()
     }
 
     static let knownBlockhash = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
 
     static func solOffer() -> X402AcceptsEntry {
-        let extra: [String: JSONValue] = ["recentBlockhash": .string(knownBlockhash)]
+        let extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),"recentBlockhash": .string(knownBlockhash)]
         return X402AcceptsEntry(
             scheme: "exact",
             network: SolanaNetwork.devnet,
@@ -346,6 +383,7 @@ struct X402PaymentBuildingTests {
 
     static func splOffer() -> X402AcceptsEntry {
         let extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),
             "recentBlockhash": .string(knownBlockhash),
             "tokenProgram": .string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
             "decimals": .int(6),
@@ -381,11 +419,11 @@ struct X402PaymentBuildingTests {
             Issue.record("payload.transaction is not valid base64")
             return
         }
-        // v0 transaction: first byte is 0x01 (1 sig slot), then 64-byte sig,
+        // v0 transaction: 2 signature slots (facilitator fee payer + signer),
         // then 0x80 (v0 message prefix).
         #expect(txData.count > 65)
-        #expect(txData[0] == 0x01)
-        #expect(txData[1 + 64] == 0x80)
+        #expect(txData[0] == 0x02)
+        #expect(txData[1 + 128] == 0x80)
     }
 
     @Test
@@ -419,7 +457,7 @@ struct X402PaymentBuildingTests {
             "asset": "\(Mints.usdcDevnet)",
             "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             "maxTimeoutSeconds": 60,
-            "extra": {
+            "extra": { "feePayer": "\(x402TestFeePayer)",
               "recentBlockhash": "\(Self.knownBlockhash)",
               "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
               "decimals": 6
@@ -473,6 +511,7 @@ struct X402PaymentBuildingTests {
     @Test
     func inCodeEntryTypedFallbackPreservesExplicitMaxTimeoutSeconds() async throws {
         let extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),
             "recentBlockhash": .string(Self.knownBlockhash),
         ]
         let offer = X402AcceptsEntry(

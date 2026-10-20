@@ -22,7 +22,7 @@ private struct LegacyFixtures {
     }
 
     static func makeRpc() -> RpcClient {
-        RpcClient(endpoint: URL(string: "http://localhost:8899")!)
+        MintFixtureURLProtocol.rpc()
     }
 
     static let knownBlockhash = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
@@ -193,6 +193,7 @@ struct X402LegacyBuildVectorTests {
 struct X402LegacyProducerTests {
     static func devnetOffer() -> X402AcceptsEntry {
         let extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),
             "recentBlockhash": .string(LegacyFixtures.knownBlockhash),
             "decimals": .int(6),
         ]
@@ -234,7 +235,8 @@ struct X402LegacyProducerTests {
     func legacyHeaderIsStandardBase64NotUrlSafe() async throws {
         // A standard-base64 string round-trips through Data(base64Encoded:);
         // url-safe ('-'/'_') would not. Use a SOL offer (no ATA dependency).
-        let extra: [String: JSONValue] = ["recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
+        let extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),"recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
         let offer = X402AcceptsEntry(
             scheme: "exact", network: SolanaNetwork.mainnet,
             amount: "1000", maxAmountRequired: nil,
@@ -257,7 +259,7 @@ struct X402LegacyProducerTests {
             amount: "1000", maxAmountRequired: nil,
             asset: "SOL", payTo: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             recipient: nil,
-            extra: ["recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
+            extra: ["feePayer": .string(x402TestFeePayer), "recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
         )
         let mainnetHeader = try await buildX402LegacyPaymentHeader(
             signer: try LegacyFixtures.makeSigner(), rpc: LegacyFixtures.makeRpc(), offer: mainnet
@@ -270,7 +272,7 @@ struct X402LegacyProducerTests {
             amount: "1000", maxAmountRequired: nil,
             asset: "SOL", payTo: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             recipient: nil,
-            extra: ["recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
+            extra: ["feePayer": .string(x402TestFeePayer), "recentBlockhash": .string(LegacyFixtures.knownBlockhash)]
         )
         let testnetHeader = try await buildX402LegacyPaymentHeader(
             signer: try LegacyFixtures.makeSigner(), rpc: LegacyFixtures.makeRpc(), offer: testnet
@@ -321,6 +323,7 @@ struct X402LegacyChallengeParseTests {
             "error": "X-PAYMENT header is required",
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "solana-devnet",
                 "maxAmountRequired": "1000",
                 "asset": "\(Mints.usdcDevnet)",
@@ -346,6 +349,7 @@ struct X402LegacyChallengeParseTests {
             "x402Version": 1,
             "accepts": [{
                 "scheme": "exact",
+                "extra": {"feePayer": "\(x402TestFeePayer)"},
                 "network": "solana-devnet",
                 "maxAmountRequired": "1000",
                 "asset": "\(Mints.usdcDevnet)",
@@ -362,9 +366,9 @@ struct X402LegacyChallengeParseTests {
     func readsCanonicalHeaderBeforeLegacyHeaderBeforeBody() throws {
         let net = SolanaNetwork.devnet
         // Canonical PAYMENT-REQUIRED header (v2) wins over everything.
-        let canonicalEnv = "{\"x402Version\":2,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"\(net)\",\"amount\":\"100\",\"asset\":\"SOL\",\"payTo\":\"from-canonical\"}]}"
-        let legacyEnv = "{\"x402Version\":1,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"solana-devnet\",\"maxAmountRequired\":\"200\",\"asset\":\"SOL\",\"payTo\":\"from-legacy-header\"}]}"
-        let body = "{\"x402Version\":1,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"solana-devnet\",\"maxAmountRequired\":\"300\",\"asset\":\"SOL\",\"payTo\":\"from-body\"}]}"
+        let canonicalEnv = "{\"x402Version\":2,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"\(net)\",\"amount\":\"100\",\"asset\":\"SOL\",\"payTo\":\"from-canonical\",\"extra\":{\"feePayer\":\"\(x402TestFeePayer)\"}}]}"
+        let legacyEnv = "{\"x402Version\":1,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"solana-devnet\",\"maxAmountRequired\":\"200\",\"asset\":\"SOL\",\"payTo\":\"from-legacy-header\",\"extra\":{\"feePayer\":\"\(x402TestFeePayer)\"}}]}"
+        let body = "{\"x402Version\":1,\"accepts\":[{\"scheme\":\"exact\",\"network\":\"solana-devnet\",\"maxAmountRequired\":\"300\",\"asset\":\"SOL\",\"payTo\":\"from-body\",\"extra\":{\"feePayer\":\"\(x402TestFeePayer)\"}}]}"
 
         let headers = [
             (name: "PAYMENT-REQUIRED", value: Data(canonicalEnv.utf8).base64EncodedString()),
@@ -402,7 +406,7 @@ struct X402LegacyChallengeParseTests {
                 "maxAmountRequired": "1000",
                 "asset": "\(Mints.usdcDevnet)",
                 "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-                "extra": { "recentBlockhash": "\(LegacyFixtures.knownBlockhash)", "decimals": 6 }
+                "extra": { "feePayer": "\(x402TestFeePayer)", "recentBlockhash": "\(LegacyFixtures.knownBlockhash)", "decimals": 6 }
             }]
         }
         """

@@ -2,6 +2,10 @@ import Foundation
 import Testing
 @testable import SolanaPayKit
 
+/// Facilitator fee payer for x402 exact test offers. scheme_exact_svm.md
+/// requires `extra.feePayer`, so every payable test offer carries one.
+let x402TestFeePayer = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+
 // MARK: - Fixture mint RPC
 //
 // Stateless JSON-RPC stub: answers `getAccountInfo` from an immutable mint
@@ -18,12 +22,19 @@ final class MintFixtureURLProtocol: URLProtocol, @unchecked Sendable {
     static let wsolMint = "So11111111111111111111111111111111111111112"
     static let systemOwnedMint = "Stake11111111111111111111111111111111111111"
     static let missingMint = "Vote111111111111111111111111111111111111111"
+    static let unknownToken2022Mint = "Config1111111111111111111111111111111111111"
 
     static let mints: [String: Mint] = [
         Mints.usdcDevnet: Mint(owner: Mints.tokenProgram, decimals: 6),
         Mints.usdcMainnet: Mint(owner: Mints.tokenProgram, decimals: 6),
         Mints.pyusdMainnet: Mint(owner: Mints.token2022Program, decimals: 6),
+        Mints.pyusdDevnet: Mint(owner: Mints.token2022Program, decimals: 6),
+        Mints.usdgMainnet: Mint(owner: Mints.token2022Program, decimals: 6),
+        Mints.usdgDevnet: Mint(owner: Mints.token2022Program, decimals: 6),
+        Mints.usdtMainnet: Mint(owner: Mints.tokenProgram, decimals: 6),
+        Mints.cashMainnet: Mint(owner: Mints.token2022Program, decimals: 6),
         wsolMint: Mint(owner: Mints.tokenProgram, decimals: 9),
+        unknownToken2022Mint: Mint(owner: Mints.token2022Program, decimals: 6),
         systemOwnedMint: Mint(owner: "11111111111111111111111111111111", decimals: 6),
     ]
 
@@ -103,10 +114,10 @@ final class MintFixtureURLProtocol: URLProtocol, @unchecked Sendable {
 
 // MARK: - x402 exact: decimals and token program from the mint (RULINGS S1)
 
-@Suite("x402 exact reads decimals from the mint account")
+@Suite("x402 exact reads token program and decimals from the mint account")
 struct X402MintLookupTests {
     private static let payTo = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
-    private static let feePayer = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+    private static let feePayer = x402TestFeePayer
 
     private static func offer(asset: String, extra: [String: JSONValue] = [:]) -> X402AcceptsEntry {
         var merged = extra
@@ -163,23 +174,43 @@ struct X402MintLookupTests {
         #expect(data.last == 6)
     }
 
-    /// Positive control: a server-sent decimals hint is used as-is, without
-    /// an RPC round-trip (the endpoint is unroutable).
+    /// Positive control: a decimals hint that agrees with the mint is fine.
     @Test
-    func decimalsHintIsUsedWithoutLookup() async throws {
+    func matchingDecimalsHintIsAccepted() async throws {
         let header = try await buildX402PaymentHeader(
             signer: try Self.signer(),
-            rpc: RpcClient(endpoint: URL(string: "http://127.0.0.1:9")!),
-            offer: Self.offer(
-                asset: MintFixtureURLProtocol.wsolMint,
-                extra: [
-                    "decimals": .int(9),
-                    "recentBlockhash": .string("11111111111111111111111111111111"),
-                ]
-            )
+            rpc: MintFixtureURLProtocol.rpc(),
+            offer: Self.offer(asset: MintFixtureURLProtocol.wsolMint, extra: ["decimals": .int(9)])
         )
         let (_, data) = try Self.transferChecked(header)
         #expect(data.last == 9)
+    }
+
+    /// Regression: a decimals hint used to be signed as-is. One that
+    /// disagrees with the mint is refused.
+    @Test
+    func decimalsHintDisagreeingWithMintIsRefused() async throws {
+        await #expect(throws: PayKitError.self) {
+            _ = try await buildX402PaymentHeader(
+                signer: try Self.signer(),
+                rpc: MintFixtureURLProtocol.rpc(),
+                offer: Self.offer(asset: MintFixtureURLProtocol.wsolMint, extra: ["decimals": .int(6)])
+            )
+        }
+    }
+
+    /// Regression: with a decimals hint present the token program used to
+    /// come from the stablecoin table, which defaults an unknown mint to the
+    /// legacy Token program. It now comes from the mint owner.
+    @Test
+    func tokenProgramComesFromMintOwnerEvenWithDecimalsHint() async throws {
+        let header = try await buildX402PaymentHeader(
+            signer: try Self.signer(),
+            rpc: MintFixtureURLProtocol.rpc(),
+            offer: Self.offer(asset: MintFixtureURLProtocol.unknownToken2022Mint, extra: ["decimals": .int(6)])
+        )
+        let (program, _) = try Self.transferChecked(header)
+        #expect(program == .token2022Program)
     }
 
     @Test

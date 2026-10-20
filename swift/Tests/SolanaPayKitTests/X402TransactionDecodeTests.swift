@@ -118,7 +118,7 @@ private enum Fixture {
     }
 
     static func rpc() -> RpcClient {
-        RpcClient(endpoint: URL(string: "http://localhost:8899")!)
+        MintFixtureURLProtocol.rpc()
     }
 
     static func decodePayload(_ header: String) throws -> DecodedTx {
@@ -134,6 +134,7 @@ private enum Fixture {
 struct X402SplDecodeTests {
     static func splOffer(memo: String? = nil) -> X402AcceptsEntry {
         var extra: [String: JSONValue] = [
+            "feePayer": .string(x402TestFeePayer),
             "recentBlockhash": .string(Fixture.blockhash),
             "tokenProgram": .string(Mints.tokenProgram),
             "decimals": .int(6),
@@ -245,7 +246,7 @@ struct X402SplDecodeTests {
             asset: Mints.usdgDevnet,
             payTo: Fixture.payTo,
             recipient: nil,
-            extra: ["recentBlockhash": .string(Fixture.blockhash), "decimals": .int(6)]
+            extra: ["feePayer": .string(x402TestFeePayer), "recentBlockhash": .string(Fixture.blockhash), "decimals": .int(6)]
         )
         let header = try await buildX402PaymentHeader(
             signer: try Fixture.signer(), rpc: Fixture.rpc(), offer: offer,
@@ -277,7 +278,7 @@ struct X402SolDecodeTests {
             asset: "SOL",
             payTo: Fixture.payTo,
             recipient: nil,
-            extra: ["recentBlockhash": .string(Fixture.blockhash)]
+            extra: ["feePayer": .string(x402TestFeePayer), "recentBlockhash": .string(Fixture.blockhash)]
         )
     }
 
@@ -360,17 +361,13 @@ struct X402FeePayerTests {
         #expect(tx.signatures[signerIndex] != zero)
     }
 
-    // MARK: - Top-level feePayerKey (managed fee-payer offer shape)
+    // MARK: - extra.feePayer is required (RULINGS S1)
 
-    /// Regression: a top-level `feePayerKey` (no extra.feePayer) must be
-    /// resolved by `effectiveFeePayerKey` and compiled to accountKeys[0].
-    ///
-    /// This matches the Kotlin/Rust managed-fee-payer offer shape where the
-    /// server stamps the key at the top level of the offer object rather than
-    /// inside the `extra` dict.
+    /// Regression: a top-level `feePayerKey` without the spec's
+    /// `extra.feePayer` used to be honoured; an offer missing `extra.feePayer`
+    /// is now refused rather than signed.
     @Test
-    func topLevelFeePayerKeyBecomesAccountKeysZero() async throws {
-        let feePayer = "11111111111111111111111111111112" // distinct from signer and recipient
+    func topLevelFeePayerKeyWithoutExtraFeePayerIsRefused() async throws {
         let offer = X402AcceptsEntry(
             scheme: "exact",
             network: SolanaNetwork.devnet,
@@ -380,46 +377,20 @@ struct X402FeePayerTests {
             payTo: Fixture.payTo,
             recipient: nil,
             extra: ["recentBlockhash": .string(Fixture.blockhash)],
-            feePayerKey: feePayer   // top-level; no extra.feePayer
+            feePayerKey: "11111111111111111111111111111112"
         )
-
-        // effectiveFeePayerKey must return the top-level key (feePayer toggle
-        // absent => defaults to true).
-        #expect(offer.effectiveFeePayerKey == feePayer)
-
-        let signer = try Fixture.signer()
-        let header = try await buildX402PaymentHeader(
-            signer: signer, rpc: Fixture.rpc(), offer: offer,
-            nonceGenerator: Fixture.fixedNonceGenerator()
-        )
-        let tx = try Fixture.decodePayload(header)
-
-        let feePayerPk = try Pubkey(base58: feePayer)
-        let signerPk = try Pubkey(bytes: try signer.publicKey)
-
-        // The managed fee payer must occupy account index 0.
-        #expect(tx.accountKeys[0] == feePayerPk)
-
-        // The signer must appear somewhere after slot 0 and still sign.
-        guard let signerIndex = tx.accountKeys.firstIndex(of: signerPk) else {
-            Issue.record("signer not found in account keys")
-            return
+        await #expect(throws: PayKitError.self) {
+            _ = try await buildX402PaymentHeader(
+                signer: try Fixture.signer(), rpc: Fixture.rpc(), offer: offer,
+                nonceGenerator: Fixture.fixedNonceGenerator()
+            )
         }
-        #expect(signerIndex != 0)
-        #expect(signerIndex < tx.numRequiredSignatures)
-
-        // Slot 0 (unattached fee payer) stays all-zero; signer slot is filled.
-        let zero = Data(repeating: 0, count: 64)
-        #expect(tx.signatures[0] == zero)
-        #expect(tx.signatures[signerIndex] != zero)
     }
 
-    /// Regression: top-level `feePayerKey` + explicit `feePayer: false` must
-    /// opt out -- `effectiveFeePayerKey` returns nil and the signer pays
-    /// (accountKeys[0] == signer).
+    /// Regression: an offer with no fee payer at all used to be signed with
+    /// the client as fee payer.
     @Test
-    func topLevelFeePayerKeyWithFeePayerFalseOptOutMeansSignerPays() async throws {
-        let feePayer = "11111111111111111111111111111112"
+    func offerWithoutFeePayerIsRefused() async throws {
         let offer = X402AcceptsEntry(
             scheme: "exact",
             network: SolanaNetwork.devnet,
@@ -428,32 +399,21 @@ struct X402FeePayerTests {
             asset: "SOL",
             payTo: Fixture.payTo,
             recipient: nil,
-            extra: ["recentBlockhash": .string(Fixture.blockhash)],
-            feePayerKey: feePayer,
-            feePayer: false          // explicit opt-out
+            extra: ["recentBlockhash": .string(Fixture.blockhash)]
         )
-
-        // feePayer: false gates the key => nil.
-        #expect(offer.effectiveFeePayerKey == nil)
-
-        let signer = try Fixture.signer()
-        let header = try await buildX402PaymentHeader(
-            signer: signer, rpc: Fixture.rpc(), offer: offer,
-            nonceGenerator: Fixture.fixedNonceGenerator()
-        )
-        let tx = try Fixture.decodePayload(header)
-
-        let signerPk = try Pubkey(bytes: try signer.publicKey)
-
-        // Signer is fee payer (index 0).
-        #expect(tx.accountKeys[0] == signerPk)
+        await #expect(throws: PayKitError.self) {
+            _ = try await buildX402PaymentHeader(
+                signer: try Fixture.signer(), rpc: Fixture.rpc(), offer: offer,
+                nonceGenerator: Fixture.fixedNonceGenerator()
+            )
+        }
     }
 
-    /// Regression: `extra.feePayer` (back-compat path) combined with top-level
-    /// `feePayer: false` must also opt out -- `effectiveFeePayerKey` returns
-    /// nil. Ensures the gate applies regardless of which dict the key came from.
+    /// Regression: the non-spec `feePayer: false` toggle used to opt out of
+    /// the facilitator fee payer and make the signer pay. `extra.feePayer`
+    /// stays the fee payer.
     @Test
-    func extraFeePayerWithFeePayerFalseOptOutMeansSignerPays() async throws {
+    func feePayerFalseToggleCannotMakeSignerPay() async throws {
         let feePayer = "11111111111111111111111111111112"
         let offer = X402AcceptsEntry(
             scheme: "exact",
@@ -465,24 +425,17 @@ struct X402FeePayerTests {
             recipient: nil,
             extra: [
                 "recentBlockhash": .string(Fixture.blockhash),
-                "feePayer": .string(feePayer),  // legacy extra path
+                "feePayer": .string(feePayer),
             ],
-            feePayer: false          // top-level toggle opts out
+            feePayer: false
         )
-
-        // feePayer: false gates the extra.feePayer key => nil.
-        #expect(offer.effectiveFeePayerKey == nil)
-
         let signer = try Fixture.signer()
         let header = try await buildX402PaymentHeader(
             signer: signer, rpc: Fixture.rpc(), offer: offer,
             nonceGenerator: Fixture.fixedNonceGenerator()
         )
         let tx = try Fixture.decodePayload(header)
-
-        let signerPk = try Pubkey(bytes: try signer.publicKey)
-
-        // Signer is fee payer (index 0).
-        #expect(tx.accountKeys[0] == signerPk)
+        #expect(tx.accountKeys[0] == (try Pubkey(base58: feePayer)))
+        #expect(tx.accountKeys[0] != (try Pubkey(bytes: signer.publicKey)))
     }
 }
