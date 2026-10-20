@@ -22,28 +22,63 @@ func parseEntry(t *testing.T, raw string) x402.AcceptsEntry {
 	return e
 }
 
-// Finding #3: the client defaults the token program to the per-currency
-// default when the offer omits extra.tokenProgram, matching Rust
-// token_program.unwrap_or_else(default_token_program_for_currency). A
-// USDC offer with no tokenProgram must still build a valid transferChecked.
-func TestBuildSPLDefaultsTokenProgramForCurrency(t *testing.T) {
-	signer := testutil.NewPrivateKey()
-	e := parseEntry(t, `{"protocol":"x402","scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+paycore.USDCMainnetMint+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{}}`)
-
-	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
-	if err != nil {
-		t.Fatalf("build with defaulted token program: %v", err)
-	}
+// transferCheckedOf returns the program and decimals byte of the single
+// transferChecked in a credential transaction.
+func transferCheckedOf(t *testing.T, header string) (string, uint8) {
+	t.Helper()
 	tx := decodeCredentialTx(t, header)
-	// The transferChecked must target the canonical SPL token program.
-	found := false
-	for _, k := range tx.Message.AccountKeys {
-		if k.String() == paycore.TokenProgram {
-			found = true
+	keys := tx.Message.AccountKeys
+	for _, ix := range tx.Message.Instructions {
+		program := keys[ix.ProgramIDIndex].String()
+		if (program == paycore.TokenProgram || program == paycore.Token2022Program) && len(ix.Data) == 10 && ix.Data[0] == 12 {
+			return program, ix.Data[9]
 		}
 	}
-	if !found {
-		t.Error("expected default token program in account keys")
+	t.Fatal("no transferChecked in credential transaction")
+	return "", 0
+}
+
+// RULINGS S1: the exact SVM offer carries neither decimals nor a token
+// program, so the client reads both from the mint account instead of
+// defaulting to the Token program and 6 decimals.
+func TestBuildSPLReadsTokenProgramAndDecimalsFromMint(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	rpc := testutil.NewFakeRPC()
+	rpc.MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	rpc.MintDecimals[mint.String()] = 9
+	e := parseEntry(t, `{"scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+mint.String()+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{"feePayer":"`+testutil.NewPrivateKey().PublicKey().String()+`"}}`)
+
+	header, err := BuildPaymentHeader(context.Background(), signer, rpc, &e)
+	if err != nil {
+		t.Fatalf("build from mint account: %v", err)
+	}
+	program, decimals := transferCheckedOf(t, header)
+	if program != paycore.Token2022Program || decimals != 9 {
+		t.Fatalf("transferChecked program=%s decimals=%d, want Token-2022 and 9 from the mint", program, decimals)
+	}
+}
+
+// A missing mint is a build error, never a guessed program or decimals.
+func TestBuildSPLRejectsUnreadableMint(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := parseEntry(t, `{"scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+paycore.USDCMainnetMint+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{}}`)
+	if _, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e); err == nil {
+		t.Fatal("expected a build error when the mint account cannot be read")
+	}
+}
+
+// Positive control: the non-spec extra.tokenProgram + extra.decimals hints
+// are honored without an RPC lookup.
+func TestBuildSPLUsesServerHintsWhenComplete(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := parseEntry(t, `{"scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+paycore.USDCMainnetMint+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{"tokenProgram":"`+paycore.TokenProgram+`","decimals":6}}`)
+	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+	if err != nil {
+		t.Fatalf("build with hints: %v", err)
+	}
+	if program, decimals := transferCheckedOf(t, header); program != paycore.TokenProgram || decimals != 6 {
+		t.Fatalf("transferChecked program=%s decimals=%d, want Token and 6", program, decimals)
 	}
 }
 

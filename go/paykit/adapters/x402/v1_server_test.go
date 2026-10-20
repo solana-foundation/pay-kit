@@ -165,25 +165,6 @@ func TestVerifyAndSettleStillRejectsUnknownVersion(t *testing.T) {
 	}
 }
 
-func TestVerifyLegacyBindingDirect(t *testing.T) {
-	a, err := New(cfgLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter := a.(*Adapter)
-	g := &paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
-
-	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: proto.ExactScheme, Network: legacyNetworkDevnet}); err != nil {
-		t.Errorf("devnet slug against localnet route should bind: %v", err)
-	}
-	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: "bad", Network: legacyNetworkDevnet}); err == nil {
-		t.Error("non-exact scheme must be rejected")
-	}
-	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: proto.ExactScheme, Network: legacyNetworkMainnet}); err == nil {
-		t.Error("mainnet slug against devnet route must be rejected")
-	}
-}
-
 // cfgLocal builds a localnet adapter config for the envelope-level v1 tests
 // that never reach broadcast.
 func cfgLocal() paykit.Config {

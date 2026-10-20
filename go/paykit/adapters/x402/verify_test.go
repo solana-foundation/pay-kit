@@ -349,12 +349,6 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
-	credJSON, err := json.Marshal(cred)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	a := &Adapter{
 		cfg: paykit.Config{
 			Network:     paykit.SolanaLocalnet,
@@ -367,6 +361,11 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 		blockhashProvider: func() (string, error) { return "BH", nil },
 	}
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, gate), Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	credJSON, err := json.Marshal(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return a, gate, base64.StdEncoding.EncodeToString(credJSON)
 }
 
@@ -474,9 +473,9 @@ func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
-	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, &gate), Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	credJSON, _ := json.Marshal(cred)
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	var perr *paykit.PaymentError
 	if !errorsAs(err, &perr) || perr.Code != "invalid_exact_svm_payload_recipient_mismatch" {
@@ -541,9 +540,9 @@ func TestVerifyAndSettleRejectsUndecodableTransaction(t *testing.T) {
 		signer: op,
 		rpc:    &fakeRPC{},
 	}
-	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString([]byte("not-a-tx"))}}
-	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, &gate), Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString([]byte("not-a-tx"))}}
+	credJSON, _ := json.Marshal(cred)
 	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	var perr *paykit.PaymentError
 	if !errorsAs(err, &perr) || perr.Code != "invalid_payload" {
@@ -573,9 +572,9 @@ func TestVerifyAndSettleDecodesLegacyTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: encoded}}
-	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, &gate), Payload: proto.CredentialPayload{Transaction: encoded}}
+	credJSON, _ := json.Marshal(cred)
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	if err == nil {
 		t.Fatal("a memo-only payment must still be rejected on its content")
@@ -595,9 +594,9 @@ func TestVerifyAndSettleRejectsBadOperatorRecipient(t *testing.T) {
 	}
 	f := newFixture(t)
 	wire, _ := f.tx().MarshalBinary()
-	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
-	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, &gate), Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	credJSON, _ := json.Marshal(cred)
 	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	var perr *paykit.PaymentError
 	if !errorsAs(err, &perr) || perr.Code != "invalid_gate" {
@@ -680,4 +679,11 @@ func TestAwaitConfirmationHonorsContextCancellation(t *testing.T) {
 	if err := a.awaitConfirmation(ctx, solana.Signature{}); err == nil {
 		t.Error("expected awaitConfirmation to return once the context is cancelled")
 	}
+}
+
+// acceptedFor returns the offer this adapter advertises for gate, which a
+// v2 client echoes verbatim as `accepted` (required by x402 v2).
+func acceptedFor(a *Adapter, gate *paykit.Gate) *proto.AcceptsEntry {
+	route := a.routeAccepts(gate)
+	return &route
 }

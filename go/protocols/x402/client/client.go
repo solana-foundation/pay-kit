@@ -230,12 +230,21 @@ func selectFromJSON(raw []byte, sel ChallengeSelection) (*x402.AcceptsEntry, int
 }
 
 // selectEntry implements the Rust select_requirement logic: keep Solana
-// x402 offers, prefer the chosen network, then either match the client's
+// exact offers, prefer the chosen network, then either match the client's
 // currency priority order (first wins, no fallback) or pick the cheapest.
+//
+// `protocol` is not an x402 v2 PaymentRequirements field (RULINGS X1), so
+// a spec-shaped offer without it is kept. Only an offer that explicitly
+// names a different protocol (e.g. an MPP entry in a pay-kit multi-protocol
+// accepts list) is skipped, as is any scheme other than exact, which this
+// client cannot pay.
 func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.AcceptsEntry {
 	solana := make([]x402.AcceptsEntry, 0, len(accepts))
 	for _, e := range accepts {
-		if e.Protocol == "x402" && strings.HasPrefix(e.Network, "solana:") {
+		if e.Protocol != "" && e.Protocol != "x402" {
+			continue
+		}
+		if e.Scheme == exactScheme && strings.HasPrefix(e.Network, "solana:") {
 			solana = append(solana, e)
 		}
 	}
@@ -493,7 +502,7 @@ func buildTransaction(
 		}
 		instructions = append(instructions, transfer)
 	} else {
-		transfer, err := buildSPLTransfer(signer, recipient, amount, entry)
+		transfer, err := buildSPLTransfer(ctx, signer, rpc, recipient, amount, entry)
 		if err != nil {
 			return "", err
 		}
@@ -557,7 +566,9 @@ func buildTransaction(
 }
 
 func buildSPLTransfer(
+	ctx context.Context,
 	signer solanatx.Signer,
+	rpc solanatx.RPCClient,
 	recipient solana.PublicKey,
 	amount uint64,
 	entry *x402.AcceptsEntry,
@@ -566,26 +577,9 @@ func buildSPLTransfer(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: mint %q: %w", entry.Asset, err)
 	}
-	// Default the token program to the per-currency default when the
-	// offer omits extra.tokenProgram, matching Rust
-	// token_program.unwrap_or_else(default_token_program_for_currency)
-	// (payment.rs:445-452). Resolved against every cluster label so a
-	// Token-2022 mint (PYUSD/USDG/CASH) picks the right program.
-	tokenProgramStr := entry.Extra.TokenProgram
-	if tokenProgramStr == "" {
-		for _, label := range mintResolutionLabels {
-			if tp := paycore.DefaultTokenProgramForCurrency(entry.Asset, label); paycore.StablecoinSymbol(paycore.ResolveMint(entry.Asset, label)) != "" {
-				tokenProgramStr = tp
-				break
-			}
-		}
-		if tokenProgramStr == "" {
-			tokenProgramStr = paycore.DefaultTokenProgramForCurrency(entry.Asset, "mainnet-beta")
-		}
-	}
-	tokenProgram, err := solana.PublicKeyFromBase58(tokenProgramStr)
+	tokenProgram, decimals, err := resolveMint(ctx, rpc, mint, entry)
 	if err != nil {
-		return nil, fmt.Errorf("x402 client: token program %q: %w", tokenProgramStr, err)
+		return nil, err
 	}
 	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 	if err != nil {
@@ -595,7 +589,33 @@ func buildSPLTransfer(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: recipient ATA: %w", err)
 	}
-	return solanatx.BuildTransferChecked(amount, uint8(entry.Extra.Decimals), sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
+	return solanatx.BuildTransferChecked(amount, decimals, sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
+}
+
+// resolveMint returns the token program and decimals for the offer's mint.
+// The exact SVM scheme carries neither (RULINGS S1): `extra.tokenProgram`
+// and `extra.decimals` are non-spec server hints the client MAY use, so
+// when either is missing the client reads the mint account, whose owner
+// and data are authoritative. It never guesses from a currency table.
+func resolveMint(ctx context.Context, rpc solanatx.RPCClient, mint solana.PublicKey, entry *x402.AcceptsEntry) (solana.PublicKey, uint8, error) {
+	if entry.Extra.TokenProgram != "" && entry.Extra.DecimalsSet {
+		program, err := solana.PublicKeyFromBase58(entry.Extra.TokenProgram)
+		if err != nil {
+			return solana.PublicKey{}, 0, fmt.Errorf("x402 client: token program %q: %w", entry.Extra.TokenProgram, err)
+		}
+		if entry.Extra.Decimals < 0 || entry.Extra.Decimals > 255 {
+			return solana.PublicKey{}, 0, fmt.Errorf("x402 client: extra.decimals %d out of range", entry.Extra.Decimals)
+		}
+		return program, uint8(entry.Extra.Decimals), nil
+	}
+	if rpc == nil {
+		return solana.PublicKey{}, 0, errors.New("x402 client: an RPC client is required to read the mint's token program and decimals")
+	}
+	info, err := solanatx.FetchMint(ctx, rpc, mint)
+	if err != nil {
+		return solana.PublicKey{}, 0, fmt.Errorf("x402 client: read mint %s: %w", mint, err)
+	}
+	return info.TokenProgram, info.Decimals, nil
 }
 
 // PaymentTransport wraps an http.RoundTripper and transparently settles an

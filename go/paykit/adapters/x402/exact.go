@@ -14,7 +14,6 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
-	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
@@ -133,71 +132,33 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if sig == "" {
 		return nil, &paykit.PaymentError{Code: "payment_required", Err: paykit.ErrPaymentRequired, Gate: req.Gate}
 	}
-	credBytes, err := base64.StdEncoding.DecodeString(sig)
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("base64 decode: %w", err), Gate: req.Gate}
-	}
-	var credential proto.Credential
-	if err := json.Unmarshal(credBytes, &credential); err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("decode credential: %w", err), Gate: req.Gate}
-	}
-	switch credential.X402Version {
-	case proto.X402VersionLegacy:
-		if err := a.verifyLegacyBinding(req.Gate, &credential); err != nil {
-			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
-		}
-	case proto.X402Version:
-		if credential.Accepted != nil {
-			if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
-				return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
-			}
-		}
-	default:
-		return nil, &paykit.PaymentError{Code: "version_mismatch", Err: fmt.Errorf("unsupported x402 version %d", credential.X402Version), Gate: req.Gate}
-	}
-	if a.cfg.X402.RequirePaymentIdentifier {
-		id := credential.Extensions.PaymentIdentifierID()
-		if id == "" {
-			return nil, &paykit.PaymentError{
-				Code: "payment_identifier_required",
-				Err:  errors.New("payment-identifier required but credential echoed no id"),
-				Gate: req.Gate,
-			}
-		}
-		if !proto.IsValidPaymentIdentifierID(id) {
-			return nil, &paykit.PaymentError{
-				Code: "payment_identifier_required",
-				Err:  fmt.Errorf("payment-identifier id is invalid: %q does not match ^[A-Za-z0-9_-]{16,128}$", id),
-				Gate: req.Gate,
-			}
-		}
-	}
-	txBase64 := credential.Payload.Transaction
-	if txBase64 == "" {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: errors.New("missing transaction payload"), Gate: req.Gate}
-	}
-	rawTx, err := base64.StdEncoding.DecodeString(txBase64)
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction base64: %w", err), Gate: req.Gate}
-	}
-	tx, err := solanatx.DecodeTransaction(rawTx)
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction decode: %w", err), Gate: req.Gate}
-	}
-	if len(tx.Signatures) == 0 {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: errors.New("transaction carries no signatures"), Gate: req.Gate}
-	}
 	reqs, err := a.transferRequirements(req.Gate)
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_gate", Err: err, Gate: req.Gate}
 	}
-	if err := proto.VerifyExactTransaction(tx, reqs); err != nil {
+	// Every pre-broadcast check (version, envelope binding, payment
+	// identifier, structural transaction verification) runs in the shared
+	// protocol verifier so this adapter and any other server cannot drift.
+	verified, err := proto.VerifyPaymentHeader(sig, proto.ExactRoute{
+		Network:                  a.cfg.Network.CAIP2(),
+		Requirements:             reqs,
+		RequirePaymentIdentifier: a.cfg.X402.RequirePaymentIdentifier,
+	})
+	if err != nil {
 		code := "charge_request_mismatch"
 		var ve *proto.VerifyError
 		if errors.As(err, &ve) {
 			code = ve.Code
 		}
 		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
+	}
+	credential, tx, rawTx := verified.Credential, verified.Transaction, verified.RawTransaction
+	// This server's own offers carry extra fields (decimals, tokenProgram,
+	// memo); a v2 echo must reproduce them exactly.
+	if credential.X402Version == proto.X402Version {
+		if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
+			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
+		}
 	}
 	replayKey, err := transactionReplayKey(tx)
 	if err != nil {
@@ -261,18 +222,6 @@ func transactionReplayKey(tx *solana.Transaction) (string, error) {
 		}
 	}
 	return "", errors.New("transaction carries no non-zero signer signature")
-}
-
-func (a *Adapter) verifyLegacyBinding(gate *paykit.Gate, credential *proto.Credential) error {
-	if credential.Scheme != proto.ExactScheme {
-		return fmt.Errorf("scheme mismatch: expected %s, got %q", proto.ExactScheme, credential.Scheme)
-	}
-	route := a.routeAccepts(gate)
-	got := normalizeNetwork(credential.Network)
-	if got != route.Network {
-		return fmt.Errorf("network mismatch: expected %s, got %s", route.Network, credential.Network)
-	}
-	return nil
 }
 
 func (a *Adapter) verifyAcceptedBinding(gate *paykit.Gate, accepted *proto.AcceptsEntry) error {
