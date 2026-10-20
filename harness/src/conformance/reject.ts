@@ -29,7 +29,16 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // "invalid payload: Unsupported x402 version"). `network mismatch`
   // likewise precedes the fallback.
   [/unsupported x402 version/i, "unsupported-version"],
+  // @x402/core facilitator: no scheme registered for the envelope's version.
+  [/no facilitator registered for x402 version/i, "unsupported-version"],
   [/network mismatch/i, "wrong-network"],
+  // @x402/svm exact verifier reason codes.
+  [/invalid_exact_svm_network_mismatch/i, "wrong-network"],
+  [/invalid_exact_svm_payload_amount_mismatch/i, "amount-mismatch"],
+  [
+    /invalid_exact_svm_payload_(mint_mismatch|recipient_mismatch|no_transfer_instruction)/i,
+    "no-matching-transfer",
+  ],
   // x402-exact extensions: server required a payment-identifier id but the
   // credential echoed none / an invalid one. Checked before the generic
   // invalid/payload fallback.

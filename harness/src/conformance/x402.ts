@@ -1,20 +1,16 @@
-// TypeScript REFERENCE for the x402 `exact` intent conformance oracle.
+// x402 `exact` envelope helpers for the conformance harness.
 //
 // The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
 // produces a base64(JSON) payment header and a SERVER verify consumes one.
-// So the cross-SDK oracle is the DECODED ENVELOPE shape, not the signed
-// Solana transaction inside `payload.transaction` (that is the harness
-// matrix's job). This module mirrors the Rust spine line-for-line:
-//   - build v2 -> rust `build_payment_header`  (PAYMENT-SIGNATURE)
-//   - build v1 -> rust `build_payment_header_v1` (X-PAYMENT)
-//   - verify   -> rust `X402::parse_payment_signature` + the `accepted`
-//                 vs route field comparison in `verify_envelope_payload`
+// The cross-SDK oracle is the DECODED ENVELOPE shape (`decodeEnvelopeShape`),
+// which every runner reports after its SDK built or verified the envelope.
 //
-// It is intentionally RPC-free and deterministic. There is no production
-// TS x402 SDK in this tree (`@solana/mpp` ships charge only), so this
-// reference IS the contract every per-SDK x402 runner is validated
-// against. Constants and resolution rules are copied verbatim from
-// `rust/crates/x402/src/{constants.rs, protocol/schemes/exact/types.rs}`.
+// The TypeScript runner no longer builds or verifies with anything here: it
+// drives @solana/pay-kit and the vendored @x402/svm (see ts-runner.ts). The
+// envelope builders, challenge parsers and `verifyPaymentHeader` below are a
+// harness-local port of the Rust envelope rules that only
+// test/x402-v1-exact.test.ts still exercises; they are not an SDK and no
+// vector outcome depends on them.
 
 import type { X402EnvelopeShape, X402Offer } from "./schema";
 
@@ -28,10 +24,8 @@ export const EXACT_SCHEME = "exact";
 export const X402_VERSION_V1 = 1;
 export const X402_VERSION_V2 = 2;
 
-// Headers (rust constants.rs).
-export const X402_V1_PAYMENT_HEADER = "X-PAYMENT";
+// Challenge headers (rust constants.rs).
 export const X402_V1_PAYMENT_REQUIRED_HEADER = "X-PAYMENT-REQUIRED";
-export const X402_V2_PAYMENT_HEADER = "PAYMENT-SIGNATURE";
 export const X402_V2_PAYMENT_REQUIRED_HEADER = "PAYMENT-REQUIRED";
 
 // Map a cluster/network identifier to its CAIP-2 form. Mirrors
@@ -82,24 +76,16 @@ export function toAcceptedValue(offer: X402Offer): Record<string, unknown> {
 
 type PaymentProof = { transaction: string };
 
-// ── x402 v2 extensions (rust types.rs PaymentExtensions et al.) ──
+// ── x402 v2 extensions ──
 //
 // The `extensions` object rides on BOTH the inbound PAYMENT-REQUIRED
-// challenge and the outbound PAYMENT-SIGNATURE credential. The client
-// echoes the inbound object back, fills required client-side fields
-// (e.g. payment-identifier.info.id), preserves unknown extensions
-// verbatim (forward-compat echo-and-append, x402 v2 §5.1.2), and omits
-// the object entirely when the server advertised none.
-//
-// The spec JSON key is kebab-case `payment-identifier` (rust
-// `#[serde(rename = "payment-identifier")]`). `info` is camelCase
+// challenge and the outbound PAYMENT-SIGNATURE credential. The spec JSON
+// key is kebab-case `payment-identifier`; `info` is camelCase
 // `{ required?, id? }`; `schema?` is echoed verbatim.
 
 export const PAYMENT_IDENTIFIER_KEY = "payment-identifier";
 
-// rust `generate_payment_identifier_id`: `pay_` + 32 lowercase hex
-// (36 total), satisfying the spec pattern ^[A-Za-z0-9_-]{16,128}$ and
-// the canonical Solana ^pay_[a-zA-Z0-9_-]{10,120}$ shape.
+// Spec id pattern (extensions/payment_identifier.md).
 export const PAYMENT_IDENTIFIER_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export type PaymentIdentifierInfo = { required?: boolean; id?: string };
@@ -115,52 +101,6 @@ export type PaymentIdentifierExtension = {
 export type PaymentExtensions = Record<string, unknown> & {
   [PAYMENT_IDENTIFIER_KEY]?: PaymentIdentifierExtension;
 };
-
-export function generatePaymentIdentifierId(): string {
-  // 16 random bytes -> 32 hex chars; `pay_` prefix. Mirrors rust.
-  let hex = "";
-  for (let i = 0; i < 16; i += 1) {
-    hex += Math.floor(Math.random() * 256)
-      .toString(16)
-      .padStart(2, "0");
-  }
-  return `pay_${hex}`;
-}
-
-// rust `PaymentExtensions::echoing`: deep-copy the inbound extensions
-// blob so unknown keys round-trip verbatim. Returns undefined when the
-// server advertised no extensions (so the outbound omits the object).
-export function echoExtensions(
-  inbound: PaymentExtensions | undefined | null,
-): PaymentExtensions | undefined {
-  if (inbound === undefined || inbound === null) return undefined;
-  return JSON.parse(JSON.stringify(inbound)) as PaymentExtensions;
-}
-
-// rust `PaymentExtensions::requires_payment_identifier`:
-// payment-identifier.info.required === true.
-export function requiresPaymentIdentifier(
-  extensions: PaymentExtensions | undefined,
-): boolean {
-  return extensions?.[PAYMENT_IDENTIFIER_KEY]?.info?.required === true;
-}
-
-// rust `PaymentExtensions::with_payment_identifier_id`: set the
-// client-side id, creating the entry if the server did not advertise it,
-// preserving server-side info (required) and schema verbatim.
-export function withPaymentIdentifierId(
-  extensions: PaymentExtensions | undefined,
-  id: string,
-): PaymentExtensions {
-  const next: PaymentExtensions = extensions
-    ? (JSON.parse(JSON.stringify(extensions)) as PaymentExtensions)
-    : {};
-  const entry = (next[PAYMENT_IDENTIFIER_KEY] ?? { info: {} }) as
-    PaymentIdentifierExtension;
-  entry.info = { ...entry.info, id };
-  next[PAYMENT_IDENTIFIER_KEY] = entry;
-  return next;
-}
 
 // rust `PaymentExtensions::is_empty`: no payment_identifier and no other
 // keys. Callers use this to avoid emitting an empty `extensions: {}`.
@@ -222,17 +162,6 @@ export function buildPaymentHeaderV1(
     x402Version: X402_VERSION_V1,
     payload: { transaction },
   });
-}
-
-export function buildPaymentHeader(
-  version: number,
-  offer: X402Offer,
-  transaction: string,
-  extensions?: PaymentExtensions,
-): string {
-  return version === X402_VERSION_V1
-    ? buildPaymentHeaderV1(offer, transaction)
-    : buildPaymentHeaderV2(offer, transaction, extensions);
 }
 
 // Decode an envelope header into the conformance shape oracle.

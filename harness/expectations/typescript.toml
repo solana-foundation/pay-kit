@@ -15,3 +15,27 @@ ids = [
   "flow/same_origin_payment_request",
   "flow/same_origin_post_payment_request",
 ]
+
+[[unsupported]]
+reason = "@solana/pay-kit speaks x402 v2 only: its client answers only the PAYMENT-REQUIRED header and its server registers only the v2 exact facilitator"
+ids = [
+  "vector/x402-exact-v1-build-devnet",
+  "vector/x402-exact-v1-build-mainnet-network-name",
+  "vector/x402-exact-v1-verify-accept-devnet",
+  "vector/x402-exact-v1-verify-accept-mainnet",
+  "vector/x402-exact-v1-verify-reject-wrong-network",
+]
+
+[[unsupported]]
+reason = "@solana/pay-kit generates the payment-identifier id itself and has no option to supply the caller-chosen id these vectors pin"
+ids = [
+  "vector/x402-ext-echo-payment-identifier-pinned-id",
+  "vector/x402-ext-preserve-unknown-verbatim",
+]
+
+[[unsupported]]
+reason = "the @solana/pay-kit x402 server has no option to require a payment-identifier and never reads extensions"
+ids = [
+  "vector/x402-ext-server-accepts-valid-id",
+  "vector/x402-ext-server-rejects-required-missing-id",
+]

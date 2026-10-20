@@ -1,34 +1,45 @@
-// Env contract for the TypeScript x402 `exact` fixture adapters. The
-// wire shape mirrors the Rust spine (`rust/crates/x402/src/bin/
-// harness_{client,server}.rs`) verbatim so any language adapter that
-// targets this contract can pair against either TS or Rust.
+// Env contract for the TypeScript x402 `exact` adapters (ts-x402). They read
+// the same X402_HARNESS_* variables as the Rust adapters
+// (rust/crates/harness-bins/src/bin/x402_harness_{client,server}.rs) and
+// drive @solana/pay-kit: the server is a pay-kit gate, the client is
+// `createPayKitClient`.
+
+import type { NetworkSlug } from "@solana/pay-kit";
 
 export type X402HarnessEnvironment = {
   rpcUrl: string;
-  network: string;
+  // pay-kit network slug for X402_HARNESS_NETWORK (CAIP-2 or slug).
+  network: NetworkSlug;
   mint: string;
   payTo: string;
   price: string;
+  // Base-unit amount the scenario expects on the wire, when the harness
+  // provides it (X402_HARNESS_AMOUNT).
+  amount: string | undefined;
   resourcePath: string;
   settlementHeader: string;
   facilitatorSecretKey: Uint8Array;
-  // Server-only. Comma-separated mint addresses advertised alongside the
-  // primary currency. Read from `X402_HARNESS_EXTRA_OFFERED_MINTS`.
-  extraOfferedMints: string[];
+  // Cross-route replay: a second, cheaper route on the same server.
+  replaySource: { resourcePath: string; price: string } | undefined;
 };
 
 export type X402ClientEnvironment = X402HarnessEnvironment & {
   targetUrl: string;
   clientSecretKey: Uint8Array;
-  // Comma-separated currency preference list (symbols or mints) read
-  // from `X402_HARNESS_PREFER_CURRENCIES`. Empty when unset.
-  preferredCurrencies: string[];
+  resubmitUrl: string | undefined;
 };
 
 const DEFAULT_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const DEFAULT_RESOURCE_PATH = "/protected";
 const DEFAULT_PRICE = "0.001";
 const DEFAULT_SETTLEMENT_HEADER = "x-fixture-settlement";
+
+// CAIP-2 ids pay-kit emits (pay-kit `caip2`), mapped back to its slugs.
+const CAIP2_TO_SLUG: Record<string, NetworkSlug> = {
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "mainnet",
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "devnet",
+};
+const SLUGS: readonly NetworkSlug[] = ["devnet", "localnet", "mainnet", "mainnet-beta"];
 
 function readRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -39,26 +50,26 @@ function readRequiredEnv(name: string): string {
 }
 
 function parseSecretKey(name: string): Uint8Array {
-  const raw = readRequiredEnv(name);
-  const parsed = JSON.parse(raw) as number[];
-  return new Uint8Array(parsed);
+  return new Uint8Array(JSON.parse(readRequiredEnv(name)) as number[]);
 }
 
-function parseCsv(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map(value => value.trim())
-    .filter(Boolean);
+function parseNetwork(raw: string): NetworkSlug {
+  const slug = CAIP2_TO_SLUG[raw] ?? (SLUGS.includes(raw as NetworkSlug) ? (raw as NetworkSlug) : undefined);
+  if (!slug) throw new Error(`X402_HARNESS_NETWORK ${raw} is not a network pay-kit supports`);
+  return slug;
+}
+
+// Strip the harness money shape ("$0.001", "0.001 USDC") to the decimal
+// string pay-kit's `usd()` takes.
+export function normalizePrice(price: string): string {
+  return price.trim().replace(/^\$/, "").split(/\s+/)[0] ?? "";
 }
 
 // Convert a human-readable price ("0.001", "$0.001", "0.001 USDC") into the
-// atomic base-unit integer string the x402 wire `amount`/`maxAmountRequired`
-// field carries. Mirrors the Rust spine: conformant clients (Rust/Swift/
-// Kotlin) parse `amount` as a u64 of base units, so the offer MUST advertise
-// base units scaled by `decimals`, never the decimal price itself.
+// atomic base-unit integer string the x402 wire `amount` carries, scaled by
+// `decimals`. Kept for test/x402-amount-base-units.test.ts.
 export function toBaseUnits(price: string, decimals: number): string {
-  const token = price.trim().replace(/^\$/, "").split(/\s+/)[0] ?? "";
+  const token = normalizePrice(price);
   if (
     token === "" ||
     (token.match(/\./g)?.length ?? 0) > 1 ||
@@ -68,8 +79,7 @@ export function toBaseUnits(price: string, decimals: number): string {
   }
   const [whole, frac = ""] = token.split(".");
   // Reject more fractional digits than the mint supports rather than
-  // truncating, which would silently under-advertise the price (the Rust
-  // spine rejects the same input as too many decimal places).
+  // truncating, which would silently under-advertise the price.
   if (frac.length > decimals) {
     throw new Error(
       `price ${price} has more than ${decimals} decimal places`,
@@ -81,17 +91,23 @@ export function toBaseUnits(price: string, decimals: number): string {
 }
 
 function readBase(): X402HarnessEnvironment {
+  const replayPath = process.env.MPP_HARNESS_REPLAY_SOURCE_PATH;
+  const replayPrice = process.env.MPP_HARNESS_REPLAY_SOURCE_PRICE;
   return {
     rpcUrl: readRequiredEnv("X402_HARNESS_RPC_URL"),
-    network: process.env.X402_HARNESS_NETWORK ?? DEFAULT_NETWORK,
+    network: parseNetwork(process.env.X402_HARNESS_NETWORK ?? DEFAULT_NETWORK),
     mint: readRequiredEnv("X402_HARNESS_MINT"),
     payTo: readRequiredEnv("X402_HARNESS_PAY_TO"),
-    price: process.env.X402_HARNESS_PRICE ?? DEFAULT_PRICE,
+    price: normalizePrice(process.env.X402_HARNESS_PRICE ?? DEFAULT_PRICE),
+    amount: process.env.X402_HARNESS_AMOUNT,
     resourcePath: process.env.X402_HARNESS_RESOURCE_PATH ?? DEFAULT_RESOURCE_PATH,
     settlementHeader:
       process.env.X402_HARNESS_SETTLEMENT_HEADER ?? DEFAULT_SETTLEMENT_HEADER,
     facilitatorSecretKey: parseSecretKey("X402_HARNESS_FACILITATOR_SECRET_KEY"),
-    extraOfferedMints: parseCsv(process.env.X402_HARNESS_EXTRA_OFFERED_MINTS),
+    replaySource:
+      replayPath && replayPrice
+        ? { resourcePath: replayPath, price: normalizePrice(replayPrice) }
+        : undefined,
   };
 }
 
@@ -100,16 +116,12 @@ export function readX402ServerEnvironment(): X402HarnessEnvironment {
 }
 
 export function readX402ClientEnvironment(): X402ClientEnvironment {
-  const base = readBase();
   return {
-    ...base,
+    ...readBase(),
     targetUrl: readRequiredEnv("X402_HARNESS_TARGET_URL"),
     clientSecretKey: parseSecretKey("X402_HARNESS_CLIENT_SECRET_KEY"),
-    preferredCurrencies: parseCsv(process.env.X402_HARNESS_PREFER_CURRENCIES),
+    resubmitUrl: process.env.MPP_HARNESS_RESUBMIT_URL,
   };
 }
 
-export const PAYMENT_REQUIRED_HEADER = "payment-required";
 export const PAYMENT_SIGNATURE_HEADER = "payment-signature";
-export const PAYMENT_RESPONSE_HEADER = "payment-response";
-export const X402_VERSION_V2 = 2;

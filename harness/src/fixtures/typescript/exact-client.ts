@@ -1,97 +1,66 @@
-// TypeScript reference x402 `exact` harness client.
+// ts-x402 client adapter: @solana/pay-kit's `createPayKitClient`.
 //
-// Shares the same `X402_HARNESS_*` env-var contract and ready/result
-// JSON protocol as the Rust spine (`rust/crates/x402/src/bin/
-// harness_client.rs`). Sends an unpaid GET, parses the base64
-// `PAYMENT-REQUIRED` envelope, selects an offer (`preferredCurrencies`
-// first) and resubmits with `PAYMENT-SIGNATURE`. Prints one result
-// JSON line to stdout.
+// Env in (X402_HARNESS_*, same as the Rust adapter), JSON out: prints one
+// `result` line. The pay-kit client does the whole x402 flow itself: it
+// reads the 402, builds and signs the exact transfer against
+// X402_HARNESS_RPC_URL and retries with PAYMENT-SIGNATURE.
 //
-// Scope: the fixture carries a stub credential payload (challenge id +
-// resource) so the harness wiring, negative-code classification, and
-// cross-server portability + idempotent-resubmit flows can run without
-// a full Solana signer. Real SVM PaymentProof construction (signed
-// VersionedTransaction or settled signature) lives in the Rust spine
-// and the TS SDK port; this client only pairs against the TS reference
-// server in the default matrix (see `test/x402-exact.e2e.test.ts`).
+// The client talks to the server through a loopback proxy so the adapter can
+// report the payment header it sent (`payment-signature-sent`) and, for the
+// scenarios that need it, steer one leg of the flow:
+//   - cross-route replay (MPP_HARNESS_REPLAY_SOURCE_PATH): the unpaid probe
+//     goes to the cheaper source route, the paid retry to the target route;
+//   - cross-server resubmit (MPP_HARNESS_RESUBMIT_URL): after paying the
+//     target, the captured header is re-sent unchanged to the second server.
 
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { createKeyPairSignerFromBytes } from "@solana/kit";
 import {
-  PAYMENT_REQUIRED_HEADER,
-  PAYMENT_SIGNATURE_HEADER,
-  readX402ClientEnvironment,
-} from "./exact-shared";
+  AssetPermission,
+  ClientPermissions,
+  createPayKitClient,
+  type SolanaNetwork,
+} from "@solana/pay-kit/client";
+import { PAYMENT_SIGNATURE_HEADER, readX402ClientEnvironment } from "./exact-shared";
 
-type PaymentRequirement = {
-  scheme: string;
-  network: string;
-  resource?: string;
-  payTo: string;
-  asset: string;
-  maxAmountRequired: string;
-  extra?: { decimals?: number; tokenProgram?: string };
-};
+const HOP_BY_HOP = new Set(["connection", "content-length", "host", "keep-alive", "transfer-encoding"]);
 
-type PaymentRequiredEnvelope = {
-  x402Version: number;
-  accepts: PaymentRequirement[];
-  resource?: string;
-};
+type Proxy = { url: string; sentHeader: () => string | undefined; close: () => void };
 
-const STABLECOIN_MINTS: Record<string, Record<string, string>> = {
-  USDC: {
-    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
-      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1":
-      "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-  },
-  PYUSD: {
-    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
-      "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-  },
-};
-
-function resolveMint(currency: string, network: string): string {
-  const upper = currency.toUpperCase();
-  const byNetwork = STABLECOIN_MINTS[upper];
-  if (byNetwork && byNetwork[network]) {
-    return byNetwork[network];
-  }
-  return currency;
+// Forward every request to `upstreamFor(paid)` and remember the payment
+// header the client attached.
+async function startProxy(upstreamFor: (paid: boolean) => string): Promise<Proxy> {
+  let sent: string | undefined;
+  const server = http.createServer((req, res) => {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value === undefined || HOP_BY_HOP.has(name)) continue;
+      headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+    }
+    const paid = headers.get(PAYMENT_SIGNATURE_HEADER) ?? headers.get("x-payment");
+    if (paid) sent = paid;
+    fetch(upstreamFor(paid !== null), { headers, method: req.method ?? "GET" })
+      .then(async (upstream) => {
+        const out: Record<string, string> = {};
+        upstream.headers.forEach((value, name) => {
+          if (!HOP_BY_HOP.has(name) && name !== "content-encoding") out[name] = value;
+        });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, out);
+        res.end(body);
+      })
+      .catch((error: unknown) => {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return { close: () => server.close(), sentHeader: () => sent, url: `http://127.0.0.1:${port}/` };
 }
 
-function pickOffer(
-  envelope: PaymentRequiredEnvelope,
-  preferred: string[],
-  network: string,
-): PaymentRequirement | undefined {
-  const supported = envelope.accepts.filter(
-    offer => offer.scheme === "exact" && offer.network === network,
-  );
-  if (supported.length === 0) {
-    return undefined;
-  }
-  if (preferred.length === 0) {
-    return supported[0];
-  }
-  for (const wanted of preferred) {
-    const wantedMint = resolveMint(wanted, network);
-    const match = supported.find(offer => offer.asset === wantedMint);
-    if (match) return match;
-  }
-  return supported[0];
-}
-
-function decodePaymentRequired(headerValue: string | null): PaymentRequiredEnvelope | null {
-  if (!headerValue) return null;
-  try {
-    const raw = Buffer.from(headerValue, "base64").toString("utf8");
-    return JSON.parse(raw) as PaymentRequiredEnvelope;
-  } catch {
-    return null;
-  }
-}
-
-async function readResponseBody(response: Response): Promise<unknown> {
+async function readBody(response: Response): Promise<unknown> {
   const raw = await response.text();
   try {
     return JSON.parse(raw);
@@ -100,126 +69,70 @@ async function readResponseBody(response: Response): Promise<unknown> {
   }
 }
 
-async function main() {
-  const env = readX402ClientEnvironment();
-
-  const firstResponse = await fetch(env.targetUrl);
-  const envelope = decodePaymentRequired(
-    firstResponse.headers.get(PAYMENT_REQUIRED_HEADER),
-  );
-
-  if (!envelope) {
-    console.log(
-      JSON.stringify({
-        type: "result",
-        implementation: "typescript",
-        role: "client",
-        ok: false,
-        status: firstResponse.status,
-        responseHeaders: Object.fromEntries(firstResponse.headers.entries()),
-        responseBody: await readResponseBody(firstResponse),
-        settlement: null,
-        error: "missing or unparseable PAYMENT-REQUIRED header",
-      }),
-    );
-    return;
-  }
-
-  const offer = pickOffer(envelope, env.preferredCurrencies, env.network);
-  if (!offer) {
-    console.log(
-      JSON.stringify({
-        type: "result",
-        implementation: "typescript",
-        role: "client",
-        ok: false,
-        status: firstResponse.status,
-        responseHeaders: Object.fromEntries(firstResponse.headers.entries()),
-        responseBody: await readResponseBody(firstResponse),
-        settlement: null,
-        error: `no offer matched network ${env.network}`,
-      }),
-    );
-    return;
-  }
-
-  // Credential payload mirrors the canonical x402 `exact` shape: an
-  // adapter-specific id plus the offer the client is committing to.
-  // A live SDK would also embed a signed Solana transaction here; the
-  // matrix runner uses the rust spine for the actual on-chain
-  // settlement assertions. The TS fixture's role is wire-level
-  // protocol compliance.
-  // Use the server-issued challenge id if present (TS reference server
-  // emits one in the `x-challenge-id` header on the 402). This lets the
-  // server verify the credential was issued against its own 402 — the
-  // cross-server portability scenario relies on this distinction.
-  const issuedChallengeId = firstResponse.headers.get("x-challenge-id");
-  const credentialId =
-    issuedChallengeId ??
-    `ts-x402-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  // Mirrors the Rust spine's PaymentPayload wire shape:
-  //   { x402Version, accepted: { scheme, network, asset, payTo, amount, extra? },
-  //     payload: { ... scheme-specific blob ... }, resource?: string }
-  // The `payload` field is required by Rust's parser. For the wire-only
-  // TS adapter the payload carries the credential id plus the route the
-  // client is committing to; a full SDK fixture would carry a signed
-  // Solana transaction here.
-  const credential = {
-    x402Version: envelope.x402Version,
-    accepted: {
-      scheme: offer.scheme,
-      network: offer.network,
-      asset: offer.asset,
-      payTo: offer.payTo,
-      amount: offer.maxAmountRequired,
-      extra: offer.extra ?? null,
-    },
-    payload: {
-      challengeId: credentialId,
-      resource: offer.resource ?? envelope.resource,
-    },
-    resource: offer.resource ?? envelope.resource,
-  };
-  const credentialHeader = Buffer.from(JSON.stringify(credential), "utf8").toString(
-    "base64",
-  );
-
-  const paidResponse = await fetch(env.targetUrl, {
-    headers: { [PAYMENT_SIGNATURE_HEADER]: credentialHeader },
-  });
-
-  const responseHeaders = Object.fromEntries(paidResponse.headers.entries());
-  // Echo the credential the client sent so the harness can replay it in
-  // cross-server portability + idempotent-resubmit scenarios. The credential
-  // is a request header so it is never reflected in the response on its own.
-  responseHeaders[`${PAYMENT_SIGNATURE_HEADER}-sent`] = credentialHeader;
-
-  console.log(
-    JSON.stringify({
-      type: "result",
-      implementation: "typescript",
-      role: "client",
-      ok: paidResponse.ok,
-      status: paidResponse.status,
-      responseHeaders,
-      responseBody: await readResponseBody(paidResponse),
-      settlement: paidResponse.headers.get(env.settlementHeader),
-    }),
-  );
+function emit(result: Record<string, unknown>): void {
+  console.log(JSON.stringify({ type: "result", implementation: "typescript", role: "client", ...result }));
 }
 
-void main().catch(error => {
-  console.log(
-    JSON.stringify({
-      type: "result",
-      implementation: "typescript",
-      role: "client",
-      ok: false,
-      status: 0,
-      responseHeaders: {},
-      responseBody: null,
-      settlement: null,
-      error: error instanceof Error ? error.message : String(error),
-    }),
-  );
+async function main(): Promise<void> {
+  const env = readX402ClientEnvironment();
+  const signer = await createKeyPairSignerFromBytes(env.clientSecretKey);
+  const network = env.network === "mainnet-beta" ? "mainnet" : (env.network as SolanaNetwork);
+  // The policy a pay-kit integrator would set: this network, this asset.
+  const permissions = ClientPermissions.builder()
+    .onlyNetwork(network)
+    .allowAsset(AssetPermission.allow(network, env.mint))
+    .build();
+  const client = await createPayKitClient({
+    accept: ["x402"],
+    network,
+    permissions,
+    rpcUrl: env.rpcUrl,
+    signer,
+  });
+
+  const source = env.replaySource ? new URL(env.replaySource.resourcePath, env.targetUrl).toString() : undefined;
+  const proxy = await startProxy((paid) => (!paid && source ? source : env.targetUrl));
+  try {
+    const response = await client.fetch(proxy.url);
+    const sent = proxy.sentHeader();
+    const headers = Object.fromEntries(response.headers.entries());
+    if (sent) headers[`${PAYMENT_SIGNATURE_HEADER}-sent`] = sent;
+    const body = await readBody(response);
+
+    if (!env.resubmitUrl) {
+      emit({
+        ok: response.ok,
+        status: response.status,
+        responseHeaders: headers,
+        responseBody: body,
+        settlement: response.headers.get(env.settlementHeader),
+      });
+      return;
+    }
+
+    if (!sent) throw new Error("client did not pay the first server, nothing to resubmit");
+    const second = await fetch(env.resubmitUrl, { headers: { [PAYMENT_SIGNATURE_HEADER]: sent } });
+    emit({
+      ok: second.ok,
+      status: second.status,
+      responseHeaders: Object.fromEntries(second.headers.entries()),
+      responseBody: await readBody(second),
+      settlement: second.headers.get(env.settlementHeader),
+      firstStatus: response.status,
+      firstBody: body,
+    });
+  } finally {
+    proxy.close();
+  }
+}
+
+main().catch((error: unknown) => {
+  emit({
+    ok: false,
+    status: 0,
+    responseHeaders: {},
+    responseBody: null,
+    settlement: null,
+    error: error instanceof Error ? error.message : String(error),
+  });
 });
