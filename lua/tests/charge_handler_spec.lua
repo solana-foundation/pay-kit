@@ -30,6 +30,16 @@ local function fake_rpc(responses)
     state.calls[#state.calls + 1] = { method = 'simulateTransaction', tx = tx }
     return next_response('simulateTransaction')
   end
+  -- The signature the next sendTransaction answers with, standing in for the
+  -- handler's local signature derivation on these opaque test payloads.
+  state.peek_send = function()
+    local list = responses.sendTransaction or {}
+    local response = list[(indices.sendTransaction or 0) + 1]
+    if type(response) == 'table' and type(response.result) == 'string' then
+      return response.result
+    end
+    return 'unsent-signature'
+  end
   state.send_raw_transaction = function(_self, tx)
     state.calls[#state.calls + 1] = { method = 'sendTransaction', tx = tx }
     return next_response('sendTransaction')
@@ -59,6 +69,7 @@ local function new_handler(opts)
     transaction_verifier = opts.transaction_verifier or function() end,
     pull_transaction_signer = opts.pull_transaction_signer,
     pull_blockhash_extractor = opts.pull_blockhash_extractor,
+    pull_signature_extractor = opts.pull_signature_extractor or function() return rpc.peek_send() end,
     confirmation_attempts = opts.confirmation_attempts or 2,
     confirmation_delay_seconds = 0,
     simulation_max_attempts = opts.simulation_max_attempts or 2,
@@ -300,6 +311,69 @@ t.test('settle_pull times out when confirmation status never reaches confirmed',
     }),
   })
   t.assert_error(function() handler:settle_pull('tx', {}) end, 'Timed out waiting')
+end)
+
+-- ─── Ambiguous broadcast (SOLA1-301) ─────────────────────────────────────
+
+local error_codes = require('pay_kit.protocol.core.error_codes')
+
+local function raised(fn)
+  local ok, err = pcall(fn)
+  t.assert_true(not ok, 'expected an error')
+  return err
+end
+
+-- A send error other than a preflight rejection does not prove the node
+-- dropped the transaction (the response may be lost after it was accepted),
+-- so the charge stays pending under the locally derived signature and
+-- reconciles; only a preflight rejection fails it and releases the claim.
+t.test('ambiguous send error is pending, not failed, and reconciles on retry', function()
+  local replay = store.memory()
+  local handler = new_handler({
+    replay_store = replay,
+    pull_signature_extractor = function() return 'sig-lost' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { error = { code = 'transport-error', message = 'response lost' } } },
+      getSignatureStatuses = {
+        { result = {} },
+        { result = { { confirmationStatus = 'confirmed' } } },
+      },
+    }),
+  })
+
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  local _v, claimed = replay:get('solana:consumed-signature:sig-lost')
+  t.assert_true(claimed, 'the possibly-sent signature must stay claimed')
+
+  -- Not visible yet: still pending, never failed.
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  -- It landed: the identical retry is granted, once.
+  t.assert_equal(handler:settle_pull('tx', {}), 'sig-lost')
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+end)
+
+t.test('preflight rejection fails the charge and releases the claim', function()
+  local replay = store.memory()
+  local handler = new_handler({
+    replay_store = replay,
+    pull_signature_extractor = function() return 'sig-rejected' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { function()
+        error({ code = 'rpc-error', rpc_code = -32002,
+                message = 'sendTransaction: Transaction simulation failed' })
+      end },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.PAYMENT_INVALID)
+  t.assert_true(tostring(err.message):match('Simulation failed') ~= nil, tostring(err.message))
+  local _v, claimed = replay:get('solana:consumed-signature:sig-rejected')
+  t.assert_true(not claimed, 'an unsent transaction must be released')
 end)
 
 -- ─── Shared consumed-signature ledger (SOLA1-289) ────────────────────────

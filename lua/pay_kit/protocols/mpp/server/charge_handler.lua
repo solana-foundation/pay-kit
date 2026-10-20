@@ -16,13 +16,20 @@ the Greptile P1 fix landed on PR #85:
     3. network blockhash check (rejects mainnet keys against a Surfpool
        sandbox and vice versa, before any RPC traffic)
     4. cosign with the server fee payer if configured (delegated to hook)
-    5. `simulate_transaction` with 3-attempt 400 ms backoff
-    6. `send_raw_transaction`
-    7. `store:put_if_absent(replay_key, true)` — CONSUME the signature
-       BEFORE awaiting confirmation so a confirmation timeout cannot leave
-       a double-pay window open
+    5. derive the final signature locally and CLAIM it in the
+       consumed-signature ledger before anything is sent, so the transfer
+       is recorded whatever happens after it leaves
+    6. `simulate_transaction` with 3-attempt 400 ms backoff (a rejection
+       releases the claim: nothing was sent)
+    7. `send_raw_transaction`. Only a preflight rejection proves the node
+       did not forward it (release + fail); any other send error leaves the
+       outcome unknown, so the charge is kept PENDING under the local
+       signature and the client is told settlement is in progress
     8. `await_confirmation` polls `getSignatureStatuses` up to the
        configured attempts/delay; raises on `meta.err` or final timeout
+
+  A later presentation of the same transaction while it is pending
+  reconciles it against its on-chain status instead of paying again.
 
   Push mode:
     1. decode credential payload `{type='signature', signature=<base58>}`
@@ -51,6 +58,13 @@ local DEFAULT_CONFIRMATION_ATTEMPTS = 40
 local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
 local DEFAULT_SIMULATION_MAX_ATTEMPTS = 3
 local DEFAULT_SIMULATION_RETRY_DELAY_SECONDS = 0.4
+-- JSON-RPC code of a sendTransaction preflight (simulation) failure.
+local SEND_PREFLIGHT_FAILURE = -32002
+-- A charge whose transaction may have been broadcast but whose outcome is
+-- unknown. Written next to the ledger claim; resolved only by reconciliation.
+local PENDING_PREFIX = 'solana-charge:pending:'
+-- Single-winner token for the one request a reconciled transaction grants.
+local RECONCILED_PREFIX = 'solana-charge:reconciled:'
 -- The ledger shared with x402 `exact`, so a payment settled through either
 -- protocol cannot authorize a second request through the other.
 local CONSUMED_PREFIX = consumed_signatures.PREFIX
@@ -106,6 +120,10 @@ end
 --                                      called between verification and simulate when the
 --                                      server is the fee payer. Receives the verified base64
 --                                      transaction and must return a signed base64 transaction.
+--     pull_signature_extractor         optional function(transaction_b64) -> signature_b58
+--                                      derives the final (fee-payer) signature of the
+--                                      signed transaction before broadcast. Defaults to the
+--                                      bundled Solana codec.
 --     pull_blockhash_extractor         optional function(transaction_b64) -> blockhash_b58
 --                                      called once before cosign so the network-blockhash gate
 --                                      can run without forcing the handler to depend on a
@@ -142,6 +160,7 @@ function M.new(config)
     transaction_verifier = config.transaction_verifier,
     pull_transaction_signer = config.pull_transaction_signer,
     pull_blockhash_extractor = config.pull_blockhash_extractor,
+    pull_signature_extractor = config.pull_signature_extractor,
     confirmation_attempts = config.confirmation_attempts or DEFAULT_CONFIRMATION_ATTEMPTS,
     confirmation_delay_seconds = config.confirmation_delay_seconds or DEFAULT_CONFIRMATION_DELAY_SECONDS,
     simulation_max_attempts = config.simulation_max_attempts or DEFAULT_SIMULATION_MAX_ATTEMPTS,
@@ -155,6 +174,71 @@ local function consume_replay(self, signature)
   if not consumed_signatures.new(self.replay_store):claim(signature) then
     verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
   end
+end
+
+-- `get` is `(value, present)` on the MPP store and a boolean on
+-- `pay_kit.store`; read presence from either.
+local function store_has(store, key)
+  local value, present = store:get(key)
+  if present == nil then return value and true or false end
+  return present == true
+end
+
+local function default_signature_extractor(transaction_base64)
+  local tx = require('pay_kit.solana.transaction').from_base64(transaction_base64)
+  if #tx.signatures == 0 then
+    error('transaction carries no signatures')
+  end
+  return require('pay_kit.solana.base58').encode(tx.signatures[1])
+end
+
+-- Only a preflight rejection proves the node did not forward the
+-- transaction; every other send failure leaves the outcome unknown.
+local function is_preflight_rejection(err)
+  return type(err) == 'table' and err.code == 'rpc-error'
+    and err.rpc_code == SEND_PREFLIGHT_FAILURE
+end
+
+local function error_message(err)
+  return type(err) == 'table' and tostring(err.message) or tostring(err)
+end
+
+-- Keep the claimed signature and record the charge as pending: the
+-- transaction may land, so the client must not be released to pay again.
+local function settlement_pending(self, signature, detail)
+  self.replay_store:put_if_absent(PENDING_PREFIX .. signature, true)
+  verifier_error('Settlement of transaction ' .. signature .. ' is in progress (' ..
+    detail .. '); retry the same credential, do not pay again',
+    error_codes.SETTLEMENT_IN_PROGRESS)
+end
+
+--- Resolve a pending charge from its on-chain status. Only an explicit
+--- on-chain outcome resolves it; anything else leaves it pending.
+function Handler:reconcile_pending(signature)
+  if not store_has(self.replay_store, PENDING_PREFIX .. signature) then
+    verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
+  end
+  local ok, statuses = pcall(self.rpc.signature_statuses, self.rpc, { signature })
+  if not ok then
+    settlement_pending(self, signature, 'status unavailable: ' .. error_message(statuses))
+  end
+  local status = statuses and statuses[1]
+  if type(status) == 'table' then
+    if status.err ~= nil and status.err ~= json.null then
+      self.replay_store:delete(PENDING_PREFIX .. signature)
+      verifier_error('Transaction ' .. signature .. ' landed on-chain but failed: ' .. tostring(status.err))
+    end
+    local confirmation_status = status.confirmationStatus
+    if confirmation_status == 'confirmed' or confirmation_status == 'finalized' then
+      -- One request per payment: only the first reconciliation is granted.
+      if not self.replay_store:put_if_absent(RECONCILED_PREFIX .. signature, true) then
+        verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
+      end
+      self.replay_store:delete(PENDING_PREFIX .. signature)
+      return signature
+    end
+  end
+  settlement_pending(self, signature, 'not yet confirmed')
 end
 
 --- Pull-mode settlement.
@@ -205,11 +289,26 @@ function Handler:settle_pull(transaction_base64, request)
     signed_base64 = signer_result
   end
 
-  -- Stage 4: simulate with bounded retries. A program-level error fails
+  -- Stage 4: derive the final signature and claim it before anything is
+  -- sent. A transaction already claimed is either pending (reconcile it) or
+  -- consumed.
+  local extractor = self.pull_signature_extractor or default_signature_extractor
+  local extract_ok, local_signature = pcall(extractor, signed_base64)
+  if not extract_ok or type(local_signature) ~= 'string' or local_signature == '' then
+    verifier_error('could not derive the transaction signature: ' .. error_message(local_signature))
+  end
+  local ledger = consumed_signatures.new(self.replay_store)
+  if not ledger:claim(local_signature) then
+    local reconciled = self:reconcile_pending(local_signature)
+    return reconciled
+  end
+
+  -- Stage 5: simulate with bounded retries. A program-level error fails
   -- the request immediately (no retry, because the result is deterministic
   -- and the next attempt would just consume another RPC round-trip to get
   -- the same error). A transport-level error (pcall returned false) is
-  -- retried up to `simulation_max_attempts` times.
+  -- retried up to `simulation_max_attempts` times. Nothing has been sent,
+  -- so every failure here releases the claim.
   local simulation, simulate_err
   for attempt = 1, self.simulation_max_attempts do
     local sim_ok, sim_result = pcall(self.rpc.simulate_transaction, self.rpc, signed_base64)
@@ -223,30 +322,41 @@ function Handler:settle_pull(transaction_base64, request)
       self.sleep(self.simulation_retry_delay_seconds)
     end
   end
+  local simulation_failure
   if simulate_err ~= nil then
-    local message = type(simulate_err) == 'table' and simulate_err.message or tostring(simulate_err)
-    verifier_error('Simulation failed: ' .. message)
-  end
-  if simulation == nil then
-    verifier_error('Simulation failed: empty simulation result')
-  end
+    simulation_failure = 'Simulation failed: ' .. error_message(simulate_err)
+  elseif simulation == nil then
+    simulation_failure = 'Simulation failed: empty simulation result'
   -- `pay_kit.util.json` decodes JSON `null` as `json.null` (a table sentinel),
   -- not Lua `nil`. Solana JSON-RPC returns `"err": null` on success, so
   -- comparing against both nil and the sentinel is required to recognize
   -- a successful simulation.
-  if simulation.err ~= nil and simulation.err ~= json.null then
-    verifier_error('Simulation failed: ' .. tostring(simulation.err))
+  elseif simulation.err ~= nil and simulation.err ~= json.null then
+    simulation_failure = 'Simulation failed: ' .. tostring(simulation.err)
+  end
+  if simulation_failure then
+    ledger:release(local_signature)
+    verifier_error(simulation_failure)
   end
 
-  -- Stage 5: broadcast. Any RPC failure here surfaces as a typed error and
-  -- the signature is not yet consumed so the client can retry safely.
-  local signature = self.rpc:send_raw_transaction(signed_base64)
-
-  -- Stage 6: consume BEFORE await. This is the Greptile P1 ordering from PR
-  -- #85. A confirmation timeout must not leave a window where the same
-  -- credential can settle a second payment, because the on-chain tx may
-  -- still finalize asynchronously.
-  consume_replay(self, signature)
+  -- Stage 6: broadcast. Only a preflight rejection proves the node did not
+  -- forward the transaction (release, the payer may present it again). Any
+  -- other error (a lost response, a 5xx from a proxy that already forwarded
+  -- it) leaves the outcome unknown: the claim is kept and the charge stays
+  -- pending for reconciliation, so the client is never released to pay a
+  -- replacement while the original can still land.
+  local send_ok, signature = pcall(self.rpc.send_raw_transaction, self.rpc, signed_base64)
+  if not send_ok then
+    if is_preflight_rejection(signature) then
+      ledger:release(local_signature)
+      verifier_error('Simulation failed: ' .. error_message(signature))
+    end
+    settlement_pending(self, local_signature, 'broadcast outcome unknown: ' .. error_message(signature))
+  end
+  if signature ~= local_signature then
+    settlement_pending(self, local_signature,
+      'RPC returned signature ' .. tostring(signature) .. ' for a different transaction')
+  end
 
   -- Stage 7: confirmation polling. Errors here surface but the signature
   -- is already consumed, mirroring the Rust spine.
