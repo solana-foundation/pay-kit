@@ -448,6 +448,27 @@ impl ChargeReplayStore {
         self.append(challenge_id, generation + 1, &confirmed).await
     }
 
+    /// The pending broadcast recorded for `challenge_id` under
+    /// `normalized_request_digest`, as `(generation, final_signature)`.
+    /// Never creates a reservation.
+    pub async fn pending(
+        &self,
+        challenge_id: &str,
+        normalized_request_digest: &str,
+    ) -> Result<Option<(u64, String)>, StoreError> {
+        Ok(match self.tip(challenge_id).await? {
+            Some((generation, record))
+                if record.state == ChargeRecordState::Pending
+                    && record.normalized_request_digest == normalized_request_digest =>
+            {
+                record
+                    .final_signature
+                    .map(|signature| (generation, signature))
+            }
+            _ => None,
+        })
+    }
+
     /// Record that `final_signature` was broadcast but its outcome is unknown,
     /// for the reservation `generation` returned by [`Self::reserve`].
     ///

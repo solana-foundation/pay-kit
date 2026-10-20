@@ -1087,6 +1087,7 @@ impl Mpp {
         // A channel submission can reconcile an already-landed transaction
         // after HTTP expiry, but cannot authorize another execution.
         let mut expired_channel_challenge = false;
+        let mut expired_pending = None;
         if let Some(ref expires) = credential.challenge.expires {
             if let Ok(expires_at) =
                 time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
@@ -1103,9 +1104,14 @@ impl Mpp {
                         .and_then(|md| md.get("channelCharge"))
                         .is_some_and(|profile| !profile.is_null());
                     if !expired_channel_challenge {
-                        return Err(VerificationError::expired(format!(
-                            "Challenge expired at {expires}"
-                        )));
+                        // Only a broadcast already pending for this exact
+                        // credential may still be reconciled; nothing new settles.
+                        expired_pending = self.expired_pending_charge(credential).await?;
+                        if expired_pending.is_none() {
+                            return Err(VerificationError::expired(format!(
+                                "Challenge expired at {expires}"
+                            )));
+                        }
                     }
                 }
             } else {
@@ -1209,6 +1215,17 @@ impl Mpp {
             return Err(VerificationError::expired(
                 "Expired channel challenge has no submitted payment to reconcile",
             ));
+        }
+        if let Some((generation, final_signature)) = expired_pending {
+            return self
+                .reconcile_pending_charge(
+                    &charge_store,
+                    &challenge_id,
+                    generation,
+                    &final_signature,
+                    &payload,
+                )
+                .await;
         }
         let generation = match charge_store
             .reserve(&challenge_id, &digest, CHARGE_RESERVATION_LEASE)
@@ -1329,6 +1346,26 @@ impl Mpp {
                 Err(err)
             }
         }
+    }
+
+    /// The pending broadcast recorded for this exact credential, if any.
+    async fn expired_pending_charge(
+        &self,
+        credential: &PaymentCredential,
+    ) -> Result<Option<(u64, String)>, VerificationError> {
+        let Ok(payload) = serde_json::from_value::<CredentialPayload>(credential.payload.clone())
+        else {
+            return Ok(None);
+        };
+        let digest = normalized_request_digest(
+            &credential.challenge.id,
+            credential.challenge.request.raw(),
+            &payload,
+        )?;
+        self.charge_replay_store()
+            .pending(&credential.challenge.id, &digest)
+            .await
+            .map_err(|e| VerificationError::new(format!("Store error: {e}")))
     }
 
     /// Resolve a charge whose broadcast outcome was unknown. The record is
@@ -8193,6 +8230,12 @@ mod tests {
 
     /// A SOL pull charge whose broadcast is accepted but never observed.
     async fn ambiguous_charge() -> (AmbiguousCharge, VerificationError) {
+        ambiguous_charge_expiring(None).await
+    }
+
+    async fn ambiguous_charge_expiring(
+        expires: Option<&str>,
+    ) -> (AmbiguousCharge, VerificationError) {
         let signature = Signature::from([7u8; 64]);
         let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let blockhash_valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -8235,14 +8278,14 @@ mod tests {
             None,
         )
         .unwrap();
-        let credential = build_credential(
-            &mpp,
-            &expected,
-            serde_json::json!({
-                "type": "transaction",
-                "transaction": crate::core::tx::encode(&tx).unwrap(),
-            }),
-        );
+        let payload = serde_json::json!({
+            "type": "transaction",
+            "transaction": crate::core::tx::encode(&tx).unwrap(),
+        });
+        let credential = match expires {
+            Some(expires) => build_credential_with_expires(&mpp, &expected, expires, payload),
+            None => build_credential(&mpp, &expected, payload),
+        };
         let first = mpp.verify(&credential, &expected).await.unwrap_err();
         (
             AmbiguousCharge {
@@ -8388,6 +8431,55 @@ mod tests {
         );
         let granted = [outcomes.0.is_ok(), outcomes.1.is_ok(), outcomes.2.is_ok()];
         assert_eq!(granted.iter().filter(|ok| **ok).count(), 1, "{outcomes:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_charge_reconciles_after_challenge_expiry() {
+        use std::sync::atomic::Ordering;
+        let deadline = time::OffsetDateTime::now_utc() + time::Duration::seconds(2);
+        let expires = deadline
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        let (charge, first) = ambiguous_charge_expiring(Some(&expires)).await;
+        assert_eq!(first.code, Some("settlement-in-progress"), "{first:?}");
+        let remaining = deadline - time::OffsetDateTime::now_utc();
+        if remaining.is_positive() {
+            tokio::time::sleep(remaining.unsigned_abs() + std::time::Duration::from_millis(200))
+                .await;
+        }
+
+        // A different payload under the expired challenge settles nothing new.
+        let mut other = charge.credential.clone();
+        other.payload = serde_json::json!({ "type": "transaction", "transaction": "AA==" });
+        let err = charge
+            .mpp
+            .verify(&other, &charge.expected)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("expired"), "{}", err.message);
+
+        // The pending credential still reconciles past expiry.
+        let err = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        charge.status.store(1, Ordering::SeqCst);
+        let receipt = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap();
+        assert_eq!(receipt.reference, charge.signature.to_string());
+
+        // Once resolved, the expired challenge is refused again.
+        let err = charge
+            .mpp
+            .verify(&charge.credential, &charge.expected)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("expired"), "{}", err.message);
     }
 
     #[tokio::test(flavor = "multi_thread")]
