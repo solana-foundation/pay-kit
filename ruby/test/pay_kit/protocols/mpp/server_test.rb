@@ -33,6 +33,20 @@ class FakeRpc
   end
 end
 
+# Answers sendTransaction with `send_error` (an exception) instead of a
+# signature.
+class FailingSendRpc < FakeRpc
+  def initialize(send_error:, **kwargs)
+    super(**kwargs)
+    @send_error = send_error
+  end
+
+  def send_raw_transaction(transaction_base64)
+    @sent_transactions << transaction_base64
+    raise @send_error
+  end
+end
+
 class SequenceRpc < FakeRpc
   def initialize(responses:)
     super()
@@ -815,6 +829,40 @@ class ChargeHandlerTest < Minitest::Test
     response = handler_with(FakeRpc.new(statuses: [{"err" => "boom", "confirmationStatus" => "confirmed"}]), attempts: 1).handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
     assert_match(/failed/, response.body["message"])
+  end
+
+  # A send error other than a preflight rejection does not prove the node
+  # dropped the transaction (the response may be lost after it was
+  # accepted), so its locally derived signature is claimed as pending and
+  # can never authorize a second request; only a preflight rejection leaves
+  # it free to present again.
+  def test_ambiguous_send_error_keeps_the_charge_pending
+    request = charge_request
+    wire = v0_transaction(
+      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    local_signature = ::PayCore::Solana::Transaction.from_base64(Base64.strict_encode64(wire)).primary_signature
+    authorization = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"transaction" => Base64.strict_encode64(wire)}
+    ).to_authorization_header
+    key = ::PayCore::ConsumedSignatures.key(local_signature)
+
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    lost = ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: Solana RPC request timed out (Net::ReadTimeout)")
+    response = handler_with(FailingSendRpc.new(send_error: lost), store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_match(/Settlement in progress/, response.body["message"])
+    assert_match(local_signature, response.body["message"])
+    refute store.put_if_absent(key, true), "an ambiguous send must keep the signature claimed"
+
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    rejected = ::PayCore::Solana::Rpc::PreflightRejection.new("sendTransaction: Transaction simulation failed")
+    response = handler_with(FailingSendRpc.new(send_error: rejected), store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_match(/simulation failed/, response.body["message"])
+    assert store.put_if_absent(key, true), "a preflight rejection proves non-delivery and leaves the signature unclaimed"
   end
 
   # TOCTOU replay regression (push mode, type="signature"). A single signature

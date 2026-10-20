@@ -259,7 +259,29 @@ module PayKit::Protocols::Mpp
           simulation = simulate_transaction_with_retry(signed_base64)
           raise ::PayKit::Protocols::Mpp::VerificationError, "Simulation failed: #{simulation["err"].inspect}" unless simulation["err"].nil?
 
+          broadcast(signed_base64, transaction.primary_signature)
+        end
+
+        # Broadcast and return the transaction's own signature, derived
+        # locally so the outcome never depends on the RPC response.
+        #
+        # Only a preflight rejection proves the node did not forward the
+        # transaction, so it alone leaves the signature unclaimed for the
+        # payer to present again. Any other send error (a lost response, a
+        # 5xx from a proxy that already forwarded it) leaves the outcome
+        # unknown: the signature is claimed as pending so it can never
+        # authorize a second request, and the charge is reported as still
+        # settling rather than failed.
+        def broadcast(signed_base64, local_signature)
           @rpc.send_raw_transaction(signed_base64)
+          local_signature
+        rescue ::PayCore::Solana::Rpc::PreflightRejection
+          raise
+        rescue ::PayCore::Solana::Rpc::RpcError => error
+          @consumed_signatures.claim(local_signature)
+          raise ::PayKit::Protocols::Mpp::VerificationError,
+            "Settlement in progress: broadcast outcome unknown (#{error.message}); " \
+            "transaction #{local_signature} is pending reconciliation"
         end
 
         # await_confirmation only runs on the pull path; push mode already

@@ -95,6 +95,25 @@ class SupportTest < Minitest::Test
     end
   end
 
+  # Only a sendTransaction preflight failure is typed as a definitive
+  # rejection; any other RPC error leaves the broadcast outcome unknown.
+  def test_rpc_client_types_send_preflight_rejection
+    response = Struct.new(:body)
+    preflight = {"error" => {"code" => -32002, "message" => "Transaction simulation failed"}}
+    with_rpc_http(lambda { |_request| response.new(JSON.generate(preflight)) }) do
+      client = ::PayCore::Solana::Rpc.new("http://localhost:8899")
+      assert_raises(::PayCore::Solana::Rpc::PreflightRejection) { client.send_raw_transaction("abc") }
+      error = assert_raises(::PayCore::Solana::Rpc::RpcError) { client.call("simulateTransaction") }
+      refute_kind_of ::PayCore::Solana::Rpc::PreflightRejection, error
+    end
+
+    lost = {"error" => {"code" => -32099, "message" => "response lost"}}
+    with_rpc_http(lambda { |_request| response.new(JSON.generate(lost)) }) do
+      error = assert_raises(::PayCore::Solana::Rpc::RpcError) { ::PayCore::Solana::Rpc.new("http://localhost:8899").send_raw_transaction("abc") }
+      refute_kind_of ::PayCore::Solana::Rpc::PreflightRejection, error
+    end
+  end
+
   def test_rpc_client_custom_timeouts_and_timeout_errors
     with_rpc_http(lambda { |_request| raise Net::ReadTimeout }) do |clients|
       client = ::PayCore::Solana::Rpc.new("https://localhost:8899", open_timeout: 1, read_timeout: 2, write_timeout: 3)
