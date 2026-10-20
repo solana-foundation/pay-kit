@@ -374,6 +374,20 @@ describe('verifyVoucherForChannel', () => {
         if (atNow.status === 'rejected') expect(atNow.reason).toBe('expired');
     });
 
+    test('a voucher signed for another channel is rejected', async () => {
+        const signer = await generateKeyPairSigner();
+        const other = (await generateKeyPairSigner()).address;
+        const voucher = await signVoucher(signer, other, 100n, FAR_FUTURE);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        const result = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n });
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') expect(result.reason).toBe('channel-mismatch');
+
+        const own = await signVoucher(signer, state.channelId, 100n, FAR_FUTURE);
+        expect((await verifyVoucherForChannel({ state, signed: own, deposit: 1_000n })).status).toBe('accepted');
+    });
+
     test('non-zero expiry within the settlement window is rejected', async () => {
         const signer = await generateKeyPairSigner();
         // Voucher valid until t=1500; now=1000; window=900 ⇒ must be after 1900.

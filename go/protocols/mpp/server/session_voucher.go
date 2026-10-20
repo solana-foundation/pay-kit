@@ -66,6 +66,10 @@ const (
 	// VoucherRejectChannelSealed: the channel is already sealed.
 	VoucherRejectChannelSealed VoucherRejectReason = "channel-sealed"
 
+	// VoucherRejectChannelMismatch means the voucher is bound to another
+	// channel.
+	VoucherRejectChannelMismatch VoucherRejectReason = "channel-mismatch"
+
 	// VoucherRejectCumulativeNotMonotonic: the cumulative does not strictly
 	// exceed the watermark.
 	VoucherRejectCumulativeNotMonotonic VoucherRejectReason = "cumulative-not-monotonic"
@@ -153,6 +157,11 @@ type VerifyVoucherArgs struct {
 func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 	state := args.State
 	signed := args.Signed
+
+	if signed.Data.ChannelID != state.ChannelID {
+		return voucherReject(VoucherRejectChannelMismatch,
+			fmt.Sprintf("voucher channelId %s does not match channel %s", signed.Data.ChannelID, state.ChannelID))
+	}
 
 	// 1. Parse new cumulative from the payload.
 	newCumulative, err := strconv.ParseUint(signed.Data.Cumulative, 10, 64)

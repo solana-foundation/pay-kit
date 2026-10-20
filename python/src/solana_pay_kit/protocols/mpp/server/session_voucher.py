@@ -61,6 +61,9 @@ class VoucherRejectReason(StrEnum):
     #: The channel is already sealed.
     CHANNEL_SEALED = "channel-sealed"
 
+    #: The voucher is bound to another channel.
+    CHANNEL_MISMATCH = "channel-mismatch"
+
     #: The cumulative does not strictly exceed the watermark.
     CUMULATIVE_NOT_MONOTONIC = "cumulative-not-monotonic"
 
@@ -189,6 +192,12 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
     """
     state = args.state
     signed = args.signed
+
+    if signed.data.channel_id != state.channel_id:
+        return _voucher_reject(
+            VoucherRejectReason.CHANNEL_MISMATCH,
+            f"voucher channelId {signed.data.channel_id} does not match channel {state.channel_id}",
+        )
 
     # 1. Parse new cumulative from the payload.
     try:

@@ -94,6 +94,17 @@ def test_verify_voucher_for_channel_accepts_no_expiry_voucher_signed_over_zero()
     assert result.new_expires_at == 0
 
 
+def test_verify_voucher_for_channel_rejects_voucher_for_another_channel() -> None:
+    signer = _TestVoucherSigner(1)
+    state = _voucher_test_state(signer.address())
+    other = str(Keypair().pubkey())
+    voucher = signer.sign_voucher(other, 100, _far_future())
+
+    result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=state.deposit))
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.CHANNEL_MISMATCH
+
+
 def test_verify_voucher_for_channel_idempotent_replay() -> None:
     signer = _TestVoucherSigner(1)
     voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, _far_future())

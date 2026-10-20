@@ -21,6 +21,7 @@ import type { ChannelState } from './store.js';
 export type VoucherRejectReason =
     | 'below-min-delta'
     | 'channel-close-pending'
+    | 'channel-mismatch'
     | 'channel-sealed'
     | 'cumulative-not-monotonic'
     | 'exceeds-deposit'
@@ -104,6 +105,12 @@ export interface VerifyVoucherArgs {
 export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<VoucherVerifyResult> {
     const { state, signed, deposit } = args;
     const { voucher: data } = signed;
+    if (data.channelId !== state.channelId) {
+        return reject(
+            'channel-mismatch',
+            `voucher channelId ${data.channelId} does not match channel ${state.channelId}`,
+        );
+    }
     if (signed.signatureType !== 'ed25519' || signed.signer !== state.authorizedSigner) {
         return reject('invalid-signature', 'voucher signer does not match the channel authorized signer');
     }

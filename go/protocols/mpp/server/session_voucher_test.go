@@ -330,6 +330,18 @@ func TestVerifyVoucherForChannelZeroExpiresAtReplayNeverExpires(t *testing.T) {
 	}
 }
 
+func TestVerifyVoucherForChannelRejectsVoucherForAnotherChannel(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	state := voucherTestState(signer.Address())
+	other := solana.NewWallet().PublicKey().String()
+	voucher := signer.SignVoucher(t, other, 100, farFuture())
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: state.Deposit})
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectChannelMismatch {
+		t.Fatalf("result = %+v, want channel-mismatch rejection", result)
+	}
+}
+
 func TestVerifyVoucherForChannelSettlementWindowBoundary(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	now := int64(1_000)
