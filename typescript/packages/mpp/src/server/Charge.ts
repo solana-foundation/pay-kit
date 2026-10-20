@@ -353,6 +353,7 @@ const RUNTIME_MAX_UNITS = 1_400_000n;
 
 type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
+    header: { numSignerAccounts: number };
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
 };
@@ -611,6 +612,7 @@ async function validateInstructionAllowlist(
     if (!txFeePayer) {
         throw new Error('Transaction has no fee payer');
     }
+    verifyRequiredSigners(message, matchedPaymentInstructionIndexes);
     const expectedAtaPayer = options.feePayer ?? txFeePayer;
     const createdAtaOwners = new Set<string>();
     const budget: ComputeBudgetSeen = { budgetInstructions: 0 };
@@ -662,6 +664,38 @@ async function validateInstructionAllowlist(
 
     if (options.feePayer !== undefined) {
         validateSponsoredPriorityFee(budget, message.instructions.length);
+    }
+}
+
+/**
+ * Every required signer must be the fee payer or the one authority that funds
+ * every matched payment transfer. Any other signer authorizes nothing and only
+ * adds a signature fee, which a sponsor would pay; letting each leg of a split
+ * name its own authority would let a payer multiply those fees.
+ */
+function verifyRequiredSigners(message: CompiledMessage, matchedPaymentInstructionIndexes: Set<number>) {
+    let fundingAuthority: string | undefined;
+    for (const index of matchedPaymentInstructionIndexes) {
+        const ix = message.instructions[index];
+        if (!ix) continue;
+        const program = programAddress(message, ix);
+        const authorityPosition =
+            program === SYSTEM_PROGRAM
+                ? 0
+                : program === TOKEN_PROGRAM || program === TOKEN_2022_PROGRAM
+                  ? 3
+                  : undefined;
+        if (authorityPosition === undefined) continue;
+        const authority = accountAddress(message, ix.accountIndices[authorityPosition], 'authority');
+        if (fundingAuthority !== undefined && fundingAuthority !== authority) {
+            throw new Error('Payment transfers must share one funding authority');
+        }
+        fundingAuthority = authority;
+    }
+    const allowed = new Set([message.staticAccounts[0], fundingAuthority]);
+    const signers = message.staticAccounts.slice(0, message.header.numSignerAccounts);
+    if (signers.some(signer => !allowed.has(signer))) {
+        throw new Error('Unexpected signer in payment transaction');
     }
 }
 

@@ -3565,6 +3565,71 @@ test('#25 fee-sponsored compute-unit price under the tight cap passes', async ()
     ).resolves.toBeUndefined();
 });
 
+// A sponsor pays a signature fee per required signer, so every leg of a split
+// must be funded by one authority, and no signer may ride along that funds
+// nothing.
+async function buildSponsoredSolSplitTx(
+    feePayerKey: string,
+    splitRecipient: string,
+    options: { extraSigner?: boolean; splitPayer?: 'other' | 'same' } = {},
+) {
+    const payer = await generateKeyPairSigner();
+    const splitPayer = options.splitPayer === 'other' ? await generateKeyPairSigner() : payer;
+    const primary = getTransferSolInstruction({ source: payer, destination: address(RECIPIENT), amount: 800_000n });
+    const extra = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        options.extraSigner
+            ? ({
+                  ...primary,
+                  accounts: [
+                      ...primary.accounts,
+                      { address: extra.address, role: AccountRole.READONLY_SIGNER, signer: extra },
+                  ],
+              } as Instruction)
+            : primary,
+        getTransferSolInstruction({ source: splitPayer, destination: address(splitRecipient), amount: 200_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayer(address(feePayerKey), msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+test('sponsored split legs must share one funding authority and carry no extra signer', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const splitRecipient = (await generateKeyPairSigner()).address;
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: {
+            network: 'devnet',
+            feePayer: true,
+            feePayerKey: feePayer.address,
+            splits: [{ amount: '200000', recipient: splitRecipient }],
+        },
+        recipient: RECIPIENT,
+    };
+
+    await expect(
+        verifyChargeTransaction(
+            await buildSponsoredSolSplitTx(feePayer.address, splitRecipient, { splitPayer: 'other' }),
+            request,
+        ),
+    ).rejects.toThrow('Payment transfers must share one funding authority');
+    await expect(
+        verifyChargeTransaction(
+            await buildSponsoredSolSplitTx(feePayer.address, splitRecipient, { extraSigner: true }),
+            request,
+        ),
+    ).rejects.toThrow('Unexpected signer in payment transaction');
+    await expect(
+        verifyChargeTransaction(await buildSponsoredSolSplitTx(feePayer.address, splitRecipient), request),
+    ).resolves.toBeUndefined();
+});
+
 async function buildSponsoredSplitTx(feePayerKey: string, budget: Instruction[]) {
     const authority = await generateKeyPairSigner();
     const instructions: Instruction[] = [
