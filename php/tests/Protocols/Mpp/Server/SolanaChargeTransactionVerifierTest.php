@@ -203,6 +203,31 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertSame('fee payer cannot fund the SOL payment transfer', $result->reason);
     }
 
+    // A sponsor pays a signature fee per required signer, so the legs of a
+    // split must all be funded by one authority, not one signer per leg.
+    public function testRejectsSplitLegsFundedByDifferentAuthorities(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $otherPayer = PublicKey::fromBytes(str_repeat("\x0b", 32));
+        $result = $this->verify($request, $this->solTransactionPayload($fixture, splitSource: $otherPayer));
+
+        self::assertFalse($result->ok);
+        self::assertSame('payment transfers must share one funding authority', $result->reason);
+    }
+
+    // A signer that funds no leg authorizes nothing and only adds a fee.
+    public function testRejectsSignerThatFundsNoPaymentLeg(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $stranger = PublicKey::fromBytes(str_repeat("\x0b", 32));
+        $result = $this->verify($request, $this->solTransactionPayload($fixture, memoSigners: [$stranger]));
+
+        self::assertFalse($result->ok);
+        self::assertSame('unexpected signer in payment transaction', $result->reason);
+    }
+
     public function testRejectsTooManySplits(): void
     {
         $fixture = $this->fixture();
@@ -803,12 +828,19 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
     /**
      * @param array<string, PublicKey> $fixture
      */
-    private function solTransactionPayload(array $fixture, ?PublicKey $primarySource = null): string
-    {
+    /**
+     * @param array<int, PublicKey> $memoSigners
+     */
+    private function solTransactionPayload(
+        array $fixture,
+        ?PublicKey $primarySource = null,
+        ?PublicKey $splitSource = null,
+        array $memoSigners = [],
+    ): string {
         $instructions = [];
         $instructions[] = SystemProgram::transfer($primarySource ?? $fixture['payer'], $fixture['recipient'], 750);
-        $instructions[] = SystemProgram::transfer($fixture['payer'], $fixture['splitRecipient'], 250);
-        $instructions[] = MemoProgram::create('order-123');
+        $instructions[] = SystemProgram::transfer($splitSource ?? $fixture['payer'], $fixture['splitRecipient'], 250);
+        $instructions[] = MemoProgram::create('order-123', $memoSigners);
         $instructions[] = MemoProgram::create('split memo');
         return $this->v0TransactionBase64($fixture['feePayer'], $instructions);
     }

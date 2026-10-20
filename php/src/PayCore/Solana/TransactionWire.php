@@ -73,6 +73,12 @@ final class TransactionWire
         return array_values($this->transaction->message->staticAccountKeys);
     }
 
+    /** Number of required signers: the first accounts of the key table. */
+    public function numRequiredSignatures(): int
+    {
+        return $this->transaction->message->numRequiredSignatures;
+    }
+
     /**
      * Top-level instructions in message order, in the v0 compiled shape for
      * both encodings.
