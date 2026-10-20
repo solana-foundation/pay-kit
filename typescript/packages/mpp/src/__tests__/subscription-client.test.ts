@@ -345,8 +345,9 @@ describe('buildSubscriptionActivationTransaction', () => {
             request: req,
             signer,
         });
-        expect(urls.some(u => u.includes('api.mainnet-beta.solana.com'))).toBe(true);
-        expect(urls.some(u => u.includes('devnet'))).toBe(false);
+        const hosts = urls.map(u => new URL(u).host);
+        expect(hosts).toContain('api.mainnet-beta.solana.com');
+        expect(hosts.some(h => h.includes('devnet'))).toBe(false);
     });
 });
 
