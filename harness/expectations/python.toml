@@ -6,3 +6,13 @@ language = "python"
 vector = ["charge", "x402-exact", "session"]
 protocol = true
 flow = false
+
+[[known_failing]]
+id = "vector/charge-split-duplicate-memo-accept"
+reason = "the charge verifier tracks expected split memos in a set, so two splits with the same memo text accept only one Memo instruction and reject the second as unexpected"
+tracking = "FINDINGS.md#python-duplicate-split-memos"
+
+[[known_failing]]
+id = "vector/x402-exact-verify-overpayment-accept"
+reason = "the x402 exact verifier requires transfer amount == requirement and rejects overpayment (RULINGS S5)"
+tracking = "FINDINGS.md#x402-overpayment-rejected"

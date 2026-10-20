@@ -5,7 +5,76 @@ Open gaps referenced from `[[known_failing]]` entries by
 when it does, replace the tracking value with the issue URL and delete the
 section here.
 
-There are no open known failures.
+Open findings from the phase-1 vectors (pinned spec text, RULINGS ids):
+
+## x402-accepted-amount-not-bound
+
+**Cases:** `vector/x402-exact-verify-accepted-amount-lie-reject`
+**SDKs:** lua, php, ruby
+
+The v2 credential's `accepted` is matched to the offered requirement by
+scheme, network, asset and payTo only, so a credential that claims a cheaper
+`accepted.amount` (and pays it) is matched to the route and rejected later by
+the transaction amount check (`invalid_exact_svm_payload_amount_mismatch`)
+instead of as an `accepted` mismatch. The payment is still refused, but the
+credential is bound to a requirement it does not echo.
+
+- Lua: `lua/pay_kit/protocols/x402/init.lua:191` (`REQUIREMENT_IDENTITY_KEYS`)
+- PHP: `php/src/Protocols/X402/Adapter.php:509` (`matchCanonicalCredential`)
+- Ruby: `ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/types.rb:108`
+  (`REQUIREMENT_IDENTITY_KEYS`)
+
+Spec: x402-specification-v2.md §5.2.2, “PaymentRequirements object indicating
+the payment method chosen”; the chosen method includes its amount.
+
+## ts-x402-accepted-not-bound
+
+**Cases:** `vector/x402-exact-v2-verify-wrong-network-reject`,
+`vector/x402-exact-verify-accepted-amount-lie-reject`,
+`vector/x402-exact-verify-accepted-asset-lie-reject`,
+`vector/x402-exact-verify-accepted-payto-lie-reject`
+**SDKs:** typescript
+
+`@solana/pay-kit`'s x402 adapter only checks that `accepted` is an object and
+then verifies the transaction against the route
+(`typescript/packages/pay-kit/src/adapters/x402.ts:146-152`). It never
+compares `accepted` with the route, so each lie surfaces as the transaction
+check that happens to fail (wrong-network, amount, mint, recipient) instead of
+`accepted-mismatch`.
+
+## ts-x402-fee-payer-in-accounts
+
+**Case:** `vector/x402-exact-verify-fee-payer-in-accounts-reject`
+**SDKs:** typescript
+
+The vendored `@x402/svm` 2.26.0 exact facilitator
+(`typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/exact/facilitator/index.mjs:728`)
+checks the fee payer only as the `TransferChecked` authority and lets it sign
+a Memo instruction. scheme_exact_svm.md §2.1.1: “The feePayer MUST NOT appear
+in the accounts list of any instruction”. Upstream reference implementation.
+
+## x402-overpayment-rejected
+
+**Case:** `vector/x402-exact-verify-overpayment-accept`
+**SDKs:** python, typescript
+
+Both verifiers require the transfer amount to equal the requirement:
+`python/src/solana_pay_kit/protocols/x402/exact/verify.py:289` and the
+vendored `@x402/svm` 2.26.0 facilitator (`.../exact/facilitator/index.mjs:765`,
+`amount !== BigInt(requirements.amount)`). RULINGS S5: overpayment is
+tolerated by default (scheme_exact_svm.md §1.4).
+
+## python-duplicate-split-memos
+
+**Case:** `vector/charge-split-duplicate-memo-accept`
+**SDKs:** python
+
+The charge verifier keeps the expected split memos in a set
+(`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:356`), so two
+splits with the same memo text accept one Memo instruction and reject the
+second as “unexpected Memo Program instruction”. draft-solana-charge-00
+Method Details: “If the same recipient appears more than once in splits,
+each occurrence is a distinct payment leg and MUST be verified separately”.
 
 ## Resolved on 2026-10-20
 

@@ -19,11 +19,6 @@ ids = [
   "vector/charge-token2022-program-from-mint-owner",
 ]
 
-[[unsupported]]
-reason = "lua SDK is server-only: this verify vector pins no transaction, so it needs a client build first and lua has no client builder"
-ids = [
-  "vector/charge-split-ata-memo-envelope-accept",
-]
 
 [[unsupported]]
 reason = "lua SDK is server-only: no client-side x402 builder"
@@ -37,3 +32,8 @@ ids = [
   "vector/x402-ext-omit-when-none-advertised",
   "vector/x402-ext-preserve-unknown-verbatim",
 ]
+
+[[known_failing]]
+id = "vector/x402-exact-verify-accepted-amount-lie-reject"
+reason = "the accepted-to-offer match compares scheme/network/asset/payTo only, so a credential whose accepted.amount lies is caught later by the transaction amount check (amount-mismatch) instead of as an accepted mismatch"
+tracking = "FINDINGS.md#x402-accepted-amount-not-bound"
