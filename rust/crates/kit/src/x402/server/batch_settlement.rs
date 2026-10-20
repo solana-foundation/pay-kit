@@ -655,6 +655,13 @@ impl X402BatchSettlement {
         crate::core::tx::highest(&self.accepted_versions)
     }
 
+    /// Route this handler's chain reads through `rpc` (a mock in tests).
+    #[cfg(test)]
+    pub(crate) fn with_rpc_client(mut self, rpc: RpcClient) -> Self {
+        self.rpc = Arc::new(rpc);
+        self
+    }
+
     /// Use a host-owned transaction pipeline for channel redemption.
     ///
     /// Sharing one pipeline across gate instances keeps submission pacing and
@@ -1112,6 +1119,24 @@ impl X402BatchSettlement {
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
                 let max_claimable = check_voucher_batched(voucher, &config, &channel_id).await?;
+                // A deposit may create a record only for a channel the chain
+                // does not hold yet. A channel already onchain with no record
+                // here lost it (a restart over an in-memory store, a fresh
+                // replica): the vouchers it accepted lived only in that record,
+                // so seeding a zero watermark would serve them again.
+                let onchain_without_record = match &stored {
+                    Some(_) => None,
+                    None => Some(self.lookup_channel(&channel_id)?.is_some()),
+                };
+                if onchain_without_record == Some(true) {
+                    return Err(batch_err(
+                        codes::INVALID_CHANNEL_STATE,
+                        format!(
+                            "channel {channel_b58} is open onchain but has no record in this \
+                             store; its accepted vouchers are unknown, so open a new channel"
+                        ),
+                    ));
+                }
                 let deposit_amount = deposit.amount()?;
                 let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
                 if let Some(state) = &stored {
@@ -1172,7 +1197,10 @@ impl X402BatchSettlement {
                     .is_some_and(|setup| {
                         Some(setup.payer_signature.as_str()) == carried_signature.as_deref()
                     })
-                    || self.lookup_channel(&channel_id)?.is_some();
+                    || match onchain_without_record {
+                        Some(landed) => landed,
+                        None => self.lookup_channel(&channel_id)?.is_some(),
+                    };
                 let recent_slot = (matches!(form, SetupForm::Open) && !retrying)
                     .then(|| {
                         crate::core::blockhash::fetch_blockhash_with_slot(
@@ -4921,6 +4949,113 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("open one with a deposit"), "{err}");
+    }
+
+    /// An RPC whose `getAccountInfo` answers with `channel` (owned by the
+    /// default program), or with an absent account for `None`.
+    fn chain_with(channel: Option<&Channel>) -> RpcClient {
+        use base64::Engine as _;
+        let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+        if let Some(channel) = channel {
+            let data = borsh::to_vec(channel).unwrap();
+            for _ in 0..8 {
+                mocks.insert(
+                    solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                    serde_json::json!({
+                        "context": { "slot": 1 },
+                        "value": {
+                            "lamports": 1_000_000,
+                            "data": [
+                                base64::engine::general_purpose::STANDARD.encode(&data),
+                                "base64"
+                            ],
+                            "owner": pc::pubkey_string(&pc::default_program_id()),
+                            "executable": false,
+                            "rentEpoch": 0,
+                            "space": data.len(),
+                        }
+                    }),
+                );
+            }
+        }
+        RpcClient::new_mock_with_mocks_map("succeeds".to_string(), mocks)
+    }
+
+    /// The confirmed channel `config` derives, open with `deposit` escrowed.
+    fn onchain_channel(config: &BatchChannelConfig, fee_payer: &Pubkey, deposit: u64) -> Channel {
+        use crate::core::payment_channels::generated::types::SettlementWatermarks;
+        let receiver = pc::parse_pubkey(&config.receiver).unwrap();
+        Channel {
+            discriminator: 0,
+            version: 1,
+            bump: 0,
+            status: CHANNEL_STATUS_OPEN,
+            salt: config.salt.parse().unwrap(),
+            deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: config.withdraw_delay,
+            distribution_hash: pc::distribution_hash(&pc::sole_recipient(&receiver)),
+            payer: pc::to_address(&pc::parse_pubkey(&config.payer).unwrap()),
+            payee: pc::to_address(fee_payer),
+            authorized_signer: pc::to_address(&pc::parse_pubkey(&config.payer_authorizer).unwrap()),
+            mint: pc::to_address(&pc::parse_pubkey(&config.token).unwrap()),
+            rent_payer: pc::to_address(fee_payer),
+            open_slot: config.open_slot,
+        }
+    }
+
+    /// A replayed opening deposit for a channel the chain already holds, sent
+    /// to a store that has no record of it (a restart over the in-memory
+    /// store), is refused instead of seeding a zero watermark that would serve
+    /// the already-accepted first voucher again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_replayed_open_for_an_unrecorded_onchain_channel_is_refused() {
+        let deposit_header = |handler: &X402BatchSettlement, fee_payer: &Pubkey| {
+            let requirements = handler.requirements("0.001").unwrap();
+            let (key, config, channel) = client(fee_payer, &requirements);
+            let payload = BatchPayload::Deposit {
+                channel_config: config.clone(),
+                voucher: Some(voucher(&key, &channel, 1_000)),
+                deposit: crate::x402::protocol::schemes::batch_settlement::BatchDeposit {
+                    amount: "5000".to_string(),
+                    transaction: "b64".to_string(),
+                },
+                authorization: None,
+            };
+            (header(&requirements, payload), config)
+        };
+
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let (_, config) = deposit_header(&probe, &fee_payer);
+        let landed = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (restarted, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let restarted = restarted.with_rpc_client(chain_with(Some(&landed)));
+        let (request, _) = deposit_header(&restarted, &fee_payer);
+        let err = restarted
+            .verify_payment(&request, "0.001")
+            .await
+            .expect_err("an unrecorded onchain channel is refused");
+        assert!(
+            err.to_string().contains("has no record in this store"),
+            "{err}"
+        );
+
+        // Positive control: the same deposit for a channel the chain does not
+        // hold yet passes this check and proceeds to validate its transaction.
+        let (fresh, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let fresh = fresh.with_rpc_client(chain_with(None));
+        let (request, _) = deposit_header(&fresh, &fee_payer);
+        let err = fresh
+            .verify_payment(&request, "0.001")
+            .await
+            .expect_err("the placeholder transaction does not decode");
+        assert!(!err.to_string().contains("has no record"), "{err}");
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a
