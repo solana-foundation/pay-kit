@@ -111,12 +111,17 @@ fn validate_challenge_binding_secret(secret: &str) -> Result<(), Error> {
 /// answer comes from the static table; for an arbitrary mint address the
 /// owner is fetched on-chain and validated, per spec §7.2 (rather than
 /// silently falling back to the legacy Token Program).
+/// True when the configured currency is native SOL (any case).
+fn currency_is_native_sol(currency: &str) -> bool {
+    currency.eq_ignore_ascii_case("SOL")
+}
+
 fn resolve_server_token_program(
     rpc: &RpcClient,
     currency: &str,
     network: Option<&str>,
 ) -> Result<Option<&'static str>, Error> {
-    if currency.eq_ignore_ascii_case("SOL") {
+    if currency_is_native_sol(currency) {
         return Ok(None);
     }
 
@@ -562,7 +567,12 @@ impl Mpp {
         // Build Solana-specific method details.
         let mut details = serde_json::Map::new();
         details.insert("network".into(), serde_json::json!(self.network));
-        details.insert("decimals".into(), serde_json::json!(self.decimals));
+        // Spec: `decimals` "MUST be present when `currency` is a mint address;
+        // MUST be absent when `currency` is `"sol"`" (`tokenProgram` likewise
+        // stays unset for SOL; see `resolve_server_token_program`).
+        if !currency_is_native_sol(&self.currency) {
+            details.insert("decimals".into(), serde_json::json!(self.decimals));
+        }
 
         if options.fee_payer || self.fee_payer {
             details.insert("feePayer".into(), serde_json::json!(true));
@@ -10611,5 +10621,27 @@ mod tests {
         let details = request.method_details.unwrap();
         assert_eq!(details["network"], "devnet");
         assert_eq!(details["decimals"], 6);
+    }
+
+    // RULINGS C2/C3: a SOL challenge carries neither `decimals` nor
+    // `tokenProgram`. Regression: `decimals` was always emitted.
+    #[test]
+    fn sol_charge_method_details_omit_decimals_and_token_program() {
+        let challenge = test_mpp_sol().charge("0.001").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let details = request.method_details.unwrap();
+        assert_eq!(details["network"], "devnet");
+        assert!(details.get("decimals").is_none(), "{details}");
+        assert!(details.get("tokenProgram").is_none(), "{details}");
+    }
+
+    // Control: a mint challenge carries both.
+    #[test]
+    fn mint_charge_method_details_carry_decimals_and_token_program() {
+        let challenge = test_mpp().charge("1.00").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let details = request.method_details.unwrap();
+        assert_eq!(details["decimals"], 6);
+        assert!(details.get("tokenProgram").is_some(), "{details}");
     }
 }
