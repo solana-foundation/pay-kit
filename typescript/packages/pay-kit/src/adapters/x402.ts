@@ -133,6 +133,18 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             } catch (error) {
                 throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
             }
+            // The header is client-controlled: reject what the v2 facilitator
+            // cannot take as a 402 (x402 v2 §9 error codes) instead of letting
+            // it throw out of `verify` as a server error.
+            if (payload?.x402Version !== X402_VERSION) {
+                throw new InvalidProofError(
+                    'invalid_x402_version',
+                    `Unsupported x402 version: ${String(payload?.x402Version)}`,
+                );
+            }
+            if (payload.accepted === null || typeof payload.accepted !== 'object') {
+                throw new InvalidProofError('invalid_payload', 'x402 v2 payment payload is missing `accepted`');
+            }
 
             const requirements = requirementsFor(gate);
             const verification = await facilitator.verify(payload, requirements);

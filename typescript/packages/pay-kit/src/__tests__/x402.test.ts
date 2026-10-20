@@ -91,6 +91,7 @@ import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402
 import { createX402ExactAdapter } from '../adapters/x402.js';
 import { Charge, X402Upto } from '../adapters/x402-upto.js';
 import { configure, type PayKitConfig } from '../config.js';
+import { InvalidProofError } from '../errors.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
@@ -172,6 +173,35 @@ describe('x402 exact adapter', () => {
             expect((error as Error).message).not.toMatch(/legacy/);
         },
     );
+
+    async function verifyHeader(envelope: Record<string, unknown>): Promise<unknown> {
+        const config = await testConfig();
+        const adapter = createX402ExactAdapter(config);
+        const header = encodePaymentSignatureHeader(envelope as never);
+        const request = new Request('http://localhost/r', { headers: { 'payment-signature': header } });
+        return await adapter.verifyAndSettle(gateFor(config), request).catch((e: unknown) => e);
+    }
+
+    it.each([
+        ['an unknown', 3],
+        ['the v1', 1],
+    ])('rejects %s x402 version as a 402, not a server error', async (_label, x402Version) => {
+        const error = await verifyHeader({
+            accepted: { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', scheme: 'exact' },
+            network: 'solana',
+            payload: { transaction: wireTransaction(0) },
+            scheme: 'exact',
+            x402Version,
+        });
+        expect(error).toBeInstanceOf(InvalidProofError);
+        expect((error as InvalidProofError).code).toBe('invalid_x402_version');
+    });
+
+    it('rejects a v2 payload without `accepted` as a 402', async () => {
+        const error = await verifyHeader({ payload: { transaction: wireTransaction(0) }, x402Version: 2 });
+        expect(error).toBeInstanceOf(InvalidProofError);
+        expect((error as InvalidProofError).code).toBe('invalid_payload');
+    });
 });
 
 describe('x402 smart-wallet options', () => {
