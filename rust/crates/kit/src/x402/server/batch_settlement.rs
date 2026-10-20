@@ -1644,9 +1644,10 @@ impl X402BatchSettlement {
                 ),
             )),
             // A reservation that never reported an outcome may have served its
-            // request already, so this voucher can never be served again. The
-            // channel is stuck at this cumulative and the client's recovery is
-            // a new one, which is worth an operator's attention.
+            // request already, so neither it nor a voucher stepping past it can
+            // be served. The channel is stuck at this cumulative and the
+            // client's recovery is a new one, which is worth an operator's
+            // attention.
             BatchReservation::Abandoned => {
                 tracing::error!(
                     channel = %outcome.channel_id,
@@ -1656,9 +1657,9 @@ impl X402BatchSettlement {
                 Err(batch_err(
                     codes::INVALID_CHANNEL_STATE,
                     format!(
-                        "authorization {} was abandoned while it may have been served; \
-                         open a new channel",
-                        authorization.id
+                        "channel {} holds an authorization abandoned while it may have \
+                         been served; open a new channel",
+                        outcome.channel_id
                     ),
                 ))
             }

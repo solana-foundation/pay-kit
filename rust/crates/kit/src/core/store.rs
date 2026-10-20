@@ -1256,7 +1256,8 @@ pub enum BatchReservation {
     /// The same authorization id was presented by a different request.
     Conflict,
     /// A reservation outlived its lease without reporting either outcome, so
-    /// whether its handler ran is unknown.
+    /// whether its handler ran is unknown. Reported both for that
+    /// authorization and for any other one on the channel while it stands.
     ///
     /// The reservation is taken immediately before the handler is invoked, so
     /// an unreported one means the handler may well have run — a process that
@@ -1264,9 +1265,10 @@ pub enum BatchReservation {
     /// past its lease. Serving it again would execute the same authorization
     /// twice, which the scheme forbids outright, so it is never reclaimed.
     ///
-    /// This is deliberately terminal for that authorization: the client cannot
-    /// reuse the voucher, and because the watermark never advanced it cannot
-    /// step past it either, so recovery is a new channel. That liveness cost
+    /// This is deliberately terminal for the channel: the client cannot reuse
+    /// the voucher, and no other voucher may step past it while its handler
+    /// could still finish unaccounted, so recovery is a new channel unless the
+    /// owner releases or commits it late. That liveness cost
     /// falls only on a crashed or overrunning request, and it is the price of
     /// never serving a paid request twice.
     Abandoned,
@@ -1396,8 +1398,8 @@ impl ChannelState {
     /// record are one atomic step.
     ///
     /// Only an authorization with no record at all is reservable. An existing
-    /// reservation is never taken over, however long its lease has been
-    /// dead — see [`BatchReservation::Abandoned`].
+    /// reservation is never taken over or stepped past, however long its lease
+    /// has been dead — see [`BatchReservation::Abandoned`].
     ///
     /// One cumulative step is in flight per channel: while another
     /// authorization holds a live or handler-succeeded reservation this one is
@@ -1453,10 +1455,21 @@ impl ChannelState {
         {
             return Some(outcome);
         }
-        if self.pending_deliveries.iter().any(|pending| {
-            pending.delivery_id != *authorization_id
-                && (pending.handler_succeeded || pending.expires_at > now)
-        }) {
+        let mut others = self
+            .pending_deliveries
+            .iter()
+            .filter(|pending| pending.delivery_id != *authorization_id);
+        // Another authorization that outlived its lease without reporting may
+        // still be running, or may have served its request before a crash.
+        // Stepping past it would leave that work out of the watermark, so it
+        // fences the channel until its owner releases or commits it.
+        if others
+            .clone()
+            .any(|pending| !pending.handler_succeeded && pending.expires_at <= now)
+        {
+            return Some(BatchReservation::Abandoned);
+        }
+        if others.any(|pending| pending.handler_succeeded || pending.expires_at > now) {
             return Some(BatchReservation::InProgress);
         }
         if self.cumulative.checked_add(amount) != Some(cumulative) {
@@ -2934,7 +2947,7 @@ pub mod conformance {
         fresh: &(dyn Fn(&str) -> ChannelState + Sync),
     ) {
         refuses_a_reservation_from_a_moved_watermark(store, fresh).await;
-        refuses_a_reservation_superseded_over_its_dead_lease(store, fresh).await;
+        refuses_to_step_past_a_dead_unreported_lease(store, fresh).await;
         refuses_reservations_on_a_closing_channel(store, fresh).await;
         a_refused_preparation_reserves_nothing(store, fresh).await;
         a_refused_reservation_leaves_the_record_unchanged(store, fresh).await;
@@ -2970,9 +2983,11 @@ pub mod conformance {
         );
     }
 
-    /// A reservation whose lease ran out may be superseded; the overrunning
-    /// one can then neither commit nor come to block the channel.
-    async fn refuses_a_reservation_superseded_over_its_dead_lease(
+    /// A reservation whose lease ran out without reporting is never stepped
+    /// past: its handler may still be running, and a later voucher committing
+    /// first would leave that work out of the watermark. The overrunning owner
+    /// can still account for it; a release reopens the channel.
+    async fn refuses_to_step_past_a_dead_unreported_lease(
         store: &dyn ChannelStore,
         fresh: &(dyn Fn(&str) -> ChannelState + Sync),
     ) {
@@ -2980,50 +2995,35 @@ pub mod conformance {
         store.put_channel(id, fresh(id)).await.unwrap();
         let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
-        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
-        let late = slow.clone();
-        assert!(store
-            .mutate_channel(
-                id,
-                None,
-                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
-            )
-            .await
-            .is_err());
-        let late = slow.clone();
-        assert!(store
-            .mutate_channel(
-                id,
-                None,
-                Box::new(move |state| state.commit_authorization(&late, "sig", 0, 100, |_| None)),
-            )
-            .await
-            .is_err());
-        commit(store, id, &next).await;
+        assert_eq!(
+            reserve(store, id, request("next", 700, 700, after_lease)).await,
+            BatchReservation::Abandoned
+        );
+        // The overrunning handler finishes and is charged.
+        commit(store, id, &slow).await;
         assert_eq!(
             store.get_channel(id).await.unwrap().unwrap().cumulative,
-            700
+            500
         );
+        assert!(matches!(
+            reserve(store, id, request("after", 200, 700, after_lease)).await,
+            BatchReservation::Reserved(_)
+        ));
 
-        // The superseding reservation commits before the slow handler returns:
-        // the slow one is still refused at mark, so it never comes to block
-        // the channel as handler-succeeded.
-        let id = "conformance-lease-committed";
+        // Positive control: a dead lease its owner released does not block.
+        let id = "conformance-lease-released";
         store.put_channel(id, fresh(id)).await.unwrap();
-        let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
-        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
-        commit(store, id, &next).await;
-        let late = slow.clone();
-        assert!(store
+        token(reserve(store, id, request("slow", 500, 500, 100)).await);
+        store
             .mutate_channel(
                 id,
                 None,
-                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
+                Box::new(|state| state.release_authorization("slow", "fp-slow")),
             )
             .await
-            .is_err());
+            .unwrap();
         assert!(matches!(
-            reserve(store, id, request("after", 300, 1_000, after_lease)).await,
+            reserve(store, id, request("next", 700, 700, after_lease)).await,
             BatchReservation::Reserved(_)
         ));
     }
@@ -4006,10 +4006,17 @@ mod tests {
             .is_err());
         assert_eq!(state.cumulative, 500);
 
-        // A dead lease does not block the channel forever.
+        // A dead lease that never reported fences the channel: its handler
+        // may still finish, so no other voucher steps past it.
         let mut state = make_state("c2", 10_000);
         state.reserve_authorization(&req("access:c2:500", "a", 500, 500, 100));
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        assert_eq!(
+            state.reserve_authorization(&req("access:c2:700", "b", 700, 700, after_lease)),
+            BatchReservation::Abandoned
+        );
+        // Released by its owner, it no longer blocks.
+        state.release_authorization("access:c2:500", "a").unwrap();
         assert!(matches!(
             state.reserve_authorization(&req("access:c2:700", "b", 700, 700, after_lease)),
             BatchReservation::Reserved(_)
