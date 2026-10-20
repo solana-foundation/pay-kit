@@ -43,6 +43,14 @@ Re-verify any line above before depending on it. The tree moves fast.
 
 Phase 0 is in progress on `feat/harness-phase0-expectations`.
 
+Phase 1 landed on `feat/pkc-phase1`: `rust/crates/conformance` (`pkc fill
+[--check]`, `pkc req-lint`), every vector filled from the Rust registry with
+a required `spec` reference, annotated views, mpp-specs pinned at
+`external/mpp-specs`. Deviations from the task list below: vectors keep their
+file names under `harness/vectors/` (no `generated/` / `authored/` split;
+`provenance` is a per-vector field), the lint is a `pkc` subcommand rather
+than a Python script, and `run` / `report` are not started.
+
 Done:
 
 - Expectations files with exact-set reconciliation for the vector,
