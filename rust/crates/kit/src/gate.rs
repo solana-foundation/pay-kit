@@ -979,7 +979,7 @@ async fn upto_gate_middleware(
         Err(error) => {
             // Nothing is delivered; still settle what was metered so far.
             tracing::warn!(error = %error, "upto response body did not complete");
-            let _ = settle_served_upto(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await;
+            let _ = settle_served_upto_detached(&upto, open, actual, UPTO_SETTLEMENT_RETRY).await;
             return (
                 StatusCode::BAD_GATEWAY,
                 "resource response body failed or exceeded the metered size limit",
@@ -1001,7 +1001,7 @@ async fn finish_served_upto(
     mut resp: Response,
     retry: UptoSettlementRetry,
 ) -> Response {
-    let Some(settlement) = settle_served_upto(upto, open, actual, retry).await else {
+    let Some(settlement) = settle_served_upto_detached(upto, open, actual, retry).await else {
         return resp;
     };
     match upto.settlement_header(&settlement) {
@@ -1071,6 +1071,23 @@ where
         }
     }
     Err(last.unwrap_or_else(|| crate::x402::Error::Other("settlement did not run".into())))
+}
+
+/// Run [`settle_served_upto`] on its own task so dropping the request future
+/// (a client disconnect) cannot cancel it and release the open.
+async fn settle_served_upto_detached(
+    upto: &Arc<X402Upto>,
+    open: crate::x402::server::VerifiedUptoOpen,
+    actual: u64,
+    retry: UptoSettlementRetry,
+) -> Option<crate::x402::upto::UptoSettlementResponse> {
+    let upto = Arc::clone(upto);
+    tokio::spawn(async move { settle_served_upto(&upto, open, actual, retry).await })
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!(error = %error, "upto settlement task failed");
+            None
+        })
 }
 
 /// Settle a request whose handler already ran. The handler's effects cannot be
@@ -2278,6 +2295,41 @@ mod tests {
                 .as_ref(),
             b"served"
         );
+    }
+
+    /// A client disconnect during the inline retries drops the request future;
+    /// the settlement keeps running and keeps the channel reserved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropped_request_does_not_cancel_upto_settlement() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let open = upto.test_open(channel, 1_000);
+        let retry = UptoSettlementRetry {
+            inline_attempts: 2,
+            background_attempts: 1,
+            base_delay: std::time::Duration::from_millis(400),
+        };
+
+        let served = finish_served_upto(&upto, open, 500, Response::new(Body::empty()), retry);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), served)
+                .await
+                .is_err(),
+            "still inside the inline retries"
+        );
+        assert!(
+            upto.is_in_flight(&channel),
+            "settlement outlives the dropped request"
+        );
+
+        for _ in 0..100 {
+            if !upto.is_in_flight(&channel) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!upto.is_in_flight(&channel));
     }
 
     fn batch_channel_state(channel_id: &str, payer: &str) -> crate::core::store::ChannelState {
