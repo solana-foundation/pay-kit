@@ -402,6 +402,9 @@ final class Adapter
                 'pay_kit: invalid proof: settlement not confirmed: ' . $e->getMessage(),
             );
         }
+        // Authorized at most once across protocols: an MPP retry reconciling
+        // the same signature cannot also be granted a response.
+        $this->authorizeSignature($sig);
 
         // Echo the network the credential committed to in the settlement
         // response: the canonical wire's `accepted.network` (CAIP-2) or the
@@ -438,6 +441,17 @@ final class Adapter
     private function consumeSignature(string $signature): void
     {
         if (!$this->consumedSignatures->claim($signature)) {
+            throw new InvalidProofException('pay_kit: signature_consumed');
+        }
+    }
+
+    /**
+     * Record that the confirmed signature authorized this response, at most
+     * once across protocols.
+     */
+    private function authorizeSignature(string $signature): void
+    {
+        if (!$this->consumedSignatures->authorize($signature)) {
             throw new InvalidProofException('pay_kit: signature_consumed');
         }
     }

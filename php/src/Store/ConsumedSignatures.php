@@ -19,6 +19,7 @@ namespace PayKit\Store;
 final class ConsumedSignatures
 {
     private const KEY_PREFIX = 'solana:consumed-signature:';
+    private const AUTHORIZED_KEY_PREFIX = 'solana:authorized-signature:';
 
     public function __construct(private readonly Store $store)
     {
@@ -31,5 +32,21 @@ final class ConsumedSignatures
     public function claim(string $signature): bool
     {
         return $this->store->putIfAbsent(self::KEY_PREFIX . $signature, true);
+    }
+
+    /**
+     * Atomically record that `$signature`, already claimed, authorized a
+     * protected response. False means another request, through any protocol,
+     * was already authorized by it.
+     *
+     * Claiming and authorizing are separate steps so a claimed payment whose
+     * outcome is not known yet (a lost broadcast response, an unconfirmed
+     * transaction) stays pending: a retry reconciles it against the chain and
+     * authorizes it once it lands, while a replay of a payment that already
+     * authorized a response is refused.
+     */
+    public function authorize(string $signature): bool
+    {
+        return $this->store->putIfAbsent(self::AUTHORIZED_KEY_PREFIX . $signature, true);
     }
 }

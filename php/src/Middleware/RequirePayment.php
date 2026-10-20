@@ -8,6 +8,7 @@ use Closure;
 use PayKit\PayKit;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Exception\PaymentRequiredException;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\Gate;
 use PayKit\PayCore\HttpFactory;
 use PayKit\Pricing;
@@ -94,6 +95,10 @@ final class RequirePayment implements MiddlewareInterface
 
         try {
             $payment = $adapter->verifyAndSettle($gate, $request);
+        } catch (SettlementInProgressException $e) {
+            // The payment may already be on chain: a fresh challenge would let
+            // the client pay twice, so answer a retryable 409 instead.
+            return $this->build409($e);
         } catch (InvalidProofException | PaymentRequiredException $e) {
             return $this->build402($gate, $request);
         }
@@ -139,6 +144,21 @@ final class RequirePayment implements MiddlewareInterface
             }
         }
         return null;
+    }
+
+    private function build409(SettlementInProgressException $e): ResponseInterface
+    {
+        $body = json_encode([
+            'type'   => 'https://paymentauth.org/problems/settlement-in-progress',
+            'title'  => 'Settlement Already In Progress',
+            'status' => 409,
+            'detail' => $e->getMessage(),
+        ], JSON_THROW_ON_ERROR);
+        return HttpFactory::responseFactory()->createResponse(409)
+            ->withHeader('content-type', 'application/problem+json')
+            ->withHeader('retry-after', '1')
+            ->withHeader('cache-control', 'no-store')
+            ->withBody(HttpFactory::streamFactory()->createStream($body));
     }
 
     private function build402(Gate $gate, ServerRequestInterface $request): ResponseInterface

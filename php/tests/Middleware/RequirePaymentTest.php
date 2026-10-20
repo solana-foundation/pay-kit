@@ -7,6 +7,7 @@ namespace PayKit\Tests\Middleware;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\PayKit;
 use PayKit\Config;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
@@ -80,6 +81,20 @@ final class RequirePaymentTest extends TestCase
         $x402Ledger = $store($mw, 'x402');
         $x402Store = (new \ReflectionProperty($x402Ledger, 'store'))->getValue($x402Ledger);
         self::assertSame($mppStore, $x402Store);
+    }
+
+    // A payment that may already be on chain is answered with a retryable
+    // 409, never a fresh challenge the client could pay a second time.
+    public function testSettlementInProgressIsAnsweredWith409WithoutAChallenge(): void
+    {
+        $mw = new RequirePayment($this->client, new Gate(amount: Price::usd('0.01')));
+        $build = new \ReflectionMethod($mw, 'build409');
+        $response = $build->invoke($mw, new SettlementInProgressException('pay_kit: retry the same credential'));
+        self::assertInstanceOf(ResponseInterface::class, $response);
+        self::assertSame(409, $response->getStatusCode());
+        self::assertSame('1', $response->getHeaderLine('retry-after'));
+        self::assertSame('', $response->getHeaderLine('www-authenticate'));
+        self::assertStringContainsString('settlement-in-progress', (string) $response->getBody());
     }
 
     public function testEmits402WhenNoCredentialPresent(): void

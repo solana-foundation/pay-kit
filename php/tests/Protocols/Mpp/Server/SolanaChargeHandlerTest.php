@@ -12,6 +12,7 @@ use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\ChargeSettlement;
 use PayKit\Protocols\Mpp\Server\PaymentRequiredResponse;
 use PayKit\Protocols\Mpp\Server\PaymentVerifier;
+use PayKit\Protocols\Mpp\Server\SettlementPending;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\Mpp\Server\TransactionPayloadVerifier;
 use PayKit\Protocols\Mpp\Server\VerificationResult;
@@ -27,6 +28,7 @@ use PayKit\Store\MemoryStore;
 use PayKit\Tests\PayCore\Rpc\FakeRpcGateway;
 use ReflectionMethod;
 use PayKit\Store\Store;
+use SolanaPhpSdk\Exception\RpcException;
 use SolanaPhpSdk\Util\Base58;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -99,13 +101,14 @@ final class SolanaChargeHandlerTest extends TestCase
         $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
+        $transaction = $this->minimalV0TransactionBase64();
         $credential = new Credential(
             challenge: $challenge->toEcho(),
-            payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
         );
 
         $http = new FakeJsonRpcHttpClient([
-            'sendTransaction' => [['result' => 'OnChainSignatureFixtureValue']],
+            'sendTransaction' => [['result' => $this->signatureOf($transaction)]],
             'getSignatureStatuses' => [[
                 'result' => [
                     'value' => [[
@@ -126,9 +129,9 @@ final class SolanaChargeHandlerTest extends TestCase
 
         self::assertInstanceOf(ChargeSettlement::class, $result);
         self::assertSame(200, $result->status);
-        self::assertSame('OnChainSignatureFixtureValue', $result->signature);
+        self::assertSame($this->signatureOf($transaction), $result->signature);
         self::assertSame(['ok' => true, 'paid' => true], $result->body);
-        self::assertSame('OnChainSignatureFixtureValue', $result->headers['x-payment-settlement-signature']);
+        self::assertSame($this->signatureOf($transaction), $result->headers['x-payment-settlement-signature']);
         self::assertNotEmpty($result->headers['payment-receipt']);
     }
 
@@ -137,9 +140,10 @@ final class SolanaChargeHandlerTest extends TestCase
         $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
+        $transaction = $this->minimalV0TransactionBase64();
         $credential = new Credential(
             challenge: $challenge->toEcho(),
-            payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
         );
 
         $statusEntry = [
@@ -153,8 +157,8 @@ final class SolanaChargeHandlerTest extends TestCase
         ];
         $http = new FakeJsonRpcHttpClient([
             'sendTransaction' => [
-                ['result' => 'ReplayProtectionFixtureSig'],
-                ['result' => 'ReplayProtectionFixtureSig'],
+                ['result' => $this->signatureOf($transaction)],
+                ['result' => $this->signatureOf($transaction)],
             ],
             'getSignatureStatuses' => [$statusEntry, $statusEntry],
         ]);
@@ -166,7 +170,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
         $first = $handler->handle($credential->toAuthorizationHeader(), $request);
         self::assertInstanceOf(ChargeSettlement::class, $first);
-        self::assertSame('ReplayProtectionFixtureSig', $first->signature);
+        self::assertSame($this->signatureOf($transaction), $first->signature);
 
         $second = $handler->handle($credential->toAuthorizationHeader(), $request);
         self::assertInstanceOf(PaymentRequiredResponse::class, $second);
@@ -203,13 +207,14 @@ final class SolanaChargeHandlerTest extends TestCase
         $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
+        $transaction = $this->minimalLegacyTransactionBase64();
         $credential = new Credential(
             challenge: $challenge->toEcho(),
-            payload: ['type' => 'transaction', 'transaction' => $this->minimalLegacyTransactionBase64()],
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
         );
 
         $http = new FakeJsonRpcHttpClient([
-            'sendTransaction' => [['result' => 'LegacySignatureFixtureValue']],
+            'sendTransaction' => [['result' => $this->signatureOf($transaction)]],
             'getSignatureStatuses' => [[
                 'result' => [
                     'value' => [[
@@ -230,7 +235,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
         self::assertInstanceOf(ChargeSettlement::class, $result);
         self::assertSame(200, $result->status);
-        self::assertSame('LegacySignatureFixtureValue', $result->signature);
+        self::assertSame($this->signatureOf($transaction), $result->signature);
     }
 
     public function testReturns402WhenBroadcastReportsOnChainFailure(): void
@@ -238,13 +243,14 @@ final class SolanaChargeHandlerTest extends TestCase
         $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
+        $transaction = $this->minimalV0TransactionBase64();
         $credential = new Credential(
             challenge: $challenge->toEcho(),
-            payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
         );
 
         $http = new FakeJsonRpcHttpClient([
-            'sendTransaction' => [['result' => 'BroadcastSig']],
+            'sendTransaction' => [['result' => $this->signatureOf($transaction)]],
             'getSignatureStatuses' => [[
                 'result' => [
                     'value' => [[
@@ -264,7 +270,7 @@ final class SolanaChargeHandlerTest extends TestCase
         $result = $handler->handle($credential->toAuthorizationHeader(), $request);
 
         self::assertInstanceOf(PaymentRequiredResponse::class, $result);
-        self::assertStringContainsString('Transaction BroadcastSig failed', $result->body['detail']);
+        self::assertStringContainsString('Transaction ' . $this->signatureOf($transaction) . ' failed', $result->body['detail']);
     }
 
     public function testFeePayerPubkeyReflectsConfiguredKeypair(): void
@@ -618,40 +624,143 @@ final class SolanaChargeHandlerTest extends TestCase
             replayStore: $store,
             recentBlockhashProvider: fn () => null,
         );
-        $x402Consume = new ReflectionMethod(X402Adapter::class, 'consumeSignature');
+        // x402 settles by claiming before confirmation and authorizing after.
+        $x402Settle = function (string $signature) use ($x402): void {
+            (new ReflectionMethod(X402Adapter::class, 'consumeSignature'))->invoke($x402, $signature);
+            (new ReflectionMethod(X402Adapter::class, 'authorizeSignature'))->invoke($x402, $signature);
+        };
 
-        $settle = function (string $signature) use ($store): PaymentRequiredResponse|ChargeSettlement {
+        $settle = function (string $transaction) use ($store): PaymentRequiredResponse|ChargeSettlement|SettlementPending {
             $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
             $request = $this->chargeRequest();
             $credential = new Credential(
                 challenge: $challenges->createChallenge($request)->toEcho(),
-                payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+                payload: ['type' => 'transaction', 'transaction' => $transaction],
             );
             $handler = $this->handler(
                 challenges: $challenges,
                 verifier: new AlwaysAcceptVerifier(),
                 replayStore: $store,
-                rpcGateway: new FakeRpcGateway(signature: $signature),
+                rpcGateway: new FakeRpcGateway(signature: $this->signatureOf($transaction)),
             );
             return $handler->handle($credential->toAuthorizationHeader(), $request);
         };
 
-        self::assertInstanceOf(ChargeSettlement::class, $settle('MppSettledSignature'));
+        $mppPaid = $this->minimalV0TransactionBase64();
+        self::assertInstanceOf(ChargeSettlement::class, $settle($mppPaid));
         try {
-            $x402Consume->invoke($x402, 'MppSettledSignature');
+            $x402Settle($this->signatureOf($mppPaid));
             self::fail('x402 accepted a signature already settled through MPP');
         } catch (InvalidProofException $e) {
             self::assertStringContainsString('signature_consumed', $e->getMessage());
         }
 
-        $x402Consume->invoke($x402, 'X402SettledSignature');
-        $replayed = $settle('X402SettledSignature');
+        $x402Paid = $this->minimalV0TransactionBase64();
+        $x402Settle($this->signatureOf($x402Paid));
+        $replayed = $settle($x402Paid);
         self::assertInstanceOf(PaymentRequiredResponse::class, $replayed);
         self::assertStringContainsString('already consumed', $replayed->body['detail']);
 
         // An unrelated payment is still accepted by either protocol.
-        self::assertInstanceOf(ChargeSettlement::class, $settle('ThirdSignature'));
-        $x402Consume->invoke($x402, 'FourthSignature');
+        self::assertInstanceOf(ChargeSettlement::class, $settle($this->minimalV0TransactionBase64()));
+        $x402Settle('UnrelatedSignature');
+    }
+
+    // A send error other than a preflight rejection does not prove the node
+    // dropped the transaction (the response may be lost after it was
+    // accepted), so the charge stays pending under the locally derived
+    // signature instead of answering a fresh challenge the client could pay
+    // a second time. The identical retry reconciles it once it lands.
+    public function testAmbiguousSendErrorIsPendingNotFailed(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $handler = fn (FakeRpcGateway $rpc) => $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            rpcGateway: $rpc,
+        );
+
+        $lost = new RpcException('JSON-RPC error: response lost after the node accepted it', 200, -32099);
+        $pending = $handler(new FakeRpcGateway(signature: $signature, sendError: $lost))->handle($authorization, $request);
+        self::assertInstanceOf(SettlementPending::class, $pending);
+        self::assertSame(409, $pending->status);
+        self::assertSame('1', $pending->headers['retry-after']);
+        self::assertArrayNotHasKey('www-authenticate', $pending->headers);
+        self::assertSame('https://paymentauth.org/problems/settlement-in-progress', $pending->body['type']);
+
+        // The transaction did land: the identical retry gets the receipt.
+        $settled = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request);
+        self::assertInstanceOf(ChargeSettlement::class, $settled);
+        self::assertSame($signature, $settled->signature);
+
+        $replayed = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $replayed);
+        self::assertStringContainsString('already consumed', $replayed->body['detail']);
+    }
+
+    // A preflight rejection is definitive: the node never forwarded the
+    // transaction, so the charge fails with a fresh challenge.
+    public function testPreflightRejectionFailsTheCharge(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $credential = new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        );
+        $rejected = new RpcException(
+            'JSON-RPC error: Transaction simulation failed: Error processing Instruction 0',
+            200,
+            -32002,
+            ['err' => ['InstructionError' => [0, ['Custom' => 1]]], 'logs' => ['Program failed']],
+        );
+        $handler = $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            rpcGateway: new FakeRpcGateway(signature: $this->signatureOf($transaction), sendError: $rejected),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertStringContainsString('rejected by preflight', $result->body['detail']);
+    }
+
+    // The node's reported signature is not authoritative: a different one
+    // leaves the transaction's own signature pending, never settled under
+    // an identifier the payer did not sign.
+    public function testMismatchedReportedSignatureIsPending(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $credential = new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalV0TransactionBase64()],
+        );
+        $handler = $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            rpcGateway: new FakeRpcGateway(signature: 'SomeOtherSignature'),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(SettlementPending::class, $result);
+    }
+
+    /** The base58 first signature of a base64 wire transaction: its id. */
+    private function signatureOf(string $transactionBase64): string
+    {
+        $wire = (string) base64_decode($transactionBase64, true);
+        return Base58::encode(substr($wire, 1, 64));
     }
 
     private function pushChargeRequest(): ChargeRequest
