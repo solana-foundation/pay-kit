@@ -23,6 +23,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
@@ -185,7 +186,7 @@ func TestNewSessionDefaults(t *testing.T) {
 		o.Network = ""
 		o.OpenTxSubmitter = ""
 	})
-	if session.currency != "USDC" || session.network != "mainnet" {
+	if session.currency != paycore.USDCMainnetMint || session.network != "mainnet" {
 		t.Fatalf("defaults: currency=%q network=%q", session.currency, session.network)
 	}
 	if session.openTxSubmitter != OpenTxSubmitterClient {
@@ -220,7 +221,7 @@ func TestSessionChallengeCanonicalShape(t *testing.T) {
 	if err := challenge.Request.Decode(&request); err != nil {
 		t.Fatalf("decode request: %v", err)
 	}
-	if request.Cap != "1000000" || request.Currency != "USDC" {
+	if request.Cap != "1000000" || request.Currency != paycore.ResolveMint("USDC", "localnet") {
 		t.Fatalf("cap=%q currency=%q", request.Cap, request.Currency)
 	}
 	if request.Operator != sessionTestRecipient || request.Recipient != sessionTestRecipient {
@@ -952,7 +953,7 @@ func TestSessionCommitForReservedDelivery(t *testing.T) {
 	if directive.DeliveryID != channelID+":1" || directive.Sequence != 1 {
 		t.Fatalf("directive = %+v", directive)
 	}
-	if directive.Currency != "USDC" || directive.Amount != "200" {
+	if directive.Currency != paycore.ResolveMint("USDC", "localnet") || directive.Amount != "200" {
 		t.Fatalf("directive fields = %+v", directive)
 	}
 

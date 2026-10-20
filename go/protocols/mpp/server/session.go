@@ -75,8 +75,14 @@ type SessionConfig struct {
 	// Currency identifier (e.g., "USDC", mint address).
 	Currency string
 
-	// Decimals is the token decimals (default 6 for USDC).
+	// Decimals is the token decimals. Required as given: NewSession
+	// resolves it from the asset; direct SessionConfig users must set it.
 	Decimals uint8
+
+	// TokenProgram is the mint's owning token program (base58), used for
+	// settlement. Empty falls back to the known-stablecoin table, which is
+	// only correct for those mints; NewSession always sets it.
+	TokenProgram string
 
 	// Network is the Solana network: "mainnet", "devnet", "localnet".
 	Network string

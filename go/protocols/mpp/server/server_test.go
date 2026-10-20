@@ -889,8 +889,8 @@ func TestNewWithDefaultValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
 	}
-	if handler.currency != "USDC" {
-		t.Fatalf("expected default currency USDC, got %q", handler.currency)
+	if handler.currency != paycore.USDCMainnetMint {
+		t.Fatalf("expected default currency USDC to resolve to the mainnet mint, got %q", handler.currency)
 	}
 	if handler.decimals != 6 {
 		t.Fatalf("expected default decimals 6, got %d", handler.decimals)

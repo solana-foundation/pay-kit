@@ -58,9 +58,13 @@ type SessionOptions struct {
 	Cap uint64
 
 	// Currency identifier (e.g. "USDC" or an SPL mint address). Default USDC.
+	// A symbol is resolved to its mint for Network before it reaches the
+	// wire.
 	Currency string
 
-	// Decimals is the token decimals. Default 6.
+	// Decimals optionally cross-checks the token decimals. The value used is
+	// always resolved from the asset (known stablecoin table, or the mint
+	// account through RPC); a non-zero value that disagrees fails NewSession.
 	Decimals uint8
 
 	// Network is the Solana network. Default "mainnet".
@@ -187,12 +191,20 @@ func NewSession(options SessionOptions) (*Session, error) {
 	if options.Currency == "" {
 		options.Currency = "USDC"
 	}
-	if options.Decimals == 0 {
-		options.Decimals = 6
-	}
 	if options.Network == "" {
 		options.Network = "mainnet"
 	}
+	// Same resolution as the charge server: the wire carries the mint (or
+	// "sol"), and decimals come from the asset, never a silent default.
+	asset, err := resolveServerAsset(context.Background(), options.RPC, options.Currency, options.Network)
+	if err != nil {
+		return nil, err
+	}
+	if options.Decimals != 0 && options.Decimals != asset.decimals {
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("configured decimals %d do not match %s decimals %d", options.Decimals, options.Currency, asset.decimals))
+	}
+	options.Currency, options.Decimals = asset.currency, asset.decimals
 	if options.Realm == "" {
 		options.Realm = DetectRealm(options.Recipient)
 	}
@@ -227,6 +239,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		MaxCap:              options.Cap,
 		Currency:            options.Currency,
 		Decimals:            options.Decimals,
+		TokenProgram:        asset.tokenProgram,
 		Network:             options.Network,
 		ProgramID:           options.ProgramID,
 		MinVoucherDelta:     options.MinVoucherDelta,

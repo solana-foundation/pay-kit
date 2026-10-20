@@ -403,7 +403,11 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint %q: %w", mintAddress, err)
 	}
-	tokenProgram, err := solana.PublicKeyFromBase58(paycore.DefaultTokenProgramForCurrency(s.config.Currency, s.config.Network))
+	tokenProgramID := s.config.TokenProgram
+	if tokenProgramID == "" {
+		tokenProgramID = paycore.DefaultTokenProgramForCurrency(s.config.Currency, s.config.Network)
+	}
+	tokenProgram, err := solana.PublicKeyFromBase58(tokenProgramID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
 	}
