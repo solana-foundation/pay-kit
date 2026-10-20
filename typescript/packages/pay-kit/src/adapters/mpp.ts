@@ -1,6 +1,6 @@
 import { resolveStablecoinMint, SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
-import { Receipt, Store } from 'mppx';
+import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
@@ -52,8 +52,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
     // Dynamic gates create distinct methods, but a payment is single-use across
-    // all of them. Distributed deployments must supply a shared atomic store.
-    const replayStore = config.replayStore ?? Store.memory();
+    // all of them (and across protocols: x402 claims the same ledger).
+    // Distributed deployments must supply a shared atomic store.
+    const replayStore = config.replayStore;
 
     function handlerFor(gate: Gate): ChargeHandler {
         const coin = resolveCoin(gate.amount, config.stablecoins);

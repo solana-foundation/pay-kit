@@ -31,6 +31,7 @@ import {
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
 import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
+import { claimConsumedSignature, consumedSignatureKey } from '../server/replay.js';
 import { transactionSignatureFromBase64 } from '../utils/transactions.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
@@ -578,6 +579,45 @@ test('signature: accepts valid native SOL transfer', async () => {
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(SIGNATURE);
+});
+
+// One on-chain payment authorizes one request across protocols: a signature
+// another protocol (PayKit's x402 adapter) already claimed in the shared
+// ledger is refused, and MPP claims its own payments in that same ledger.
+test('signature: shares one consumed-signature ledger with other protocols', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    const credential = signatureCredential(SIGNATURE, { amount: '1000000' });
+
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(true);
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+
+    await store.delete(consumedSignatureKey(SIGNATURE));
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(false);
+});
+
+// A signature claimed under the pre-ledger MPP key (by an older replica, or
+// just before an upgrade) stays consumed for every claim path; the legacy
+// record is only read, never rewritten.
+test('signature: a pre-ledger consumed record stays consumed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    const legacyKey = `solana-charge:consumed:${SIGNATURE}`;
+    await store.put(legacyKey, true);
+
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).rejects.toThrow('already consumed');
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(false);
+    expect(await store.get(consumedSignatureKey(SIGNATURE))).toBeNull();
+    expect(await store.get(legacyKey)).toBe(true);
+
+    // Signatures without a legacy record claim normally.
+    await store.delete(legacyKey);
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
 });
 
 test('signature: rejects SOL transfer with wrong recipient', async () => {
@@ -1869,7 +1909,7 @@ test('pull: an uncertain settlement can recover once after its lease expires wit
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     await store.put(key, {
         binding: JSON.stringify({
             challengeId: credential.challenge.id ?? null,
@@ -1889,7 +1929,7 @@ test('pull: recovers an accepted send with a lost response exactly once without 
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     const rpcMethods: string[] = [];
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const successfulFetch = globalThis.fetch;
@@ -1917,7 +1957,7 @@ test('push cannot overwrite a pull reservation after passing its initial replay 
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const signature = transactionSignatureFromBase64(transaction);
-    const key = `solana-charge:consumed:${signature}`;
+    const key = consumedSignatureKey(signature);
     const rpcMethods: string[] = [];
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const successfulFetch = globalThis.fetch;
@@ -1997,7 +2037,7 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
     expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'pending' });

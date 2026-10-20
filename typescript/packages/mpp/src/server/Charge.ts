@@ -30,7 +30,14 @@ import {
 } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { checkNetworkBlockhash } from './network-check.js';
-import { claimReplayKey, consumeReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
+import {
+    claimConsumedSignature,
+    claimReplayKey,
+    consumedBeforeLedger,
+    consumedSignatureKey,
+    consumeReplayKey,
+    inspectReplayKey,
+} from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -833,7 +840,10 @@ async function verifyTransaction(
     }
 
     const signature = transactionSignatureFromBase64(txToSend);
-    const replayKey = `solana-charge:consumed:${signature}`;
+    if (await consumedBeforeLedger(store, signature)) {
+        throw new Error('Transaction signature already consumed');
+    }
+    const replayKey = consumedSignatureKey(signature);
     const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
     const replayStatus = await inspectReplayKey(store, replayKey, replayBinding);
     if (replayStatus === 'conflict' || replayStatus === 'retry') {
@@ -901,11 +911,11 @@ async function verifySignature(
         throw new Error('Missing signature in credential payload');
     }
 
-    const consumedKey = `solana-charge:consumed:${signature}`;
+    const consumedKey = consumedSignatureKey(signature);
 
     // Reject obvious replays before RPC work. The authoritative atomic
     // check-and-consume below also coordinates with transaction credentials.
-    if (await store.get(consumedKey)) {
+    if ((await store.get(consumedKey)) || (await consumedBeforeLedger(store, signature))) {
         throw new Error('Transaction signature already consumed');
     }
 
@@ -913,7 +923,7 @@ async function verifySignature(
 
     // Failed verification must not burn a valid payment. Shared stores with
     // update() coordinate replicas; legacy stores are single-process only.
-    if (!(await reserveReplayKey(store, consumedKey))) {
+    if (!(await claimConsumedSignature(store, signature))) {
         throw new Error('Transaction signature already consumed');
     }
 

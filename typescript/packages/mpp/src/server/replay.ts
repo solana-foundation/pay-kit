@@ -107,6 +107,40 @@ export async function confirmReplayKey(store: Store.Store, key: string, binding:
     await store.put(key, { binding, leaseUntil: current.leaseUntil, state: 'confirmed' } satisfies ReplayRecord);
 }
 
+/**
+ * Key of a Solana transaction signature in the protocol-independent ledger of
+ * payments that already authorized a protected response.
+ *
+ * MPP charge (pull and push) and PayKit's x402 `exact` adapter all claim here,
+ * so one on-chain payment authorizes one request whichever protocol presents
+ * it: a transaction settled through MPP cannot be presented again as an x402
+ * payment on a gate sharing the store, and vice versa. The key is the
+ * signature alone, matching the other PayKit SDKs.
+ */
+export function consumedSignatureKey(signature: string): string {
+    return `solana:consumed-signature:${signature}`;
+}
+
+/**
+ * Whether `signature` was claimed under the pre-ledger MPP charge key
+ * (`solana-charge:consumed:<sig>`), by a replica running an older release or
+ * before this one upgraded. Read only and fail closed: such a signature stays
+ * consumed, it is never migrated or claimed again. The x402 adapter kept no
+ * store record before the ledger, so it has no legacy key.
+ */
+export async function consumedBeforeLedger(store: Store.Store, signature: string): Promise<boolean> {
+    return (await store.get(`solana-charge:consumed:${signature}`)) !== null;
+}
+
+/**
+ * Atomically claim `signature` in the shared consumed-signature ledger.
+ * `false` means an earlier presentation, through any protocol, claimed it.
+ */
+export async function claimConsumedSignature(store: Store.Store, signature: string): Promise<boolean> {
+    if (await consumedBeforeLedger(store, signature)) return false;
+    return await reserveReplayKey(store, consumedSignatureKey(signature));
+}
+
 /** Atomically reserves a replay key, falling back to a process-local lock for legacy stores. */
 export async function reserveReplayKey(store: Store.Store, key: string): Promise<boolean> {
     const atomicStore = store as AtomicStore;
