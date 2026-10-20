@@ -1038,6 +1038,9 @@ impl ChannelBinding {
 
 const CHANNEL_BINDING_KEY: &str = "channelBinding";
 
+/// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_slot`].
+const ONCHAIN_OBSERVED_SLOT_KEY: &str = "onchainObservedSlot";
+
 impl ChannelState {
     /// The deployment binding stamped on this record, if any.
     pub fn binding(&self) -> Result<Option<ChannelBinding>, StoreError> {
@@ -1064,6 +1067,34 @@ impl ChannelState {
         if recorded.as_ref() != Some(&adopted) {
             self.set_binding(&adopted);
         }
+        Ok(())
+    }
+
+    /// Slot of the bank that served the newest onchain observation this
+    /// record accepted, `0` when none recorded one.
+    pub fn onchain_observed_slot(&self) -> u64 {
+        self.extra
+            .get(ONCHAIN_OBSERVED_SLOT_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// Accept an onchain observation read at `slot` as this record's fresh
+    /// snapshot, refreshing [`Self::onchain_checked_at`] to `now`. A read
+    /// served from a bank behind the newest accepted one is refused: a lagging
+    /// node can return a channel as open after it closed, and must never
+    /// renew the admission window.
+    pub fn record_onchain_observation(&mut self, slot: u64, now: u64) -> Result<(), StoreError> {
+        let recorded = self.onchain_observed_slot();
+        if slot < recorded {
+            return Err(StoreError::Internal(format!(
+                "channel {} observation at slot {slot} is behind the recorded slot {recorded}",
+                self.channel_id
+            )));
+        }
+        self.extra
+            .insert(ONCHAIN_OBSERVED_SLOT_KEY.to_string(), slot.into());
+        self.onchain_checked_at = now;
         Ok(())
     }
 

@@ -251,6 +251,62 @@ fn rpc_lookup_channel(
         .transpose()
 }
 
+/// A channel account read together with the slot of the bank that served it.
+struct ChannelObservation {
+    channel: Option<Channel>,
+    slot: u64,
+}
+
+/// [`rpc_lookup_channel`] fenced on chain progress: the node must serve the
+/// read from a bank at or after `min_context_slot`, so a lagging node cannot
+/// answer with a channel state older than one this record already accepted.
+fn rpc_observe_channel(
+    rpc: &RpcClient,
+    channel_id: &Pubkey,
+    program_id: &Pubkey,
+    min_context_slot: u64,
+) -> Result<ChannelObservation, Error> {
+    let mut config = serde_json::json!({
+        "commitment": rpc.commitment().commitment.to_string(),
+        "encoding": "base64",
+    });
+    if min_context_slot > 0 {
+        config["minContextSlot"] = min_context_slot.into();
+    }
+    let response: solana_rpc_client_api::response::Response<
+        Option<solana_account_decoder_client_types::UiAccount>,
+    > = rpc
+        .send(
+            solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+            serde_json::json!([pc::pubkey_string(channel_id), config]),
+        )
+        .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
+    if response.context.slot < min_context_slot {
+        return Err(Error::Rpc(format!(
+            "channel account read at slot {} is behind the recorded slot {min_context_slot}",
+            response.context.slot
+        )));
+    }
+    let channel = response
+        .value
+        .map(|account| {
+            let account = account
+                .to_account()
+                .ok_or_else(|| Error::Other("channel account data could not be decoded".into()))?;
+            decode_channel_account(
+                channel_id,
+                &pc::from_address(&account.owner),
+                &account.data,
+                program_id,
+            )
+        })
+        .transpose()?;
+    Ok(ChannelObservation {
+        channel,
+        slot: response.context.slot,
+    })
+}
+
 /// Decode a channel account owned by `program_id`. An account at the channel
 /// address owned by another program is an error, never an absence: it is not
 /// this deployment's channel, and its record must not be dropped for it.
@@ -1913,7 +1969,7 @@ impl X402BatchSettlement {
         // Hot path: only the last-checked timestamp decides whether a refresh
         // is due, so read that one field without cloning the whole record.
         let now = now_unix();
-        let snapshot: Arc<Mutex<Option<(u64, bool)>>> = Arc::new(Mutex::new(None));
+        let snapshot: Arc<Mutex<Option<(u64, u64, bool)>>> = Arc::new(Mutex::new(None));
         let out = Arc::clone(&snapshot);
         self.store
             .read_channel(
@@ -1924,6 +1980,7 @@ impl X402BatchSettlement {
                         .map(|state| {
                             (
                                 state.onchain_checked_at,
+                                state.onchain_observed_slot(),
                                 has_active_pending_open(state, now),
                             )
                         });
@@ -1932,7 +1989,7 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let Some((onchain_checked_at, has_pending_open)) =
+        let Some((onchain_checked_at, observed_slot, has_pending_open)) =
             *snapshot.lock().unwrap_or_else(|e| e.into_inner())
         else {
             // Nothing to reconcile: an unknown channel is refused by
@@ -1949,13 +2006,18 @@ impl X402BatchSettlement {
         // never stalls the async worker serving other paid requests.
         let rpc = Arc::clone(&self.rpc);
         let program_id = self.program_id()?;
-        let fetched =
-            tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
-                .await
-                .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
+        let fetched = tokio::task::spawn_blocking(move || {
+            rpc_observe_channel(&rpc, &channel_id, &program_id, observed_slot)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
         // A snapshot past its window cannot rule out a payer's close, so a
-        // failed refresh refuses the voucher rather than serving on it.
-        let onchain = fetched?;
+        // failed refresh, or one served by a node behind what this record
+        // already saw, refuses the voucher rather than serving on it.
+        let ChannelObservation {
+            channel: onchain,
+            slot,
+        } = fetched?;
         let closed_at = match onchain {
             // Confirmed absent: reclaimed, or never opened. Either way no
             // voucher against it can ever be redeemed.
@@ -2006,7 +2068,10 @@ impl X402BatchSettlement {
                                 state.close_requested_at =
                                     Some(state.close_requested_at.unwrap_or(closed_at));
                             }
-                            state.onchain_checked_at = now;
+                            // Fenced on the stored slot again inside the
+                            // transition, so a concurrent fresher refresh is
+                            // never overwritten by this older one.
+                            state.record_onchain_observation(slot, now)?;
                             Ok(state)
                         }),
                     )
@@ -4954,6 +5019,11 @@ mod tests {
     /// An RPC whose `getAccountInfo` answers with `channel` (owned by the
     /// default program), or with an absent account for `None`.
     fn chain_with(channel: Option<&Channel>) -> RpcClient {
+        chain_at(channel, 1)
+    }
+
+    /// [`chain_with`], served from a bank at `slot`.
+    fn chain_at(channel: Option<&Channel>, slot: u64) -> RpcClient {
         use base64::Engine as _;
         let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
         if let Some(channel) = channel {
@@ -4962,7 +5032,7 @@ mod tests {
                 mocks.insert(
                     solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
                     serde_json::json!({
-                        "context": { "slot": 1 },
+                        "context": { "slot": slot },
                         "value": {
                             "lamports": 1_000_000,
                             "data": [
@@ -5056,6 +5126,45 @@ mod tests {
             .await
             .expect_err("the placeholder transaction does not decode");
         assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// A refresh served by a node behind the slot this record already
+    /// accepted is refused and does not renew the snapshot: a lagging node can
+    /// still show a distributed channel as open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refresh_from_a_lagging_node_does_not_renew_admission() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        state.onchain_checked_at = 0;
+        state.record_onchain_observation(500, 0).unwrap();
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (lagging, _) = handler(store.clone());
+        let lagging = lagging.with_rpc_client(chain_at(Some(&open), 400));
+        let err = lagging
+            .reconcile_channel(&channel_b58)
+            .await
+            .expect_err("a read behind the recorded slot is refused");
+        assert!(
+            err.to_string().contains("behind the recorded slot"),
+            "{err}"
+        );
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(state.onchain_checked_at, 0, "the snapshot was not renewed");
+        assert_eq!(state.onchain_observed_slot(), 500);
+
+        // Positive control: a node at or past the recorded slot refreshes it.
+        let (current, _) = handler(store.clone());
+        let current = current.with_rpc_client(chain_at(Some(&open), 600));
+        current.reconcile_channel(&channel_b58).await.unwrap();
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.onchain_checked_at > 0);
+        assert_eq!(state.onchain_observed_slot(), 600);
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a
