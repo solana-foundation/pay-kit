@@ -214,7 +214,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: llvm-tools-preview
+          components: llvm-tools-preview, clippy
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: actions/cache@v5
         with:
@@ -287,6 +287,10 @@ jobs:
       - name: Rust format check
         working-directory: rust
         run: cargo fmt --check
+
+      - name: Rust clippy
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Upload Rust coverage
         if: always()
