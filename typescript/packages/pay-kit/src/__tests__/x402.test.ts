@@ -91,8 +91,10 @@ import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402
 import { createX402ExactAdapter } from '../adapters/x402.js';
 import { Charge, X402Upto } from '../adapters/x402-upto.js';
 import { configure, type PayKitConfig } from '../config.js';
-import { InvalidProofError } from '../errors.js';
+import { InvalidProofError, PaymentIdentifierError, ProtocolIncompatibleError } from '../errors.js';
 import { Gate } from '../gate.js';
+import type { PaymentIdentifierPolicy } from '../payment-identifier.js';
+import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
 
@@ -195,6 +197,112 @@ describe('x402 exact adapter', () => {
         });
         expect(error).toBeInstanceOf(InvalidProofError);
         expect((error as InvalidProofError).code).toBe('invalid_x402_version');
+    });
+
+    describe('payment-identifier extension', () => {
+        const VALID_ID = 'pay_abcdef1234567890abcdef1234567890';
+
+        function identifierGate(config: PayKitConfig, policy?: PaymentIdentifierPolicy): Gate {
+            return Gate.create(
+                { accept: ['x402'], amount: usd('0.10'), name: 'test', paymentIdentifier: policy },
+                gateDefaults(config),
+            );
+        }
+
+        async function verifyWith(policy: PaymentIdentifierPolicy, info: Record<string, unknown> | undefined) {
+            const config = await testConfig();
+            const adapter = createX402ExactAdapter(config);
+            const gate = identifierGate(config, policy);
+            const accepted = await adapter.acceptsEntry(gate, new Request('http://localhost/r'));
+            const header = encodePaymentSignatureHeader({
+                accepted,
+                ...(info && { extensions: { 'payment-identifier': { info } } }),
+                payload: { transaction: wireTransaction(0) },
+                x402Version: 2,
+            } as never);
+            const request = new Request('http://localhost/r', { headers: { 'payment-signature': header } });
+            return await adapter.verifyAndSettle(gate, request).catch((e: unknown) => e);
+        }
+
+        it('advertises the extension with info.required only when the gate sets a policy', async () => {
+            const config = await testConfig();
+            const adapter = createX402ExactAdapter(config);
+            const request = new Request('http://localhost/r');
+            const advertised = (policy?: PaymentIdentifierPolicy) =>
+                adapter
+                    .challengeHeaders(identifierGate(config, policy), request)
+                    .then(headers => decodePaymentRequiredHeader(headers['payment-required']).extensions);
+
+            expect(await advertised('required')).toMatchObject({ 'payment-identifier': { info: { required: true } } });
+            expect(await advertised('optional')).toMatchObject({
+                'payment-identifier': { info: { required: false } },
+            });
+            expect(await advertised()).toBeUndefined();
+        });
+
+        it.each([
+            ['no extensions', undefined, 'payment_identifier_required'],
+            ['an echo without an id', { required: true }, 'payment_identifier_required'],
+            ['a too-short id', { id: 'pay_short', required: true }, 'invalid_payment_identifier'],
+            [
+                'an id with a forbidden character',
+                { id: 'pay_abcdef1234567890!', required: true },
+                'invalid_payment_identifier',
+            ],
+        ])('rejects %s with a 400 when the id is required', async (_label, info, code) => {
+            const error = await verifyWith('required', info);
+            expect(error).toBeInstanceOf(PaymentIdentifierError);
+            expect((error as PaymentIdentifierError).httpStatus).toBe(400);
+            expect((error as PaymentIdentifierError).code).toBe(code);
+        });
+
+        it('lets a valid id through to the facilitator', async () => {
+            const error = await verifyWith('required', { id: VALID_ID, required: true });
+            // The minimal transaction fails later, in the facilitator.
+            expect(error).toBeInstanceOf(Error);
+            expect(error).not.toBeInstanceOf(PaymentIdentifierError);
+        });
+
+        it('lets a payment without an id through when the id is optional', async () => {
+            const error = await verifyWith('optional', undefined);
+            expect(error).not.toBeInstanceOf(PaymentIdentifierError);
+        });
+
+        it('answers a missing required id with HTTP 400 through the gate handler', async () => {
+            const config = await configure({
+                accept: ['x402'],
+                mpp: { challengeBindingSecret: 'x402-test-secret' },
+                network: 'solana_localnet',
+            });
+            const pay = await createPayKit({
+                config,
+                pricing: { api: { accept: ['x402'], amount: usd('0.10'), paymentIdentifier: 'required' } },
+            });
+            const unpaid = await pay.requirePayment(new Request('http://localhost/r'), 'api');
+            if (!('challenge' in unpaid)) throw new Error('expected a challenge');
+            const header = encodePaymentSignatureHeader({
+                accepted: unpaid.challenge.accepts[0],
+                payload: { transaction: wireTransaction(0) },
+                x402Version: 2,
+            } as never);
+            const handler = pay.fetch('api', () => new Response('ok'));
+            const response = await handler(
+                new Request('http://localhost/r', { headers: { 'payment-signature': header } }),
+            );
+
+            expect(response.status).toBe(400);
+            expect(await response.json()).toMatchObject({ code: 'payment_identifier_required' });
+        });
+
+        it('refuses the policy on a gate that does not accept x402', async () => {
+            const config = await testConfig();
+            expect(() =>
+                Gate.create(
+                    { accept: ['mpp'], amount: usd('0.10'), name: 'mpp-only', paymentIdentifier: 'required' },
+                    gateDefaults(config),
+                ),
+            ).toThrow(ProtocolIncompatibleError);
+        });
     });
 
     it('rejects a v2 payload without `accepted` as a 402', async () => {

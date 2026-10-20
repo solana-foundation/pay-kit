@@ -55,7 +55,7 @@ export class PaymentRequiredError extends PayKitError {
  */
 export class InvalidProofError extends PayKitError {
     override name = 'InvalidProofError';
-    readonly httpStatus = 402;
+    readonly httpStatus: 400 | 402 = 402;
     /** Canonical cross-SDK machine code (e.g. `signature_consumed`), asserted by conformance. */
     readonly code: string;
 
@@ -71,6 +71,19 @@ export class ChallengeExpiredError extends InvalidProofError {
 
     constructor(detail?: string) {
         super('challenge_expired', detail);
+    }
+}
+
+/**
+ * The x402 payload lacks the `payment-identifier` id the gate requires, or
+ * carries a malformed one. Rendered as HTTP 400 (payment_identifier.md).
+ */
+export class PaymentIdentifierError extends InvalidProofError {
+    override name = 'PaymentIdentifierError';
+    override readonly httpStatus = 400;
+
+    constructor(code: 'invalid_payment_identifier' | 'payment_identifier_required', detail: string) {
+        super(code, detail);
     }
 }
 

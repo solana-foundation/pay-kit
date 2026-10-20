@@ -16,6 +16,7 @@ import type { PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
+import { paymentIdentifierDeclaration, readPaymentIdentifier } from '../payment-identifier.js';
 import { caip2 } from '../protocol.js';
 import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
@@ -112,6 +113,7 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
                 // a pathname-only value fails that validation behind a proxy.
                 resource: { url: request.url },
                 x402Version: X402_VERSION,
+                ...(gate.paymentIdentifier && { extensions: paymentIdentifierDeclaration(gate.paymentIdentifier) }),
             };
             return { [PAYMENT_REQUIRED_HEADER]: encodePaymentRequiredHeader(paymentRequired) };
         },
@@ -145,6 +147,8 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             if (payload.accepted === null || typeof payload.accepted !== 'object') {
                 throw new InvalidProofError('invalid_payload', 'x402 v2 payment payload is missing `accepted`');
             }
+            // Before any chain work: a missing or malformed id is a 400.
+            if (gate.paymentIdentifier) readPaymentIdentifier(payload.extensions, gate.paymentIdentifier);
 
             const requirements = requirementsFor(gate);
             const verification = await facilitator.verify(payload, requirements);

@@ -30,6 +30,7 @@ export {
     InvalidProofError,
     MixedCurrenciesError,
     PayKitError,
+    PaymentIdentifierError,
     PaymentRequiredError,
     ProtocolIncompatibleError,
     ProtocolNotSupportedError,
@@ -54,6 +55,13 @@ export {
     type ServiceInfo,
 } from './openapi.js';
 export type { Payment } from './payment.js';
+export {
+    PAYMENT_IDENTIFIER,
+    PaymentIdentifier,
+    paymentIdentifierDeclaration,
+    type PaymentIdentifierPolicy,
+    readPaymentIdentifier,
+} from './payment-identifier.js';
 export {
     createPayKit,
     type CreatePayKitOptions,

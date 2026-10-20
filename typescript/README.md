@@ -289,7 +289,7 @@ result object instead of halting, matching the surrounding ecosystem:
 
 | Method | Purpose |
 |--------|---------|
-| `pay.requirePayment(request, gate)` | Verify-or-deny; returns `{ status: 402, response }` or `{ status: 200, payment, withSettlement }` |
+| `pay.requirePayment(request, gate)` | Verify-or-deny; returns `{ status: 402, response }` (400 for a malformed x402 payment, e.g. a missing required `payment-identifier` id) or `{ status: 200, payment, withSettlement }` |
 | `pay.paid(request, gateName?)`      | Predicate, never settles |
 | `pay.payment(request)`              | The verified `Payment`, `undefined` until paid |
 

@@ -63,11 +63,15 @@ export type OpenApiRoute<P extends PricingDef = PricingDef> = {
 /** Options for {@link PayKit.openapi}. */
 export type OpenApiOptions = { readonly info?: OpenApiInfo; readonly serviceInfo?: ServiceInfo };
 
-/** The request did not carry a valid payment; respond with `response`. */
+/**
+ * The request did not carry a valid payment; respond with `response`.
+ * `status` is the HTTP status of `response`: 402, or 400 for a malformed
+ * request (an x402 payment missing a required `payment-identifier` id).
+ */
 export type PaymentDenied = {
     readonly challenge: Challenge;
     readonly response: Response;
-    readonly status: 402;
+    readonly status: 400 | 402;
 };
 
 /**
@@ -292,10 +296,10 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         return Gate.create({ ...params, name: 'inline' }, defaults);
     }
 
-    function render402(challenge: Challenge, body: Record<string, unknown>): Response {
+    function render402(challenge: Challenge, body: Record<string, unknown>, status: 400 | 402 = 402): Response {
         return new Response(JSON.stringify(body), {
             headers: { ...challenge.headers, 'content-type': 'application/json' },
-            status: 402,
+            status,
         });
     }
 
@@ -378,12 +382,16 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             const challenge = await buildChallenge();
             return {
                 challenge,
-                response: render402(challenge, {
-                    accepts: challenge.accepts,
-                    code: error.code,
-                    ...(error.message !== error.code ? { detail: error.message } : {}),
-                }),
-                status: 402,
+                response: render402(
+                    challenge,
+                    {
+                        accepts: challenge.accepts,
+                        code: error.code,
+                        ...(error.message !== error.code ? { detail: error.message } : {}),
+                    },
+                    error.httpStatus,
+                ),
+                status: error.httpStatus,
             };
         }
     }
@@ -618,7 +626,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     await sendResponse(res, result.respond);
                     return;
                 }
-                if (result.status === 402) {
+                if (result.status !== 200) {
                     await sendResponse(res, result.response);
                     return;
                 }
@@ -641,7 +649,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             return async request => {
                 const result = await instance.requirePayment(request, gate);
                 if ('respond' in result) return result.respond;
-                if (result.status === 402) return result.response;
+                if (result.status !== 200) return result.response;
                 let response: Response;
                 try {
                     response = await handler(request, result.payment);
@@ -669,7 +677,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             return async (c, next) => {
                 const result = await instance.requirePayment(c.req.raw, gate);
                 if ('respond' in result) return result.respond;
-                if (result.status === 402) return result.response;
+                if (result.status !== 200) return result.response;
                 try {
                     await next();
                 } finally {

@@ -10,8 +10,7 @@
  */
 import type { ClientExtension } from '@x402/core/client';
 
-/** Extension key on the `PaymentRequired` and `PaymentPayload` envelopes. */
-export const PAYMENT_IDENTIFIER = 'payment-identifier';
+import { PAYMENT_IDENTIFIER } from '../payment-identifier.js';
 
 /** Fresh payment id: `pay_` + 16 random bytes in lowercase hex (36 characters). */
 export function generatePaymentIdentifier(): string {

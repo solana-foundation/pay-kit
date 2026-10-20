@@ -1,5 +1,6 @@
 import { ConfigurationError, MixedCurrenciesError, ProtocolIncompatibleError } from './errors.js';
 import type { Fee } from './fee.js';
+import type { PaymentIdentifierPolicy } from './payment-identifier.js';
 import { Price } from './price.js';
 import type { Protocol } from './protocol.js';
 
@@ -69,6 +70,12 @@ export type GateParams = {
     readonly name: string;
     /** Recipient of the base amount. Omit to inherit the operator recipient. */
     readonly payTo?: string;
+    /**
+     * Advertise the x402 `payment-identifier` extension on this gate's
+     * challenge. `required` rejects a payment without a valid id with HTTP 400.
+     * Omit to not advertise it. Only valid on `fixed` gates that accept x402.
+     */
+    readonly paymentIdentifier?: PaymentIdentifierPolicy;
     /** Metering config — required for (and only valid on) `session` gates. */
     readonly session?: SessionConfig;
     /** Plan binding — required for (and only valid on) `subscription` gates. */
@@ -99,6 +106,8 @@ export class Gate {
     readonly kind: GateKind;
     readonly name: string;
     readonly payTo: string;
+    /** x402 `payment-identifier` policy; `undefined` when not advertised. */
+    readonly paymentIdentifier: PaymentIdentifierPolicy | undefined;
     /** Metering config for `session` gates; `undefined` otherwise. */
     readonly session: SessionConfig | undefined;
     /** Plan binding for `subscription` gates; `undefined` otherwise. */
@@ -113,6 +122,7 @@ export class Gate {
         kind: GateKind;
         name: string;
         payTo: string;
+        paymentIdentifier: PaymentIdentifierPolicy | undefined;
         session: SessionConfig | undefined;
         subscription: SubscriptionConfig | undefined;
     }) {
@@ -124,6 +134,7 @@ export class Gate {
         this.kind = params.kind;
         this.name = params.name;
         this.payTo = params.payTo;
+        this.paymentIdentifier = params.paymentIdentifier;
         this.session = params.session ? Object.freeze({ ...params.session }) : undefined;
         this.subscription = params.subscription ? Object.freeze({ ...params.subscription }) : undefined;
         Object.freeze(this);
@@ -223,6 +234,12 @@ export class Gate {
         if (accept.length === 0) {
             throw new ConfigurationError(`Gate "${params.name}": accepts no protocols.`);
         }
+        if (params.paymentIdentifier !== undefined && (kind !== 'fixed' || !accept.includes('x402'))) {
+            throw new ProtocolIncompatibleError(
+                `Gate "${params.name}": paymentIdentifier is an x402 exact extension; ` +
+                    `it needs a fixed gate that accepts x402.`,
+            );
+        }
 
         return new Gate({
             accept,
@@ -233,6 +250,7 @@ export class Gate {
             kind,
             name: params.name,
             payTo,
+            paymentIdentifier: params.paymentIdentifier,
             session: params.session,
             subscription: params.subscription,
         });
