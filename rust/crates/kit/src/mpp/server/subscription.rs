@@ -574,6 +574,7 @@ impl SubscriptionServer {
         }
 
         // ── Settle the activation transaction ────────────────────────────
+        let mut recovery_claim = None;
         let (subscriber, activation_signature) = match payload_type {
             "transaction" => {
                 let tx_b64 = activate.transaction.as_deref().ok_or_else(|| {
@@ -653,7 +654,24 @@ impl SubscriptionServer {
                 });
                 let sig = if delegation_already_exists {
                     self.ensure_activation_landed(&signature).await?;
-                    reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
+                    // Landed under an earlier challenge that never got its
+                    // binding (the server failed after confirming, or the
+                    // receipt was lost past that challenge's expiry): recover
+                    // once, through the same on-chain verification and
+                    // binding as a first activation.
+                    if try_reserve_activation_signature(self.store.as_ref(), &key, binding).await?
+                        == ActivationReservation::HeldElsewhere
+                    {
+                        recovery_claim = Some(
+                            claim_activation_recovery(
+                                self.store.as_ref(),
+                                &delegation_pda,
+                                &signature,
+                                &credential.challenge.id,
+                            )
+                            .await?,
+                        );
+                    }
                     signature
                 } else {
                     reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
@@ -692,6 +710,39 @@ impl SubscriptionServer {
             }
         };
 
+        let activation_signature = activation_signature.ok_or_else(|| {
+            VerificationError::transaction_failed("Activation transaction signature is unavailable")
+        })?;
+        let bound = self
+            .bind_confirmed_activation(
+                credential,
+                &request,
+                subscriber,
+                activation_signature,
+                activate.authentication.as_ref(),
+            )
+            .await;
+        // A recovery that did not bind stays available to a later retry.
+        if let (Err(_), Some(claim)) = (&bound, recovery_claim) {
+            self.store.delete(&claim).await.map_err(|e| {
+                VerificationError::new(format!("Failed to release activation recovery: {e}"))
+            })?;
+        }
+        bound
+    }
+
+    /// Turn a confirmed activation into the subscription's bearer binding:
+    /// read its delegation, check it against this payer, plan and terms, and
+    /// rotate the binding to this challenge. The only writer of bindings, for
+    /// first activations and recoveries alike.
+    async fn bind_confirmed_activation(
+        &self,
+        credential: &PaymentCredential,
+        request: &SubscriptionRequest,
+        subscriber: Pubkey,
+        activation_reference: String,
+        authentication: Option<&SubscriptionAuthentication>,
+    ) -> Result<ReceiptKind, VerificationError> {
         // ── Derive subscription PDA and read on-chain state ──────────────
         let program_id = parse_pubkey(&self.program_id, "program_id")
             .map_err(|e| VerificationError::new(e.to_string()))?;
@@ -755,16 +806,13 @@ impl SubscriptionServer {
         self.ensure_current_authority(&subscriber, &delegation)
             .await?;
 
-        let authentication = activate.authentication.as_ref().ok_or_else(|| {
+        let authentication = authentication.ok_or_else(|| {
             VerificationError::invalid_payload(
                 "Subscription activation is missing authentication.type=\"proof\"",
             )
         })?;
         let binding_key = subscription_binding_key(&subscription_pda);
         let subscription_id = derive_subscription_id(&subscription_pda, &credential.challenge.id);
-        let activation_reference = activation_signature.clone().ok_or_else(|| {
-            VerificationError::transaction_failed("Activation transaction signature is unavailable")
-        })?;
         let binding = serde_json::json!({
             "activationSignature": activation_reference,
             "authentication": authentication,
@@ -1344,11 +1392,19 @@ fn ensure_live_delegation(
     Ok(period_end)
 }
 
-async fn reserve_activation_signature(
+#[derive(Debug, PartialEq, Eq)]
+enum ActivationReservation {
+    /// Reserved for this challenge, now or by an earlier attempt of it.
+    Held,
+    /// Reserved by a different challenge.
+    HeldElsewhere,
+}
+
+async fn try_reserve_activation_signature(
     store: &dyn Store,
     key: &str,
     binding: serde_json::Value,
-) -> Result<(), VerificationError> {
+) -> Result<ActivationReservation, VerificationError> {
     let inserted = store
         .put_if_absent(key, binding.clone())
         .await
@@ -1356,7 +1412,7 @@ async fn reserve_activation_signature(
             VerificationError::new(format!("Failed to reserve activation signature: {error}"))
         })?;
     if inserted {
-        return Ok(());
+        return Ok(ActivationReservation::Held);
     }
 
     // Re-broadcasting the same signed transaction is idempotent on Solana.
@@ -1365,12 +1421,63 @@ async fn reserve_activation_signature(
     let existing = store.get(key).await.map_err(|error| {
         VerificationError::new(format!("Failed to load activation reservation: {error}"))
     })?;
-    if existing != Some(binding) {
-        return Err(VerificationError::signature_consumed(
+    Ok(if existing == Some(binding) {
+        ActivationReservation::Held
+    } else {
+        ActivationReservation::HeldElsewhere
+    })
+}
+
+async fn reserve_activation_signature(
+    store: &dyn Store,
+    key: &str,
+    binding: serde_json::Value,
+) -> Result<(), VerificationError> {
+    match try_reserve_activation_signature(store, key, binding).await? {
+        ActivationReservation::Held => Ok(()),
+        ActivationReservation::HeldElsewhere => Err(VerificationError::signature_consumed(
             "Activation signature already consumed",
+        )),
+    }
+}
+
+/// Claim the one recovery of a confirmed activation reserved under another
+/// challenge whose binding was never written, returning the claim's key.
+/// Refused once any binding for this activation exists: its holder presents
+/// the subscription proof.
+async fn claim_activation_recovery(
+    store: &dyn Store,
+    delegation: &Pubkey,
+    signature: &Signature,
+    challenge_id: &str,
+) -> Result<String, VerificationError> {
+    let bound = store
+        .get(&subscription_binding_key(delegation))
+        .await
+        .map_err(|error| {
+            VerificationError::new(format!(
+                "Failed to load subscription authentication binding: {error}"
+            ))
+        })?;
+    let signature = signature.to_string();
+    if bound
+        .as_ref()
+        .and_then(|binding| binding.get("activationSignature"))
+        .and_then(serde_json::Value::as_str)
+        == Some(signature.as_str())
+    {
+        return Err(VerificationError::signature_consumed(
+            "Activation is already bound; present the subscription proof instead",
         ));
     }
-    Ok(())
+    let claim = format!("solana-subscription:recovered:{signature}");
+    reserve_activation_signature(
+        store,
+        &claim,
+        serde_json::json!({ "challengeId": challenge_id }),
+    )
+    .await?;
+    Ok(claim)
 }
 
 async fn rotate_subscription_binding(
@@ -2921,12 +3028,62 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn confirmed_activation_binds_and_reuses_subscription_proof() {
+    struct ActivationFixture {
+        server: SubscriptionServer,
+        signer: solana_keychain::MemorySigner,
+        transaction: String,
+        delegation: Pubkey,
+        rpc_task: tokio::task::JoinHandle<()>,
+    }
+
+    impl ActivationFixture {
+        async fn activation(
+            &self,
+            challenge: &crate::mpp::protocol::core::PaymentChallenge,
+            signer: &solana_keychain::MemorySigner,
+        ) -> (
+            PaymentCredential,
+            crate::mpp::protocol::intents::subscription::SubscriptionAuthentication,
+        ) {
+            let authentication = crate::mpp::client::sign_subscription_authentication(
+                signer,
+                &challenge.id,
+                &self.delegation.to_string(),
+            )
+            .await
+            .unwrap();
+            let credential = PaymentCredential::new(
+                challenge.to_echo(),
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some(self.transaction.clone()),
+                    signature: None,
+                    authentication: Some(authentication.clone()),
+                },
+            );
+            (credential, authentication)
+        }
+
+        fn access(
+            &self,
+            challenge: &crate::mpp::protocol::core::PaymentChallenge,
+            authentication: crate::mpp::protocol::intents::subscription::SubscriptionAuthentication,
+        ) -> PaymentCredential {
+            crate::mpp::client::build_subscription_access_credential(
+                challenge,
+                self.delegation.to_string(),
+                authentication,
+            )
+        }
+    }
+
+    /// A subscription whose on-chain activation has landed: every RPC read
+    /// reports it confirmed. `delegation_subscriber` overrides who the
+    /// on-chain delegation says it belongs to.
+    async fn activation_fixture(delegation_subscriber: Option<Pubkey>) -> ActivationFixture {
         use crate::mpp::client::{
-            build_subscription_access_credential,
             build_subscription_activation_transaction_with_options,
-            sign_subscription_authentication, BuildSubscriptionActivationOptions,
+            BuildSubscriptionActivationOptions,
         };
         use crate::mpp::protocol::solana::CredentialPayload;
         use axum::{routing::post, Json, Router};
@@ -2949,7 +3106,7 @@ mod tests {
         let period_start = now_unix_secs() - 60;
 
         let mut delegation_data = vec![4, 1, 255];
-        delegation_data.extend_from_slice(subscriber.as_ref());
+        delegation_data.extend_from_slice(delegation_subscriber.unwrap_or(subscriber).as_ref());
         delegation_data.extend_from_slice(plan.as_ref());
         delegation_data.extend_from_slice(Pubkey::new_unique().as_ref());
         delegation_data.extend_from_slice(&77i64.to_le_bytes());
@@ -3036,33 +3193,140 @@ mod tests {
         let CredentialPayload::Transaction { transaction } = transaction else {
             panic!("transaction")
         };
-        let authentication =
-            sign_subscription_authentication(&signer, &challenge.id, &delegation.to_string())
-                .await
-                .unwrap();
-        let activation = PaymentCredential::new(
-            challenge.to_echo(),
-            ActivatePayload {
-                payload_type: "transaction".into(),
-                transaction: Some(transaction),
-                signature: None,
-                authentication: Some(authentication.clone()),
-            },
-        );
-        assert!(matches!(
-            server.verify_credential(&activation).await.unwrap(),
-            ReceiptKind::Subscription { .. }
-        ));
+        ActivationFixture {
+            server,
+            signer,
+            transaction,
+            delegation,
+            rpc_task,
+        }
+    }
 
-        let access = build_subscription_access_credential(
-            &challenge,
-            delegation.to_string(),
-            authentication,
-        );
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_activation_binds_and_reuses_subscription_proof() {
+        let fixture = activation_fixture(None).await;
+        let challenge = fixture.server.subscription_challenge("10000000").unwrap();
+        let (activation, authentication) = fixture.activation(&challenge, &fixture.signer).await;
         assert!(matches!(
-            server.verify_credential(&access).await.unwrap(),
+            fixture.server.verify_credential(&activation).await.unwrap(),
             ReceiptKind::Subscription { .. }
         ));
-        rpc_task.abort();
+        assert!(matches!(
+            fixture
+                .server
+                .verify_credential(&fixture.access(&challenge, authentication))
+                .await
+                .unwrap(),
+            ReceiptKind::Subscription { .. }
+        ));
+        fixture.rpc_task.abort();
+    }
+
+    /// An activation that landed but never got its binding (the server failed
+    /// after confirming, or the receipt was lost past the challenge's expiry)
+    /// recovers once under a fresh challenge, through the same verification.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_landed_activation_without_a_binding_recovers_under_a_fresh_challenge() {
+        let fixture = activation_fixture(None).await;
+        let first = fixture.server.subscription_challenge("10000000").unwrap();
+        let (activation, first_auth) = fixture.activation(&first, &fixture.signer).await;
+        fixture.server.verify_credential(&activation).await.unwrap();
+        // The binding write after confirmation never happened.
+        let binding_key = subscription_binding_key(&fixture.delegation);
+        fixture.server.store.delete(&binding_key).await.unwrap();
+        assert!(fixture
+            .server
+            .verify_credential(&fixture.access(&first, first_auth.clone()))
+            .await
+            .is_err());
+
+        // Another key cannot recover it.
+        let fresh = fixture.server.subscription_challenge("10000000").unwrap();
+        let stranger = solana_keychain::MemorySigner::from_bytes(&{
+            let key = ed25519_dalek::SigningKey::from_bytes(&[31u8; 32]);
+            let mut keypair = [0u8; 64];
+            keypair[..32].copy_from_slice(key.as_bytes());
+            keypair[32..].copy_from_slice(key.verifying_key().as_bytes());
+            keypair
+        })
+        .unwrap();
+        let (forged, _) = fixture.activation(&fresh, &stranger).await;
+        assert!(fixture.server.verify_credential(&forged).await.is_err());
+        assert!(fixture
+            .server
+            .store
+            .get(&binding_key)
+            .await
+            .unwrap()
+            .is_none());
+
+        // The subscriber recovers under the fresh challenge, and its proof works.
+        let (recovery, fresh_auth) = fixture.activation(&fresh, &fixture.signer).await;
+        assert!(matches!(
+            fixture.server.verify_credential(&recovery).await.unwrap(),
+            ReceiptKind::Subscription { .. }
+        ));
+        fixture
+            .server
+            .verify_credential(&fixture.access(&fresh, fresh_auth))
+            .await
+            .unwrap();
+        assert!(fixture
+            .server
+            .verify_credential(&fixture.access(&first, first_auth))
+            .await
+            .is_err());
+
+        // Once bound, a further fresh-challenge retry is refused.
+        let again = fixture.server.subscription_challenge("10000000").unwrap();
+        let (retry, _) = fixture.activation(&again, &fixture.signer).await;
+        let error = fixture.server.verify_credential(&retry).await.unwrap_err();
+        assert!(error.to_string().contains("already bound"), "{error}");
+        fixture.rpc_task.abort();
+    }
+
+    /// Recovery re-derives the binding from the on-chain delegation and fails
+    /// closed when it belongs to someone else, leaving the recovery available.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_recovery_refuses_a_delegation_for_another_payer() {
+        let fixture = activation_fixture(Some(Pubkey::new_unique())).await;
+        let first = fixture.server.subscription_challenge("10000000").unwrap();
+        // The first attempt reserved the signature, then failed before binding.
+        let (activation, _) = fixture.activation(&first, &fixture.signer).await;
+        assert!(fixture.server.verify_credential(&activation).await.is_err());
+
+        let fresh = fixture.server.subscription_challenge("10000000").unwrap();
+        let (recovery, _) = fixture.activation(&fresh, &fixture.signer).await;
+        let error = fixture
+            .server
+            .verify_credential(&recovery)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("subscriber"), "{error}");
+        let binding_key = subscription_binding_key(&fixture.delegation);
+        assert!(fixture
+            .server
+            .store
+            .get(&binding_key)
+            .await
+            .unwrap()
+            .is_none());
+        // The failed recovery released its claim for a later retry.
+        let ActivatePayload {
+            transaction: Some(transaction),
+            ..
+        } = decode_activate_payload(&recovery).unwrap()
+        else {
+            panic!("transaction payload");
+        };
+        let signature = decode_base64_transaction(&transaction).unwrap().signatures[0];
+        assert!(fixture
+            .server
+            .store
+            .get(&format!("solana-subscription:recovered:{signature}"))
+            .await
+            .unwrap()
+            .is_none());
+        fixture.rpc_task.abort();
     }
 }
