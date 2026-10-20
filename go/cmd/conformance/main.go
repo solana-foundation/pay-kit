@@ -151,6 +151,9 @@ type VectorInput struct {
 	// X402ServerAmount is the route amount (decimal string of token base
 	// units) the envelope's accepted.amount must equal on verify.
 	X402ServerAmount string `json:"x402ServerAmount"`
+	// X402ServerMemo is the route's extra.memo; the verifier requires the
+	// transaction's single Memo to carry it.
+	X402ServerMemo string `json:"x402ServerMemo"`
 	// X402PaymentHeader is the base64(JSON) x402 payment header the verify
 	// mode decodes and gates against the route.
 	X402PaymentHeader string `json:"x402PaymentHeader"`
@@ -326,7 +329,13 @@ type rejectPattern struct {
 var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
 	{regexp.MustCompile(`(?i)compute unit limit .* exceeds (maximum|cap)`), "compute-limit-over-cap"},
-	{regexp.MustCompile(`(?i)fee payer cannot authorize`), "fee-payer-not-authority"},
+	{regexp.MustCompile(`(?i)fee payer cannot authorize|transfer authority is the fee-payer|references the fee payer in its accounts`), "fee-payer-not-authority"},
+	// x402 v2: the credential's `accepted` disagrees with the route.
+	{regexp.MustCompile(`(?i)recipient mismatch|currency mismatch|amount mismatch: expected \d+, got \d+|accepted .*does not match`), "accepted-mismatch"},
+	{regexp.MustCompile(`(?i)amount mismatch: got \d+, want at least`), "amount-mismatch"},
+	{regexp.MustCompile(`(?i)expected exactly one matching transferchecked, found \d+`), "unexpected-instruction"},
+	{regexp.MustCompile(`(?i)is not an spl token transfer|found 0 matching`), "no-matching-transfer"},
+	{regexp.MustCompile(`(?i)no memo instruction found|memo mismatch|memo count|does not match extra\.memo`), "invalid-payload"},
 	{regexp.MustCompile(`(?i)fee payer .* (funding source|funds source)`), "fee-payer-is-funds-source"},
 	{regexp.MustCompile(`(?i)splits consume the entire amount`), "splits-exceed-amount"},
 	{regexp.MustCompile(`(?i)too many splits`), "too-many-splits"},

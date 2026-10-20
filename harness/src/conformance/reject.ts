@@ -12,6 +12,24 @@
 import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
+  // x402 v2: the credential's `accepted` matches none of the route's
+  // requirements (targeted field checks or a structural offer match).
+  [
+    /recipient mismatch|currency mismatch|accepted payment requirement does not match|amount mismatch: expected \d+, got \d+/i,
+    "accepted-mismatch",
+  ],
+  // A split memo or the route's extra.memo missing or different.
+  [/no memo instruction found|invalid_exact_svm_payload_memo_(mismatch|count)/i, "invalid-payload"],
+  // @x402/svm exact verifier: fee payer isolation (§2.1.1) and the static
+  // layout's instruction set (§3.1).
+  [
+    /invalid_exact_svm_payload_transaction_fee_payer_(transferring_funds|in_instruction_accounts|included_in_instruction_accounts)/i,
+    "fee-payer-not-authority",
+  ],
+  [
+    /invalid_exact_svm_payload_(unknown_(fourth|fifth|sixth|optional)_instruction|transaction_instructions_length)/i,
+    "unexpected-instruction",
+  ],
   // Client refusing a challenge that violates the method spec (RULINGS C2,
   // C3). Checked first: these messages also contain generic words.
   [/decimals is required|failed to determine token program/i, "invalid-challenge"],
@@ -23,7 +41,7 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/too many splits/i, "too-many-splits"],
   [/no matching (spl )?(transfer|transferchecked|sol transfer)/i, "no-matching-transfer"],
   [/unexpected .* (instruction|transfer)/i, "unexpected-instruction"],
-  [/amount .* (mismatch|does not match)/i, "amount-mismatch"],
+  [/amount\b.* (mismatch|does not match)/i, "amount-mismatch"],
   // x402-exact reject categories. `unsupported version` must be checked
   // before the generic invalid/payload fallback (the message contains
   // "invalid payload: Unsupported x402 version"). `network mismatch`

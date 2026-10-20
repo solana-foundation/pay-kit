@@ -111,6 +111,9 @@ end
 # The charge verifier enforces transferChecked decimals through the transfer
 # match key, so a decimals mismatch surfaces as "no matching transfer".
 REJECT_PATTERNS = [
+  # x402 v2: the credential's `accepted` matches no offered requirement.
+  [/No matching payment requirements|accepted payment requirement does not match/i, "accepted-mismatch"],
+  [/no memo instruction found|memo_mismatch|memo_count/i, "invalid-payload"],
   [/unsupported x402\s*version/i, "unsupported-version"],
   [/network mismatch/i, "wrong-network"],
   [/payment.identifier .*(required|missing|invalid)/i, "payment-identifier-required"],
@@ -213,7 +216,10 @@ def run_x402_vector(vector)
   )
 
   begin
-    PayKit::Protocols::X402::Server::Exact.verify_exact_payment(config, header)
+    # The route's extra.memo is the SDK's resource binding (`resource:`):
+    # it is advertised as extra.memo and enforced on the transaction.
+    memo = input["x402ServerMemo"]
+    PayKit::Protocols::X402::Server::Exact.verify_exact_payment(config, header, resource: memo)
   rescue => error
     return reject_result(vector["id"], error.message)
   end

@@ -298,8 +298,10 @@ local function run_x402_verify(vector)
   local gate = assert(require('pay_kit.internal.registry').materialize('route'))
 
   local adapter = assert(x402.new({config_resolver = pay_kit.config}))
-  -- The vector route binds no resource memo.
-  local offer, verify_err = adapter:verify_payment(gate, {headers = {['payment-signature'] = header}}, nil)
+  -- The route's extra.memo is the SDK's resource binding: advertised as
+  -- extra.memo and enforced on the transaction.
+  local memo = input.x402ServerMemo
+  local offer, verify_err = adapter:verify_payment(gate, {headers = {['payment-signature'] = header}}, memo)
   if not offer then error(verify_err) end
   return {
     id = vector.id,
@@ -441,6 +443,26 @@ local function classify_reject(message)
     return nil
   end
   local m = message:lower()
+
+  -- x402 v2: the credential's `accepted` matches none of the route's
+  -- requirements (the SDK's targeted field checks or its offer match).
+  if has(m, 'recipient mismatch') or has(m, 'currency mismatch')
+    or has(m, 'accepted payment requirement does not match')
+    or has(m, 'charge_request_mismatch')
+    or m:find('amount mismatch: expected %d+, got %d+') then
+    return 'accepted-mismatch'
+  end
+  if has(m, 'no memo instruction found') or has(m, 'memo_mismatch') or has(m, 'memo_count') then
+    return 'invalid-payload'
+  end
+  if has(m, 'unknown_fourth_instruction') or has(m, 'unknown_fifth_instruction')
+    or has(m, 'unknown_sixth_instruction') or has(m, 'unknown_optional_instruction')
+    or has(m, 'instructions_length') then
+    return 'unexpected-instruction'
+  end
+  if has(m, 'fee_payer_included_in_instruction_accounts') then
+    return 'fee-payer-not-authority'
+  end
 
   -- x402-exact: an envelope carrying an x402Version the server does not
   -- understand (the SDK raises "invalid proof: unsupported x402Version").

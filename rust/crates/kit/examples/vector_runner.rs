@@ -124,6 +124,7 @@ impl From<solana_pay_kit::x402::Error> for Rejection {
                 Some("payment-identifier-required")
             }
             solana_pay_kit::x402::Error::WrongNetwork { .. } => Some("wrong-network"),
+            solana_pay_kit::x402::Error::AcceptedMismatch => Some("accepted-mismatch"),
             _ => None,
         };
         Self {
@@ -724,12 +725,34 @@ async fn x402_verify(input: &Value) -> Result<Outcome, Rejection> {
     // takes a human decimal price and converts it with `core::parse_units`.
     let base_units = str_field(input, "x402ServerAmount");
     let price = human_price(base_units, decimals)?;
+    // The route's extra.memo, which the verifier enforces on the transaction.
+    let options = ExactOptions {
+        memo: input.get("x402ServerMemo").and_then(Value::as_str),
+        ..Default::default()
+    };
     let requirements = server
-        .exact_requirements(&price, ExactOptions::default())
+        .exact_requirements(&price, options)
         .map_err(|e| format!("route requirements: {e}"))?;
-    server
+    if let Err(error) = server
         .verify_payment_signature_for_requirements(header, &requirements)
-        .await?;
+        .await
+    {
+        // A v2 credential names its network inside `accepted`, so a v2
+        // network mismatch is an `accepted` mismatch (v1 keeps wrong-network).
+        let v2 = envelope_fields(header)
+            .ok()
+            .and_then(|shape| shape.get("x402EnvelopeShape").cloned())
+            .and_then(|shape| shape.get("x402Version").and_then(Value::as_u64))
+            == Some(2);
+        let message = error.to_string();
+        if v2 && message.starts_with("Network mismatch") {
+            return Err(Rejection {
+                message,
+                code: Some("accepted-mismatch"),
+            });
+        }
+        return Err(error.into());
+    }
     Ok(Outcome::Accept(envelope_fields(header)?))
 }
 
@@ -852,6 +875,16 @@ fn classify_reject(message: &str) -> Option<&'static str> {
         "compute-price-over-cap"
     } else if has("compute unit limit") && (has("exceeds") || has("cap") || has("maximum")) {
         "compute-limit-over-cap"
+    } else if has("credential claims a different recipient")
+        || has("currency mismatch")
+        || has("structurally match")
+        || has("does not match any offered")
+        || (has("amount mismatch: expected") && !has("_amount_mismatch"))
+    {
+        // x402 v2: the credential's `accepted` disagrees with the route.
+        "accepted-mismatch"
+    } else if has("no memo instruction found") {
+        "invalid-payload"
     } else if has("fee payer cannot authorize") {
         "fee-payer-not-authority"
     } else if has("fee payer") && (has("funding source") || has("funds source")) {

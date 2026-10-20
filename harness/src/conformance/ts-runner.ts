@@ -223,11 +223,7 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
   }
 }
 
-type X402VerifyInput = ConformanceVector["input"] & {
-  // Written by gen-x402-verify-vectors.ts; not yet declared in schema.ts.
-  x402ServerFeePayer?: string;
-  x402ServerFeePayerSecretKey?: number[];
-};
+type X402VerifyInput = ConformanceVector["input"];
 
 async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input as X402VerifyInput;
@@ -268,7 +264,11 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
   const requirements: PaymentRequirements = {
     amount: input.x402ServerAmount,
     asset: input.x402ServerCurrency,
-    extra: { feePayer: operator.address },
+    // The route's extra.memo, which the verifier enforces (§3.1).
+    extra: {
+      feePayer: operator.address,
+      ...(input.x402ServerMemo !== undefined ? { memo: input.x402ServerMemo } : {}),
+    },
     maxTimeoutSeconds: 300,
     network,
     payTo: input.x402ServerRecipient,

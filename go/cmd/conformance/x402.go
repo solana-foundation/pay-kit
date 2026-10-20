@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	solana "github.com/gagliardetto/solana-go"
 
@@ -279,12 +280,19 @@ func verifyX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 		Asset:                    in.X402ServerCurrency,
 		Amount:                   in.X402ServerAmount,
 		FeePayer:                 feePayer,
+		ExpectedMemo:             in.X402ServerMemo,
 		RequirePaymentIdentifier: in.X402ServerRequiresPaymentIdentifier,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if _, err := x402.VerifyPaymentHeader(in.X402PaymentHeader, route); err != nil {
+		// A v2 credential names its network inside `accepted`, so the
+		// shared code for a v2 network mismatch is accepted-mismatch.
+		if shape, shapeErr := decodeX402EnvelopeShape(in.X402PaymentHeader); shapeErr == nil &&
+			shape.X402Version == 2 && strings.Contains(strings.ToLower(err.Error()), "network mismatch") {
+			return nil, fmt.Errorf("accepted network does not match the route: %w", err)
+		}
 		return nil, err
 	}
 	return decodeX402EnvelopeShape(in.X402PaymentHeader)

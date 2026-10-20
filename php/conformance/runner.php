@@ -246,6 +246,9 @@ function classify_reject(string $message): ?string
     }
 
     $patterns = [
+        // x402 v2: the credential's `accepted` matches no offered requirement.
+        '/charge_request_mismatch|accepted payment requirement does not match/i' => 'accepted-mismatch',
+        '/no memo instruction found|memo_mismatch|memo_count/i' => 'invalid-payload',
         '/compute unit price .*exceeds (maximum|cap)/i' => 'compute-price-over-cap',
         '/compute unit limit .*exceeds (maximum|cap)/i' => 'compute-limit-over-cap',
         '/fee payer cannot authorize/i' => 'fee-payer-not-authority',
@@ -468,8 +471,13 @@ function run_x402_vector(array $vector): array
     $adapter = new X402Adapter($config, new \PayKit\Store\MemoryStore());
     $gate = new Gate(amount: Price::usd($amount, $coin));
 
-    // Pre-broadcast verification only. The vector route has no resource memo.
-    $adapter->verifyPaymentHeader($gate, $header, null);
+    // Pre-broadcast verification only. The route's extra.memo is the SDK's
+    // resource binding: advertised as extra.memo and enforced on the
+    // transaction.
+    $memo = array_key_exists('x402ServerMemo', $input)
+        ? Json::optionalString($input['x402ServerMemo'], 'x402ServerMemo')
+        : null;
+    $adapter->verifyPaymentHeader($gate, $header, $memo);
 
     $decoded = json_decode((string) base64_decode($header, true), true, flags: JSON_THROW_ON_ERROR);
     return [

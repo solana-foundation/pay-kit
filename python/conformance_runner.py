@@ -456,6 +456,10 @@ def _x402_route_offer(inp: dict[str, Any]) -> X402AcceptsEntry:
     fee_payer = inp.get("x402ServerFeePayer")
     if not fee_payer:
         raise ValueError("x402 verify vector is missing input.x402ServerFeePayer")
+    extra: dict[str, Any] = {"feePayer": fee_payer}
+    # The route's extra.memo, which the verifier must enforce (§3.1).
+    if inp.get("x402ServerMemo"):
+        extra["memo"] = inp["x402ServerMemo"]
     return {
         "scheme": EXACT_SCHEME,
         "network": _caip2_for_selection(inp["x402ServerNetwork"]),
@@ -463,7 +467,7 @@ def _x402_route_offer(inp: dict[str, Any]) -> X402AcceptsEntry:
         "asset": inp["x402ServerCurrency"],
         "payTo": inp["x402ServerRecipient"],
         "maxTimeoutSeconds": 300,
-        "extra": {"feePayer": fee_payer},
+        "extra": extra,
     }
 
 
@@ -591,6 +595,16 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 # than passing on outcome alone. Decimals mismatch is enforced through the
 # transfer match key, so it honestly surfaces as `no-matching-transfer`.
 _REJECT_PATTERNS: list[tuple[str, str]] = [
+    # x402 v2: the credential's `accepted` matches none of the route's
+    # requirements (the SDK's offer match). Before the amount pattern.
+    (r"charge_request_mismatch|accepted payment requirement does not match", "accepted-mismatch"),
+    # x402 exact SVM verifier reasons.
+    (r"fee_payer_transferring_funds|fee_payer_in_instruction_accounts", "fee-payer-not-authority"),
+    (r"unknown_(fourth|fifth|sixth|optional)_instruction|instructions_length", "unexpected-instruction"),
+    (r"no_transfer_instruction|recipient_mismatch|mint_mismatch", "no-matching-transfer"),
+    (r"_amount_mismatch", "amount-mismatch"),
+    (r"no memo instruction found|memo_mismatch|memo_count", "invalid-payload"),
+    (r"no matching sol transfer", "no-matching-transfer"),
     (r"compute unit price .* exceeds (cap|maximum)", "compute-price-over-cap"),
     (r"compute unit limit .* exceeds (cap|maximum)", "compute-limit-over-cap"),
     (r"fee payer cannot authorize", "fee-payer-not-authority"),
