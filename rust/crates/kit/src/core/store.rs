@@ -1044,6 +1044,9 @@ impl ChannelBinding {
 
 const CHANNEL_BINDING_KEY: &str = "channelBinding";
 
+/// [`ChannelState::extra`] key holding [`ChannelState::grace_period`].
+const GRACE_PERIOD_KEY: &str = "gracePeriod";
+
 /// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_slot`].
 const ONCHAIN_OBSERVED_SLOT_KEY: &str = "onchainObservedSlot";
 
@@ -1074,6 +1077,40 @@ impl ChannelState {
             self.set_binding(&adopted);
         }
         Ok(())
+    }
+
+    /// The channel's immutable onchain grace period (seconds), when recorded.
+    /// It is not a PDA seed, so a policy change can leave an open channel with
+    /// a shorter close window than the server now plans its leases around.
+    pub fn grace_period(&self) -> Option<u32> {
+        self.extra
+            .get(GRACE_PERIOD_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+    }
+
+    /// Record the channel's onchain grace period.
+    pub fn set_grace_period(&mut self, grace_period: u32) {
+        self.extra
+            .insert(GRACE_PERIOD_KEY.to_string(), grace_period.into());
+    }
+
+    /// Require the recorded grace period to be `withdraw_delay`, the window
+    /// the server sizes its reservation leases and snapshots against. A record
+    /// without one must first be completed from its confirmed channel.
+    pub fn check_grace_period(&self, withdraw_delay: u32) -> Result<(), StoreError> {
+        match self.grace_period() {
+            Some(recorded) if recorded == withdraw_delay => Ok(()),
+            Some(recorded) => Err(StoreError::Internal(format!(
+                "channel {} has a {recorded}s grace period, not the {withdraw_delay}s this \
+                 server requires",
+                self.channel_id
+            ))),
+            None => Err(StoreError::Internal(format!(
+                "channel {} has no recorded grace period",
+                self.channel_id
+            ))),
+        }
     }
 
     /// Slot of the bank that served the newest onchain observation this

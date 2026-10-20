@@ -1699,6 +1699,7 @@ impl X402BatchSettlement {
         let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
         let binding = self.binding();
+        let withdraw_delay = self.config.withdraw_delay;
         let request = AuthorizationRequest {
             authorization_id: id,
             request_fingerprint: fingerprint,
@@ -1721,6 +1722,7 @@ impl X402BatchSettlement {
                     // Admission requires the complete binding of this
                     // deployment, in the same transition as the reservation.
                     state.check_binding_complete(&binding)?;
+                    state.check_grace_period(withdraw_delay)?;
                     match (&state.pending_setup, setup) {
                         // Another setup transaction is already in flight for this
                         // channel; one of them would be credited twice.
@@ -1754,7 +1756,9 @@ impl X402BatchSettlement {
     /// is refused, and the reservation itself requires the complete binding.
     async fn complete_binding(&self, outcome: &BatchOutcome) -> Result<(), Error> {
         let current = self.binding();
-        let recorded: Arc<Mutex<Option<Option<ChannelBinding>>>> = Arc::new(Mutex::new(None));
+        let withdraw_delay = self.config.withdraw_delay;
+        type Recorded = (Option<ChannelBinding>, Option<u32>);
+        let recorded: Arc<Mutex<Option<Recorded>>> = Arc::new(Mutex::new(None));
         let out = Arc::clone(&recorded);
         let expected = current.clone();
         self.store
@@ -1763,7 +1767,13 @@ impl X402BatchSettlement {
                 Box::new(move |state| {
                     if let Some(state) = state {
                         state.check_binding(&expected)?;
-                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.binding()?);
+                        // A recorded grace period is the confirmed channel's:
+                        // one this policy does not match is refused outright.
+                        if state.grace_period().is_some() {
+                            state.check_grace_period(withdraw_delay)?;
+                        }
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((state.binding()?, state.grace_period()));
                     }
                     Ok(())
                 }),
@@ -1774,7 +1784,9 @@ impl X402BatchSettlement {
         match recorded {
             // No record yet: a deposit seeds one carrying the full binding.
             None => return Ok(()),
-            Some(Some(binding)) if binding == current && binding.is_complete() => return Ok(()),
+            Some((Some(binding), Some(_))) if binding == current && binding.is_complete() => {
+                return Ok(())
+            }
             Some(_) => {}
         }
         let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
@@ -1794,12 +1806,15 @@ impl X402BatchSettlement {
                         ),
                     )
                 })?;
+        // Binds the grace period too: the payload's withdrawDelay was already
+        // held to this server's, so the channel must have been opened with it.
         self.check_channel_bindings(
             &onchain,
             outcome.payload.channel_config(),
             &self.config.pay_to,
             0,
         )?;
+        let grace_period = onchain.grace_period;
         self.store
             .mutate_channel(
                 &outcome.channel_id,
@@ -1807,6 +1822,7 @@ impl X402BatchSettlement {
                 Box::new(move |state| {
                     state.check_binding(&current)?;
                     state.adopt_binding(&current)?;
+                    state.set_grace_period(grace_period);
                     Ok(())
                 }),
             )
@@ -1967,6 +1983,7 @@ impl X402BatchSettlement {
                             .distributed_on_chain
                             .max(channel.settlement.payout_watermark);
                         state.open_slot = Some(channel.open_slot);
+                        state.set_grace_period(channel.grace_period);
                         state.rent_payer = rent_payer;
                         state.onchain_checked_at = now.max(0) as u64;
                         state.pending_setup = None;
@@ -2463,6 +2480,9 @@ impl X402BatchSettlement {
             extra: Default::default(),
         };
         state.set_binding(&self.binding());
+        // The open is validated against this delay before it is broadcast,
+        // and the confirmed channel is checked against it again at commit.
+        state.set_grace_period(config.withdraw_delay);
         state
     }
 
@@ -3702,6 +3722,7 @@ mod tests {
         let mut state = unbound(channel, config, deposit, cumulative);
         // Bound to the deployment `handler` builds, as a deposit seeds it.
         state.set_binding(&handler(Arc::new(MemoryChannelStore::new())).0.binding());
+        state.set_grace_period(config.withdraw_delay);
         state
     }
 
@@ -5162,6 +5183,75 @@ mod tests {
         assert!(matches!(
             api_a
                 .verify_and_reserve_payment(&request_a, "0.001")
+                .await
+                .unwrap(),
+            BatchAccess::Serve(_)
+        ));
+    }
+
+    /// A channel opened under an older, shorter grace period is not served
+    /// after the policy changed: the reservation lease is sized for the new
+    /// delay and could outlast the old channel's close window. Its recorded
+    /// grace period is refused outright; a record without one is checked
+    /// against the confirmed channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_channel_with_a_drifted_grace_period_is_refused() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config.clone(),
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let mut drifted = seeded(&channel, &config, 5_000, 1_000);
+        drifted.set_grace_period(900);
+        store.put_channel(&channel_b58, drifted).await.unwrap();
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("a recorded shorter grace period is refused");
+        assert!(err.to_string().contains("grace period"), "{err}");
+
+        let mut old_open = onchain_channel(&config, &fee_payer, 5_000);
+        old_open.grace_period = 900;
+        let mut unrecorded = seeded(&channel, &config, 5_000, 1_000);
+        unrecorded.extra.remove("gracePeriod");
+        store
+            .update_channel(&channel_b58, Box::new(move |_| Ok(unrecorded)))
+            .await
+            .unwrap();
+        let (chained, _) = super::tests::handler(store.clone());
+        let chained = chained.with_rpc_client(chain_with(Some(&old_open)));
+        let err = chained
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("an unrecorded grace period is read from the chain");
+        assert!(err.to_string().contains("grace_period"), "{err}");
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .grace_period(),
+            None
+        );
+
+        // Positive control: the grace period this server advertises.
+        let matching = seeded(&channel, &config, 5_000, 1_000);
+        store
+            .update_channel(&channel_b58, Box::new(move |_| Ok(matching)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            handler
+                .verify_and_reserve_payment(&request, "0.001")
                 .await
                 .unwrap(),
             BatchAccess::Serve(_)

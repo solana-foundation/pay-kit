@@ -2513,6 +2513,7 @@ mod tests {
 
         let batch = pay.x402_batch().expect("signer enables batch");
         let requirements = batch.requirements("0.001").unwrap();
+        let requirements_delay = requirements.extra.withdraw_delay;
         let key = ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]);
         let payer = bs58::encode(key.verifying_key().as_bytes()).into_string();
         let config = BatchChannelConfig {
@@ -2548,6 +2549,7 @@ mod tests {
             .put_channel(&channel_id, {
                 let mut state = batch_channel_state(&channel_id, &payer);
                 state.set_binding(&batch.binding());
+                state.set_grace_period(requirements_delay);
                 state
             })
             .await
