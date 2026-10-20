@@ -626,15 +626,19 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 }
 
 // handleVoucher verifies a cumulative voucher and advances the watermark.
-// The receipt reference is "<channelId>:<cumulative>".
+// Each voucher authorizes one request: an exact replay is rejected. The
+// receipt reference is "<channelId>:<cumulative>".
 func (s *Session) handleVoucher(ctx context.Context, payload *intents.VoucherPayload) (string, error) {
 	channelID := payload.Voucher.Data.ChannelID
-	cumulative, err := s.core.VerifyVoucher(ctx, payload)
+	acceptance, err := s.core.VerifyVoucherDetailed(ctx, payload)
 	if err != nil {
 		return "", err
 	}
+	if acceptance.Replayed {
+		return "", fmt.Errorf("voucher was already accepted; sign a new voucher for this request")
+	}
 	s.touch(channelID)
-	return fmt.Sprintf("%s:%d", channelID, cumulative), nil
+	return fmt.Sprintf("%s:%d", channelID, acceptance.Cumulative), nil
 }
 
 // handleCommit commits a reserved metered delivery. The receipt reference is

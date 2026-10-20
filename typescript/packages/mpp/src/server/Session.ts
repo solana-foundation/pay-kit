@@ -844,10 +844,8 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
             throw new Error(`${result.reason}: ${result.detail}`);
         }
         if (result.status === 'replayed') {
-            // An idempotent replay of the already-accepted highest voucher
-            // must not deliver additional service or debit spentAmount
-            // again — the client already paid for it.
-            return { ...current, lastActivityAt: Date.now() };
+            // Each voucher authorizes one request; a replay changes no state.
+            throw new Error('voucher was already accepted; sign a new voucher for this request');
         }
         if (result.newCumulative - current.spentAmount < args.price) {
             throw new Error('insufficient authorized voucher availability');

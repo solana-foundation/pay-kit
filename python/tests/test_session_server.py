@@ -350,15 +350,19 @@ async def test_concurrent_open_verifies_and_persists_once() -> None:
     assert (await server.store().get_channel(CHANNEL)).cumulative == 0  # type: ignore[union-attr]
 
 
-async def test_client_voucher_advances_watermark_and_replays_idempotently() -> None:
+async def test_client_voucher_advances_watermark_and_rejects_exact_replay() -> None:
     server, _, _ = await _server()
     voucher = _voucher(100)
     assert await server.verify_voucher(_voucher_payload(voucher)) == 100
-    # The replay must not double-debit: spent_amount reflects only the one
-    # fresh acceptance, not the replay that followed it.
-    assert await server.verify_voucher(_voucher_payload(voucher)) == 100
+    before = await server.store().get_channel(CHANNEL)
+    # A replay authorizes no further request and leaves the channel untouched.
+    with pytest.raises(ValueError, match="already accepted"):
+        await server.verify_voucher(_voucher_payload(voucher))
     state = await server.store().get_channel(CHANNEL)
+    assert state == before
     assert state is not None and state.cumulative == 100 and state.spent_amount == 25
+    # The next request is paid with a fresh voucher.
+    assert await server.verify_voucher(_voucher_payload(_voucher(200))) == 200
 
 
 async def test_voucher_action_channel_id_must_match_the_signed_voucher() -> None:

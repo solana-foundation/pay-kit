@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -590,6 +591,26 @@ func TestSessionVoucherAdvancesWatermark(t *testing.T) {
 	state := mustGetChannel(t, session, channelID)
 	if state.Cumulative != 250 || state.HighestVoucherSignature == nil || *state.HighestVoucherSignature != voucher.Signature {
 		t.Fatalf("state after voucher = %+v", state)
+	}
+}
+
+func TestSessionVoucherExactReplayRejectedWithoutStateChange(t *testing.T) {
+	session := newTestSession(t, nil)
+	signer, channelID := openTrustedChannel(t, session, 1_000)
+	voucher := signer.SignVoucher(t, channelID, 250, farFuture())
+	action := intents.NewVoucherAction(intents.VoucherPayload{Voucher: voucher})
+	if _, err := verifySessionAction(t, session, action); err != nil {
+		t.Fatalf("voucher: %v", err)
+	}
+	before := mustGetChannel(t, session, channelID)
+	if _, err := verifySessionAction(t, session, action); err == nil || !strings.Contains(err.Error(), "already accepted") {
+		t.Fatalf("replay error = %v, want already-accepted rejection", err)
+	}
+	if after := mustGetChannel(t, session, channelID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("replay changed state: %+v -> %+v", before, after)
+	}
+	if _, err := submitMethodVoucher(t, session, signer, channelID, 500); err != nil {
+		t.Fatalf("fresh voucher after replay: %v", err)
 	}
 }
 

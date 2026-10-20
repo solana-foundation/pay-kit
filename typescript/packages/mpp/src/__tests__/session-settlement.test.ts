@@ -591,7 +591,7 @@ async function watermarkedFixture(
 
 describe('session() verify() close monotonicity', () => {
     test('an accepted voucher advances the watermark', async () => {
-        const { f, method, receipt, voucher } = await watermarkedFixture();
+        const { active, f, method, receipt, voucher } = await watermarkedFixture();
         expect(receipt.status).toBe('success');
         expect(receipt.reference).toBe(f.channel.address);
         expect(receipt).toMatchObject({
@@ -605,16 +605,21 @@ describe('session() verify() close monotonicity', () => {
         expect(state?.cumulative).toBe(250n);
         expect(state?.highestVoucherSignature).toBe(voucher.signature);
 
-        // An idempotent replay of the already-accepted highest voucher must
-        // not deliver additional service or debit `spent` again — repeated
-        // replays keep returning the same cached amount.
-        const replay = await verify(method, makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher }));
-        expect(replay).toMatchObject({ acceptedCumulative: '250', spent: '100' });
-        const replayAgain = await verify(
+        // A replay of the accepted voucher authorizes no further request and
+        // leaves the channel untouched.
+        const before = await f.store.getChannel(f.channel.address);
+        await expect(
+            verify(method, makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher })),
+        ).rejects.toThrow(/already accepted/);
+        expect(await f.store.getChannel(f.channel.address)).toEqual(before);
+
+        // The next request is paid with a fresh voucher.
+        const next = await active.prepareVoucher(500n);
+        const fresh = await verify(
             method,
-            makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher }),
+            makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher: next }),
         );
-        expect(replayAgain).toMatchObject({ acceptedCumulative: '250', spent: '100' });
+        expect(fresh).toMatchObject({ acceptedCumulative: '500', spent: '200' });
     });
 
     test('a voucher action whose top-level channelId diverges from the signed voucher is rejected', async () => {
