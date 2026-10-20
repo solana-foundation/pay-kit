@@ -28,6 +28,7 @@ from solana_pay_kit.protocols.mpp.server.charge import (
     ChargeOptions,
     Config,
     Mpp,
+    _verify_local_transaction_intent,
     _verify_parsed_memo_instructions,
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
@@ -1376,6 +1377,103 @@ class TestMissingStatusNeverFails:
         with pytest.raises(PaymentError) as exc:
             await _verify(handler, credential, challenge)
         assert exc.value.code == "transaction-failed"
+
+
+class TestOneFundingAuthority:
+    """SOLA1-349: a sponsor pays a signature fee per required signer, so every
+    payment leg must be funded by one authority and the only signers may be
+    the fee payer and that authority."""
+
+    SPLIT_RECIPIENT = "11111111111111111111111111111113"
+
+    def _sponsored(self, fee_payer: Keypair, currency: str, amount: int, decimals: int | None = None):
+        request = ChargeRequest(amount=str(amount), currency=currency, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            decimals=decimals,
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+            splits=[Split(recipient=self.SPLIT_RECIPIENT, amount="200000")],
+        )
+        return request, details
+
+    def _unsigned_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH))
+        signers = message.header.num_required_signatures
+        tx = VersionedTransaction.populate(message, [Signature.default()] * signers)
+        return base64.b64encode(bytes(tx)).decode("ascii")
+
+    def _sol(self, source: Pubkey, destination: str, lamports: int) -> Instruction:
+        return transfer(
+            TransferParams(from_pubkey=source, to_pubkey=Pubkey.from_string(destination), lamports=lamports)
+        )
+
+    def _spl(self, authority: Pubkey, owner: str, amount: int) -> Instruction:
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([6])
+        return Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(Pubkey.from_string(_derive_ata(owner, USDC_DEVNET)), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def test_sol_split_legs_must_share_one_funding_authority(self):
+        fee_payer, payer, other = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, "SOL", 1_000_000)
+        mixed = self._unsigned_tx(
+            [
+                self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._sol(other.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        with pytest.raises(PaymentError, match="share one funding authority"):
+            _verify_local_transaction_intent(mixed, request, details)
+
+        one = self._unsigned_tx(
+            [
+                self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._sol(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        _verify_local_transaction_intent(one, request, details)
+
+    def test_spl_split_legs_must_share_one_funding_authority(self):
+        fee_payer, payer, other = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, USDC_DEVNET, 1_000_000, decimals=6)
+        mixed = self._unsigned_tx(
+            [
+                self._spl(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._spl(other.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        with pytest.raises(PaymentError, match="share one funding authority"):
+            _verify_local_transaction_intent(mixed, request, details)
+
+        one = self._unsigned_tx(
+            [
+                self._spl(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._spl(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        _verify_local_transaction_intent(one, request, details)
+
+    def test_extra_signer_that_funds_nothing_is_rejected(self):
+        fee_payer, payer, extra = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, "SOL", 1_000_000)
+        primary = self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000)
+        split = self._sol(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000)
+        padded = Instruction(split.program_id, split.data, [*split.accounts, AccountMeta(extra.pubkey(), True, False)])
+        tx = self._unsigned_tx([primary, padded], fee_payer)
+        with pytest.raises(PaymentError, match="unexpected signer"):
+            _verify_local_transaction_intent(tx, request, details)
 
 
 class TestCoSignSplitBounds:
