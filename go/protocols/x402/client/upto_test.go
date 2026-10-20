@@ -424,3 +424,73 @@ func TestParseUptoChallengeValidAfter(t *testing.T) {
 		t.Fatalf("validAfter = %d", payload.ValidAfter)
 	}
 }
+
+func TestBuildUptoPayloadAppendsDeclaredMemoAfterOpen(t *testing.T) {
+	signer := testSigner{testutil.NewPrivateKey()}
+	req := uptoRequirementsWithRoles(testutil.NewPrivateKey().PublicKey(), testutil.NewPrivateKey().PublicKey())
+	req.Extra.Memo = "x402-upto:route-a"
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ixs := tx.Message.Instructions
+	if len(ixs) != 2 {
+		t.Fatalf("instructions = %d, want open + memo", len(ixs))
+	}
+	if got := tx.Message.AccountKeys[ixs[0].ProgramIDIndex]; !got.Equals(paymentchannels.ProgramPubkey()) {
+		t.Fatalf("first instruction program = %s, want payment channels", got)
+	}
+	memo := ixs[1]
+	if got := tx.Message.AccountKeys[memo.ProgramIDIndex].String(); got != paycore.MemoProgram {
+		t.Fatalf("second instruction program = %s, want memo", got)
+	}
+	if len(memo.Accounts) != 0 {
+		t.Fatalf("memo accounts = %d, want 0", len(memo.Accounts))
+	}
+	if string(memo.Data) != req.Extra.Memo {
+		t.Fatalf("memo data = %q, want %q", memo.Data, req.Extra.Memo)
+	}
+
+	// The echoed accepted entry carries the memo the server matches against.
+	header, err := EncodeUptoHeader(req, payload)
+	if err != nil {
+		t.Fatalf("EncodeUptoHeader: %v", err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(header)
+	if !strings.Contains(string(raw), `"memo":"x402-upto:route-a"`) {
+		t.Fatalf("accepted does not echo extra.memo: %s", raw)
+	}
+}
+
+func TestBuildUptoPayloadWithoutMemoIsBareOpen(t *testing.T) {
+	signer := testSigner{testutil.NewPrivateKey()}
+	req := uptoRequirementsWithRoles(testutil.NewPrivateKey().PublicKey(), testutil.NewPrivateKey().PublicKey())
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(tx.Message.Instructions) != 1 {
+		t.Fatalf("instructions = %d, want bare open", len(tx.Message.Instructions))
+	}
+	raw, _ := json.Marshal(req)
+	if strings.Contains(string(raw), `"memo"`) {
+		t.Fatalf("unset memo must be omitted: %s", raw)
+	}
+}
+
+func TestBuildUptoPayloadRejectsOverlongMemo(t *testing.T) {
+	signer := testSigner{testutil.NewPrivateKey()}
+	req := uptoRequirementsWithRoles(testutil.NewPrivateKey().PublicKey(), testutil.NewPrivateKey().PublicKey())
+	req.Extra.Memo = strings.Repeat("x", x402.MaxUptoOpenMemoBytes+1)
+	if _, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, ""); err == nil {
+		t.Fatal("expected an over-long memo to be rejected")
+	}
+}

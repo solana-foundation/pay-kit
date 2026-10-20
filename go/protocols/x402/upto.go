@@ -55,6 +55,29 @@ type UptoExtra struct {
 	// open_slot (a PDA seed and open arg); clients never fetch it themselves.
 	RecentSlot string `json:"recentSlot,omitempty"`
 	ValidAfter *int64 `json:"validAfter,omitempty"`
+	// Memo is the seller-declared memo; the client signs it into the open as
+	// one SPL Memo instruction right after `open`.
+	Memo string `json:"memo,omitempty"`
+}
+
+// MaxUptoOpenMemoBytes caps extra.memo, matching what upto servers accept.
+const MaxUptoOpenMemoBytes = 256
+
+// OpenSuffixInstructions returns the instructions the challenge requires
+// right after the channel `open`: one SPL Memo carrying extra.memo when the
+// seller declared one, none otherwise.
+func (e UptoExtra) OpenSuffixInstructions() ([]solana.Instruction, error) {
+	if e.Memo == "" {
+		return nil, nil
+	}
+	if len(e.Memo) > MaxUptoOpenMemoBytes {
+		return nil, fmt.Errorf("extra.memo is %d bytes, over the %d-byte maximum", len(e.Memo), MaxUptoOpenMemoBytes)
+	}
+	memoIx, err := solanatx.BuildMemoInstruction(e.Memo)
+	if err != nil {
+		return nil, fmt.Errorf("build memo instruction: %w", err)
+	}
+	return []solana.Instruction{memoIx}, nil
 }
 
 // UptoRequirements is the accepted object for the x402 upto scheme.
