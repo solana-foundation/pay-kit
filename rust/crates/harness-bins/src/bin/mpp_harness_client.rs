@@ -56,16 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or_else(|| "server did not return a supported Payment challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
-    // The harness funds split ATA rent from the client wallet on servers
-    // without a fee payer.
+    // Split ATA rent is funded from the client wallet on servers without a
+    // fee payer, which is the kit's default (the spec requires it).
     let authorization = build_credential_header_with_options(
         &signer,
         &rpc,
         &challenge,
-        BuildChargeTransactionOptions {
-            allow_payer_funded_ata_creation: true,
-            ..Default::default()
-        },
+        BuildChargeTransactionOptions::default(),
     )
     .await?;
 

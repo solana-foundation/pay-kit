@@ -77,15 +77,33 @@ pub struct BuildChargeTransactionOptions {
     /// auto-pay agent meant for one network from being lured into
     /// signing a transaction for another.
     pub expected_network: Option<String>,
-    /// Opt-in: let the signer fund rent for split ATAs the challenge asks it
-    /// to create (`ataCreationRequired` without a server fee payer). That rent
-    /// is spent on top of the charged amount, so it is refused by default.
-    pub allow_payer_funded_ata_creation: bool,
+    /// What to do when the signer is the fee payer and a split sets
+    /// `ataCreationRequired`. The charge spec says the client MUST include
+    /// the ATA creation, so the default funds it; [`PayerFundedAtaCreation::Decline`]
+    /// refuses the whole challenge instead (never a transaction without it).
+    pub payer_funded_ata_creation: PayerFundedAtaCreation,
     /// Bounded compute-unit price/limit for the prepared
     /// transaction. Defaults match the historical hardcoded budget (1
     /// micro-lamport, 200,000 CU) — existing callers see no behavior change
     /// unless they opt into different values.
     pub compute_budget: ComputeBudgetOptions,
+}
+
+/// Client policy for split ATAs the challenge asks a client-paid transaction
+/// to create (`ataCreationRequired: true` without a server fee payer).
+///
+/// The charge spec obliges the client: when it pays the fees it "MUST include
+/// one for each split whose entry sets `ataCreationRequired: true`". The rent
+/// is spent on top of the charged amount, so a wallet that will not fund it
+/// declines the challenge. There is no variant that builds the transaction
+/// without the creation instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PayerFundedAtaCreation {
+    /// Include the ATA creation instructions and fund their rent (spec default).
+    #[default]
+    Include,
+    /// Refuse the challenge with [`Error::PayerFundedAtaCreationDeclined`].
+    Decline,
 }
 
 /// Bounded compute-budget parameters for a prepared charge transaction.
@@ -348,12 +366,10 @@ pub async fn build_prepared_charge(
                 "ataCreationRequired requires currency to be an SPL token mint address".into(),
             ));
         }
-        if fee_payer_pubkey.is_none() && !options.allow_payer_funded_ata_creation {
-            return Err(Error::Other(
-                "ataCreationRequired without a server fee payer would spend the signer's SOL on \
-                 rent beyond the charged amount; set allow_payer_funded_ata_creation to accept"
-                    .into(),
-            ));
+        if fee_payer_pubkey.is_none()
+            && options.payer_funded_ata_creation == PayerFundedAtaCreation::Decline
+        {
+            return Err(Error::PayerFundedAtaCreationDeclined);
         }
     }
 
@@ -2516,10 +2532,7 @@ mod tests {
             USDC_MINT,
             RECIPIENT,
             &md,
-            &BuildChargeTransactionOptions {
-                allow_payer_funded_ata_creation: true,
-                ..Default::default()
-            },
+            &BuildChargeTransactionOptions::default(),
         )
         .await
         .unwrap_err();
@@ -3708,22 +3721,87 @@ mod tests {
         }
     }
 
+    /// Count associated-token-account create instructions in a built payload.
+    fn ata_create_count(payload: &CredentialPayload) -> usize {
+        use base64::Engine;
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected a transaction payload, got {payload:?}");
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(transaction)
+            .unwrap();
+        let tx = crate::core::tx::decode_bytes(&bytes).unwrap();
+        let keys = tx.message.static_account_keys();
+        tx.message
+            .instructions()
+            .iter()
+            .filter(|ix| {
+                keys[ix.program_id_index as usize].to_string() == programs::ASSOCIATED_TOKEN_PROGRAM
+            })
+            .count()
+    }
+
+    // RULINGS C5: with the client as fee payer, `ataCreationRequired` obliges
+    // the client to include the creation. Regression: the default used to
+    // refuse the challenge.
     #[tokio::test]
-    async fn build_charge_refuses_payer_funded_split_ata_rent_by_default() {
+    async fn build_charge_includes_payer_funded_split_ata_by_default() {
         let signer = make_signer();
         let rpc = dummy_rpc();
         let md = ata_split_details(None);
 
-        let err =
+        let payload =
             build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
                 .await
-                .unwrap_err();
+                .unwrap();
+        assert_eq!(ata_create_count(&payload), 8);
+    }
+
+    // Control: a split without `ataCreationRequired` gets no creation.
+    #[tokio::test]
+    async fn build_charge_omits_ata_creation_when_not_required() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let mut md = ata_split_details(None);
+        for split in md.splits.as_mut().unwrap() {
+            split.ata_creation_required = None;
+        }
+
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert_eq!(ata_create_count(&payload), 0);
+    }
+
+    // Opting out declines the challenge; it never builds without the creation.
+    #[tokio::test]
+    async fn build_charge_decline_policy_refuses_payer_funded_split_ata() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = ata_split_details(None);
+
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                payer_funded_ata_creation: PayerFundedAtaCreation::Decline,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(
-            err.to_string().contains("allow_payer_funded_ata_creation"),
-            "{err}"
+            matches!(err, crate::mpp::Error::PayerFundedAtaCreationDeclined),
+            "{err:?}"
         );
 
-        // Explicit opt-in still builds the signer-funded creations.
+        // A server fee payer funds the rent, so declining does not apply.
+        let md = ata_split_details(Some(Pubkey::new_unique()));
         let payload = build_charge_transaction_with_options(
             signer.as_ref(),
             &rpc,
@@ -3732,25 +3810,12 @@ mod tests {
             RECIPIENT,
             &md,
             BuildChargeTransactionOptions {
-                allow_payer_funded_ata_creation: true,
+                payer_funded_ata_creation: PayerFundedAtaCreation::Decline,
                 ..Default::default()
             },
         )
         .await
         .unwrap();
-        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
-
-        // A server fee payer funds the rent, so no opt-in is needed.
-        let md = ata_split_details(Some(Pubkey::new_unique()));
-        assert!(build_charge_transaction(
-            signer.as_ref(),
-            &rpc,
-            "1000000",
-            USDC_MINT,
-            RECIPIENT,
-            &md
-        )
-        .await
-        .is_ok());
+        assert_eq!(ata_create_count(&payload), 8);
     }
 }

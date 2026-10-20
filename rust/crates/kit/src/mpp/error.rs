@@ -52,6 +52,16 @@ pub enum Error {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// The client declined a challenge whose splits set `ataCreationRequired`
+    /// while the client pays the fees (`PayerFundedAtaCreation::Decline`).
+    /// The spec requires the creation in that case, so the challenge is
+    /// refused rather than paid without it.
+    #[error(
+        "challenge declined: a split sets ataCreationRequired and the client is the fee payer, \
+         so the spec requires the client to fund that ATA rent, which this client declines"
+    )]
+    PayerFundedAtaCreationDeclined,
+
     #[error("Challenge expired at {0}")]
     ChallengeExpired(String),
 
