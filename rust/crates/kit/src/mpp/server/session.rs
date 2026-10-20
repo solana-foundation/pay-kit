@@ -916,6 +916,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .as_ref()
             .map(|signer| signer.pubkey())
             .unwrap_or(payer);
+        reject_sponsor_as_payer(&self.config, &payer)?;
         let params = payment_channels::OpenChannelParams {
             payer,
             rent_payer,
@@ -2631,6 +2632,22 @@ fn confirmed_rpc_client(rpc_url: &str) -> solana_rpc_client::rpc_client::RpcClie
     )
 }
 
+/// A sponsored server co-signs as fee payer and rent payer. If the channel
+/// payer were the same key, that one signature would also authorize the
+/// deposit out of the sponsor's own token account, so the roles must differ.
+fn reject_sponsor_as_payer(config: &SessionConfig, payer: &Pubkey) -> Result<()> {
+    if config
+        .fee_payer_signer
+        .as_ref()
+        .is_some_and(|signer| signer.pubkey() == *payer)
+    {
+        return Err(Error::Other(
+            "payment-channel payer must differ from the sponsored fee payer".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "server")]
 async fn prepare_open_transaction(
     payload: &OpenPayload,
@@ -2915,6 +2932,7 @@ async fn verify_submit_and_fetch_topup(
         .parse::<u64>()
         .map_err(|_| Error::Other("invalid additionalAmount".to_string()))?;
     let payer = parse_pubkey_field(&state.payer, "payer")?;
+    reject_sponsor_as_payer(config, &payer)?;
     let channel = parse_pubkey_field(&payload.channel_id, "channelId")?;
     let mint = expected_payment_channel_mint(config)?;
     let token_program = match config.token_program {
@@ -4044,6 +4062,95 @@ mod tests {
             .to_string()
             .contains("invalid client transaction signature"));
         rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_rejects_payer_aliasing_the_fee_payer() {
+        let sponsor = shared_signer(8);
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        let server = SessionServer::new(cfg, MemoryChannelStore::new());
+
+        // Seed 8 is the sponsor: the open would draw the deposit from the
+        // sponsor's token account under the sponsor's co-signature alone.
+        let (aliased, _) = signed_open(&server, 8).await;
+        assert_eq!(aliased.payer, sponsor.pubkey().to_string());
+        let error = server.payment_channel_open_params(&aliased).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must differ from the sponsored fee payer"),
+            "{error}"
+        );
+        assert!(server.payment_channel_open_instruction(&aliased).is_err());
+
+        let (distinct, _) = signed_open(&server, 6).await;
+        let params = server.payment_channel_open_params(&distinct).unwrap();
+        assert_eq!(params.rent_payer, sponsor.pubkey());
+        assert_ne!(params.payer, params.rent_payer);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_topup_rejects_stored_payer_aliasing_the_fee_payer() {
+        let (mut server, _session, channel_id) = client_server().await;
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        server.config.rpc_url = Some("http://127.0.0.1:1".into());
+        let sponsor_key = sponsor.pubkey().to_string();
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state.unwrap();
+                    state.payer = sponsor_key.clone();
+                    state.rent_payer = sponsor_key;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction: String::new(),
+        };
+        let error = server
+            .process_topup_with_outcome(&payload)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must differ from the sponsored fee payer"),
+            "{error}"
+        );
+
+        // Positive control: a distinct stored payer passes the role check and
+        // fails later, on the (empty) transaction itself.
+        let payer = signer(5).pubkey().to_string();
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state.unwrap();
+                    state.payer = payer;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let error = server
+            .process_topup_with_outcome(&payload)
+            .await
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("sponsored fee payer"),
+            "{error}"
+        );
     }
 
     /// Re-sign `open` as a sponsored V0 transaction carrying `instructions`.
