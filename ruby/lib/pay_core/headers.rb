@@ -183,7 +183,7 @@ module PayCore
       string = value.to_s
       raise ArgumentError, "control character in header parameter value" if string.match?(/[\r\n]/)
 
-      string.gsub("\\", "\\\\\\").gsub("\"", "\\\"")
+      string.gsub(/["\\]/) { |char| "\\#{char}" }
     end
   end
 end

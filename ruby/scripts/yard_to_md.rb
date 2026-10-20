@@ -21,7 +21,7 @@ YARD::Registry.load(Dir[LIB_GLOB], true)
 FileUtils.mkdir_p(OUT_DIR)
 
 def escape_md(text)
-  text.to_s.gsub("|", "\\|").tr("\n", " ").strip
+  text.to_s.gsub(/[\\|]/) { |char| "\\#{char}" }.tr("\n", " ").strip
 end
 
 def render_method(meth)

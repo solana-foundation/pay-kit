@@ -20,6 +20,15 @@ class CoreTest < Minitest::Test
     assert_raises(ArgumentError) { PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_auth_params("id=a, id=b") }
   end
 
+  def test_header_escape_round_trips_backslashes_and_quotes
+    backslash = "\\"
+    raw = "a#{backslash}\"b#{backslash}#{backslash}c\"d"
+    escaped = ::PayCore::Headers.escape(raw)
+    assert_equal "a#{backslash * 3}\"b#{backslash * 4}c#{backslash}\"d", escaped
+    assert_equal({"description" => raw}, ::PayCore::Headers.parse_auth_params(%(description="#{escaped}")))
+    assert_raises(ArgumentError) { ::PayCore::Headers.escape("a\r\nb") }
+  end
+
   def test_parse_auth_params_token_form_values
     params = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_auth_params("id=abc, realm=api, method=solana, intent=charge, request=e30")
     assert_equal "abc", params.fetch("id")
