@@ -26,7 +26,9 @@ the Greptile P1 fix landed on PR #85:
        outcome unknown, so the charge is kept PENDING under the local
        signature and the client is told settlement is in progress
     8. `await_confirmation` polls `getSignatureStatuses` up to the
-       configured attempts/delay; raises on `meta.err` or final timeout
+       configured attempts/delay; raises on `meta.err`. A status that never
+       surfaces keeps the charge pending: only an explicit on-chain outcome
+       resolves it
 
   A later presentation of the same transaction while it is pending
   reconciles it against its on-chain status instead of paying again.
@@ -438,10 +440,20 @@ function Handler:as_callback(options)
 end
 
 --- Poll `getSignatureStatuses` until the signature is confirmed/finalized
--- or the attempt budget is exhausted. Raises on `meta.err` or timeout.
+-- or the attempt budget is exhausted. Raises on `meta.err`. A status that
+-- never surfaces (null, still processing, or an RPC error) is not proof the
+-- transaction did not execute: the queried node may lag or lack history for
+-- a transaction that committed in time. The charge then stays pending for
+-- reconciliation instead of failing, so the client is never released to pay
+-- a replacement.
 function Handler:await_confirmation(signature)
+  local last_error
   for attempt = 1, self.confirmation_attempts do
-    local statuses = self.rpc:signature_statuses({ signature })
+    local ok, statuses = pcall(self.rpc.signature_statuses, self.rpc, { signature })
+    if not ok then
+      last_error = error_message(statuses)
+      statuses = nil
+    end
     local status = statuses and statuses[1]
     if type(status) == 'table' then
       -- Solana JSON-RPC returns `"err": null` on success; pay_kit.util.json
@@ -458,7 +470,8 @@ function Handler:await_confirmation(signature)
       self.sleep(self.confirmation_delay_seconds)
     end
   end
-  verifier_error('Timed out waiting for transaction ' .. signature)
+  settlement_pending(self, signature, 'timed out waiting for confirmation' ..
+    (last_error and (': ' .. last_error) or ''))
 end
 
 --- Fetch a settled push-mode transaction by signature, retrying until the

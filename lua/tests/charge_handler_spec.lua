@@ -268,7 +268,7 @@ t.test('settle_pull consumes signature before awaiting confirmation', function()
       },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'Timed out waiting')
+  t.assert_error(function() handler:settle_pull('tx', {}) end, 'in progress')
   -- The replay store should already contain the consumed signature key.
   local _value, present = replay:get('solana:consumed-signature:sig-x')
   t.assert_true(present, 'signature must be consumed before confirmation poll completes')
@@ -298,7 +298,7 @@ t.test('settle_pull surfaces transaction failure during confirmation', function(
   t.assert_error(function() handler:settle_pull('tx', {}) end, 'AccountInUse')
 end)
 
-t.test('settle_pull times out when confirmation status never reaches confirmed', function()
+t.test('settle_pull keeps the charge pending when confirmation never surfaces', function()
   local handler = new_handler({
     confirmation_attempts = 2,
     rpc = fake_rpc({
@@ -310,7 +310,7 @@ t.test('settle_pull times out when confirmation status never reaches confirmed',
       },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'Timed out waiting')
+  t.assert_error(function() handler:settle_pull('tx', {}) end, 'in progress')
 end)
 
 -- ─── Ambiguous broadcast (SOLA1-301) ─────────────────────────────────────
@@ -374,6 +374,58 @@ t.test('preflight rejection fails the charge and releases the claim', function()
   t.assert_true(tostring(err.message):match('Simulation failed') ~= nil, tostring(err.message))
   local _v, claimed = replay:get('solana:consumed-signature:sig-rejected')
   t.assert_true(not claimed, 'an unsent transaction must be released')
+end)
+
+-- ─── Missing signature status (SOLA1-299) ────────────────────────────────
+
+-- A null status (or an RPC that cannot answer) is never proof the transaction
+-- did not execute: a lagging or history-less node returns null for one that
+-- committed in time. Only an explicit on-chain outcome resolves the charge.
+t.test('missing signature status never fails a pending charge', function()
+  local replay = store.memory()
+  local handler = new_handler({
+    replay_store = replay,
+    confirmation_attempts = 2,
+    pull_signature_extractor = function() return 'sig-unseen' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { result = 'sig-unseen' } },
+      getSignatureStatuses = {
+        { result = {} },
+        { error = { code = 'transport-error', message = 'node unreachable' } },
+        { result = {} },
+        { result = { { confirmationStatus = 'finalized' } } },
+      },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  -- When the status does surface, the same retry is granted.
+  t.assert_equal(handler:settle_pull('tx', {}), 'sig-unseen')
+end)
+
+t.test('an explicit on-chain failure resolves a pending charge as failed', function()
+  local handler = new_handler({
+    confirmation_attempts = 1,
+    pull_signature_extractor = function() return 'sig-failed' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { result = 'sig-failed' } },
+      getSignatureStatuses = {
+        { result = {} },
+        { result = { { confirmationStatus = 'confirmed', err = { InstructionError = { 0, 'Custom' } } } } },
+      },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.PAYMENT_INVALID)
+  t.assert_true(tostring(err.message):match('landed on%-chain but failed') ~= nil, tostring(err.message))
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
 end)
 
 -- ─── Shared consumed-signature ledger (SOLA1-289) ────────────────────────
