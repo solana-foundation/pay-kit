@@ -873,3 +873,90 @@ func uptoExpiresAtRejectsOutOfRangeTimeouts() throws {
             == 1_000_000 + uptoMaxTimeoutCeilingSeconds
     )
 }
+
+// MARK: - extra.memo
+
+/// (program id, account count, data) for each instruction of a v0 transaction.
+private func uptoInstructions(_ base64: String) throws -> [(Pubkey, Int, Data)] {
+    let data = try #require(Data(base64Encoded: base64))
+    var off = 0
+    let sigCount = V0TxDecoder.shortVec(data, &off)
+    off += sigCount * 64 + 1 + 3
+    let keyCount = V0TxDecoder.shortVec(data, &off)
+    var keys: [Pubkey] = []
+    for _ in 0..<keyCount {
+        keys.append(try Pubkey(bytes: data.subdata(in: (data.startIndex + off)..<(data.startIndex + off + 32))))
+        off += 32
+    }
+    off += 32
+    let ixCount = V0TxDecoder.shortVec(data, &off)
+    var out: [(Pubkey, Int, Data)] = []
+    for _ in 0..<ixCount {
+        let program = keys[Int(data[data.startIndex + off])]; off += 1
+        let accts = V0TxDecoder.shortVec(data, &off); off += accts
+        let len = V0TxDecoder.shortVec(data, &off)
+        out.append((program, accts, data.subdata(in: (data.startIndex + off)..<(data.startIndex + off + len))))
+        off += len
+    }
+    return out
+}
+
+@Suite("x402 upto memo")
+struct X402UptoMemoTests {
+    private func extra(memo: String?) -> X402UptoExtra {
+        X402UptoExtra(
+            feePayer: UptoFixture.feePayerAddr,
+            receiverAuthorizer: UptoFixture.receiverAuthorizerAddr,
+            withdrawDelay: 900,
+            recentBlockhash: UptoFixture.blockhash,
+            recentSlot: UptoFixture.recentSlot,
+            memo: memo
+        )
+    }
+
+    @Test
+    func declaredMemoIsSignedAfterOpenAndEchoed() async throws {
+        let memo = "x402-upto:route-a"
+        let req = UptoFixture.requirements(extra: extra(memo: memo))
+        let payload = try await buildUptoPayload(signer: try UptoFixture.signer(), requirements: req, expiresAt: 1000)
+        let ixs = try uptoInstructions(try #require(payload.openTransaction))
+        #expect(ixs.count == 2)
+        #expect(ixs[0].0 == PaymentChannels.programId)
+        #expect(ixs[1].0 == .memoProgram)
+        #expect(ixs[1].1 == 0)
+        #expect(String(decoding: ixs[1].2, as: UTF8.self) == memo)
+
+        let header = try encodeUptoHeader(requirements: req, payload: payload)
+        let text = String(decoding: try #require(Data(base64Encoded: header)), as: UTF8.self)
+        #expect(text.contains("\"memo\":\"\(memo)\""))
+    }
+
+    @Test
+    func declaredMemoDecodesOffTheWire() throws {
+        let wire = """
+        {"feePayer":"\(UptoFixture.feePayerAddr)","receiverAuthorizer":"\(UptoFixture.receiverAuthorizerAddr)",\
+        "withdrawDelay":900,"memo":"m-1"}
+        """
+        let decoded = try JSONDecoder().decode(X402UptoExtra.self, from: Data(wire.utf8))
+        #expect(decoded.memo == "m-1")
+    }
+
+    @Test
+    func noDeclaredMemoKeepsABareOpen() async throws {
+        let req = UptoFixture.requirements(extra: extra(memo: nil))
+        let payload = try await buildUptoPayload(signer: try UptoFixture.signer(), requirements: req, expiresAt: 1000)
+        #expect(try uptoInstructions(try #require(payload.openTransaction)).count == 1)
+        let encoded = String(decoding: try JSONEncoder().encode(req.extra), as: UTF8.self)
+        #expect(!encoded.contains("memo"))
+    }
+
+    @Test
+    func overlongMemoIsRejected() async throws {
+        let req = UptoFixture.requirements(
+            extra: extra(memo: String(repeating: "x", count: PaymentChannels.openMaxMemoBytes + 1))
+        )
+        await #expect(throws: (any Error).self) {
+            _ = try await buildUptoPayload(signer: try UptoFixture.signer(), requirements: req, expiresAt: 1000)
+        }
+    }
+}

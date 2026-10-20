@@ -331,7 +331,8 @@ public enum PaymentChannelSession {
             tokenProgram: open.tokenProgram,
             programId: open.programId,
             feePayer: feePayer,
-            recentBlockhash: blockhash
+            recentBlockhash: blockhash,
+            memo: nil
         )
 
         let session = ActiveSession(

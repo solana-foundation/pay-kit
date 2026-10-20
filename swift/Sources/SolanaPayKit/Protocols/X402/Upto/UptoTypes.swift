@@ -28,6 +28,8 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
     public let recentSlot: String?
     /// Earliest activation time (Unix seconds).
     public let validAfter: Int?
+    /// Seller-declared memo the client signs into the open as one SPL Memo after `open`.
+    public let memo: String?
 
     public init(
         tokenProgram: String? = nil,
@@ -37,7 +39,8 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         recentBlockhash: String? = nil,
         lastValidBlockHeight: String? = nil,
         recentSlot: String? = nil,
-        validAfter: Int? = nil
+        validAfter: Int? = nil,
+        memo: String? = nil
     ) {
         self.tokenProgram = tokenProgram
         self.feePayer = feePayer
@@ -47,11 +50,12 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         self.lastValidBlockHeight = lastValidBlockHeight
         self.recentSlot = recentSlot
         self.validAfter = validAfter
+        self.memo = memo
     }
 
     private enum CodingKeys: String, CodingKey {
         case tokenProgram, feePayer, receiverAuthorizer, withdrawDelay
-        case recentBlockhash, lastValidBlockHeight, recentSlot, validAfter
+        case recentBlockhash, lastValidBlockHeight, recentSlot, validAfter, memo
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +68,7 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         lastValidBlockHeight = try container.decodeIfPresent(String.self, forKey: .lastValidBlockHeight)
         recentSlot = try container.decodeIfPresent(String.self, forKey: .recentSlot)
         validAfter = try container.decodeIfPresent(Int.self, forKey: .validAfter)
+        memo = try container.decodeIfPresent(String.self, forKey: .memo)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -76,6 +81,7 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         try container.encodeIfPresent(lastValidBlockHeight, forKey: .lastValidBlockHeight)
         try container.encodeIfPresent(recentSlot, forKey: .recentSlot)
         try container.encodeIfPresent(validAfter, forKey: .validAfter)
+        try container.encodeIfPresent(memo, forKey: .memo)
     }
 }
 

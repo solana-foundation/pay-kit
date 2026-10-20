@@ -143,7 +143,10 @@ public func buildUptoPayload(
         tokenProgram: tokenProgram,
         programId: programId,
         feePayer: feePayer,
-        recentBlockhash: blockhash
+        recentBlockhash: blockhash,
+        // A seller that declares extra.memo requires exactly one matching Memo
+        // after `open`; without it the transaction stays a bare open.
+        memo: extra.memo
     )
 
     let signerPubkey = try Pubkey(bytes: signer.publicKey)

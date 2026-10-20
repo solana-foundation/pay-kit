@@ -40,6 +40,9 @@ public enum PaymentChannels {
     public static let openSlotMaxAgeSlots: UInt64 = 1500
 
     /// `open` instruction discriminator (codama `OPEN_DISCRIMINATOR`).
+    /// Maximum byte length of a memo emitted after `open`.
+    public static let openMaxMemoBytes = 256
+
     static let openDiscriminator: UInt8 = 1
 
     /// A recipient split: `bps` basis points of the settled balance.
@@ -104,7 +107,7 @@ public enum PaymentChannels {
         }
     }
 
-    /// Output of ``buildOpenTransaction(payer:payee:mint:authorizedSigner:salt:deposit:gracePeriod:openSlot:recipients:tokenProgram:programId:feePayer:recentBlockhash:)``:
+    /// Output of ``buildOpenTransaction(payer:payee:mint:authorizedSigner:salt:deposit:gracePeriod:openSlot:recipients:tokenProgram:programId:feePayer:recentBlockhash:memo:)``:
     /// the derived channel PDA and the base64 (payer-signed, fee-payer-unsigned)
     /// open transaction.
     public struct OpenTransaction: Sendable {
@@ -238,7 +241,9 @@ public enum PaymentChannels {
         tokenProgram: Pubkey,
         programId: Pubkey,
         feePayer: Pubkey,
-        recentBlockhash: Data
+        recentBlockhash: Data,
+        // Required so each caller decides: x402 upto passes extra.memo.
+        memo: String?
     ) async throws -> OpenTransaction {
         let payerPubkey = try Pubkey(bytes: payer.publicKey)
         let params = OpenChannelParams(
@@ -265,11 +270,21 @@ public enum PaymentChannels {
             openSlot: openSlot,
             programId: programId
         )
-        let instruction = try buildOpenInstruction(params)
+        var instructions = [try buildOpenInstruction(params)]
+        // A seller-declared memo rides as one SPL Memo right after `open`.
+        if let memo {
+            let size = Data(memo.utf8).count
+            guard size <= openMaxMemoBytes else {
+                throw PayKitError.invalidTransaction(
+                    "channel open memo is \(size) bytes, over the \(openMaxMemoBytes)-byte maximum"
+                )
+            }
+            instructions.append(try Instructions.memo(memo))
+        }
         let message = try TransactionBuilder.compile(
             version: .v0,
             feePayer: feePayer,
-            instructions: [instruction],
+            instructions: instructions,
             recentBlockhash: recentBlockhash
         )
         let signature = try await payer.sign(message: message.serialize())
