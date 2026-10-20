@@ -11,7 +11,7 @@ use solana_pay_kit::x402::{
 use solana_rpc_client::rpc_client::RpcClient;
 
 const DEFAULT_NETWORK: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const SETTLEMENT_HEADER: &str = "x-fixture-settlement";
+const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -19,6 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rpc_url = read_required_env("X402_HARNESS_RPC_URL")?;
     let network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| DEFAULT_NETWORK.to_string());
     let signer = read_memory_signer("X402_HARNESS_CLIENT_SECRET_KEY")?;
+    let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
+        .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
 
     // For multi-currency harness, the harness passes
     //   X402_HARNESS_PREFER_CURRENCIES = "PYUSD,USDC"
@@ -60,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let paid_headers = response_headers(paid_response.headers())?;
     let mut paid_headers = headers_to_map(paid_headers);
     paid_headers.insert(format!("{PAYMENT_SIGNATURE_HEADER}-sent"), payment_header);
-    let settlement = paid_headers.get(SETTLEMENT_HEADER).cloned();
+    let settlement = paid_headers.get(&settlement_header).cloned();
     let raw_body = paid_response.text().await?;
     let response_body = serde_json::from_str::<serde_json::Value>(&raw_body)
         .unwrap_or(serde_json::Value::String(raw_body));

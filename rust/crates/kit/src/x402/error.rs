@@ -55,8 +55,26 @@ pub enum Error {
     #[error("Payment header missing from 402 response")]
     MissingPaymentHeader,
 
+    /// The route requires the `payment-identifier` extension and the
+    /// credential carried no id, or carried one that violates the format.
+    /// The extension spec answers this with HTTP 400 (see [`Error::http_status`]).
+    #[error("payment-identifier required: {0}")]
+    PaymentIdentifierRequired(String),
+
     #[error("{0}")]
     Other(String),
+}
+
+impl Error {
+    /// HTTP status a resource server answers with when payment verification
+    /// fails with this error: 400 for a missing or malformed required
+    /// `payment-identifier` (per the extension spec), 402 otherwise.
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Error::PaymentIdentifierRequired(_) => 400,
+            _ => 402,
+        }
+    }
 }
 
 impl From<crate::core::Error> for Error {

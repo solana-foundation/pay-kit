@@ -22,7 +22,7 @@ pub struct CurrencyConfig {
 
 pub use batch_settlement::{BatchAccess, BatchConfig, BatchOutcome, X402BatchSettlement};
 pub use exact::{
-    check_network_blockhash, Config, ExactOptions, VerifiedExactPayment, LOCALNET_NETWORK,
-    SURFPOOL_BLOCKHASH_PREFIX, X402,
+    check_network_blockhash, Config, ExactOptions, PaymentIdentifierPolicy, VerifiedExactPayment,
+    LOCALNET_NETWORK, SURFPOOL_BLOCKHASH_PREFIX, X402,
 };
 pub use upto::{UptoConfig, UptoPayout, VerifiedUptoOpen, X402Upto};

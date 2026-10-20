@@ -630,6 +630,84 @@ impl PaymentExtensions {
     }
 }
 
+/// The `payment-identifier` extension key.
+pub const PAYMENT_IDENTIFIER_EXTENSION: &str = "payment-identifier";
+
+/// A `payment-identifier` id that satisfies the extension's format: 16-128
+/// characters of `[A-Za-z0-9_-]`. The only constructor is [`Self::parse`], so
+/// holding one proves the id was checked.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PaymentIdentifierId(String);
+
+impl PaymentIdentifierId {
+    /// Shortest id the extension allows.
+    pub const MIN_LEN: usize = 16;
+    /// Longest id the extension allows.
+    pub const MAX_LEN: usize = 128;
+
+    /// Validate `id` against the extension's length and character rules.
+    pub fn parse(id: &str) -> Result<Self, crate::x402::Error> {
+        if !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(crate::x402::Error::PaymentIdentifierRequired(
+                "payment-identifier id may only contain A-Z, a-z, 0-9, '_' and '-'".into(),
+            ));
+        }
+        // ASCII only from here, so the byte length is the character count.
+        if !(Self::MIN_LEN..=Self::MAX_LEN).contains(&id.len()) {
+            return Err(crate::x402::Error::PaymentIdentifierRequired(format!(
+                "payment-identifier id must be {}-{} characters, got {}",
+                Self::MIN_LEN,
+                Self::MAX_LEN,
+                id.len()
+            )));
+        }
+        Ok(Self(id.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PaymentIdentifierId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The `payment-identifier` entry a server advertises in `PaymentRequired`
+/// `extensions`: `info.required` plus the extension's JSON schema.
+pub fn payment_identifier_advertisement(required: bool) -> serde_json::Value {
+    serde_json::json!({
+        "info": { "required": required },
+        "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "required": { "type": "boolean" },
+                "id": { "type": "string", "minLength": 16, "maxLength": 128 }
+            },
+            "required": ["required"]
+        }
+    })
+}
+
+impl PaymentSignatureEnvelope {
+    /// The client's `extensions["payment-identifier"].info.id`, if any.
+    pub fn payment_identifier_id(&self) -> Option<&str> {
+        self.extensions
+            .as_ref()?
+            .payment_identifier
+            .as_ref()?
+            .info
+            .id
+            .as_deref()
+    }
+}
+
 /// Generate a fresh `pay_`-prefixed idempotency id (32 hex chars after
 /// the prefix; 36 total). Satisfies the `payment-identifier` spec
 /// pattern `^[A-Za-z0-9_-]{16,128}$` and the canonical Solana

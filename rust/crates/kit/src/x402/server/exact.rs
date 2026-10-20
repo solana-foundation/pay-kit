@@ -14,9 +14,10 @@ use crate::x402::{
     error::Error,
     protocol::schemes::exact::{
         caip2_network_for_cluster, cluster_for_caip2_network, default_rpc_url, fetch_transaction,
-        verify_exact_versioned_transaction, verify_transaction_details, PaymentConfig,
-        PaymentProof, PaymentRequiredEnvelope, PaymentRequirements, PaymentSignatureEnvelope,
-        ResourceInfo, EXACT_SCHEME,
+        payment_identifier_advertisement, verify_exact_versioned_transaction,
+        verify_transaction_details, PaymentConfig, PaymentIdentifierId, PaymentProof,
+        PaymentRequiredEnvelope, PaymentRequirements, PaymentSignatureEnvelope, ResourceInfo,
+        EXACT_SCHEME, PAYMENT_IDENTIFIER_EXTENSION,
     },
     PAYMENT_REQUIRED_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V1, X402_VERSION_V2,
 };
@@ -44,6 +45,27 @@ pub struct Config {
     /// the route's expected requirements at verify time go through the
     /// same path, so structural deepEqual matching is stable.
     pub fee_payer_key: Option<String>,
+    /// Whether 402 responses advertise the `payment-identifier` extension and
+    /// whether verification requires a client id.
+    pub payment_identifier: PaymentIdentifierPolicy,
+}
+
+/// How a route uses the x402 `payment-identifier` extension.
+///
+/// See `specs/extensions/payment_identifier.md`: the server advertises the
+/// extension with `info.required`, and a required route answers a payload
+/// without a valid id (16-128 characters of `[A-Za-z0-9_-]`) with 400.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaymentIdentifierPolicy {
+    /// Do not advertise the extension; ids sent anyway are ignored.
+    #[default]
+    NotAdvertised,
+    /// Advertise with `required: false`. An id is optional, but one that is
+    /// present must be well formed.
+    Optional,
+    /// Advertise with `required: true` and reject a payload without a valid id
+    /// ([`Error::PaymentIdentifierRequired`], HTTP 400).
+    Required,
 }
 
 impl Default for Config {
@@ -61,6 +83,7 @@ impl Default for Config {
             description: None,
             max_age: None,
             fee_payer_key: None,
+            payment_identifier: PaymentIdentifierPolicy::NotAdvertised,
         }
     }
 }
@@ -228,6 +251,41 @@ impl X402 {
             .unwrap_or_else(|| default_rpc_url(&self.config.network).to_string())
     }
 
+    /// The `extensions` object 402 responses carry, per
+    /// [`Config::payment_identifier`]. `None` when nothing is advertised.
+    pub fn advertised_extensions(&self) -> Option<serde_json::Value> {
+        let required = match self.config.payment_identifier {
+            PaymentIdentifierPolicy::NotAdvertised => return None,
+            PaymentIdentifierPolicy::Optional => false,
+            PaymentIdentifierPolicy::Required => true,
+        };
+        let mut extensions = serde_json::Map::new();
+        extensions.insert(
+            PAYMENT_IDENTIFIER_EXTENSION.to_string(),
+            payment_identifier_advertisement(required),
+        );
+        Some(serde_json::Value::Object(extensions))
+    }
+
+    /// Enforce [`Config::payment_identifier`] on a credential. Returns the
+    /// validated id when one was sent and the route advertises the extension.
+    fn check_payment_identifier(
+        &self,
+        envelope: &PaymentSignatureEnvelope,
+    ) -> Result<Option<PaymentIdentifierId>, Error> {
+        match (
+            self.config.payment_identifier,
+            envelope.payment_identifier_id(),
+        ) {
+            (PaymentIdentifierPolicy::NotAdvertised, _) => Ok(None),
+            (PaymentIdentifierPolicy::Required, None) => Err(Error::PaymentIdentifierRequired(
+                "this route requires extensions[\"payment-identifier\"].info.id".into(),
+            )),
+            (PaymentIdentifierPolicy::Optional, None) => Ok(None),
+            (_, Some(id)) => PaymentIdentifierId::parse(id).map(Some),
+        }
+    }
+
     pub fn exact(&self, amount: &str) -> Result<PaymentRequiredEnvelope, Error> {
         self.exact_with_options(amount, ExactOptions::default())
     }
@@ -260,7 +318,7 @@ impl X402 {
             resource,
             accepts,
             error: None,
-            extensions: None,
+            extensions: self.advertised_extensions(),
         })
     }
 
@@ -447,7 +505,7 @@ impl X402 {
             resource,
             accepts,
             error: None,
-            extensions: None,
+            extensions: self.advertised_extensions(),
         })
     }
 
@@ -759,6 +817,7 @@ impl X402 {
         // Defense in depth: even with a correct caller, this catches misuse
         // before a transaction is broadcast against the wrong destination.
         self.verify_pinned_fields(requirements)?;
+        self.check_payment_identifier(&envelope)?;
 
         if let Some(accepted) = &envelope.accepted {
             let accepted_requirements: PaymentRequirements =
@@ -1281,6 +1340,7 @@ mod tests {
             description: Some("Fortune".to_string()),
             max_age: Some(60),
             fee_payer_key: None,
+            payment_identifier: PaymentIdentifierPolicy::NotAdvertised,
         }
     }
 
@@ -2456,5 +2516,140 @@ mod tests {
         assert!(check_network_blockhash("mainnet", "11111111111111111111111111111111").is_ok());
         assert!(check_network_blockhash("devnet", "11111111111111111111111111111111").is_ok());
         assert!(check_network_blockhash("localnet", "11111111111111111111111111111111").is_ok());
+    }
+
+    // ── payment-identifier extension (RULINGS S4) ──
+
+    /// An honest exact transaction header carrying `extensions`.
+    fn header_with_extensions(x402: &X402, extensions: Option<serde_json::Value>) -> String {
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let payer = Pubkey::new_unique();
+        let tx = exact_transaction(&requirements, &payer, &payer);
+        let envelope = PaymentSignatureEnvelope {
+            scheme: None,
+            network: None,
+            x402_version: X402_VERSION_V2,
+            accepted: Some(requirements.to_accepted_value()),
+            resource: requirements.resource_info(),
+            payload: PaymentProof::Transaction {
+                transaction: crate::core::tx::encode(&tx).unwrap(),
+            },
+            extensions: extensions.map(|value| serde_json::from_value(value).unwrap()),
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+
+    fn with_id(id: &str) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "payment-identifier": { "info": { "required": true, "id": id } }
+        }))
+    }
+
+    fn x402_with_policy(policy: PaymentIdentifierPolicy) -> X402 {
+        X402::new(Config {
+            payment_identifier: policy,
+            ..config()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn payment_identifier_advertised_per_policy() {
+        let none = x402_with_policy(PaymentIdentifierPolicy::NotAdvertised);
+        assert!(none.exact("0.01").unwrap().extensions.is_none());
+
+        for (policy, required) in [
+            (PaymentIdentifierPolicy::Optional, false),
+            (PaymentIdentifierPolicy::Required, true),
+        ] {
+            let envelope = x402_with_policy(policy).exact("0.01").unwrap();
+            let extensions = envelope.extensions.unwrap();
+            assert_eq!(
+                extensions["payment-identifier"]["info"]["required"],
+                serde_json::json!(required)
+            );
+            assert_eq!(
+                extensions["payment-identifier"]["schema"]["properties"]["id"]["maxLength"],
+                128
+            );
+        }
+    }
+
+    // Regression: a required route used to accept a payload without an id.
+    #[tokio::test]
+    async fn required_payment_identifier_rejects_missing_or_invalid_id() {
+        let x402 = x402_with_policy(PaymentIdentifierPolicy::Required);
+        let cases = [
+            None,
+            Some(serde_json::json!({ "payment-identifier": { "info": { "required": true } } })),
+            with_id(""),
+            with_id("short_id_15char"),
+            with_id(&"a".repeat(129)),
+            with_id("pay_has space_0123456789"),
+            with_id("pay_has.dot.0123456789"),
+        ];
+        for extensions in cases {
+            let header = header_with_extensions(&x402, extensions.clone());
+            let err = x402
+                .process_payment(&header, "0.01", ExactOptions::default())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::PaymentIdentifierRequired(_)),
+                "{extensions:?}: {err:?}"
+            );
+            assert_eq!(err.http_status(), 400);
+        }
+    }
+
+    // Control: a valid id (both length bounds) passes and the payment verifies.
+    #[tokio::test]
+    async fn required_payment_identifier_accepts_valid_id() {
+        let x402 = x402_with_policy(PaymentIdentifierPolicy::Required);
+        for id in [
+            "pay_7d5d747be160e280504c099d984bcfe0".to_string(),
+            "abcdefghij-_0123".to_string(),
+            "A".repeat(128),
+        ] {
+            let header = header_with_extensions(&x402, with_id(&id));
+            let verified = x402
+                .process_payment(&header, "0.01", ExactOptions::default())
+                .await;
+            assert!(
+                matches!(verified, Ok(VerifiedExactPayment::Transaction(_))),
+                "{id}: {verified:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_payment_identifier_allows_absent_but_rejects_malformed_id() {
+        let x402 = x402_with_policy(PaymentIdentifierPolicy::Optional);
+        let header = header_with_extensions(&x402, None);
+        assert!(x402
+            .process_payment(&header, "0.01", ExactOptions::default())
+            .await
+            .is_ok());
+        let header = header_with_extensions(&x402, with_id("bad"));
+        assert!(matches!(
+            x402.process_payment(&header, "0.01", ExactOptions::default())
+                .await,
+            Err(Error::PaymentIdentifierRequired(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn unadvertised_payment_identifier_is_not_checked() {
+        let x402 = x402_with_policy(PaymentIdentifierPolicy::NotAdvertised);
+        let header = header_with_extensions(&x402, with_id("bad"));
+        assert!(x402
+            .process_payment(&header, "0.01", ExactOptions::default())
+            .await
+            .is_ok());
     }
 }

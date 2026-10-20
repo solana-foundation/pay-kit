@@ -13,7 +13,8 @@ use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::exact::{PaymentRequiredEnvelope, PaymentRequirements},
     server::{
-        exact::PaymentOption, Config, CurrencyConfig, ExactOptions, VerifiedExactPayment, X402,
+        exact::PaymentOption, Config, CurrencyConfig, ExactOptions, PaymentIdentifierPolicy,
+        VerifiedExactPayment, X402,
     },
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V2,
 };
@@ -87,6 +88,10 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
     let price = normalize_price(
         &env::var("X402_HARNESS_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string()),
     )?;
+    // The harness picks a path per scenario (e.g. /protected/expensive); the
+    // route match and the advertised resource must both use it.
+    let resource_path = env::var("X402_HARNESS_RESOURCE_PATH")
+        .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string());
 
     let extra_offered_mints: Vec<String> = env::var("X402_HARNESS_EXTRA_OFFERED_MINTS")
         .ok()
@@ -119,16 +124,18 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             currencies,
             network,
             rpc_url: Some(rpc_url.clone()),
-            resource: DEFAULT_RESOURCE_PATH.to_string(),
+            resource: resource_path.clone(),
             description: Some("Surfpool-backed protected content".to_string()),
             max_age: Some(60),
             fee_payer_key: Some(fee_payer.pubkey().to_string()),
+            payment_identifier: PaymentIdentifierPolicy::NotAdvertised,
         })?,
         rpc_url,
         fee_payer,
         price,
-        resource_path: DEFAULT_RESOURCE_PATH.to_string(),
-        settlement_header: DEFAULT_SETTLEMENT_HEADER.to_string(),
+        resource_path,
+        settlement_header: env::var("X402_HARNESS_SETTLEMENT_HEADER")
+            .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string()),
         extra_offered_mints,
     })
 }
@@ -247,10 +254,15 @@ fn handle_connection(
                         )?;
                     }
                     Err(error) => {
-                        let (_, header_value) = payment_required_header_for(&requirements_list)?;
+                        let (_, header_value) =
+                            payment_required_header_for(state, &requirements_list)?;
+                        // A missing required payment-identifier is a 400.
+                        let status = error
+                            .downcast_ref::<solana_pay_kit::x402::Error>()
+                            .map_or(402, solana_pay_kit::x402::Error::http_status);
                         write_json_response(
                             &mut stream,
-                            402,
+                            status,
                             &[(PAYMENT_REQUIRED_HEADER, header_value.as_str())],
                             &json!({
                                 "error": "payment_invalid",
@@ -260,7 +272,7 @@ fn handle_connection(
                     }
                 }
             } else {
-                let (_, header_value) = payment_required_header_for(&requirements_list)?;
+                let (_, header_value) = payment_required_header_for(state, &requirements_list)?;
                 write_json_response(
                     &mut stream,
                     402,
@@ -295,6 +307,7 @@ fn build_offered_requirements(
 }
 
 fn payment_required_header_for(
+    state: &HarnessState,
     requirements: &[PaymentRequirements],
 ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
     let envelope = PaymentRequiredEnvelope {
@@ -302,7 +315,7 @@ fn payment_required_header_for(
         resource: requirements.first().and_then(|r| r.resource_info()),
         accepts: requirements.to_vec(),
         error: None,
-        extensions: None,
+        extensions: state.x402.advertised_extensions(),
     };
     let json = serde_json::to_string(&envelope)?;
     Ok((
@@ -356,6 +369,7 @@ fn write_json_response(
     let body = serde_json::to_vec(body)?;
     let reason = match status {
         200 => "OK",
+        400 => "Bad Request",
         402 => "Payment Required",
         404 => "Not Found",
         _ => "Internal Server Error",
