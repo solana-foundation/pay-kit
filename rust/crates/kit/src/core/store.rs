@@ -1192,13 +1192,12 @@ impl ChannelState {
         )
     }
 
-    /// Whether a later reservation was taken over this one's dead lease. Its
-    /// work can no longer be marked or committed: the later one steps from the
-    /// same watermark.
+    /// Whether a later reservation was taken over this one's dead lease,
+    /// whether it is still pending or has already committed. Its work can no
+    /// longer be marked or committed: the later one stepped from the same
+    /// watermark.
     fn is_superseded(&self, sequence: u64) -> bool {
-        self.pending_deliveries
-            .iter()
-            .any(|pending| pending.sequence > sequence)
+        self.next_delivery_sequence > sequence
     }
 
     /// The pending entry `token` was minted for.
@@ -2823,6 +2822,28 @@ pub mod conformance {
             store.get_channel(id).await.unwrap().unwrap().cumulative,
             700
         );
+
+        // The superseding reservation commits before the slow handler returns:
+        // the slow one is still refused at mark, so it never comes to block
+        // the channel as handler-succeeded.
+        let id = "conformance-lease-committed";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
+        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
+        commit(store, id, &next).await;
+        let late = slow.clone();
+        assert!(store
+            .mutate_channel(
+                id,
+                None,
+                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
+            )
+            .await
+            .is_err());
+        assert!(matches!(
+            reserve(store, id, request("after", 300, 1_000, after_lease)).await,
+            BatchReservation::Reserved(_)
+        ));
     }
 
     async fn refuses_reservations_on_a_closing_channel(
