@@ -12,9 +12,10 @@
 // across SDKs. The canonical-bytes mode pins exact bytes for the JCS /
 // base64url vectors where byte-for-byte agreement is the whole point.
 //
-// The run is deterministic and RPC-free: build/verify vectors pin a recent
-// blockhash and either an explicit token program or one resolvable by
-// currency, so no live validator is contacted.
+// The runner passes each vector's request to the SDK verbatim and hands the
+// SDK an RPC client pointed at the driver's fixture JSON-RPC
+// (input.rpcUrl). It never fills defaults, applies field precedence or
+// resolves chain state itself (harness/expectations/RULINGS.md).
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +33,7 @@ import (
 	"strings"
 
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
@@ -47,8 +50,6 @@ const (
 	systemProgram        = "11111111111111111111111111111111"
 	computeBudgetProgram = "ComputeBudget111111111111111111111111111111"
 	memoProgram          = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-	defaultNetwork       = "mainnet"
-	defaultSPLDecimals   = 6
 )
 
 // Vector is the top-level conformance-vector shape consumed from stdin.
@@ -86,9 +87,10 @@ type SessionVoucherVerify struct {
 
 // VectorInput carries the per-mode inputs of a conformance vector.
 type VectorInput struct {
-	// Request is the charge request that drives the build/verify modes;
-	// nil for encoder-only (canonical-bytes) vectors.
-	Request *ChargeRequest `json:"request"`
+	// Request is the decoded charge request that drives the build/verify
+	// modes, kept raw so it reaches the SDK's own wire type verbatim; empty
+	// for encoder-only (canonical-bytes) vectors.
+	Request json.RawMessage `json:"request"`
 	// Transaction is a pinned base64 wire transaction to verify; empty in
 	// verify mode means build one from Request first and verify that.
 	Transaction string `json:"transaction"`
@@ -96,9 +98,9 @@ type VectorInput struct {
 	// byte array) acting as transfer authority and default fee payer on
 	// the client build path.
 	SignerSecretKey []byte `json:"signerSecretKey"`
-	// RPCFixtures pins RPC-derived values (mint owners) so build/verify
-	// stay RPC-free; nil when the vector needs none.
-	RPCFixtures *RPCFixtures `json:"rpcFixtures"`
+	// RPCURL is the fixture JSON-RPC the driver injects; the SDK reads all
+	// chain state (blockhash, mint owner and decimals) through it.
+	RPCURL string `json:"rpcUrl"`
 	// Value is a raw JSON value to canonicalize (JCS) and base64url-encode
 	// in canonical-bytes mode; absent otherwise.
 	Value json.RawMessage `json:"value"`
@@ -131,10 +133,11 @@ type VectorInput struct {
 	// accepted-echo envelope, and 0 (absent) exercises the default
 	// producer, which also emits 2.
 	X402Version int `json:"x402Version"`
-	// X402PinnedTransaction is the placeholder base64 transaction proof
-	// placed in payload.transaction on build; the envelope shape, not
-	// these bytes, is the conformance oracle.
-	X402PinnedTransaction string `json:"x402PinnedTransaction"`
+	// X402ServerFeePayer is the route's fee payer (sponsor) public key and
+	// X402ServerFeePayerSecretKey its 64-byte secret, used to configure the
+	// verifier the way an operator would.
+	X402ServerFeePayer          string `json:"x402ServerFeePayer"`
+	X402ServerFeePayerSecretKey []byte `json:"x402ServerFeePayerSecretKey"`
 	// X402ServerNetwork is the route network the verify gate expects;
 	// cluster slugs, legacy slugs, and CAIP-2 ids are all normalized to
 	// CAIP-2 before comparison.
@@ -163,73 +166,12 @@ type VectorInput struct {
 	X402ServerRequiresPaymentIdentifier bool `json:"x402ServerRequiresPaymentIdentifier"`
 }
 
-// ChargeRequest is the charge-intent request carried in a vector input.
-type ChargeRequest struct {
-	// Amount is the total charge as a decimal string of integer base units
-	// (lamports for SOL, token base units for SPL); no display decimals.
-	Amount string `json:"amount"`
-	// Currency is the asset symbol (e.g. "USDC", "SOL") or mint address;
-	// Asset takes precedence over it when both are set.
-	Currency string `json:"currency"`
-	// ExternalID is an external reference recorded on-chain as a Memo
-	// instruction; empty means no memo is added.
-	ExternalID string `json:"externalId"`
-	// Recipient is the destination address (base58); PayTo takes
-	// precedence over it when both are set.
-	Recipient string `json:"recipient"`
-	// PayTo is the preferred recipient field; per the conformance
-	// precedence rules it wins over Recipient.
-	PayTo string `json:"payTo"`
-	// Asset is the preferred asset field; per the conformance precedence
-	// rules it wins over Currency.
-	Asset string `json:"asset"`
-	// MethodDetails carries the Solana-specific build/verify knobs
-	// (network, blockhash, token program, splits); nil uses defaults.
-	MethodDetails *MethodDetails `json:"methodDetails"`
-	// ComputeUnitLimit caps compute units for the built transaction;
-	// nil leaves the SDK default in effect.
+// buildKnobs are the vector-only build options carried next to the charge
+// request (compute budget overrides). They are client build options, not
+// request fields, so they are read separately from the verbatim request.
+type buildKnobs struct {
 	ComputeUnitLimit *uint32 `json:"computeUnitLimit"`
-	// ComputeUnitPrice is the priority fee in micro-lamports per compute
-	// unit, as a decimal string; nil leaves the SDK default in effect.
 	ComputeUnitPrice *string `json:"computeUnitPrice"`
-}
-
-// MethodDetails is the methodDetails block of a vector charge request.
-type MethodDetails struct {
-	// Network is the Solana cluster slug (e.g. "mainnet", "devnet");
-	// empty defaults to mainnet.
-	Network string `json:"network"`
-	// Decimals is the SPL mint decimals used for transferChecked; nil
-	// defaults to 6 for non-SOL currencies and is unused for SOL.
-	Decimals *uint8 `json:"decimals"`
-	// TokenProgram is the base58 id of the program owning the mint (Token
-	// or Token-2022); empty resolves via the rpc-fixture mint owner, then
-	// the default-by-currency table, keeping the run RPC-free.
-	TokenProgram string `json:"tokenProgram"`
-	// RecentBlockhash pins the blockhash (base58) used to build the
-	// transaction so no live validator is contacted.
-	RecentBlockhash string `json:"recentBlockhash"`
-	// FeePayer enables server fee sponsorship when true and FeePayerKey is
-	// set; nil or false keeps the signer as fee payer.
-	FeePayer *bool `json:"feePayer"`
-	// FeePayerKey is the base58 public key of the sponsoring fee payer
-	// account used when FeePayer is true.
-	FeePayerKey string `json:"feePayerKey"`
-	// Splits lists additional same-asset transfers carved out of the total
-	// amount, each with its own recipient.
-	Splits []paycore.Split `json:"splits"`
-}
-
-// RPCFixtures pins the RPC-derived values a vector needs so the run stays
-// RPC-free.
-type RPCFixtures struct {
-	// RecentBlockhash is a pinned blockhash (base58) a vector may carry;
-	// the build path reads the blockhash from methodDetails, so this stays
-	// informational for this runner.
-	RecentBlockhash string `json:"recentBlockhash"`
-	// MintOwners maps mint address (base58) to its owning token program
-	// (base58), standing in for the getAccountInfo owner lookup.
-	MintOwners map[string]string `json:"mintOwners"`
 }
 
 // EncodeBase64URL holds the raw bytes (hex or UTF-8) to base64url-encode.
@@ -489,13 +431,14 @@ func runVector(vector Vector) RunnerResult {
 	switch vector.Mode {
 	case "canonical-bytes":
 		if vector.Input.SessionAuthenticationMessage != nil || vector.Input.SessionWire != nil {
-			// Session wire vectors need the final session wire contract,
-			// which the Go SDK has not migrated to yet. Skip loudly instead
-			// of failing on empty exactBytes.
+			// The Go session wire types have not migrated to the final
+			// contract, so a round-trip through them would assert the
+			// superseded draft. Skip loudly instead of failing on empty
+			// exactBytes.
 			return RunnerResult{
 				ID:      vector.ID,
 				Outcome: "unsupported-mode",
-				Error:   "unsupported-mode: session wire vectors are not implemented for the Go SDK yet",
+				Error:   "unsupported-mode: Go session wire types are on the superseded draft, not mpp-specs e702dd8: intents.OpenPayload carries recentSlot instead of openSlot and SignedVoucher nests the voucher under data instead of voucher (go/protocols/mpp/intents/session.go)",
 			}
 		}
 		eb, err := runCanonicalBytes(vector)
@@ -581,74 +524,57 @@ func runSessionVoucherVerify(vector Vector) (RunnerResult, error) {
 
 func rejected(id string, err error) RunnerResult {
 	msg := err.Error()
-	return RunnerResult{ID: id, Outcome: "reject", Error: msg, RejectCode: classifyReject(msg)}
+	return RunnerResult{ID: id, Outcome: "reject", Error: msg, RejectCode: rejectCodeOf(err)}
 }
 
-// flattenRequest applies the conformance contract's precedence rules:
-// top-level asset / payTo win over currency / recipient, and the
-// token program resolves explicit -> rpc-fixture mint owner ->
-// default-by-currency so the build path stays RPC-free. It returns the
-// charge fields plus the resolved paycore.MethodDetails the Go SDK consumes.
-func flattenRequest(req *ChargeRequest, mintOwners map[string]string) (amount, currency, recipient string, details paycore.MethodDetails, err error) {
-	currency = req.Currency
-	if req.Asset != "" {
-		currency = req.Asset
+// rejectCodeOf maps the SDK's structured error code first (a challenge the
+// client refuses is paycore code "invalid-challenge"), then falls back to
+// the message classifier.
+func rejectCodeOf(err error) string {
+	var sdkErr *paycore.Error
+	if errors.As(err, &sdkErr) && sdkErr.Code == "invalid-challenge" {
+		return "invalid-challenge"
 	}
-	recipient = req.Recipient
-	if req.PayTo != "" {
-		recipient = req.PayTo
-	}
-	if recipient == "" {
-		return "", "", "", paycore.MethodDetails{}, fmt.Errorf("vector request is missing recipient/payTo")
-	}
+	return classifyReject(err.Error())
+}
 
-	md := req.MethodDetails
-	network := defaultNetwork
-	if md != nil && md.Network != "" {
-		network = md.Network
+// sdkRPC returns the SDK RPC client for the driver's fixture JSON-RPC.
+func sdkRPC(in VectorInput) (*rpc.Client, error) {
+	if in.RPCURL == "" {
+		return nil, fmt.Errorf("driver did not inject input.rpcUrl")
 	}
+	return rpc.New(in.RPCURL), nil
+}
 
-	details = paycore.MethodDetails{Network: network}
-	if md != nil {
-		details.RecentBlockhash = md.RecentBlockhash
-		details.FeePayer = md.FeePayer
-		details.FeePayerKey = md.FeePayerKey
-		details.Splits = md.Splits
-		details.Decimals = md.Decimals
-		details.TokenProgram = md.TokenProgram
+// decodeRequest decodes the vector request into the SDK's wire types
+// exactly as the client decodes a challenge request: intents.ChargeRequest,
+// then its methodDetails into paycore.MethodDetails. Nothing is defaulted.
+func decodeRequest(raw json.RawMessage) (intents.ChargeRequest, paycore.MethodDetails, error) {
+	if len(raw) == 0 {
+		return intents.ChargeRequest{}, paycore.MethodDetails{}, fmt.Errorf("build/verify vector is missing input.request")
 	}
-
-	isSOL := strings.EqualFold(currency, "sol")
-
-	if details.TokenProgram == "" && !isSOL {
-		resolvedMint := paycore.ResolveMint(currency, network)
-		if resolvedMint == "" {
-			resolvedMint = currency
+	var request intents.ChargeRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return intents.ChargeRequest{}, paycore.MethodDetails{}, fmt.Errorf("invalid payload: decode request: %w", err)
+	}
+	var details paycore.MethodDetails
+	if request.MethodDetails != nil {
+		mdRaw, err := json.Marshal(request.MethodDetails)
+		if err != nil {
+			return intents.ChargeRequest{}, paycore.MethodDetails{}, err
 		}
-		if owner, ok := mintOwners[resolvedMint]; ok {
-			details.TokenProgram = owner
-		} else {
-			details.TokenProgram = paycore.DefaultTokenProgramForCurrency(currency, network)
+		if err := json.Unmarshal(mdRaw, &details); err != nil {
+			return intents.ChargeRequest{}, paycore.MethodDetails{}, fmt.Errorf("invalid payload: decode methodDetails: %w", err)
 		}
 	}
-
-	if details.Decimals == nil && !isSOL {
-		d := uint8(defaultSPLDecimals)
-		details.Decimals = &d
-	}
-
-	return req.Amount, currency, recipient, details, nil
+	return request, details, nil
 }
 
 // buildTransaction drives the real Go client build path
-// (client.BuildChargeTransaction) and returns the base64 wire transaction.
-// recentBlockhash and the resolved token program keep the build RPC-free;
-// the bogus rpcUrl ensures a missing blockhash surfaces as a clear failure.
+// (client.BuildChargeTransaction) against the fixture RPC and returns the
+// base64 wire transaction.
 func buildTransaction(vector Vector) (string, error) {
 	in := vector.Input
-	if in.Request == nil {
-		return "", fmt.Errorf("build/verify vector is missing input.request")
-	}
 	if len(in.SignerSecretKey) == 0 {
 		return "", fmt.Errorf("build/verify vector is missing input.signerSecretKey")
 	}
@@ -656,21 +582,25 @@ func buildTransaction(vector Vector) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var mintOwners map[string]string
-	if in.RPCFixtures != nil {
-		mintOwners = in.RPCFixtures.MintOwners
+	request, details, err := decodeRequest(in.Request)
+	if err != nil {
+		return "", err
 	}
-	amount, currency, recipient, details, err := flattenRequest(in.Request, mintOwners)
+	var knobs buildKnobs
+	if err := json.Unmarshal(in.Request, &knobs); err != nil {
+		return "", err
+	}
+	rpcClient, err := sdkRPC(in)
 	if err != nil {
 		return "", err
 	}
 
-	options := client.BuildOptions{ExternalID: in.Request.ExternalID}
-	if in.Request.ComputeUnitLimit != nil {
-		options.ComputeUnitLimit = *in.Request.ComputeUnitLimit
+	options := client.BuildOptions{ExternalID: request.ExternalID}
+	if knobs.ComputeUnitLimit != nil {
+		options.ComputeUnitLimit = *knobs.ComputeUnitLimit
 	}
-	if in.Request.ComputeUnitPrice != nil {
-		price, perr := parseUint64(*in.Request.ComputeUnitPrice)
+	if knobs.ComputeUnitPrice != nil {
+		price, perr := parseUint64(*knobs.ComputeUnitPrice)
 		if perr != nil {
 			return "", perr
 		}
@@ -680,10 +610,10 @@ func buildTransaction(vector Vector) (string, error) {
 	payload, err := client.BuildChargeTransaction(
 		context.Background(),
 		signer,
-		newOfflineRPC(),
-		amount,
-		currency,
-		recipient,
+		rpcClient,
+		request.Amount,
+		request.Currency,
+		request.Recipient,
 		details,
 		options,
 	)
@@ -696,25 +626,12 @@ func buildTransaction(vector Vector) (string, error) {
 	return payload.Transaction, nil
 }
 
-// verifyTransaction drives the Go server's RPC-free pre-broadcast verify.
+// verifyTransaction drives the Go server's pre-broadcast verify with the
+// request exactly as the challenge carries it.
 func verifyTransaction(vector Vector, transactionBase64 string) error {
-	in := vector.Input
-	if in.Request == nil {
-		return fmt.Errorf("verify vector is missing input.request")
-	}
-	var mintOwners map[string]string
-	if in.RPCFixtures != nil {
-		mintOwners = in.RPCFixtures.MintOwners
-	}
-	amount, currency, recipient, details, err := flattenRequest(in.Request, mintOwners)
+	request, details, err := decodeRequest(vector.Input.Request)
 	if err != nil {
 		return err
-	}
-	request := intents.ChargeRequest{
-		Amount:     amount,
-		Currency:   currency,
-		Recipient:  recipient,
-		ExternalID: in.Request.ExternalID,
 	}
 	return server.VerifyChargeTransactionPreBroadcast(transactionBase64, request, details, details.Network)
 }

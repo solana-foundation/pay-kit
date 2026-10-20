@@ -43,9 +43,9 @@ func TestSeededVectorsConform(t *testing.T) {
 
 	// expectedSkips is the exact set of vectors the Go SDK may declare
 	// out of scope. The session wire vectors are pending Go's migration to
-	// the final e702dd8 wire contract (tracked follow-up to PR #259) — Go
-	// still parses the superseded draft shape, so running them here would
-	// assert the wrong contract. Any unsupported-mode outcome outside this
+	// the final e702dd8 wire contract — Go still parses the superseded
+	// draft shape (OpenPayload.recentSlot, SignedVoucher.data), so running
+	// them here would assert the wrong contract. Any unsupported-mode outcome outside this
 	// set is a regression and fails loudly, and once the migration lands
 	// the leftover-allowlist check below forces this set to be emptied.
 	expectedSkips := map[string]bool{
@@ -78,6 +78,9 @@ func TestSeededVectorsConform(t *testing.T) {
 		var rawVectors []struct {
 			ID     string      `json:"id"`
 			Expect expectBlock `json:"expect"`
+			Input  struct {
+				RPCFixtures rpcFixtures `json:"rpcFixtures"`
+			} `json:"input"`
 		}
 		if err := json.Unmarshal(raw, &rawVectors); err != nil {
 			t.Fatalf("parse expect in %s: %v", entry.Name(), err)
@@ -85,7 +88,11 @@ func TestSeededVectorsConform(t *testing.T) {
 
 		for i, vector := range vectors {
 			expect := rawVectors[i].Expect
+			fixtures := rawVectors[i].Input.RPCFixtures
 			t.Run(vector.ID, func(t *testing.T) {
+				// Same contract as the harness driver: chain state comes
+				// from a fixture JSON-RPC built from input.rpcFixtures.
+				vector.Input.RPCURL = startFixtureRPC(t, fixtures)
 				result := runVector(vector)
 				if result.Outcome == "unsupported-mode" ||
 					strings.HasPrefix(result.Error, "unsupported-mode") {

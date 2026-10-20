@@ -8,7 +8,7 @@ protocol = true
 flow = false
 
 [[unsupported]]
-reason = "session wire vectors are not implemented for the Go SDK yet"
+reason = "Go session wire types are on the superseded draft, not mpp-specs e702dd8: intents.OpenPayload carries recentSlot instead of openSlot and SignedVoucher nests the voucher under data instead of voucher (go/protocols/mpp/intents/session.go)"
 ids = [
   "vector/session-wire-action-close-frozen",
   "vector/session-wire-action-open-draft-slot-echo-reject",
