@@ -255,10 +255,12 @@ final class Verifier
             throw new InvalidProofException('invalid_exact_svm_payload_recipient_mismatch');
         }
 
-        // Rule 8: amount match.
+        // Rule 8: scheme_exact_svm §1.4, the matching transfer is "at least"
+        // the required amount: overpayment is tolerated, less is rejected. A u64
+        // at or above 2^63 unpacks negative here, so it fails closed.
         $amount = self::readU64Le($data, 1);
         $expectedAmount = self::amountField($requirement);
-        if ($amount !== $expectedAmount) {
+        if ($amount < $expectedAmount) {
             throw new InvalidProofException('invalid_exact_svm_payload_amount_mismatch');
         }
 

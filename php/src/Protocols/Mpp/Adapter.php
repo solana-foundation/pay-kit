@@ -7,7 +7,9 @@ namespace PayKit\Protocols\Mpp;
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
+use Brick\Math\BigDecimal;
 use PayKit\PayCore\Solana\Mints;
+use PayKit\PayCore\Stablecoin;
 use PayKit\Payment;
 use PayKit\Price;
 use PayKit\Protocol;
@@ -34,12 +36,6 @@ use SolanaPhpSdk\Rpc\RpcClient;
  */
 final class Adapter
 {
-    /**
-     * Base-unit precision of every price this adapter emits: priceUnits()
-     * scales by 10^6, and every settlement coin is a 6-decimal stablecoin.
-     */
-    private const DECIMALS = 6;
-
     /** @var array<string,array{ChargeServer, SolanaChargeHandler}> */
     private array $handlerCache = [];
 
@@ -87,7 +83,7 @@ final class Adapter
             foreach ($gate->fees as $f) {
                 $splits[] = [
                     'recipient' => $f->recipient,
-                    'amount'    => (string) $this->priceUnits($f->price),
+                    'amount'    => (string) $this->priceUnits($f->price, $gate),
                 ];
             }
             $entry['splits'] = $splits;
@@ -176,7 +172,7 @@ final class Adapter
         // SOL is never a settlement coin on this adapter.
         $methodDetails = [
             'network'      => $this->config->network->mintsLabel(),
-            'decimals'     => self::DECIMALS,
+            'decimals'     => $this->settlementDecimals($gate),
             'tokenProgram' => Mints::tokenProgramFor($mint, $this->config->network->mintsLabel()),
         ];
         if ($gate->hasFees()) {
@@ -184,7 +180,7 @@ final class Adapter
             foreach ($gate->fees as $f) {
                 $splits[] = [
                     'recipient' => $f->recipient,
-                    'amount'    => (string) $this->priceUnits($f->price),
+                    'amount'    => (string) $this->priceUnits($f->price, $gate),
                 ];
             }
             $methodDetails['splits'] = $splits;
@@ -222,9 +218,9 @@ final class Adapter
         // currency/network/decimals). The in-SDK request is built from this
         // same route config (chargeRequestFor), so these are correct by
         // construction; pinning makes the enforcement explicit and rejects any
-        // off-route request that reaches this oracle. Decimals is the SDK's
-        // fixed 6-dp micro-unit convention (matches the X402 adapter and
-        // priceUnits()).
+        // off-route request that reaches this oracle. Decimals are the
+        // settlement coin's own (Stablecoin::decimals), as in priceUnits()
+        // and the X402 adapter.
         $charges = new ChargeServer(
             secretKey: $this->config->mpp->challengeBindingSecret ?? '',
             realm: $this->config->mpp->resolveRealm($payTo),
@@ -233,7 +229,7 @@ final class Adapter
             pinnedCurrency: $mint,
             pinnedRecipient: $payTo,
             pinnedNetwork: $this->config->network->mintsLabel(),
-            pinnedDecimals: self::DECIMALS,
+            pinnedDecimals: $this->settlementDecimals($gate),
         );
         $rpc = new RpcClient($this->config->rpcUrl);
         $feePayer = null;
@@ -276,13 +272,21 @@ final class Adapter
         return $mint;
     }
 
-    private function totalUnits(Gate $gate): int
+    /** Decimals of the gate's settlement coin, taken from the asset. */
+    private function settlementDecimals(Gate $gate): int
     {
-        return $this->priceUnits($gate->total());
+        return Stablecoin::from($this->settlementCoin($gate))->decimals();
     }
 
-    private function priceUnits(Price $price): int
+    private function totalUnits(Gate $gate): int
     {
-        return $price->amount->multipliedBy(1_000_000)->toInt();
+        return $this->priceUnits($gate->total(), $gate);
+    }
+
+    private function priceUnits(Price $price, Gate $gate): int
+    {
+        // Atomic units of the settlement coin (RULINGS C2). toInt() throws
+        // rather than round when the price is finer than the coin allows.
+        return $price->amount->multipliedBy(BigDecimal::ten()->power($this->settlementDecimals($gate)))->toInt();
     }
 }

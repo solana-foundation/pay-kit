@@ -41,7 +41,7 @@ final class AtaCreateRejectTest extends TestCase
      * @param list<array{program:string,data:string,accounts:list<string>}> $optionals
      * @return array{0:string,1:array<string,mixed>}
      */
-    private function buildTransaction(array $optionals): array
+    private function buildTransaction(array $optionals, ?string $transferDataOverride = null): array
     {
         $payer     = Keypair::generate()->getPublicKey()->toBase58();
         $authority = Keypair::generate()->getPublicKey()->toBase58();
@@ -55,7 +55,7 @@ final class AtaCreateRejectTest extends TestCase
         // Instruction data blobs.
         $computeLimitData = chr(2) . pack('V', 200000);            // tag 2 + u32
         $computePriceData = chr(3) . pack('P', 1);                 // tag 3 + u64
-        $transferData     = chr(12) . pack('P', $amount) . chr(6); // tag 12 + u64 + u8 decimals
+        $transferData     = $transferDataOverride ?? chr(12) . pack('P', $amount) . chr(6); // tag 12 + u64 + u8 decimals
 
         // Build the ordered account-key table and an index resolver.
         $keys = [];
@@ -194,6 +194,52 @@ final class AtaCreateRejectTest extends TestCase
                 $this->assertStringContainsString('fee_payer_in_instruction_accounts', $e->getMessage());
             }
         }
+    }
+
+    /**
+     * scheme_exact_svm §1.4: the matching transfer is "at least" the
+     * required amount. The 100000 transfer pays a 99999 requirement
+     * (overpayment, accepted) and its own amount (control), but not 100001.
+     */
+    public function testTransferMayOverpayButNotUnderpay(): void
+    {
+        [$tx, $req] = $this->buildTransaction([]);
+        foreach (['99999', '100000'] as $required) {
+            $req['amount'] = $required;
+            $this->assertSame(100000, Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx'])['amount']);
+        }
+
+        $req['amount'] = '100001';
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/amount_mismatch/');
+        Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
+    }
+
+    /** §1.4: exactly one matching transfer; a second TransferChecked is rejected. */
+    public function testSecondTransferCheckedRejected(): void
+    {
+        [$tx, $req] = $this->buildTransaction([[
+            'program'  => self::TOKEN_PROGRAM,
+            'data'     => chr(12) . pack('P', 100000) . chr(6),
+            'accounts' => [
+                Keypair::generate()->getPublicKey()->toBase58(),
+                self::USDC_MINT,
+                Keypair::generate()->getPublicKey()->toBase58(),
+                Keypair::generate()->getPublicKey()->toBase58(),
+            ],
+        ]]);
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/unknown_fourth_instruction/');
+        Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
+    }
+
+    /** §1.4: zero matching transfers (ix[2] is a plain Transfer) is rejected. */
+    public function testNoTransferCheckedRejected(): void
+    {
+        [$tx, $req] = $this->buildTransaction([], chr(3) . pack('P', 100000));
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessageMatches('/no_transfer_instruction/');
+        Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
     }
 
     public function testAtaCreateOptionalInstructionRejected(): void

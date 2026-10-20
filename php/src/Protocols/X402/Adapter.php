@@ -135,7 +135,11 @@ final class Adapter
      */
     private function offerFor(Gate $gate, ?string $resource): array
     {
-        $coin = $gate->amount->primaryCoin()?->value ?? $this->config->stablecoins[0]->value;
+        $stablecoin = $gate->amount->primaryCoin() ?? $this->config->stablecoins[0];
+        $coin = $stablecoin->value;
+        // `amount` is in atomic units of the asset (RULINGS X2): scale by the
+        // coin's own decimals. toInt() throws rather than round.
+        $decimals = $stablecoin->decimals();
         // x402 spec puts the on-chain mint pubkey on `asset`, not the
         // ticker. Resolve the ticker to a mint via the legacy Mints
         // registry; Mints::resolve already falls back to the mainnet
@@ -143,14 +147,14 @@ final class Adapter
         $asset = \PayKit\PayCore\Solana\Mints::resolve($coin, $this->config->network->mintsLabel()) ?? $coin;
         $tokenProgram = \PayKit\PayCore\Solana\Mints::tokenProgramFor($coin, $this->config->network->mintsLabel());
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
-        $amount = (string) $gate->total()->amount->multipliedBy(1_000_000)->toInt();
+        $amount = (string) $gate->total()->amount->multipliedBy(\Brick\Math\BigDecimal::ten()->power($decimals))->toInt();
         $signer = $this->config->effectiveX402Signer();
         // `decimals` and `tokenProgram` are non-spec hints: scheme_exact_svm
         // defines feePayer, memo, recentBlockhash and lastValidBlockHeight
         // only, and a client reads the mint (RULINGS S1).
         $extra = [
             'feePayer'     => $signer?->pubkey() ?? '',
-            'decimals'     => 6,
+            'decimals'     => $decimals,
             'tokenProgram' => $tokenProgram,
         ];
         if ($resource !== null && $resource !== '') {

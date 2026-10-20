@@ -427,8 +427,8 @@ function run_x402_vector(array $vector): array
     }
 
     // Configure the route the way a PayKit operator would. The SDK prices in
-    // a Gate (human amount of a settlement stablecoin) and always scales by
-    // 10^6, so the route's atomic amount maps back onto that fixed scale;
+    // a Gate (human amount of a settlement stablecoin) and scales it by the
+    // coin's decimals, so the route's atomic amount maps back with them;
     // the stablecoin is the table entry for the route's mint.
     $network = match (Json::optionalString($input['x402ServerNetwork'], 'x402ServerNetwork')) {
         'mainnet', 'mainnet-beta', 'solana' => Network::SolanaMainnet,
@@ -445,7 +445,7 @@ function run_x402_vector(array $vector): array
             'error' => 'php x402 server only settles built-in stablecoins; ' . $currency . ' is not one',
         ];
     }
-    $amount = BigDecimal::ofUnscaledValue(Json::optionalString($input['x402ServerAmount'], 'x402ServerAmount'), 6);
+    $amount = BigDecimal::ofUnscaledValue(Json::optionalString($input['x402ServerAmount'], 'x402ServerAmount'), $coin->decimals());
     $secret = json_encode($input['x402ServerFeePayerSecretKey'], JSON_THROW_ON_ERROR);
     $config = new Config(
         network: $network,
