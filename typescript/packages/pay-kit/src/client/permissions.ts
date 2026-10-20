@@ -128,9 +128,23 @@ export class OriginPermissionOverrideBuilder {
     }
 }
 
-/** A normalized payment offer evaluated before transaction construction. */
+/** One account a payment transfers to, with its share in atomic units. */
+export type PaymentDestination = {
+    /** Amount in the asset's atomic units. */
+    readonly amount: bigint;
+    /** Wallet that receives the transfer (the owner of its token account). */
+    readonly recipient: string;
+};
+
+/**
+ * A normalized payment offer evaluated before transaction construction.
+ *
+ * `destinations` lists every transfer leg the signer will pay (primary
+ * recipient first, then splits) and must add up to `amount`.
+ */
 export type PaymentCandidate = {
     readonly amount: bigint;
+    readonly destinations: readonly PaymentDestination[];
     readonly mint: string;
     readonly network: SolanaNetwork;
     readonly origin: string;
@@ -142,7 +156,8 @@ export type PermissionDeniedCode =
     | 'asset_not_allowed'
     | 'invalid_challenge_terms'
     | 'network_not_allowed'
-    | 'origin_not_allowed';
+    | 'origin_not_allowed'
+    | 'recipient_not_allowed';
 
 /** One rejected payment option. */
 export type PermissionRejection = {
@@ -183,6 +198,7 @@ export class ClientPermissions {
     readonly #allowedAssets: readonly AssetPermission[];
     readonly #allowedNetworks: ReadonlySet<SolanaNetwork>;
     readonly #allowedOrigins: ReadonlySet<string> | undefined;
+    readonly #allowedRecipients: ReadonlySet<string> | undefined;
     readonly #maxAmountPerPayment: UsdAmount | undefined;
     readonly #originOverrides: ReadonlyMap<string, OriginPermissionOverride>;
 
@@ -192,6 +208,7 @@ export class ClientPermissions {
         allowedAssets: readonly AssetPermission[];
         allowedNetworks: ReadonlySet<SolanaNetwork>;
         allowedOrigins: ReadonlySet<string> | undefined;
+        allowedRecipients?: ReadonlySet<string> | undefined;
         maxAmountPerPayment: UsdAmount | undefined;
         originOverrides: ReadonlyMap<string, OriginPermissionOverride>;
     }) {
@@ -199,6 +216,7 @@ export class ClientPermissions {
         this.#allowedAssets = options.allowedAssets;
         this.#allowedNetworks = options.allowedNetworks;
         this.#allowedOrigins = options.allowedOrigins;
+        this.#allowedRecipients = options.allowedRecipients;
         this.#maxAmountPerPayment = options.maxAmountPerPayment;
         this.#originOverrides = options.originOverrides;
     }
@@ -238,6 +256,7 @@ export class ClientPermissions {
         if (candidate.amount < 0n) {
             throw denial('invalid_challenge_terms', 'Challenge amount is not a non-negative integer');
         }
+        this.#authorizeDestinations(candidate);
 
         let mint: string;
         try {
@@ -278,6 +297,28 @@ export class ClientPermissions {
         }
         return { maxAmountAtomic: cap };
     }
+
+    #authorizeDestinations(candidate: PaymentCandidate): void {
+        if (candidate.destinations.length === 0) {
+            throw denial('invalid_challenge_terms', 'Payment names no recipient');
+        }
+        let paid = 0n;
+        for (const destination of candidate.destinations) {
+            if (destination.amount < 0n) {
+                throw denial('invalid_challenge_terms', 'Payment destination amount is negative');
+            }
+            normalizeRecipient(destination.recipient);
+            paid += destination.amount;
+        }
+        if (paid !== candidate.amount) {
+            throw denial('invalid_challenge_terms', 'Payment destinations do not add up to the payment amount');
+        }
+        const allowed = this.#allowedRecipients;
+        const outside = allowed && candidate.destinations.find(destination => !allowed.has(destination.recipient));
+        if (outside) {
+            throw denial('recipient_not_allowed', `Recipient ${outside.recipient} is not allowed`);
+        }
+    }
 }
 
 /** Fluent builder for {@link ClientPermissions}. */
@@ -286,6 +327,7 @@ export class ClientPermissionsBuilder {
     readonly #allowedAssets: AssetPermission[] = [];
     #allowedNetworks = new Set<SolanaNetwork>(['mainnet']);
     #allowedOrigins: Set<string> | undefined;
+    #allowedRecipients: Set<string> | undefined;
     #maxAmountPerPayment: UsdAmount | undefined = usd('1');
     readonly #originOverrides = new Map<string, OriginPermissionOverride>();
 
@@ -298,6 +340,22 @@ export class ClientPermissionsBuilder {
     /** Permit challenges from any HTTP(S) origin. */
     allowAnyOrigin(): this {
         this.#allowedOrigins = undefined;
+        return this;
+    }
+
+    /**
+     * Restrict payments to destinations owned by `recipient`. The first call
+     * changes the default from any recipient to an allowlist, which then
+     * covers the primary recipient and every split of a payment.
+     */
+    allowRecipient(recipient: string): this {
+        (this.#allowedRecipients ??= new Set()).add(normalizeRecipientConfig(recipient));
+        return this;
+    }
+
+    /** Permit payments to any recipient. */
+    allowAnyRecipient(): this {
+        this.#allowedRecipients = undefined;
         return this;
     }
 
@@ -350,6 +408,7 @@ export class ClientPermissionsBuilder {
             allowedAssets: Object.freeze([...this.#allowedAssets]),
             allowedNetworks: new Set(this.#allowedNetworks),
             allowedOrigins: this.#allowedOrigins ? new Set(this.#allowedOrigins) : undefined,
+            allowedRecipients: this.#allowedRecipients ? new Set(this.#allowedRecipients) : undefined,
             maxAmountPerPayment: this.#maxAmountPerPayment,
             originOverrides: new Map(this.#originOverrides),
         });
@@ -380,6 +439,22 @@ function normalizeMint(network: SolanaNetwork, asset: string): string {
         return address(mint).toString();
     } catch {
         throw new PermissionConfigurationError(`Invalid Solana asset: ${asset}`);
+    }
+}
+
+function normalizeRecipient(recipient: string): string {
+    try {
+        return address(recipient).toString();
+    } catch {
+        throw denial('invalid_challenge_terms', `Invalid payment recipient: ${recipient}`);
+    }
+}
+
+function normalizeRecipientConfig(recipient: string): string {
+    try {
+        return address(recipient).toString();
+    } catch {
+        throw new PermissionConfigurationError(`Invalid Solana recipient: ${recipient}`);
     }
 }
 
