@@ -1198,7 +1198,7 @@ mod tests {
             payee: pk(13),
             mint: pk(14),
             authorized_signer: pk(15),
-            salt: 7,
+            salt: random_salt(),
             open_slot: 42,
             deposit: 1_000,
             grace_period: DEFAULT_GRACE_PERIOD_SECONDS,
@@ -1234,7 +1234,7 @@ mod tests {
 
         // An open for a different channel, and one whose args do not derive it.
         let mut other = params.clone();
-        other.salt = 8;
+        other.salt = !params.salt;
         let other_open = build_open_instruction(&other);
         assert!(decode_open_for_channel(
             &compile(std::slice::from_ref(&other_open)),
@@ -1262,7 +1262,7 @@ mod tests {
             &params.program_id,
         )
         .unwrap();
-        assert_eq!(args.salt, 7);
+        assert_eq!(args.salt, params.salt);
         assert_eq!(args.deposit, 1_000);
         assert_eq!(args.recipients.len(), 1);
         assert_eq!(args.recipients[0].bps, 10_000);
