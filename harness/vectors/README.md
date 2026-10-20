@@ -133,6 +133,9 @@ charge request's `methodDetails.recentBlockhash`.
   pinned clock.
 - Rejects: `expect.rejectCode` from the shared vocabulary (`RejectCode` in
   `schema.ts`); `rejectReason` documents and is never asserted.
+  `accepted-mismatch` is the code for a v2 x402 credential whose `accepted`
+  disagrees with the route (amount, payTo, asset or network), whether the
+  SDK checks fields one by one or matches `accepted` against its offers.
 
 ### Inputs by intent
 

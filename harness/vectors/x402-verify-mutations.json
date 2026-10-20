@@ -4,7 +4,7 @@
     "description": "Server rejects a v2 credential whose accepted.network names mainnet when the route is devnet. Mutation: accepted.network set to solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "wrong-network"
+      "rejectCode": "accepted-mismatch"
     },
     "id": "x402-exact-v2-verify-wrong-network-reject",
     "input": {
@@ -970,7 +970,7 @@
     "description": "Cross-route lie: the credential's accepted.amount claims 1 (a cheaper route) and the transaction pays 1; the route requires 1000. A server that trusts accepted instead of its own route under-charges.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "amount-mismatch",
+      "rejectCode": "accepted-mismatch",
       "rejectReason": "accepted.amount differs from the route"
     },
     "id": "x402-exact-verify-accepted-amount-lie-reject",
@@ -1076,7 +1076,7 @@
     "description": "Cross-route lie: the credential's accepted.payTo names another merchant and the transaction pays that merchant; the route's payTo receives nothing.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "no-matching-transfer",
+      "rejectCode": "accepted-mismatch",
       "rejectReason": "accepted.payTo differs from the route"
     },
     "id": "x402-exact-verify-accepted-payto-lie-reject",
@@ -1183,7 +1183,7 @@
     "description": "Cross-route lie: the credential's accepted.asset names another mint and the transaction pays in that mint; the route's asset is never transferred.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "no-matching-transfer",
+      "rejectCode": "accepted-mismatch",
       "rejectReason": "accepted.asset differs from the route"
     },
     "id": "x402-exact-verify-accepted-asset-lie-reject",

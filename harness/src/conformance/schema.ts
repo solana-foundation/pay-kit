@@ -212,7 +212,11 @@ export type RejectCode =
   | "voucher-expired"
   // session voucher verify: a non-zero expiry at/before now + settlement
   // window (the boundary is exclusive).
-  | "voucher-expires-before-settlement";
+  | "voucher-expires-before-settlement"
+  // x402-exact v2: the credential's `accepted` matches none of the route's
+  // payment requirements (amount, payTo, asset or network differ). Covers
+  // both targeted field checks and a structural match against the offers.
+  | "accepted-mismatch";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

@@ -108,7 +108,7 @@ impl Mutation {
             (FeePayerAsAuthority { .. }, Suite::Charge | Suite::X402Exact) => {
                 Some(FeePayerNotAuthority)
             }
-            (Mutation::WrongNetwork { .. }, Suite::X402Exact) => Some(RejectCode::WrongNetwork),
+            (Mutation::WrongNetwork { .. }, Suite::X402Exact) => Some(RejectCode::AcceptedMismatch),
             _ => None,
         }
     }

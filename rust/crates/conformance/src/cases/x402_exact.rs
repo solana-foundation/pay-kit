@@ -514,7 +514,7 @@ crate::registry! {
         &[NOT_LESS],
         "Cross-route lie: the credential's accepted.amount claims 1 (a cheaper route) and the transaction pays 1; the route requires 1000. A server that trusts accepted instead of its own route under-charges.",
         lie("amount", "1", X402Payment { recipient: X402_PAY_TO, mint: MINT, amount: "1" }),
-        Expect::Reject { code: RejectCode::AmountMismatch, reason: Some("accepted.amount differs from the route".into()) },
+        Expect::Reject { code: RejectCode::AcceptedMismatch, reason: Some("accepted.amount differs from the route".into()) },
     )
     .build();
     x402_exact_verify_accepted_payto_lie_reject => verify_case(
@@ -525,7 +525,7 @@ crate::registry! {
         &[DESTINATION, ZERO_MATCHING],
         "Cross-route lie: the credential's accepted.payTo names another merchant and the transaction pays that merchant; the route's payTo receives nothing.",
         lie("payTo", X402_OTHER_PAY_TO, X402Payment { recipient: X402_OTHER_PAY_TO, mint: MINT, amount: "1000" }),
-        Expect::Reject { code: RejectCode::NoMatchingTransfer, reason: Some("accepted.payTo differs from the route".into()) },
+        Expect::Reject { code: RejectCode::AcceptedMismatch, reason: Some("accepted.payTo differs from the route".into()) },
     )
     .build();
     x402_exact_verify_accepted_asset_lie_reject => verify_case(
@@ -536,7 +536,7 @@ crate::registry! {
         &[DESTINATION, ZERO_MATCHING],
         "Cross-route lie: the credential's accepted.asset names another mint and the transaction pays in that mint; the route's asset is never transferred.",
         lie("asset", OTHER_MINT, X402Payment { recipient: X402_PAY_TO, mint: OTHER_MINT, amount: "1000" }),
-        Expect::Reject { code: RejectCode::NoMatchingTransfer, reason: Some("accepted.asset differs from the route".into()) },
+        Expect::Reject { code: RejectCode::AcceptedMismatch, reason: Some("accepted.asset differs from the route".into()) },
     )
     .build();
 }

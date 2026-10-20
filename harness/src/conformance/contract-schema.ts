@@ -103,6 +103,7 @@ const rejectCodeSchema = {
     "invalid-challenge",
     "voucher-expired",
     "voucher-expires-before-settlement",
+    "accepted-mismatch",
   ],
 } as const;
 

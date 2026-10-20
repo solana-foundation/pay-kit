@@ -578,9 +578,32 @@ async fn x402_verify(input: &Value) -> Result<Observed, String> {
                 header: Some(header.to_string()),
                 ..Default::default()
             }),
-            Err(error) => Observed::reject(error.to_string()),
+            Err(error) => {
+                let message = error.to_string();
+                // A v2 credential names its network inside `accepted`, so a
+                // v2 network mismatch is an `accepted` mismatch; v1 carries
+                // the network at the top level (`wrong-network`).
+                if message.starts_with("Network mismatch") && envelope_version(header) == Some(2) {
+                    Observed::Reject {
+                        code: Some(RejectCode::AcceptedMismatch),
+                        message,
+                    }
+                } else {
+                    Observed::reject(message)
+                }
+            }
         },
     )
+}
+
+fn envelope_version(header: &str) -> Option<u64> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(header)
+        .ok()?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("x402Version")?
+        .as_u64()
 }
 
 async fn session_verify(input: &Value) -> Result<Observed, String> {

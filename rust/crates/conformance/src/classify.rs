@@ -43,6 +43,16 @@ pub fn classify(message: &str) -> Option<RejectCode> {
         SplitsExceedAmount
     } else if has("too many splits") {
         TooManySplits
+    } else if has("credential claims a different recipient")
+        || has("currency mismatch")
+        || has("structurally match")
+        || has("does not match any offered")
+        || (has("amount mismatch: expected") && !has("_amount_mismatch"))
+    {
+        // The v2 credential's `accepted` disagrees with the route (the
+        // kit's targeted checks in verify_envelope_payload, then its
+        // structural backstop).
+        AcceptedMismatch
     } else if has("unsupported x402 version") {
         UnsupportedVersion
     } else if has("network mismatch") {
@@ -94,6 +104,14 @@ mod tests {
     #[test]
     fn kit_messages_classify() {
         let table = [
+            (
+                "Amount mismatch: expected 1000, got 1",
+                RejectCode::AcceptedMismatch,
+            ),
+            (
+                "Recipient mismatch: credential claims a different recipient",
+                RejectCode::AcceptedMismatch,
+            ),
             (
                 "invalid_exact_svm_payload_amount_mismatch",
                 RejectCode::AmountMismatch,

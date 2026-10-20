@@ -340,10 +340,11 @@ pub enum RejectCode {
     InvalidChallenge,
     VoucherExpired,
     VoucherExpiresBeforeSettlement,
+    AcceptedMismatch,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 17] = [
+    pub const ALL: [RejectCode; 18] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -361,6 +362,7 @@ impl RejectCode {
         RejectCode::InvalidChallenge,
         RejectCode::VoucherExpired,
         RejectCode::VoucherExpiresBeforeSettlement,
+        RejectCode::AcceptedMismatch,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -382,6 +384,7 @@ impl RejectCode {
             RejectCode::InvalidChallenge => "invalid-challenge",
             RejectCode::VoucherExpired => "voucher-expired",
             RejectCode::VoucherExpiresBeforeSettlement => "voucher-expires-before-settlement",
+            RejectCode::AcceptedMismatch => "accepted-mismatch",
         }
     }
 }
