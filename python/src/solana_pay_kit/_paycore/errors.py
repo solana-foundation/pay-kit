@@ -111,6 +111,15 @@ class PaymentError(Exception):
         self.retryable = retryable
 
 
+class InvalidChallengeError(ValueError):
+    """A client refuses a challenge that violates its payment-method spec.
+
+    Examples: an MPP charge for a mint without ``decimals``, or one that omits
+    ``tokenProgram`` when the mint lookup fails or returns an unexpected owner
+    (draft-solana-charge-00). Raised before anything is signed.
+    """
+
+
 class VerificationError(PaymentError):
     """Payment verification failed."""
 

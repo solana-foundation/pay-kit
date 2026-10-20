@@ -315,14 +315,19 @@ async def test_build_charge_transaction_resolves_token_program_via_rpc_owner():
     # owned by Token-2022 must build with the Token-2022 program.
     from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM
 
-    class _Owner:
+    mint_data = bytearray(82)
+    mint_data[44] = 6  # decimals
+    mint_data[45] = 1  # is_initialized
+
+    class _Account:
         owner = TOKEN_2022_PROGRAM
+        data = bytes(mint_data)
 
     class _Resp:
-        value = _Owner()
+        value = _Account()
 
     class _Rpc:
-        async def get_account(self, _pubkey):
+        async def get_account_info(self, _pubkey):
             return _Resp()
 
     signer = MemorySigner(Keypair())
@@ -386,6 +391,8 @@ async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
     # currency given as a raw mint address (not a known symbol): resolve_mint
     # passes it through and the client builds an SPL TransferChecked to the
     # recipient ATA. Guards against regressing the SPL client path back to a stub.
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+
     signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
@@ -395,7 +402,7 @@ async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
         currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         recipient=recipient,
         external_id="",
-        method_details=MethodDetails(recent_blockhash=BLOCKHASH, decimals=6),
+        method_details=MethodDetails(recent_blockhash=BLOCKHASH, decimals=6, token_program=TOKEN_PROGRAM),
     )
 
     tx = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction))

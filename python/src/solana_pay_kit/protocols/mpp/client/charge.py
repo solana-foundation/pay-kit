@@ -6,6 +6,8 @@ from typing import Any
 
 from solana_keychain import TransactionSigner
 
+from solana_pay_kit._paycore.errors import InvalidChallengeError
+from solana_pay_kit._paycore.mint_account import fetch_mint_account
 from solana_pay_kit._paycore.mints import derive_ata
 from solana_pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
@@ -17,7 +19,6 @@ from solana_pay_kit._paycore.solana import (
     TOKEN_PROGRAM,
     CredentialPayload,
     MethodDetails,
-    default_token_program_for_currency,
     is_known_stablecoin_mint,
     is_native_sol,
     resolve_mint,
@@ -41,7 +42,7 @@ async def build_credential_header(
 
     Args:
         signer: A native solana-keychain transaction signer.
-        rpc_client: A solana.rpc.async_api.AsyncClient for RPC calls.
+        rpc_client: An async Solana RPC client (``SolanaRpc`` or solana-py ``AsyncClient``).
         challenge: The payment challenge to satisfy.
         max_amount_base_units: Audit #10 opt-in guard. When set, refuse to sign
             a challenge whose amount (base units) exceeds this cap. Defaults to
@@ -236,15 +237,15 @@ async def build_charge_transaction(
         # idempotent create-ATA is prepended only for splits that flag it.
         from solders.instruction import AccountMeta
 
-        mint = resolve_mint(currency, details.network)
-        token_program = await _resolve_token_program(rpc_client, mint, currency, details, allow_unknown_token_2022)
         # Audit #42: decimals are conditionally required by spec §7.2 — they
         # MUST be present for an SPL charge. Silently defaulting to 6 produces a
         # wrong divisor / wrong transferChecked decimals byte for non-6-decimal
-        # mints, so error out instead of guessing.
+        # mints, so refuse the challenge instead of guessing.
         if details.decimals is None:
-            raise ValueError("methodDetails.decimals is required for SPL charges (spec §7.2)")
+            raise InvalidChallengeError("methodDetails.decimals is required for SPL charges (spec §7.2)")
         decimals = details.decimals
+        mint = resolve_mint(currency, details.network)
+        token_program = await _resolve_token_program(rpc_client, mint, currency, details, allow_unknown_token_2022)
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(mint)
         system_program_key = Pubkey.from_string(SYSTEM_PROGRAM)
@@ -361,22 +362,21 @@ async def _resolve_token_program(
     details: MethodDetails,
     allow_unknown_token_2022: bool = False,
 ) -> str:
-    """Resolve the SPL token program for ``mint``, matching rust resolve_token_program.
+    """Resolve the SPL token program for ``mint`` (draft-solana-charge-00).
 
-    Mirrors rust ``resolve_token_program`` (charge.rs:442-466): use
-    ``methodDetails.tokenProgram`` when present; otherwise fetch the mint
-    account owner via RPC; then reject any program that is not the classic SPL
-    Token program or Token-2022. Without this, an unknown mint that omits
-    ``tokenProgram`` silently defaults to the classic program where rust
-    consults the chain, building the wrong program id / ATA derivation.
+    Uses ``methodDetails.tokenProgram`` when present. Otherwise the spec
+    requires the mint account to be fetched: "If that lookup fails, returns an
+    unexpected owner, or cannot be verified, clients MUST reject the challenge
+    rather than falling back to the Token Program." :func:`fetch_mint_account`
+    raises :class:`MintLookupError` in every one of those cases, so there is no
+    path that defaults by currency.
     """
     if details.token_program:
         token_program = details.token_program
+        if token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+            raise InvalidChallengeError(f"Unsupported token program: {token_program}")
     else:
-        owner = await _fetch_mint_owner(rpc_client, mint)
-        token_program = owner if owner is not None else default_token_program_for_currency(mint, details.network)
-    if token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
-        raise ValueError(f"Unsupported token program: {token_program}")
+        token_program = (await fetch_mint_account(rpc_client, mint)).token_program
     # Audit #26: refuse to sign an UNKNOWN Token-2022 mint unless explicitly
     # opted in. Token-2022 mints can carry transfer hooks that execute
     # arbitrary code on every transfer; the server's pre-broadcast checks do
@@ -394,22 +394,3 @@ async def _resolve_token_program(
             "pass allow_unknown_token_2022=True to opt in"
         )
     return token_program
-
-
-async def _fetch_mint_owner(rpc_client: Any, mint: str) -> str | None:
-    """Return the on-chain owner program of ``mint`` via RPC, or None when unavailable.
-
-    Mirrors the rust ``rpc.get_account(mint).owner`` lookup. Tolerates an absent
-    or stubbed RPC client (offline tests pass ``None``) by returning None so the
-    caller falls back to the symbol-derived default.
-    """
-    if rpc_client is None:
-        return None
-    from solders.pubkey import Pubkey
-
-    resp = await rpc_client.get_account(Pubkey.from_string(mint))
-    value = getattr(resp, "value", resp)
-    if value is None:
-        return None
-    owner = getattr(value, "owner", None)
-    return str(owner) if owner is not None else None
