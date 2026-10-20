@@ -12,7 +12,7 @@
 // follow-up (see harness/vectors/README.md).
 
 import { createHmac } from "node:crypto";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
+import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
 import { session as sessionMethod } from "@solana/mpp";
 import {
   buildChargeTransaction,
@@ -21,8 +21,10 @@ import {
 } from "@solana/mpp/client";
 import {
   defaultTokenProgramForCurrency,
+  encodeVoucherMessageBytes,
   resolveStablecoinMint,
   verifyChargeTransaction,
+  verifyVoucherForChannel,
 } from "@solana/mpp/server";
 import { decodeTransactionShape } from "./decode";
 import { base64UrlFromUtf8, canonicalizeJson } from "./jcs";
@@ -219,9 +221,77 @@ function runX402Vector(vector: ConformanceVector): RunnerResult {
   };
 }
 
+// Session voucher verify: sign one voucher with the vector key and drive the
+// production verifier against a fresh channel at the pinned clock.
+async function runSessionVoucherVerify(vector: ConformanceVector): Promise<RunnerResult> {
+  const input = vector.input.sessionVoucherVerify!;
+  if (!vector.input.signerSecretKey) throw new Error("vector is missing signerSecretKey");
+  const signer = await createKeyPairSignerFromBytes(Uint8Array.from(vector.input.signerSecretKey));
+  const message = encodeVoucherMessageBytes({
+    channelId: input.channelId,
+    cumulativeAmount: BigInt(input.cumulativeAmount),
+    expiresAt: BigInt(input.expiresAt),
+  });
+  const [signatures] = await signer.signMessages([{ content: message, signatures: {} }]);
+  const signature = signatures?.[signer.address];
+  if (!signature) throw new Error("signer did not produce a signature");
+  const result = await verifyVoucherForChannel({
+    deposit: BigInt(input.deposit),
+    nowSeconds: BigInt(input.nowSeconds),
+    settlementWindow: BigInt(input.settlementWindowSeconds),
+    signed: {
+      signature: getBase58Decoder().decode(signature),
+      signatureType: "ed25519",
+      signer: signer.address,
+      voucher: {
+        channelId: input.channelId,
+        cumulativeAmount: input.cumulativeAmount,
+        expiresAt: input.expiresAt,
+      },
+    },
+    state: {
+      authorizedSigner: signer.address,
+      channelId: input.channelId,
+      committedDeliveries: [],
+      cumulative: 0n,
+      deposit: BigInt(input.deposit),
+      nextDeliverySequence: 0n,
+      payer: signer.address,
+      pendingDeliveries: [],
+      processedUses: [],
+      rentPayer: signer.address,
+      sealed: false,
+      settledOnChain: 0n,
+      spentAmount: 0n,
+    },
+  });
+  if (result.status === "accepted") return { id: vector.id, outcome: "accept" };
+  if (result.status === "replayed") {
+    return { error: "unexpected replay", id: vector.id, outcome: "reject" };
+  }
+  const rejectCode =
+    result.reason === "expired"
+      ? ("voucher-expired" as const)
+      : result.reason === "expires-within-settlement-window"
+        ? ("voucher-expires-before-settlement" as const)
+        : undefined;
+  return {
+    error: `${result.reason}: ${result.detail}`,
+    id: vector.id,
+    outcome: "reject",
+    ...(rejectCode ? { rejectCode } : {}),
+  };
+}
+
 async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.intent === "x402-exact") {
     return runX402Vector(vector);
+  }
+  if (vector.intent === "session" && vector.mode === "verify-transaction") {
+    if (!vector.input.sessionVoucherVerify) {
+      return { error: "unsupported-mode: session verify input", id: vector.id, outcome: "unsupported-mode" };
+    }
+    return runSessionVoucherVerify(vector);
   }
   if (vector.mode === "canonical-bytes") {
     const exactBytes: NonNullable<RunnerResult["exactBytes"]> = {};

@@ -100,6 +100,8 @@ const rejectCodeSchema = {
     "unsupported-version",
     "wrong-network",
     "payment-identifier-required",
+    "voucher-expired",
+    "voucher-expires-before-settlement",
   ],
 } as const;
 

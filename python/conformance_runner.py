@@ -53,9 +53,17 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     SessionAction,
     SessionAuthentication,
     SessionRequest,
+    SignedVoucher,
     VoucherData,
 )
 from solana_pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
+from solana_pay_kit.protocols.mpp.server.session_voucher import (
+    ChannelState,
+    VerifyVoucherArgs,
+    VoucherRejectReason,
+    VoucherVerifyStatus,
+    verify_voucher_for_channel,
+)
 from solana_pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
     build_payment_header,
@@ -634,12 +642,59 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unsupported-mode: {mode}")
 
 
+_VOUCHER_REJECT_CODES = {
+    VoucherRejectReason.EXPIRED: "voucher-expired",
+    VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT: "voucher-expires-before-settlement",
+}
+
+
+def _run_session_voucher_verify(vector: dict[str, Any]) -> dict[str, Any]:
+    """Sign one voucher with the vector key and drive the production verifier
+    against a fresh channel at the pinned clock."""
+    vector_id = vector.get("id", "")
+    inp = vector["input"]
+    params = inp["sessionVoucherVerify"]
+    keypair = Keypair.from_bytes(bytes(inp["signerSecretKey"]))
+    data = VoucherData(
+        channel_id=params["channelId"],
+        cumulative_amount=str(params["cumulativeAmount"]),
+        expires_at=int(params["expiresAt"]),
+    )
+    signed = SignedVoucher(
+        data=data, signer=str(keypair.pubkey()), signature=str(keypair.sign_message(data.message_bytes()))
+    )
+    deposit = int(params["deposit"])
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=ChannelState(
+                channel_id=params["channelId"], authorized_signer=str(keypair.pubkey()), deposit=deposit
+            ),
+            signed=signed,
+            deposit=deposit,
+            now_seconds=int(params["nowSeconds"]),
+            settlement_window=int(params["settlementWindowSeconds"]),
+        )
+    )
+    if result.status == VoucherVerifyStatus.ACCEPTED:
+        return {"id": vector_id, "outcome": "accept"}
+    out: dict[str, Any] = {"id": vector_id, "outcome": "reject", "error": f"{result.reason}: {result.detail}"}
+    code = _VOUCHER_REJECT_CODES.get(result.reason) if result.reason is not None else None
+    if code is not None:
+        out["rejectCode"] = code
+    return out
+
+
 def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
 
     if vector.get("intent") == "x402-exact":
         return _run_x402(vector)
+
+    if vector.get("intent") == "session" and mode == "verify-transaction":
+        if not (vector.get("input") or {}).get("sessionVoucherVerify"):
+            return {"id": vector_id, "outcome": "unsupported-mode", "error": "unsupported-mode: session verify input"}
+        return _run_session_voucher_verify(vector)
 
     if mode == "canonical-bytes":
         return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}

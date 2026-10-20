@@ -22,6 +22,12 @@ export {
     type SubmitSettleAndDistributeResult,
     waitForSignatureConfirmation,
 } from './session/on-chain.js';
+export {
+    type VerifyVoucherArgs,
+    verifyVoucherForChannel,
+    type VoucherRejectReason,
+    type VoucherVerifyResult,
+} from './session/voucher.js';
 export { buildAndSignWireTransaction } from './session/wire-tx.js';
 export { subscription } from './Subscription.js';
 export { assertReportedTransactionVersion, MISSING_TRANSACTION_VERSION_ERROR } from '../utils/transactions.js';

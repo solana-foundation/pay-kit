@@ -201,7 +201,12 @@ export type RejectCode =
   // info.required=true but the credential echoed no valid `pay_`-shaped
   // id (missing, empty, or pattern-violating). The coinbase spec maps
   // this to HTTP 400; the conformance oracle pins it as a reject category.
-  | "payment-identifier-required";
+  | "payment-identifier-required"
+  // session voucher verify: a non-zero expiry at/before now.
+  | "voucher-expired"
+  // session voucher verify: a non-zero expiry at/before now + settlement
+  // window (the boundary is exclusive).
+  | "voucher-expires-before-settlement";
 
 export type VectorInput = {
   // build-transaction / verify-transaction
@@ -277,6 +282,21 @@ export type VectorInput = {
   sessionWire?: {
     shape: "request" | "action";
     value: unknown;
+  };
+
+  // verify-transaction (session): one voucher against a fresh channel
+  // (cumulative 0, authorizedSigner = pubkey of `signerSecretKey`). The
+  // runner signs the voucher preimage with `signerSecretKey` and drives the
+  // PRODUCTION server voucher verifier at the pinned clock. Accept means the
+  // verifier advanced the watermark; a reject maps the verifier's reason to
+  // voucher-expired / voucher-expires-before-settlement.
+  sessionVoucherVerify?: {
+    channelId: string;
+    cumulativeAmount: string;
+    expiresAt: number;
+    nowSeconds: number;
+    settlementWindowSeconds: number;
+    deposit: string;
   };
 
   // ── x402-exact inputs ────────────────────────────────────────────────

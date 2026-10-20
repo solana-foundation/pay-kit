@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -72,6 +73,17 @@ type Vector struct {
 	Expect json.RawMessage `json:"expect"`
 }
 
+// SessionVoucherVerify is one voucher checked against a fresh channel whose
+// authorized signer is the vector's SignerSecretKey.
+type SessionVoucherVerify struct {
+	ChannelID               string `json:"channelId"`
+	CumulativeAmount        string `json:"cumulativeAmount"`
+	ExpiresAt               int64  `json:"expiresAt"`
+	NowSeconds              int64  `json:"nowSeconds"`
+	SettlementWindowSeconds int64  `json:"settlementWindowSeconds"`
+	Deposit                 string `json:"deposit"`
+}
+
 // VectorInput carries the per-mode inputs of a conformance vector.
 type VectorInput struct {
 	// Request is the charge request that drives the build/verify modes;
@@ -107,7 +119,10 @@ type VectorInput struct {
 	// follow-up: implement once go/protocols/mpp/intents/session.go is on
 	// the final shapes.
 	SessionAuthenticationMessage json.RawMessage `json:"sessionAuthenticationMessage"`
-	SessionWire                  json.RawMessage `json:"sessionWire"`
+	// SessionVoucherVerify drives the production voucher verifier against a
+	// fresh channel at a pinned clock (verify-transaction, session intent).
+	SessionVoucherVerify *SessionVoucherVerify `json:"sessionVoucherVerify"`
+	SessionWire          json.RawMessage       `json:"sessionWire"`
 
 	// x402-exact inputs.
 	X402Offer *X402Offer `json:"x402Offer"`
@@ -461,6 +476,16 @@ func runVector(vector Vector) RunnerResult {
 	if vector.Intent == "x402-exact" {
 		return runX402(vector)
 	}
+	if vector.Intent == "session" && vector.Mode == "verify-transaction" {
+		if vector.Input.SessionVoucherVerify == nil {
+			return RunnerResult{ID: vector.ID, Outcome: "unsupported-mode", Error: "unsupported-mode: session verify input"}
+		}
+		result, err := runSessionVoucherVerify(vector)
+		if err != nil {
+			return rejected(vector.ID, err)
+		}
+		return result
+	}
 	switch vector.Mode {
 	case "canonical-bytes":
 		if vector.Input.SessionAuthenticationMessage != nil || vector.Input.SessionWire != nil {
@@ -507,6 +532,50 @@ func runVector(vector Vector) RunnerResult {
 		return RunnerResult{ID: vector.ID, Outcome: "accept", TransactionShape: shape}
 	default:
 		return rejected(vector.ID, fmt.Errorf("unsupported mode %q", vector.Mode))
+	}
+}
+
+// runSessionVoucherVerify signs one voucher with the vector key and drives
+// the production verifier against a fresh channel at the pinned clock.
+func runSessionVoucherVerify(vector Vector) (RunnerResult, error) {
+	in := vector.Input.SessionVoucherVerify
+	if len(vector.Input.SignerSecretKey) != ed25519.PrivateKeySize {
+		return RunnerResult{}, fmt.Errorf("signerSecretKey must be %d bytes", ed25519.PrivateKeySize)
+	}
+	key := ed25519.PrivateKey(vector.Input.SignerSecretKey)
+	signer := solana.PublicKeyFromBytes(key.Public().(ed25519.PublicKey)).String()
+	deposit, err := strconv.ParseUint(in.Deposit, 10, 64)
+	if err != nil {
+		return RunnerResult{}, fmt.Errorf("invalid deposit: %w", err)
+	}
+	data := intents.VoucherData{ChannelID: in.ChannelID, Cumulative: in.CumulativeAmount, ExpiresAt: in.ExpiresAt}
+	message, err := data.MessageBytes()
+	if err != nil {
+		return RunnerResult{}, err
+	}
+	signed := intents.SignedVoucher{Data: data, Signature: solana.SignatureFromBytes(ed25519.Sign(key, message)).String()}
+	now := in.NowSeconds
+	result := server.VerifyVoucherForChannel(server.VerifyVoucherArgs{
+		State:                   server.ChannelState{ChannelID: in.ChannelID, AuthorizedSigner: signer, Deposit: deposit},
+		Signed:                  signed,
+		Deposit:                 deposit,
+		SettlementWindowSeconds: in.SettlementWindowSeconds,
+		NowSeconds:              &now,
+	})
+	switch result.Status {
+	case server.VoucherVerifyAccepted:
+		return RunnerResult{ID: vector.ID, Outcome: "accept"}, nil
+	case server.VoucherVerifyRejected:
+		out := RunnerResult{ID: vector.ID, Outcome: "reject", Error: fmt.Sprintf("%s: %s", result.Reason, result.Detail)}
+		switch result.Reason {
+		case server.VoucherRejectExpired:
+			out.RejectCode = "voucher-expired"
+		case server.VoucherRejectExpiryTooSoon:
+			out.RejectCode = "voucher-expires-before-settlement"
+		}
+		return out, nil
+	default:
+		return RunnerResult{ID: vector.ID, Outcome: "reject", Error: "unexpected replay"}, nil
 	}
 }
 
