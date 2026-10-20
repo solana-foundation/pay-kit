@@ -2,3 +2,6 @@
 	path = typescript/external/x402
 	url = https://github.com/x402-foundation/x402.git
 	branch = main
+[submodule "external/mpp-specs"]
+	path = external/mpp-specs
+	url = https://github.com/tempoxyz/mpp-specs.git
