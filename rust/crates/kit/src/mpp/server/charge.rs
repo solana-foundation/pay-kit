@@ -2166,6 +2166,27 @@ pub fn check_network_blockhash(
     )))
 }
 
+/// Conformance hooks (feature `testkit`). Not a payment verifier: nothing
+/// here checks the challenge binding, consumes replay state, co-signs or
+/// broadcasts. Use [`Mpp::verify`] to accept payments.
+#[cfg(feature = "testkit")]
+pub mod testkit {
+    use super::*;
+
+    /// Run the offline pre-broadcast checks [`Mpp`] applies to a pull-mode
+    /// charge transaction before it co-signs and broadcasts: envelope and
+    /// compute caps, fee-payer isolation, and the exact transfer set for
+    /// `request` and `method_details`.
+    pub fn verify_transaction_pre_broadcast(
+        tx: &VersionedTransaction,
+        request: &ChargeRequest,
+        method_details: &MethodDetails,
+        accepted_versions: &[TxVersion],
+    ) -> Result<(), VerificationError> {
+        verify_versioned_transaction_pre_broadcast(tx, request, method_details, accepted_versions)
+    }
+}
+
 // ── Pre-broadcast verification ──
 //
 // Inspects the raw Transaction instructions to verify amounts and recipients
