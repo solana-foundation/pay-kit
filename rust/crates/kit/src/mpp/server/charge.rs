@@ -971,9 +971,35 @@ impl Mpp {
             if let Some(splits) = md.splits.as_deref() {
                 crate::mpp::protocol::solana::validate_splits(splits)?;
             }
+
+            crate::mpp::protocol::solana::validate_confidential_charge(&request.currency, &md)?;
+            if md.confidential == Some(true) {
+                self.confidential_sponsor(&md)
+                    .map_err(Error::InvalidConfig)?;
+            }
         }
 
         Ok(())
+    }
+
+    /// The gateway key that sponsors a confidential charge: the configured
+    /// fee-payer signer, which `md` must name as its sponsor. Checked when the
+    /// challenge is issued and again before any bundle is co-signed.
+    pub(crate) fn confidential_sponsor(&self, md: &MethodDetails) -> Result<Pubkey, String> {
+        let signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
+            "confidential charges require a fee_payer_signer (the gateway pays bundle fees)"
+                .to_string()
+        })?;
+        let sponsor = signer.pubkey();
+        if md.fee_payer != Some(true)
+            || md.fee_payer_key.as_deref() != Some(sponsor.to_string().as_str())
+        {
+            return Err(format!(
+                "confidential charges must be sponsored by this gateway: feePayer=true and \
+                 feePayerKey={sponsor}"
+            ));
+        }
+        Ok(sponsor)
     }
 
     // ── Verification ──
@@ -5261,7 +5287,11 @@ mod tests {
             serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
             serde_json::json!({ "type": "signature", "signature": "fakesig" }),
         ] {
-            let cred = build_credential(&mpp, &request, payload.clone());
+            let cred = PaymentCredential {
+                challenge: sign_unvalidated(&mpp, &request).to_echo(),
+                source: None,
+                payload: payload.clone(),
+            };
             let err = mpp.verify(&cred, &request).await.unwrap_err();
             assert!(
                 err.message.contains("Bundle credential"),
@@ -5269,6 +5299,86 @@ mod tests {
                 err.message
             );
         }
+    }
+
+    // A confidential charge is funded by the gateway, so a caller-built
+    // challenge must name this gateway as its sponsor. A contradictory one
+    // (feePayer false, omitted, or another key) is never signed, and one that
+    // was signed anyway is refused before the gateway co-signs anything.
+    #[cfg(feature = "confidential")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confidential_challenge_must_be_sponsored_by_this_gateway() {
+        use crate::mpp::protocol::solana::mints;
+        let gateway = test_fee_payer_signer();
+        let gateway_key = gateway.pubkey().to_string();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            currency: mints::USDPT_MAINNET.to_string(),
+            decimals: 6,
+            network: "mainnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            realm: Some("test-realm".to_string()),
+            fee_payer_signer: Some(gateway),
+            accept_unverified_confidential_amount: true,
+            store: Some(Arc::new(MemoryStore::new())),
+            ..Default::default()
+        })
+        .unwrap();
+        let request = |fee_payer: Option<bool>, fee_payer_key: Option<String>| ChargeRequest {
+            amount: "1000".to_string(),
+            currency: mints::USDPT_MAINNET.to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    network: Some("mainnet".to_string()),
+                    decimals: Some(6),
+                    token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+                    confidential: Some(true),
+                    fee_payer,
+                    fee_payer_key,
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+
+        for contradictory in [
+            request(Some(false), Some(gateway_key.clone())),
+            request(None, Some(gateway_key.clone())),
+            request(Some(true), Some(Pubkey::new_unique().to_string())),
+        ] {
+            let err = mpp
+                .charge_challenge_with_options(&contradictory, None, None)
+                .unwrap_err();
+            assert!(err.to_string().contains("sponsored"), "{err}");
+
+            let credential = PaymentCredential {
+                challenge: sign_unvalidated(&mpp, &contradictory).to_echo(),
+                source: None,
+                payload: serde_json::json!({"type": "bundle", "transactions": ["AA=="]}),
+            };
+            let err = mpp.verify(&credential, &contradictory).await.unwrap_err();
+            assert!(err.message.contains("sponsored"), "{err:?}");
+        }
+
+        // Sponsored by this gateway: issued, and settlement proceeds to the
+        // bundle itself.
+        let sponsored = request(Some(true), Some(gateway_key));
+        let credential = PaymentCredential {
+            challenge: mpp
+                .charge_challenge_with_options(&sponsored, None, None)
+                .unwrap()
+                .to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "bundle", "transactions": ["AA=="]}),
+        };
+        let err = mpp.verify(&credential, &sponsored).await.unwrap_err();
+        assert!(
+            err.message.contains("Invalid transaction at index 0"),
+            "{err:?}"
+        );
     }
 
     // ── Pre-broadcast SOL verification tests ──
@@ -7594,6 +7704,23 @@ mod tests {
 
     // ── verify() — HMAC mismatch, expiry, replay protection ──
 
+    /// An authenticated challenge for `request` that skips issuance
+    /// validation, standing in for one issued by an older or differently
+    /// configured replica: verification must hold on its own.
+    fn sign_unvalidated(mpp: &Mpp, request: &ChargeRequest) -> PaymentChallenge {
+        PaymentChallenge::with_challenge_binding_secret_full(
+            &mpp.challenge_binding_secret,
+            &mpp.realm,
+            METHOD_NAME,
+            "charge",
+            Base64UrlJson::from_typed(request).unwrap(),
+            Some(&crate::mpp::expires::minutes(5)),
+            None,
+            None,
+            None,
+        )
+    }
+
     fn build_credential(
         mpp: &Mpp,
         request: &ChargeRequest,
@@ -8060,7 +8187,7 @@ mod tests {
         let mut confidential = plain.clone();
         mutate_method_details(&mut confidential, |md| md.confidential = Some(true));
         let cred = PaymentCredential {
-            challenge: mpp.charge_challenge(&confidential).unwrap().to_echo(),
+            challenge: sign_unvalidated(&mpp, &confidential).to_echo(),
             source: None,
             payload: serde_json::json!({"type": "signature", "signature": "x"}),
         };

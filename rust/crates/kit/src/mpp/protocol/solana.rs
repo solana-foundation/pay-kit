@@ -803,8 +803,35 @@ mod tests {
             token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
             confidential: Some(true),
             auditor_elgamal_pubkey: Some("auditor-key".to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some("gateway-key".to_string()),
             ..MethodDetails::default()
         }
+    }
+
+    // The gateway funds every bundle transaction, so an unsponsored
+    // confidential charge is contradictory and never issued or paid.
+    #[test]
+    fn validate_confidential_requires_gateway_sponsorship() {
+        for md in [
+            MethodDetails {
+                fee_payer: None,
+                ..confidential_md()
+            },
+            MethodDetails {
+                fee_payer: Some(false),
+                ..confidential_md()
+            },
+            MethodDetails {
+                fee_payer_key: None,
+                ..confidential_md()
+            },
+        ] {
+            let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
+                .expect_err("unsponsored confidential charge");
+            assert!(err.to_string().contains("gateway-sponsored"), "{err}");
+        }
+        validate_confidential_charge(mints::USDPT_MAINNET, &confidential_md()).unwrap();
     }
 
     #[test]
@@ -1175,6 +1202,17 @@ pub fn validate_confidential_charge(
     if md.splits.as_ref().is_some_and(|s| !s.is_empty()) {
         return Err(Error::InvalidConfig(
             "confidential transfers cannot be combined with splits".into(),
+        ));
+    }
+
+    // The gateway funds every bundle transaction (fees, proof and record
+    // accounts), so a confidential charge is sponsored by construction. A
+    // challenge that says otherwise is contradictory: the server would fund a
+    // charge it declared unsponsored.
+    if md.fee_payer != Some(true) || md.fee_payer_key.as_deref().is_none_or(str::is_empty) {
+        return Err(Error::InvalidConfig(
+            "confidential charges are gateway-sponsored: feePayer must be true and feePayerKey set"
+                .into(),
         ));
     }
 

@@ -190,7 +190,12 @@ impl Mpp {
                 "Confidential settlement requires a fee-payer signer (the gateway pays bundle fees)",
             )
         })?;
-        let gateway_pubkey = fee_payer_signer.pubkey();
+        // Recheck the challenge's sponsorship policy right before the gateway
+        // commits to funding anything.
+        let gateway_pubkey = self
+            .confidential_sponsor(method_details)
+            .map_err(VerificationError::credential_mismatch)?;
+        debug_assert_eq!(gateway_pubkey, fee_payer_signer.pubkey());
 
         // Amount enforcement, before the gateway signs or pays for anything:
         //   * recipient_signer SET (the gateway controls the payee) ⇒ decrypt
@@ -1762,6 +1767,8 @@ pub(crate) mod tests {
             method_details: MethodDetails {
                 token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
                 confidential: Some(true),
+                fee_payer: Some(true),
+                fee_payer_key: Some(gateway.to_string()),
                 ..Default::default()
             },
         }
