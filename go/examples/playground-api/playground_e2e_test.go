@@ -87,6 +87,8 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 		feePayer:  feePayer,
 		rpcClient: rpcClient,
 		repoRoot:  t.TempDir(),
+
+		replayStore: core.NewMemoryStore(),
 	}
 	bootstrapFunding(a)
 

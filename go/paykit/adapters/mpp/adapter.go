@@ -46,6 +46,9 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 	if len(cfg.MPP.ChallengeBindingSecret) == 0 {
 		return nil, fmt.Errorf("protocols/mpp: MPP.ChallengeBindingSecret is required")
 	}
+	if cfg.MPP.Store == nil {
+		return nil, fmt.Errorf("protocols/mpp: MPP.Store is required")
+	}
 	return &Adapter{cfg: cfg}, nil
 }
 
@@ -168,7 +171,7 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil {
 		feePayer = &signerBridge{signer: a.cfg.Operator.Signer}
 	}
-	srv, err := server.New(server.Config{
+	srv, err := server.New(a.cfg.MPP.Store, server.Config{
 		Recipient:      string(payTo),
 		SecretKey:      string(a.cfg.MPP.ChallengeBindingSecret),
 		Currency:       coin,

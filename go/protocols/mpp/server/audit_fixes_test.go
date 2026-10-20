@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -47,7 +48,17 @@ func validConfig(t *testing.T) Config {
 		Network:   "localnet",
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       testutil.NewFakeRPC(),
-		Store:     core.NewMemoryStore(),
+	}
+}
+
+func TestNewRequiresStore(t *testing.T) {
+	_, err := New(nil, validConfig(t))
+	var coreErr *core.Error
+	if !errors.As(err, &coreErr) || coreErr.Code != core.ErrCodeInvalidConfig || !strings.Contains(err.Error(), "store is required") {
+		t.Fatalf("err = %v, want invalid-config store is required", err)
+	}
+	if _, err := New(core.NewMemoryStore(), validConfig(t)); err != nil {
+		t.Fatalf("New with store: %v", err)
 	}
 }
 
@@ -56,7 +67,7 @@ func validConfig(t *testing.T) Config {
 func TestNewRejectsShortSecretKey(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.SecretKey = strings.Repeat("a", minSecretKeyBytes-1)
-	if _, err := New(cfg); err == nil {
+	if _, err := New(core.NewMemoryStore(), cfg); err == nil {
 		t.Fatal("expected rejection of short secret key")
 	}
 }
@@ -64,7 +75,7 @@ func TestNewRejectsShortSecretKey(t *testing.T) {
 func TestNewAcceptsSecretKeyAtMinimumLength(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.SecretKey = strings.Repeat("a", minSecretKeyBytes)
-	if _, err := New(cfg); err != nil {
+	if _, err := New(core.NewMemoryStore(), cfg); err != nil {
 		t.Fatalf("expected at-minimum secret key to be accepted: %v", err)
 	}
 }
@@ -76,7 +87,7 @@ func TestNewAcceptsCanonicalNetworks(t *testing.T) {
 		cfg := validConfig(t)
 		cfg.Network = network
 		// USDC resolves from the static table, no RPC fetch needed at boot.
-		if _, err := New(cfg); err != nil {
+		if _, err := New(core.NewMemoryStore(), cfg); err != nil {
 			t.Fatalf("expected network %q to be accepted: %v", network, err)
 		}
 	}
@@ -85,7 +96,7 @@ func TestNewAcceptsCanonicalNetworks(t *testing.T) {
 func TestNewRejectsMainnetBetaSlug(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.Network = "mainnet-beta"
-	if _, err := New(cfg); err == nil {
+	if _, err := New(core.NewMemoryStore(), cfg); err == nil {
 		t.Fatal("expected legacy mainnet-beta slug to be rejected")
 	}
 }
@@ -93,7 +104,7 @@ func TestNewRejectsMainnetBetaSlug(t *testing.T) {
 func TestNewRejectsUnknownNetwork(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.Network = "testnet"
-	if _, err := New(cfg); err == nil {
+	if _, err := New(core.NewMemoryStore(), cfg); err == nil {
 		t.Fatal("expected unknown network to be rejected")
 	}
 }
@@ -102,7 +113,7 @@ func TestNewRejectsUnknownNetwork(t *testing.T) {
 
 func TestChargeOptionsRejectsFeePayerWithoutSigner(t *testing.T) {
 	cfg := validConfig(t)
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -116,7 +127,7 @@ func TestChargeOptionsFeePayerSucceedsWhenSignerConfigured(t *testing.T) {
 	cfg.Currency = "sol"
 	cfg.Decimals = 9
 	cfg.FeePayerSigner = testutil.NewPrivateKey()
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -142,7 +153,7 @@ func TestChargeRejectsPrimaryRecipientSplitWithATACreation(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.TokenProgramID
 	cfg.Currency = mint.String()
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -160,7 +171,7 @@ func TestChargeAllowsPrimaryRecipientSplitWithoutATACreation(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.Currency = "sol"
 	cfg.Decimals = 9
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -217,7 +228,7 @@ func TestValidateSplits(t *testing.T) {
 func TestNewResolvesTokenProgramForKnownStablecoin(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.Currency = "PYUSD"
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -231,7 +242,7 @@ func TestNewResolvesArbitraryMintFromChain(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 	cfg.Currency = mint.String()
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -246,7 +257,7 @@ func TestNewRejectsArbitraryMintWithUnknownOwner(t *testing.T) {
 	// Owner is some random program, not Token / Token-2022.
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = testutil.NewPrivateKey().PublicKey()
 	cfg.Currency = mint.String()
-	if _, err := New(cfg); err == nil {
+	if _, err := New(core.NewMemoryStore(), cfg); err == nil {
 		t.Fatal("expected mint with non-token owner to be rejected at boot")
 	}
 }
@@ -256,7 +267,7 @@ func TestChargeEmitsTokenProgramForArbitraryMint(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	cfg.RPC.(*testutil.FakeRPC).MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 	cfg.Currency = mint.String()
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -279,7 +290,7 @@ func TestPushModeRejectedByDefault(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.Currency = "sol"
 	cfg.Decimals = 9
-	m, err := New(cfg)
+	m, err := New(core.NewMemoryStore(), cfg)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

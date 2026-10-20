@@ -71,7 +71,6 @@ type Config struct {
 	Realm          string
 	HTML           bool
 	FeePayerSigner solanatx.Signer
-	Store          core.Store
 	RPC            solanatx.RPCClient
 
 	// AcceptPushMode opts in to accepting type="signature" (push mode)
@@ -116,8 +115,13 @@ type Mpp struct {
 	acceptPushMode bool
 }
 
-// New creates a new server-side handler.
-func New(config Config) (*Mpp, error) {
+// New creates a server-side handler. store is the replay store and is
+// required: pass one long-lived Store shared by every verifier of the same
+// challenges.
+func New(store core.Store, config Config) (*Mpp, error) {
+	if store == nil {
+		return nil, core.NewError(core.ErrCodeInvalidConfig, "store is required: pass one long-lived Store shared by every verifier of the same challenges")
+	}
 	if strings.TrimSpace(config.Recipient) == "" {
 		return nil, core.NewError(core.ErrCodeInvalidConfig, "recipient is required")
 	}
@@ -169,9 +173,6 @@ func New(config Config) (*Mpp, error) {
 	if config.RPC == nil {
 		config.RPC = rpc.New(rpcURL)
 	}
-	if config.Store == nil {
-		config.Store = core.NewMemoryStore()
-	}
 	// Resolve the token program once at boot. Known stablecoins answer from
 	// the static table; an arbitrary mint address is looked up on-chain and
 	// rejected if its owner is neither Token nor Token-2022. Native SOL has no
@@ -191,7 +192,7 @@ func New(config Config) (*Mpp, error) {
 		rpcURL:         rpcURL,
 		html:           config.HTML,
 		feePayerSigner: config.FeePayerSigner,
-		store:          config.Store,
+		store:          store,
 		tokenProgram:   tokenProgram,
 		acceptPushMode: config.AcceptPushMode,
 	}, nil

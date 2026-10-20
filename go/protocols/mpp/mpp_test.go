@@ -6,6 +6,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	mppadapter "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func cfg() paykit.Config {
@@ -19,6 +20,7 @@ func cfg() paykit.Config {
 		MPP: paykit.MPPConfig{
 			Realm:                  "Unit",
 			ChallengeBindingSecret: []byte("unit-secret"),
+			Store:                  core.NewMemoryStore(),
 		},
 	}
 }

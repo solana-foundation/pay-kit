@@ -37,6 +37,7 @@ import (
     _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
     _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
     _ "github.com/solana-foundation/pay-kit/go/paycore/signer"
+    core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func main() {
@@ -46,6 +47,8 @@ func main() {
         MPP: paykit.MPPConfig{
             Realm:                  "MyApp",
             ChallengeBindingSecret: []byte("local-dev-secret"),
+            // Required: one replay store shared by every replica.
+            Store: core.NewMemoryStore(),
         },
     })
     if err != nil {

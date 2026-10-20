@@ -6,11 +6,13 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func newHTMLTestMpp(t *testing.T) *Mpp {
 	t.Helper()
-	handler, err := New(Config{
+	handler, err := New(core.NewMemoryStore(), Config{
 		Recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		Network:   "devnet",
@@ -121,7 +123,7 @@ func TestHTMLEnabled(t *testing.T) {
 		t.Fatal("expected HTMLEnabled() = true when Config.HTML is true")
 	}
 
-	disabled, err := New(Config{
+	disabled, err := New(core.NewMemoryStore(), Config{
 		Recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		Network:   "devnet",

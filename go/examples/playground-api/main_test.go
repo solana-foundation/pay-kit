@@ -19,6 +19,7 @@ import (
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // newStubRPC serves the JSON-RPC answers the playground needs at boot and
@@ -85,6 +86,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *app) {
 		feePayer:  feePayer,
 		rpcClient: rpc.New(stub.URL),
 		repoRoot:  t.TempDir(), // empty root: no docs generated, no SPA dist
+
+		replayStore: core.NewMemoryStore(),
 	}
 	handler, shutdown, err := newApp(a)
 	if err != nil {

@@ -16,14 +16,13 @@ import (
 func newMiddlewareTestMpp(t *testing.T) *Mpp {
 	t.Helper()
 	rpcClient := testutil.NewFakeRPC()
-	handler, err := New(Config{
+	handler, err := New(core.NewMemoryStore(), Config{
 		Recipient: testutil.NewPrivateKey().PublicKey().String(),
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -83,14 +82,13 @@ func TestMiddlewareNoAuth402(t *testing.T) {
 func TestMiddlewareValidAuth(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()
-	m, err := New(Config{
+	m, err := New(core.NewMemoryStore(), Config{
 		Recipient: testutil.NewPrivateKey().PublicKey().String(),
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -165,14 +163,13 @@ func TestMiddlewareInvalidCredential402(t *testing.T) {
 
 func TestMiddlewareBrowserHTML402(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
-	m, err := New(Config{
+	m, err := New(core.NewMemoryStore(), Config{
 		Recipient: testutil.NewPrivateKey().PublicKey().String(),
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
 		HTML:      true,
 	})
 	if err != nil {

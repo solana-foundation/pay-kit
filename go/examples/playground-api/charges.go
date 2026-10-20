@@ -290,7 +290,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client, dualClie
 	// or MPP charge). Browser payment-link requests still drop to the
 	// protocol-layer MPP server so the HTML challenge and service worker flow
 	// remain available for the payment-link E2E.
-	fortuneMpp, err := server.New(server.Config{
+	fortuneMpp, err := server.New(a.replayStore, server.Config{
 		Recipient:      a.recipient,
 		Currency:       paycore.USDCMainnetMint,
 		Decimals:       usdcDecimals,

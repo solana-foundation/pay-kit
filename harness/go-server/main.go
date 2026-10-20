@@ -215,7 +215,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	feePayer := privateKeyFromJSON(feePayerJSON)
 	rpcClient := rpc.New(rpcURL)
 
-	srv, err := server.New(server.Config{
+	srv, err := server.New(core.NewMemoryStore(), server.Config{
 		Recipient:      payTo,
 		Currency:       mint,
 		Decimals:       6,

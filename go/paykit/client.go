@@ -175,6 +175,9 @@ func New(cfg Config) (*Client, error) {
 	// forced to supply (or have a .env generated for) an MPP secret,
 	// and the resolution is independent of preflight so a server with
 	// Preflight=false still gets a usable secret.
+	if containsProtocol(cfg.Accept, MPP) && cfg.MPP.Store == nil {
+		return nil, fmt.Errorf("%w: MPP.Store is required when MPP is accepted: pass one long-lived Store shared by every verifier of the same challenges", ErrInvalidConfig)
+	}
 	if containsProtocol(cfg.Accept, MPP) && len(cfg.MPP.ChallengeBindingSecret) == 0 {
 		secret, err := resolveMPPSecret()
 		if err != nil {

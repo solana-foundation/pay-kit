@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Protocol enumerates the payment protocols the kit speaks. Order matters in
@@ -220,6 +222,10 @@ type MPPConfig struct {
 	// ExpiresIn is how long an issued challenge stays valid; sent on the
 	// wire in whole seconds. Zero defaults to 2 minutes.
 	ExpiresIn time.Duration
+	// Store is the MPP replay store. Required when MPP is in
+	// [Config.Accept]; pass one long-lived Store shared by every verifier
+	// of the same challenges.
+	Store core.Store
 }
 
 // Config is the boot-time configuration passed to [New]. Zero-value

@@ -33,6 +33,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // app carries the boot configuration shared by every module.
@@ -55,6 +56,8 @@ type app struct {
 	// repoRoot is the repository checkout root; "" outside a checkout, which
 	// disables the docs browser default root and the SPA file server.
 	repoRoot string
+	// replayStore is the MPP replay store shared by every charge verifier.
+	replayStore core.Store
 }
 
 func main() {
@@ -95,6 +98,8 @@ func main() {
 		feePayer:  feePayer,
 		rpcClient: rpc.New(rpcURL),
 		repoRoot:  findRepoRoot(),
+
+		replayStore: core.NewMemoryStore(),
 	}
 
 	bootstrapFunding(a)
@@ -203,6 +208,7 @@ func newPaymentClient(a *app, accept []paykit.Protocol, x402Scheme string) (*pay
 		MPP: paykit.MPPConfig{
 			Realm:                  "PayKit Playground",
 			ChallengeBindingSecret: []byte(a.secretKey),
+			Store:                  a.replayStore,
 		},
 		X402: paykit.X402Config{
 			Scheme: x402Scheme,

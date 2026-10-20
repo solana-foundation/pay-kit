@@ -2,6 +2,7 @@ package paykit_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func disabled() *bool { f := false; return &f }
@@ -20,6 +22,27 @@ func disabled() *bool { f := false; return &f }
 func TestNewRejectsMissingNetwork(t *testing.T) {
 	if _, err := paykit.New(paykit.Config{Preflight: disabled()}); err == nil {
 		t.Fatal("expected error for missing Network")
+	}
+}
+
+func TestNewRequiresMPPStoreWhenMPPAccepted(t *testing.T) {
+	base := paykit.Config{
+		Network:   paykit.SolanaLocalnet,
+		Preflight: disabled(),
+		MPP:       paykit.MPPConfig{ChallengeBindingSecret: []byte("test-secret")},
+	}
+	if _, err := paykit.New(base); !errors.Is(err, paykit.ErrInvalidConfig) || !strings.Contains(err.Error(), "MPP.Store") {
+		t.Fatalf("err = %v, want MPP.Store required", err)
+	}
+	x402Only := base
+	x402Only.Accept = []paykit.Protocol{paykit.X402}
+	if _, err := paykit.New(x402Only); err != nil {
+		t.Fatalf("x402-only New: %v", err)
+	}
+	withStore := base
+	withStore.MPP.Store = core.NewMemoryStore()
+	if _, err := paykit.New(withStore); err != nil {
+		t.Fatalf("New with store: %v", err)
 	}
 }
 
@@ -42,6 +65,7 @@ func TestNewAppliesDefaults(t *testing.T) {
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
 			ChallengeBindingSecret: []byte("test-secret"),
+			Store:                  core.NewMemoryStore(),
 		},
 	})
 	if err != nil {
@@ -274,6 +298,7 @@ func mustClient(t *testing.T) *paykit.Client {
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
 			ChallengeBindingSecret: []byte("test-secret-key-0123456789abcdef"),
+			Store:                  core.NewMemoryStore(),
 		},
 	})
 	if err != nil {
@@ -375,7 +400,7 @@ func TestSettlementWriterMergesHeaders(t *testing.T) {
 func TestResolveMPPSecretFromEnv(t *testing.T) {
 	t.Setenv("PAY_KIT_MPP_CHALLENGE_BINDING_SECRET", "from-env-value")
 	on := true
-	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on}
+	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on, MPP: paykit.MPPConfig{Store: core.NewMemoryStore()}}
 	restore := paykit.SetPreflightRPCFactoryForTests(func(_ string) paykit.PreflightRPCInterface {
 		return &fakeRPC{accountInfo: nil}
 	})
@@ -406,7 +431,7 @@ PAY_KIT_MPP_CHALLENGE_BINDING_SECRET="dotenv-secret"
 		t.Fatal(err)
 	}
 	on := true
-	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on}
+	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on, MPP: paykit.MPPConfig{Store: core.NewMemoryStore()}}
 	restore := paykit.SetPreflightRPCFactoryForTests(func(_ string) paykit.PreflightRPCInterface {
 		return &fakeRPC{accountInfo: nil}
 	})
@@ -426,7 +451,7 @@ func TestResolveMPPSecretGenerateAndPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	on := true
-	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on}
+	cfg := paykit.Config{Network: paykit.SolanaLocalnet, Preflight: &on, MPP: paykit.MPPConfig{Store: core.NewMemoryStore()}}
 	restore := paykit.SetPreflightRPCFactoryForTests(func(_ string) paykit.PreflightRPCInterface {
 		return &fakeRPC{accountInfo: nil}
 	})

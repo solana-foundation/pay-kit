@@ -39,14 +39,13 @@ func TestReplayMarkerRetainedOnConfirmationTimeout(t *testing.T) {
 	recipientSigner := testutil.NewPrivateKey()
 	clientSigner := testutil.NewPrivateKey()
 
-	handler, err := New(Config{
+	handler, err := New(core.NewMemoryStore(), Config{
 		Recipient: recipientSigner.PublicKey().String(),
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)

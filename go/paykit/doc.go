@@ -11,6 +11,7 @@
 //	    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
 //	    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 //	    _ "github.com/solana-foundation/pay-kit/go/paycore/signer"
+//	    core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 //	)
 //
 //	preflight := false
@@ -20,6 +21,7 @@
 //	    MPP: paykit.MPPConfig{
 //	        Realm: "MyApp",
 //	        ChallengeBindingSecret: []byte("local-dev-secret"),
+//	        Store: core.NewMemoryStore(), // one store shared by every replica
 //	    },
 //	})
 //	if err != nil { log.Fatal(err) }
