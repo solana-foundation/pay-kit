@@ -252,7 +252,8 @@ class TestCharge:
         challenge = mpp.charge("1.00")
         request = challenge.decode_request()
         assert request["recipient"] == TEST_RECIPIENT
-        assert request["currency"] == "USDC"
+        # RULINGS C1: the configured symbol is resolved to the mint on the wire.
+        assert request["currency"] == USDC_DEVNET
 
     def test_charge_with_splits(self, mpp: Mpp):
         vendor = str(Pubkey.new_unique())

@@ -134,52 +134,61 @@ def resolve_server_token_program(currency: str, network: str, rpc_url: str | Non
     Token-2022 mint is resolved to its real owner so the emitted
     ``tokenProgram`` (and the derived ATAs) are correct.
     """
-    if is_native_sol(currency):
-        return None
-    if is_known_stablecoin_mint(currency):
-        return default_token_program_for_currency(currency, network)
-    # Arbitrary currency: must be a real mint pubkey.
-    if not _is_valid_pubkey(currency):
-        raise ValueError(f"currency '{currency}' is neither a known stablecoin symbol nor a valid mint address")
-    owner = _fetch_mint_owner_sync(currency, rpc_url)
-    if owner not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
-        raise ValueError(
-            f"mint '{currency}' is owned by an unexpected program '{owner}'; "
-            "only the SPL Token and Token-2022 programs are supported"
-        )
-    return owner
+    return resolve_server_asset(currency, network, rpc_url, None).token_program
 
 
-def _fetch_mint_owner_sync(mint: str, rpc_url: str | None) -> str:
-    """Fetch the owner program of ``mint`` via a synchronous getAccountInfo call.
+#: Native SOL precision: 1 SOL = 10^9 lamports.
+SOL_DECIMALS = 9
 
-    Runs once at server boot (``Mpp.__init__`` is synchronous). Raises if the
-    RPC is unreachable or the mint account does not exist, so a misconfigured
-    arbitrary mint fails fast rather than shipping a wrong ``tokenProgram``.
+
+@dataclass(frozen=True)
+class ServerAsset:
+    """What an MPP charge server advertises for its configured currency.
+
+    ``token_program`` is ``None`` for native SOL. Build it with
+    :func:`resolve_server_asset` only.
     """
-    if not rpc_url:
-        raise ValueError(f"cannot resolve token program for arbitrary mint '{mint}': no rpc_url configured")
-    import httpx
 
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getAccountInfo",
-        "params": [mint, {"encoding": "base64"}],
-    }
-    try:
-        resp = httpx.post(rpc_url, json=payload, timeout=30.0)
-        resp.raise_for_status()
-        body = resp.json()
-    except Exception as exc:  # noqa: BLE001 — surface any RPC failure at boot
-        raise ValueError(f"failed to fetch mint '{mint}' owner from {rpc_url}: {exc}") from exc
-    value = (body.get("result") or {}).get("value")
-    if not value:
-        raise ValueError(f"mint account '{mint}' not found on chain")
-    owner = value.get("owner")
-    if not owner:
-        raise ValueError(f"mint account '{mint}' has no owner field in RPC response")
-    return str(owner)
+    token_program: str | None
+    decimals: int
+
+
+def resolve_server_asset(
+    currency: str,
+    network: str,
+    rpc_url: str | None,
+    configured_decimals: int | None,
+) -> ServerAsset:
+    """Resolve the token program and decimals a charge server emits (RULINGS C2).
+
+    - native SOL: no token program, 9 decimals (``decimals`` is then only the
+      price precision; it is never put on the wire).
+    - a known stablecoin: the static table.
+    - an arbitrary mint: the mint account, fetched once at boot.
+
+    ``configured_decimals`` is optional; when given (``0`` included) it must
+    agree with the resolved value, so a misconfiguration fails at boot rather
+    than mispricing every charge.
+    """
+    if is_native_sol(currency):
+        asset = ServerAsset(token_program=None, decimals=SOL_DECIMALS)
+    elif is_known_stablecoin_mint(currency):
+        asset = ServerAsset(
+            token_program=default_token_program_for_currency(currency, network),
+            decimals=stablecoin_decimals(currency, network),
+        )
+    else:
+        if not _is_valid_pubkey(currency):
+            raise ValueError(f"currency '{currency}' is neither a known stablecoin symbol nor a valid mint address")
+        from solana_pay_kit._paycore.mint_account import fetch_mint_account_sync
+
+        mint = fetch_mint_account_sync(rpc_url, currency)
+        asset = ServerAsset(token_program=mint.token_program, decimals=mint.decimals)
+    if configured_decimals is not None and configured_decimals != asset.decimals:
+        raise ValueError(
+            f"configured decimals {configured_decimals} do not match {asset.decimals} for currency '{currency}'"
+        )
+    return asset
 
 
 def validate_splits(splits: list[Split]) -> None:
