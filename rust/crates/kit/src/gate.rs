@@ -2555,6 +2555,13 @@ mod tests {
                 let mut state = batch_channel_state(&channel_id, &payer);
                 state.set_binding(&batch.binding());
                 state.set_grace_period(requirements_delay);
+                state.record_onchain_observation(
+                    crate::core::store::OnchainObservation {
+                        slot: None,
+                        lifecycle: crate::core::store::ObservedLifecycle::Open,
+                    },
+                    state.onchain_checked_at,
+                );
                 state
             })
             .await

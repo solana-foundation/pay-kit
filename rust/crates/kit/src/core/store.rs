@@ -953,10 +953,11 @@ pub struct ChannelState {
     pub pending_setup: Option<PendingSetup>,
 
     /// Unix seconds of the last reconciliation against confirmed onchain state.
+    /// `0` means never reconciled.
     ///
-    /// A scheme that must confirm the channel is still `Open` before accepting
-    /// an authorization uses this to decide whether its snapshot is fresh
-    /// enough to trust. `0` means never reconciled.
+    /// Informational: admission trusts only
+    /// [`ChannelState::onchain_observed_at`], which is written together with
+    /// the lifecycle the read showed.
     #[serde(default)]
     pub onchain_checked_at: u64,
 
@@ -1050,6 +1051,39 @@ const GRACE_PERIOD_KEY: &str = "gracePeriod";
 /// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_slot`].
 const ONCHAIN_OBSERVED_SLOT_KEY: &str = "onchainObservedSlot";
 
+/// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_at`].
+const ONCHAIN_OBSERVED_AT_KEY: &str = "onchainObservedAt";
+
+/// The lifecycle an onchain read showed for a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedLifecycle {
+    /// Open, with no close started.
+    Open,
+    /// A payer close started at `started_at` (unix seconds); still claimable.
+    Closing { started_at: u64 },
+    /// Sealed, distributed or otherwise past accepting vouchers.
+    Terminal { started_at: Option<u64> },
+}
+
+/// One onchain read of a channel; see [`ChannelState::record_onchain_observation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnchainObservation {
+    /// Slot of the bank that served the read, when the read reported one.
+    pub slot: Option<u64>,
+    /// What the read showed.
+    pub lifecycle: ObservedLifecycle,
+}
+
+/// Whether [`ChannelState::record_onchain_observation`] renewed the snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationOutcome {
+    /// The snapshot now stands at this observation.
+    Fresh,
+    /// The read came from a bank behind `recorded`: its fences were applied,
+    /// the snapshot was not renewed.
+    Behind { recorded: u64 },
+}
+
 impl ChannelState {
     /// The deployment binding stamped on this record, if any.
     pub fn binding(&self) -> Result<Option<ChannelBinding>, StoreError> {
@@ -1122,23 +1156,57 @@ impl ChannelState {
             .unwrap_or(0)
     }
 
-    /// Accept an onchain observation read at `slot` as this record's fresh
-    /// snapshot, refreshing [`Self::onchain_checked_at`] to `now`. A read
-    /// served from a bank behind the newest accepted one is refused: a lagging
-    /// node can return a channel as open after it closed, and must never
-    /// renew the admission window.
-    pub fn record_onchain_observation(&mut self, slot: u64, now: u64) -> Result<(), StoreError> {
+    /// Unix seconds of the newest onchain observation recorded through
+    /// [`Self::record_onchain_observation`], `0` when none was.
+    ///
+    /// This, not [`Self::onchain_checked_at`], is what may stand in for a
+    /// fresh read at admission: it is only written together with the lifecycle
+    /// the read showed, so a refreshed timestamp can never hide a close or a
+    /// distribution the same read saw.
+    pub fn onchain_observed_at(&self) -> u64 {
+        self.extra
+            .get(ONCHAIN_OBSERVED_AT_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// Apply an onchain observation of this channel in one step.
+    ///
+    /// The lifecycle fences it carries are applied first and unconditionally:
+    /// they only ever close a channel, so even a stale read may set them. The
+    /// snapshot is renewed (`onchain_observed_at`, `onchain_checked_at`) only
+    /// when the read is not behind the newest accepted slot; a lagging node
+    /// can return a channel as open after it closed, and must never renew the
+    /// admission window.
+    pub fn record_onchain_observation(
+        &mut self,
+        observation: OnchainObservation,
+        now: u64,
+    ) -> ObservationOutcome {
+        match observation.lifecycle {
+            ObservedLifecycle::Open => {}
+            ObservedLifecycle::Closing { started_at } => {
+                self.close_requested_at = Some(self.close_requested_at.unwrap_or(started_at));
+            }
+            ObservedLifecycle::Terminal { started_at } => {
+                self.sealed = true;
+                if let Some(started_at) = started_at {
+                    self.close_requested_at = Some(self.close_requested_at.unwrap_or(started_at));
+                }
+            }
+        }
         let recorded = self.onchain_observed_slot();
-        if slot < recorded {
-            return Err(StoreError::Internal(format!(
-                "channel {} observation at slot {slot} is behind the recorded slot {recorded}",
-                self.channel_id
-            )));
+        if let Some(slot) = observation.slot {
+            if slot < recorded {
+                return ObservationOutcome::Behind { recorded };
+            }
+            self.extra
+                .insert(ONCHAIN_OBSERVED_SLOT_KEY.to_string(), slot.into());
         }
         self.extra
-            .insert(ONCHAIN_OBSERVED_SLOT_KEY.to_string(), slot.into());
+            .insert(ONCHAIN_OBSERVED_AT_KEY.to_string(), now.into());
         self.onchain_checked_at = now;
-        Ok(())
+        ObservationOutcome::Fresh
     }
 
     /// Stamp `binding` on this record.

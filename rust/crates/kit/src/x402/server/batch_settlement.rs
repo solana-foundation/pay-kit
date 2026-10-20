@@ -45,8 +45,8 @@ use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
 use crate::core::store::{
     AuthorizationRequest, BatchReservation, ChannelBinding, ChannelState, ChannelStore,
-    MemoryChannelStore, PendingSetup, ReservationToken, CHANNEL_STATE_SCHEMA_VERSION,
-    CHARGE_RESERVATION_LEASE,
+    MemoryChannelStore, ObservationOutcome, ObservedLifecycle, OnchainObservation, PendingSetup,
+    ReservationToken, CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
@@ -249,6 +249,23 @@ fn rpc_lookup_channel(
             )
         })
         .transpose()
+}
+
+/// The lifecycle a confirmed channel read shows, as the store fences it.
+fn observed_lifecycle(channel: &Channel, now: u64) -> ObservedLifecycle {
+    let started_at = (channel.closure_started_at != 0 || channel.status != CHANNEL_STATUS_OPEN)
+        .then(|| {
+            u64::try_from(channel.closure_started_at)
+                .unwrap_or(now)
+                .max(1)
+        });
+    if channel.status != CHANNEL_STATUS_OPEN && channel.status != CHANNEL_STATUS_CLOSING {
+        ObservedLifecycle::Terminal { started_at }
+    } else if let Some(started_at) = started_at {
+        ObservedLifecycle::Closing { started_at }
+    } else {
+        ObservedLifecycle::Open
+    }
 }
 
 /// A channel account read together with the slot of the bank that served it.
@@ -1985,7 +2002,14 @@ impl X402BatchSettlement {
                         state.open_slot = Some(channel.open_slot);
                         state.set_grace_period(channel.grace_period);
                         state.rent_payer = rent_payer;
-                        state.onchain_checked_at = now.max(0) as u64;
+                        // `check_channel_bindings` held it open.
+                        state.record_onchain_observation(
+                            OnchainObservation {
+                                slot: None,
+                                lifecycle: ObservedLifecycle::Open,
+                            },
+                            now.max(0) as u64,
+                        );
                         state.pending_setup = None;
                         // Marks this escrow as applied, so a retry re-uses the
                         // confirmed deposit rather than adding it again.
@@ -2079,7 +2103,7 @@ impl X402BatchSettlement {
                         .filter(|state| !is_empty_tombstone(state))
                         .map(|state| {
                             (
-                                state.onchain_checked_at,
+                                state.onchain_observed_at(),
                                 state.onchain_observed_slot(),
                                 has_active_pending_open(state, now),
                             )
@@ -2089,7 +2113,7 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let Some((onchain_checked_at, observed_slot, has_pending_open)) =
+        let Some((observed_at, observed_slot, has_pending_open)) =
             *snapshot.lock().unwrap_or_else(|e| e.into_inner())
         else {
             // Nothing to reconcile: an unknown channel is refused by
@@ -2097,7 +2121,7 @@ impl X402BatchSettlement {
             // tombstone left by a released opener holds nothing to protect.
             return Ok(());
         };
-        let age = now.saturating_sub(onchain_checked_at);
+        let age = now.saturating_sub(observed_at);
         if age < self.config.channel_snapshot_max_age_seconds {
             return Ok(());
         }
@@ -2150,8 +2174,12 @@ impl X402BatchSettlement {
                 let deposit = channel.deposit;
                 let settled = channel.settlement.settled;
                 let distributed = channel.settlement.payout_watermark;
-                let sealed = channel.status != CHANNEL_STATUS_OPEN
-                    && channel.status != CHANNEL_STATUS_CLOSING;
+                let observation = OnchainObservation {
+                    slot: Some(slot),
+                    lifecycle: observed_lifecycle(&channel, now),
+                };
+                let outcome = Arc::new(Mutex::new(ObservationOutcome::Fresh));
+                let out = Arc::clone(&outcome);
                 self.store
                     .update_channel(
                         channel_b58,
@@ -2163,20 +2191,24 @@ impl X402BatchSettlement {
                             state.settled_on_chain = state.settled_on_chain.max(settled);
                             state.distributed_on_chain =
                                 state.distributed_on_chain.max(distributed);
-                            state.sealed = state.sealed || sealed;
-                            if let Some(closed_at) = closed_at {
-                                state.close_requested_at =
-                                    Some(state.close_requested_at.unwrap_or(closed_at));
-                            }
                             // Fenced on the stored slot again inside the
                             // transition, so a concurrent fresher refresh is
                             // never overwritten by this older one.
-                            state.record_onchain_observation(slot, now)?;
+                            *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                                state.record_onchain_observation(observation, now);
                             Ok(state)
                         }),
                     )
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                if let ObservationOutcome::Behind { recorded } =
+                    *outcome.lock().unwrap_or_else(|e| e.into_inner())
+                {
+                    return Err(Error::Rpc(format!(
+                        "channel account read at slot {slot} is behind the recorded slot \
+                         {recorded}"
+                    )));
+                }
                 closed_at
             }
         };
@@ -3734,7 +3766,7 @@ mod tests {
         deposit: u64,
         cumulative: u64,
     ) -> ChannelState {
-        ChannelState {
+        let mut state = ChannelState {
             channel_id: pc::pubkey_string(channel),
             authorized_signer: config.payer_authorizer.clone(),
             deposit,
@@ -3761,12 +3793,22 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: Default::default(),
             pending_setup: None,
-            // Fresh enough that the reservation path trusts it instead of
-            // reaching for an RPC these tests do not have.
-            onchain_checked_at: now_unix(),
+            onchain_checked_at: 0,
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
+        };
+        // Fresh enough that the reservation path trusts it instead of
+        // reaching for an RPC these tests do not have.
+        state.record_onchain_observation(open_observation(), now_unix());
+        state
+    }
+
+    /// An observation of an open channel with no slot.
+    fn open_observation() -> OnchainObservation {
+        OnchainObservation {
+            slot: None,
+            lifecycle: ObservedLifecycle::Open,
         }
     }
 
@@ -4854,7 +4896,7 @@ mod tests {
                 &channel_b58,
                 Box::new(|current| {
                     let mut state = current.unwrap();
-                    state.onchain_checked_at = now_unix() - 60;
+                    state.record_onchain_observation(open_observation(), now_unix() - 60);
                     Ok(state)
                 }),
             )
@@ -5258,6 +5300,82 @@ mod tests {
         ));
     }
 
+    /// A refreshed `onchain_checked_at` alone, as a lifecycle worker that
+    /// observed the channel without recording its status leaves it, is not a
+    /// fresh snapshot: admission reads the chain, sees the distribution and
+    /// fences the record.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bare_checked_timestamp_does_not_admit_a_distributed_channel() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        state.extra.remove("onchainObservedAt");
+        state.onchain_checked_at = now_unix();
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let mut distributed = onchain_channel(&config, &fee_payer, 5_000);
+        distributed.status = CHANNEL_STATUS_DISTRIBUTED;
+        distributed.closure_started_at = 1;
+        let handler = handler.with_rpc_client(chain_with(Some(&distributed)));
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("the distributed channel is refused");
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+            codes::INVALID_CHANNEL_CLOSING,
+            "{err}"
+        );
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.sealed, "the terminal observation is persisted");
+        assert!(state.close_requested_at.is_some());
+        assert!(state.pending_deliveries.is_empty());
+    }
+
+    /// A terminal observation fences the record even from a read behind the
+    /// recorded slot, which only declines to renew the snapshot.
+    #[test]
+    fn a_terminal_observation_fences_even_when_behind() {
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let mut state = seeded(&channel, &config, 5_000, 0);
+        let observed = |slot, lifecycle| OnchainObservation {
+            slot: Some(slot),
+            lifecycle,
+        };
+        assert_eq!(
+            state.record_onchain_observation(observed(500, ObservedLifecycle::Open), 10),
+            ObservationOutcome::Fresh
+        );
+        assert!(!state.sealed);
+        assert_eq!(
+            state.record_onchain_observation(
+                observed(
+                    400,
+                    ObservedLifecycle::Terminal {
+                        started_at: Some(7)
+                    }
+                ),
+                20
+            ),
+            ObservationOutcome::Behind { recorded: 500 }
+        );
+        assert!(state.sealed);
+        assert_eq!(state.close_requested_at, Some(7));
+        assert_eq!(state.onchain_observed_at(), 10);
+    }
+
     /// A voucher for a channel this store has no record of is refused, never
     /// rebuilt from the onchain `settled` watermark: vouchers accepted after
     /// the last claim lived only in the lost record and may have been served.
@@ -5414,8 +5532,13 @@ mod tests {
         let (_, config, channel) = client(&fee_payer, &requirements);
         let channel_b58 = pc::pubkey_string(&channel);
         let mut state = seeded(&channel, &config, 5_000, 1_000);
-        state.onchain_checked_at = 0;
-        state.record_onchain_observation(500, 0).unwrap();
+        state.record_onchain_observation(
+            OnchainObservation {
+                slot: Some(500),
+                lifecycle: ObservedLifecycle::Open,
+            },
+            0,
+        );
         store.put_channel(&channel_b58, state).await.unwrap();
         let open = onchain_channel(&config, &fee_payer, 5_000);
 
@@ -5430,7 +5553,11 @@ mod tests {
             "{err}"
         );
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
-        assert_eq!(state.onchain_checked_at, 0, "the snapshot was not renewed");
+        assert_eq!(
+            state.onchain_observed_at(),
+            0,
+            "the snapshot was not renewed"
+        );
         assert_eq!(state.onchain_observed_slot(), 500);
 
         // Positive control: a node at or past the recorded slot refreshes it.
@@ -5438,7 +5565,7 @@ mod tests {
         let current = current.with_rpc_client(chain_at(Some(&open), 600));
         current.reconcile_channel(&channel_b58).await.unwrap();
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
-        assert!(state.onchain_checked_at > 0);
+        assert!(state.onchain_observed_at() > 0);
         assert_eq!(state.onchain_observed_slot(), 600);
     }
 
