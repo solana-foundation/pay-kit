@@ -144,11 +144,10 @@ impl PayKitClient {
         }
 
         let response_url = response.url().clone();
-        // reqwest follows redirects internally, so the response does not
-        // expose the effective method/body/header state used for the final
-        // hop. Replaying the original request at that URL could leak caller
-        // credentials cross-origin or turn a 303's effective GET back into a
-        // POST. Fail closed instead of guessing at redirect semantics.
+        // The HTTP client never follows redirects (see `build`), so this only
+        // fires if that invariant is broken. Replaying the original request
+        // at another URL could leak caller credentials or turn a 303's
+        // effective GET back into a POST; fail closed.
         if response_url != request_url {
             return Err(ClientError::RedirectedChallenge {
                 from: request_url.to_string(),
@@ -196,14 +195,15 @@ impl PayKitClient {
                 })
             })?;
         let (header_name, header_value) = self.payment_header(&offer, authorization).await?;
+        let mut header_value = HeaderValue::from_str(&header_value)?;
+        header_value.set_sensitive(true);
         *retry.url_mut() = response_url.clone();
-        retry
-            .headers_mut()
-            .insert(header_name, HeaderValue::from_str(&header_value)?);
+        retry.headers_mut().insert(header_name, header_value);
+        // The paid retry goes to exactly the challenged URL. A 3xx answer is
+        // handed back to the caller unfollowed, so the credential, caller
+        // headers and body never reach a location the challenge did not name.
         let paid = self.inner.http.execute(retry).await?;
-        // A caller-supplied HTTP client may follow redirects across origins;
-        // never hand back a response from an origin that was not authorized.
-        if paid.url().origin() != response_url.origin() {
+        if paid.url() != &response_url {
             return Err(ClientError::RedirectedPaidRetry {
                 from: response_url.to_string(),
                 to: paid.url().to_string(),
@@ -289,7 +289,7 @@ impl PayKitClient {
 /// Builder for [`PayKitClient`].
 #[derive(Default)]
 pub struct PayKitClientBuilder {
-    http: Option<reqwest::Client>,
+    http: Option<reqwest::ClientBuilder>,
     signer: Option<Arc<dyn TransactionSigner>>,
     rpc_url: Option<String>,
     permissions: Option<ClientPermissions>,
@@ -337,12 +337,13 @@ impl PayKitClientBuilder {
         self
     }
 
-    /// Use a preconfigured HTTP client.
+    /// Configure the underlying HTTP client (timeouts, proxies, TLS, ...).
     ///
-    /// The paid retry carries the payment credential and the caller's
-    /// headers, so the client must not follow cross-origin redirects. The
-    /// default client follows same-origin redirects only.
-    pub fn http_client(mut self, client: reqwest::Client) -> Self {
+    /// The paid retry carries the payment credential, the caller's headers
+    /// and the request body, so `build` replaces any redirect policy on this
+    /// builder with one that never follows redirects. A 3xx response is
+    /// returned to the caller as is.
+    pub fn http_client(mut self, client: reqwest::ClientBuilder) -> Self {
         self.http = Some(client);
         self
     }
@@ -365,9 +366,17 @@ impl PayKitClientBuilder {
         if protocols.is_empty() {
             return Err(ClientBuildError::NoAcceptedProtocols);
         }
+        // The redirect policy is not caller-configurable: it is applied last
+        // so it overrides whatever the supplied builder set.
+        let http = self
+            .http
+            .unwrap_or_default()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(ClientBuildError::HttpClient)?;
         Ok(PayKitClient {
             inner: Arc::new(PayKitClientInner {
-                http: self.http.unwrap_or_else(default_http_client),
+                http,
                 signer,
                 rpc_url,
                 permissions,
@@ -523,32 +532,6 @@ fn parse_network(value: &str) -> Option<SolanaNetwork> {
     }
 }
 
-/// Follow redirects only within the origin of the original request, so a
-/// payment credential or caller header is never forwarded to another origin.
-fn same_origin_redirects() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        let Some(first) = attempt.previous().first() else {
-            return attempt.stop();
-        };
-        if attempt.previous().len() > MAX_REDIRECTS {
-            attempt.error("too many redirects")
-        } else if attempt.url().origin() == first.origin() {
-            attempt.follow()
-        } else {
-            attempt.stop()
-        }
-    })
-}
-
-const MAX_REDIRECTS: usize = 10;
-
-fn default_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(same_origin_redirects())
-        .build()
-        .expect("default HTTP client")
-}
-
 fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -576,6 +559,9 @@ pub enum ClientBuildError {
     /// The accepted-protocol set was explicitly configured as empty.
     #[error("PayKitClient must accept at least one payment protocol")]
     NoAcceptedProtocols,
+    /// The underlying HTTP client could not be built.
+    #[error("PayKitClient HTTP client is invalid: {0}")]
+    HttpClient(#[source] reqwest::Error),
 }
 
 /// Failure while sending or paying a client request.
@@ -599,7 +585,7 @@ pub enum ClientError {
         /// Final URL that returned the 402.
         to: String,
     },
-    /// The paid retry was answered from an origin other than the one that
+    /// The paid retry was answered from a URL other than the one that
     /// issued the challenge.
     #[error("paid retry to {from} was answered from {to}")]
     RedirectedPaidRetry {
@@ -1239,7 +1225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn redirected_402_fails_closed_before_signing() {
+    async fn redirect_to_a_402_is_not_followed_or_signed() {
         let calls = Arc::new(AtomicUsize::new(0));
         let signer = CountingSigner {
             calls: calls.clone(),
@@ -1253,10 +1239,8 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(matches!(
-            client.get(url).send().await,
-            Err(ClientError::RedirectedChallenge { .. })
-        ));
+        let response = client.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         task.abort();
     }
@@ -1535,7 +1519,7 @@ mod tests {
         (format!("{paying_origin}/paid"), captured)
     }
 
-    fn x402_client(http: Option<reqwest::Client>) -> PayKitClient {
+    fn x402_client(http: Option<reqwest::ClientBuilder>) -> PayKitClient {
         let mut builder = PayKitClient::builder()
             .signer(test_signer())
             .rpc_url("http://127.0.0.1:1")
@@ -1546,10 +1530,14 @@ mod tests {
         builder.build().unwrap()
     }
 
-    #[tokio::test]
-    async fn paid_retry_is_not_forwarded_across_origins() {
-        let (url, captured) = redirect_fixture(true).await;
-        let response = x402_client(None)
+    /// Sends a paid POST with a caller secret and asserts the paid retry's
+    /// redirect is handed back unfollowed: nothing reaches the location.
+    async fn assert_paid_redirect_not_followed(
+        cross_origin: bool,
+        http: Option<reqwest::ClientBuilder>,
+    ) {
+        let (url, captured) = redirect_fixture(cross_origin).await;
+        let response = x402_client(http)
             .post(url)
             .header("X-Api-Key", "caller-secret")
             .body(b"private".to_vec())
@@ -1565,36 +1553,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn redirect_following_client_cannot_return_a_foreign_paid_response() {
-        let (url, _) = redirect_fixture(true).await;
-        let error = x402_client(Some(reqwest::Client::new()))
-            .post(url)
-            .body(b"private".to_vec())
-            .send()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, ClientError::RedirectedPaidRetry { .. }),
-            "{error}"
-        );
+    async fn paid_retry_is_not_forwarded_across_origins() {
+        assert_paid_redirect_not_followed(true, None).await;
     }
 
     #[tokio::test]
-    async fn paid_retry_follows_same_origin_redirects() {
-        let (url, captured) = redirect_fixture(false).await;
-        let response = x402_client(None)
-            .post(url)
-            .header("X-Api-Key", "caller-secret")
-            .body(b"private".to_vec())
-            .send()
-            .await
-            .unwrap();
+    async fn redirect_following_http_client_cannot_forward_the_paid_retry() {
+        let following = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(10));
+        assert_paid_redirect_not_followed(true, Some(following)).await;
+    }
 
+    #[tokio::test]
+    async fn paid_retry_is_not_forwarded_to_another_same_origin_path() {
+        assert_paid_redirect_not_followed(false, None).await;
+    }
+
+    #[tokio::test]
+    async fn caller_http_client_still_pays_the_challenged_url() {
+        let (url, saw_payment, task) = challenge_server(500_000, Pubkey::new_unique()).await;
+        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(10));
+        let response = x402_client(Some(http)).get(url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let captured = captured.lock().unwrap();
-        assert_eq!(captured.requests, 1);
-        assert!(captured.payment_signature);
-        assert_eq!(captured.body, b"private");
+        assert!(saw_payment.load(Ordering::SeqCst));
+        task.abort();
     }
 
     #[tokio::test]
