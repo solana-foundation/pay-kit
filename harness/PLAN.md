@@ -39,6 +39,40 @@ Verified on 2026-10-20 against `main` at `cee5b8ff`.
 
 Re-verify any line above before depending on it. The tree moves fast.
 
+## Status (updated 2026-10-20)
+
+Phase 0 is in progress on `feat/harness-phase0-expectations`.
+
+Done:
+
+- Expectations files with exact-set reconciliation for the vector,
+  protocol and flow suites (`src/expectations.ts`, `expectations/*.toml`).
+- Every claimed offline suite runs in CI under `HARNESS_REQUIRE=1`,
+  enforced by `test/ci-coverage.test.ts`.
+- Generated tables in `harness/README.md`: offline conformance per SDK
+  (`coverage-table.ts`) and interop cases actually run in CI
+  (`interop-coverage.ts`), both staleness-checked.
+- Rust integration tests fail instead of skipping under `HARNESS_REQUIRE=1`.
+- `harness/rust-client/` removed.
+
+Facts established while doing it:
+
+| Gap found | Effect before the fix |
+| --- | --- |
+| Vector runners for TypeScript, Go, Ruby, Lua, PHP never ran in CI | 5 of 8 SDKs had no vector conformance in CI |
+| Protocol and flow suites never ran in CI | 91 protocol and 34 flow cases unchecked |
+| Spawned protocol runners ran one smoke case per op | 7 of 91 cases per language; hid a PHP divergence |
+| Flow suite crashed in `beforeAll` (mppx 32-byte secret) | all flows skipped locally too |
+| Kotlin vector runner implements 3 of 54 vectors | reported as a green job |
+| `ts-x402` client and server run no interop case in CI | 46 of 56 x402-exact cases never run |
+| 9 harness test files run by no CI step | one had been failing since a path move |
+| Rust settlement and confidential integration tests are not in any CI invocation | 8 on-chain tests never run |
+| Skipped Rust integration tests print `ok` | indistinguishable from a pass except by duration |
+
+Remaining for phase 0: the Rust vector runner, and replacing hand-picked
+x402 / upto / session interop pairs with a generated matrix (interop claims
+in the expectations files).
+
 ## Phase 0: make the current harness honest (one PR, 1–3 days)
 
 Goal: no code moves, no new crate. After this PR the existing driver cannot
