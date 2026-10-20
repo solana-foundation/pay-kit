@@ -491,7 +491,11 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
       - name: Build Rust conformance runners
         working-directory: rust
-        run: cargo build -q -p solana-pay-kit --example protocol_runner
+        # Same feature sets as harness/protocol-runners/rust.json and
+        # harness/runners/rust.json, so `cargo run` in the drivers reuses these.
+        run: |
+          cargo build -q -p solana-pay-kit --example protocol_runner
+          cargo build -q -p solana-pay-kit --features mpp,x402,client,server --example vector_runner
       - name: Run rust offline conformance (vectors + protocol)
         working-directory: harness
         env:

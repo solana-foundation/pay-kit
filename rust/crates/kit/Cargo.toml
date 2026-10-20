@@ -240,6 +240,10 @@ name = "axum_batch"
 required-features = ["axum"]
 
 [[example]]
+name = "vector_runner"
+required-features = ["mpp", "x402", "client", "server"]
+
+[[example]]
 name = "golden_tx"
 required-features = ["mpp", "client"]
 

@@ -1,0 +1,15 @@
+{
+  "language": "rust",
+  "command": [
+    "cargo",
+    "run",
+    "-q",
+    "-p",
+    "solana-pay-kit",
+    "--features",
+    "mpp,x402,client,server",
+    "--example",
+    "vector_runner"
+  ],
+  "cwd": "rust"
+}
