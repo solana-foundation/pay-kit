@@ -54,6 +54,9 @@ Done:
   (`interop-coverage.ts`), both staleness-checked.
 - Rust integration tests fail instead of skipping under `HARNESS_REQUIRE=1`.
 - `harness/rust-client/` removed.
+- Rust vector runner (`rust/crates/kit/examples/vector_runner.rs`): 45 of 54
+  vectors pass; its 7 known failures mostly expose vectors that contradict
+  the spec (see `expectations/FINDINGS.md`).
 
 Facts established while doing it:
 
@@ -69,9 +72,10 @@ Facts established while doing it:
 | Rust settlement and confidential integration tests are not in any CI invocation | 8 on-chain tests never run |
 | Skipped Rust integration tests print `ok` | indistinguishable from a pass except by duration |
 
-Remaining for phase 0: the Rust vector runner, and replacing hand-picked
-x402 / upto / session interop pairs with a generated matrix (interop claims
-in the expectations files).
+Remaining for phase 0: replacing hand-picked x402 / upto / session interop
+pairs with a generated matrix and interop claims in the expectations files.
+The never-run x402 pairs were run locally first; their failures are recorded
+under "Interop findings" in `expectations/FINDINGS.md`.
 
 ## Phase 0: make the current harness honest (one PR, 1–3 days)
 
