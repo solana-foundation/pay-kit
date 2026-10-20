@@ -1,55 +1,136 @@
 [
   {
-    "id": "charge-split-ata-memo-envelope-accept",
-    "intent": "charge",
-    "mode": "verify-transaction",
-    "description": "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept.",
-    "input": {
-      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
-      "request": {
-        "amount": "1000",
-        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "decimals": 6,
-          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "splits": [
-            {
-              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
-              "amount": "250",
-              "ataCreationRequired": true,
-              "memo": "conformance split"
-            }
-          ]
-        }
-      }
-    },
+    "bugType": "settlement",
+    "description": "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept. The pinned transaction is the Rust kit's build with allow_payer_funded_ata_creation (the kit refuses payer-funded split ATA rent by default; RULINGS C5).",
     "expect": {
       "outcome": "accept",
       "transactionShape": {
         "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
-        "memo": ["conformance split"],
+        "memo": [
+          "conformance split"
+        ],
         "transfers": [
           {
-            "kind": "spl",
-            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "amount": "750",
             "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           },
           {
-            "kind": "spl",
-            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
-            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "amount": "250",
             "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           }
         ]
       }
-    }
+    },
+    "id": "charge-split-ata-memo-envelope-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "250",
+              "ataCreationRequired": true,
+              "memo": "conformance split",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AbtAjfrIokn57cAIQs/vcQxxhE7w8WmXoJlH6nGAELtV+nio02/Vho+EwSq6kd+faOkfFjuMJ10S8TwppfXaSQWAAQAHC+pKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup4yXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZkaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYFAAUCQA0DAAUACQMBAAAAAAAAAAcEAwgCAAoM7gIAAAAAAAAGCQYAAQoIBAcBAQcEAwgBAAoM+gAAAAAAAAAGBgARY29uZm9ybWFuY2Ugc3BsaXQA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-197d674f50",
+      "MPP-64da85f4f3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "When the client is the transaction fee payer (feePayer is false or omitted), clients MAY include ATA creation instructions only for split recipients, and MUST include one for each split whose entry sets ataCreationRequired: true.",
+      "section": "Split Recipient ATA Creation"
+    },
+    "tier": "offline"
   }
 ]

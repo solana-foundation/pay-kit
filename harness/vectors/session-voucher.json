@@ -1,19 +1,10 @@
 [
   {
-    "id": "session-voucher-preimage-frozen",
-    "intent": "session",
-    "mode": "canonical-bytes",
+    "bugType": "wire",
     "description": "50-byte Ed25519 voucher preimage magic(0x56,0x01)||channelId(32)||cumulative LE u64||expiresAt LE i64. Frozen cross-SDK vector (matches the rust/Go/Python unit vectors). Pins the single most load-bearing session invariant byte-for-byte.",
-    "input": {
-      "voucherPreimage": {
-        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
-        "cumulativeAmount": "42",
-        "expiresAt": 1234
-      }
-    },
     "expect": {
-      "outcome": "accept",
       "exactBytes": {
+        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAA0gQAAAAAAAA",
         "bytes": [
           86,
           1,
@@ -65,25 +56,36 @@
           0,
           0,
           0
-        ],
-        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAA0gQAAAAAAAA"
-      }
-    }
-  },
-  {
-    "id": "session-voucher-preimage-large-cumulative",
-    "intent": "session",
-    "mode": "canonical-bytes",
-    "description": "Voucher preimage with a near-u64-max cumulative, asserting little-endian u64 packing has no precision loss.",
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "session-voucher-preimage-frozen",
     "input": {
       "voucherPreimage": {
         "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
-        "cumulativeAmount": "18446744073709551607",
-        "expiresAt": 4102444800
+        "cumulativeAmount": "42",
+        "expiresAt": 1234
       }
     },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4acddd43ce"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The signed voucher payload is 50 bytes in fixed Borsh layout:",
+      "section": "Voucher Signing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Voucher preimage with a near-u64-max cumulative, asserting little-endian u64 packing has no precision loss.",
     "expect": {
-      "outcome": "accept",
       "exactBytes": {
         "bytes": [
           86,
@@ -137,23 +139,37 @@
           0,
           0
         ]
-      }
-    }
-  },
-  {
-    "id": "session-voucher-preimage-no-expiry",
-    "intent": "session",
-    "mode": "canonical-bytes",
-    "description": "50-byte Ed25519 voucher preimage with expiresAt OMITTED: 0-or-omitted means never-expires and the SDK must encode 0 verbatim into the trailing LE i64 — substituting any sentinel (e.g. a default expiry) makes the reconstructed bytes diverge from what the counterparty signed, breaking cross-SDK signature verification. Frozen after the Python SDK was caught substituting DEFAULT_SESSION_EXPIRES_AT here.",
+      },
+      "outcome": "accept"
+    },
+    "id": "session-voucher-preimage-large-cumulative",
     "input": {
       "voucherPreimage": {
         "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
-        "cumulativeAmount": "42"
+        "cumulativeAmount": "18446744073709551607",
+        "expiresAt": 4102444800
       }
     },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4acddd43ce"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The signed voucher payload is 50 bytes in fixed Borsh layout:",
+      "section": "Voucher Signing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "50-byte Ed25519 voucher preimage with expiresAt OMITTED: 0-or-omitted means never-expires and the SDK must encode 0 verbatim into the trailing LE i64 — substituting any sentinel (e.g. a default expiry) makes the reconstructed bytes diverge from what the counterparty signed, breaking cross-SDK signature verification. Frozen after the Python SDK was caught substituting DEFAULT_SESSION_EXPIRES_AT here.",
     "expect": {
-      "outcome": "accept",
       "exactBytes": {
+        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAAAAAAAAAAAAA",
         "bytes": [
           86,
           1,
@@ -205,9 +221,29 @@
           0,
           0,
           0
-        ],
-        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAAAAAAAAAAAAA"
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "session-voucher-preimage-no-expiry",
+    "input": {
+      "voucherPreimage": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "cumulativeAmount": "42"
       }
-    }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4acddd43ce"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The signed voucher payload is 50 bytes in fixed Borsh layout:",
+      "section": "Voucher Signing"
+    },
+    "tier": "offline"
   }
 ]

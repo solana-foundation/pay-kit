@@ -131,14 +131,35 @@ export const conformanceVectorSchema = {
   $id: "ConformanceVector",
   type: "object",
   additionalProperties: false,
-  required: ["id", "intent", "mode", "input", "expect"],
+  required: ["id", "intent", "mode", "spec", "input", "expect"],
   properties: {
-    id: { type: "string" },
+    id: { type: "string", pattern: "^[a-z][a-z0-9-]*[a-z0-9]$" },
     intent: { enum: ["charge", "x402-exact", "session"] },
     mode: {
       enum: ["build-transaction", "verify-transaction", "canonical-bytes"],
     },
     description: { type: "string" },
+    // Every vector names the sentence it encodes, inside a pinned spec repo.
+    spec: {
+      type: "object",
+      additionalProperties: false,
+      required: ["doc", "section", "quote"],
+      properties: {
+        doc: { type: "string", pattern: "^(mpp-specs|x402)/specs/[^.][^\\s]*\\.md$" },
+        section: { type: "string", minLength: 1 },
+        quote: { type: "string", minLength: 12 },
+      },
+    },
+    requirements: {
+      type: "array",
+      items: { type: "string", pattern: "^(MPP|X402)-[0-9a-f]{10}$" },
+    },
+    bugType: {
+      enum: ["replay", "auth-bypass", "settlement", "wire", "defaults", "malleability", "precedence"],
+    },
+    tier: { enum: ["offline", "interop", "onchain"] },
+    role: { enum: ["client", "server", "both"] },
+    provenance: { enum: ["generated", "authored"] },
     input: { type: "object" },
     expect: {
       type: "object",

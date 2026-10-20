@@ -1,107 +1,32 @@
 [
   {
-    "id": "charge-spl-missing-decimals-reject",
-    "intent": "charge",
-    "mode": "build-transaction",
+    "bugType": "defaults",
     "description": "draft-solana-charge-00 methodDetails: decimals \"MUST be present when currency is a mint address\". A client must refuse the challenge rather than assume a value.",
-    "input": {
-      "signerSecretKey": [
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        234,
-        74,
-        108,
-        99,
-        226,
-        156,
-        82,
-        10,
-        190,
-        245,
-        80,
-        123,
-        19,
-        46,
-        197,
-        249,
-        149,
-        71,
-        118,
-        174,
-        190,
-        190,
-        123,
-        146,
-        66,
-        30,
-        234,
-        105,
-        20,
-        70,
-        210,
-        44
-      ],
-      "request": {
-        "amount": "1000",
-        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        }
-      },
-      "rpcFixtures": {
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
-    },
     "expect": {
       "outcome": "reject",
       "rejectCode": "invalid-challenge",
       "rejectReason": "decimals missing for a mint currency"
-    }
-  },
-  {
-    "id": "charge-spl-token-program-from-mint-owner",
-    "intent": "charge",
-    "mode": "build-transaction",
-    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted, so the client MUST fetch the mint account and use its owner (here the SPL Token program).",
+    },
+    "id": "charge-spl-missing-decimals-reject",
     "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        }
+      },
       "signerSecretKey": [
         7,
         7,
@@ -167,26 +92,25 @@
         70,
         210,
         44
-      ],
-      "request": {
-        "amount": "1000",
-        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "decimals": 6
-        }
-      },
-      "rpcFixtures": {
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      ]
     },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-5348f3f797"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "MUST be present when currency is a mint address; MUST be absent when currency is \"sol\".",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted, so the client MUST fetch the mint account and use its owner (here the SPL Token program).",
     "expect": {
       "outcome": "accept",
       "transactionShape": {
@@ -194,23 +118,36 @@
         "maxComputeUnitLimit": 200000,
         "transfers": [
           {
-            "kind": "spl",
-            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "amount": "1000",
             "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           }
         ]
       }
-    }
-  },
-  {
-    "id": "charge-token2022-program-from-mint-owner",
-    "intent": "charge",
-    "mode": "build-transaction",
-    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted for a Token-2022 mint; the client MUST resolve the program from the mint owner, not from a currency table.",
+    },
+    "id": "charge-spl-token-program-from-mint-owner",
     "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        }
+      },
       "signerSecretKey": [
         7,
         7,
@@ -276,49 +213,61 @@
         70,
         210,
         44
-      ],
-      "request": {
-        "amount": "1000",
-        "currency": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "mainnet",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "decimals": 6
-        }
-      },
-      "rpcFixtures": {
-        "mints": {
-          "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": {
-            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-            "decimals": 6
-          }
-        }
-      }
+      ]
     },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7743ae4e51"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If omitted, clients MUST determine the correct token program by fetching the mint account from the network and inspecting its owner program.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted for a Token-2022 mint; the client MUST resolve the program from the mint owner, not from a currency table.",
     "expect": {
       "outcome": "accept",
       "transactionShape": {
         "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "transfers": [
           {
-            "kind": "spl",
-            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
             "amount": "1000",
             "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
             "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
           }
         ]
       }
-    }
-  },
-  {
-    "id": "charge-token-program-lookup-missing-mint-reject",
-    "intent": "charge",
-    "mode": "build-transaction",
-    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted and the mint account does not exist; \"clients MUST reject the challenge rather than falling back to the Token Program\".",
+    },
+    "id": "charge-token2022-program-from-mint-owner",
     "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "mainnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "rpcFixtures": {
+        "mints": {
+          "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": {
+            "decimals": 6,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          }
+        }
+      },
       "signerSecretKey": [
         7,
         7,
@@ -384,33 +333,45 @@
         70,
         210,
         44
-      ],
-      "request": {
-        "amount": "1000",
-        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "decimals": 6
-        }
-      },
-      "rpcFixtures": {
-        "mints": {}
-      }
+      ]
     },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7743ae4e51"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If omitted, clients MUST determine the correct token program by fetching the mint account from the network and inspecting its owner program.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted and the mint account does not exist; \"clients MUST reject the challenge rather than falling back to the Token Program\".",
     "expect": {
       "outcome": "reject",
       "rejectCode": "invalid-challenge",
       "rejectReason": "mint lookup failed"
-    }
-  },
-  {
-    "id": "charge-token-program-unexpected-owner-reject",
-    "intent": "charge",
-    "mode": "build-transaction",
-    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted and the mint account is owned by neither token program; the client MUST reject.",
+    },
+    "id": "charge-token-program-lookup-missing-mint-reject",
     "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "rpcFixtures": {
+        "mints": {}
+      },
       "signerSecretKey": [
         7,
         7,
@@ -476,38 +437,50 @@
         70,
         210,
         44
-      ],
-      "request": {
-        "amount": "1000",
-        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "recentBlockhash": "11111111111111111111111111111111",
-          "decimals": 6
-        }
-      },
-      "rpcFixtures": {
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "11111111111111111111111111111111",
-            "decimals": 6
-          }
-        }
-      }
+      ]
     },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c189ef935e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If that lookup fails, returns an unexpected owner, or cannot be verified, clients MUST reject the challenge rather than falling back to the Token Program.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "draft-solana-charge-00 methodDetails: tokenProgram omitted and the mint account is owned by neither token program; the client MUST reject.",
     "expect": {
       "outcome": "reject",
       "rejectCode": "invalid-challenge",
       "rejectReason": "unexpected mint owner"
-    }
-  },
-  {
-    "id": "charge-sol-native-build",
-    "intent": "charge",
-    "mode": "build-transaction",
-    "description": "Native SOL charge: currency \"sol\" must produce a System Program transfer of lamports, no SPL token program and no ATA creation.",
+    },
+    "id": "charge-token-program-unexpected-owner-reject",
     "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "11111111111111111111111111111111"
+          }
+        }
+      },
       "signerSecretKey": [
         7,
         7,
@@ -573,17 +546,25 @@
         70,
         210,
         44
-      ],
-      "request": {
-        "amount": "1000000",
-        "currency": "sol",
-        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-        "methodDetails": {
-          "network": "localnet",
-          "recentBlockhash": "11111111111111111111111111111111"
-        }
-      }
+      ]
     },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c189ef935e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If that lookup fails, returns an unexpected owner, or cannot be verified, clients MUST reject the challenge rather than falling back to the Token Program.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Native SOL charge: currency \"sol\" must produce a System Program transfer of lamports, no SPL token program and no ATA creation.",
     "expect": {
       "outcome": "accept",
       "transactionShape": {
@@ -594,12 +575,103 @@
         ],
         "transfers": [
           {
-            "kind": "sol",
+            "amount": "1000000",
             "destination": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-            "amount": "1000000"
+            "kind": "sol"
           }
         ]
       }
-    }
+    },
+    "id": "charge-sol-native-build",
+    "input": {
+      "request": {
+        "amount": "1000000",
+        "currency": "sol",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-e02293d02d"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "The client MUST construct a transaction containing a System Program transfer instruction with:",
+      "section": "Client Transaction Construction"
+    },
+    "tier": "offline"
   }
 ]

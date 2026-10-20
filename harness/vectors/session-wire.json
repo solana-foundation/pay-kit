@@ -1,9 +1,15 @@
 [
   {
-    "id": "session-wire-request-new-channel-frozen",
-    "intent": "session",
-    "mode": "canonical-bytes",
+    "bugType": "wire",
     "description": "New-channel session challenge SessionRequest (mpp-specs e702dd8): methodDetails has NO channelId, so recentBlockhash (base58, the open transaction's blockhash) and recentSlot (decimal-string u64 from the same getLatestBlockhash response's context.slot, the client's default openSlot) are REQUIRED and frozen here byte-for-byte. Round-tripped through the production wire parser and JCS-canonicalized; a rename, retype (e.g. numeric recentSlot on encode), or drop of either field diverges from the frozen bytes. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJpZGxlVGltZW91dE9wdGlvbnNTZWNvbmRzIjpbNjAsMzAwLDkwMF0sIm5ldHdvcmsiOiJkZXZuZXQiLCJyZWNlbnRCbG9ja2hhc2giOiJFa1NuTldpZDJjdndFVm5WeDlhQnFhd25taUNOaURncDNnVWRrRFBUS04xTiIsInJlY2VudFNsb3QiOiIyNTAwMDAwMDAiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwidm91Y2hlclNpZ25lciI6Im9wZXJhdG9yIn0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"idleTimeoutOptionsSeconds\":[60,300,900],\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"voucherSigner\":\"operator\"},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-request-new-channel-frozen",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -33,19 +39,31 @@
         }
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"idleTimeoutOptionsSeconds\":[60,300,900],\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"voucherSigner\":\"operator\"},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}",
-        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJpZGxlVGltZW91dE9wdGlvbnNTZWNvbmRzIjpbNjAsMzAwLDkwMF0sIm5ldHdvcmsiOiJkZXZuZXQiLCJyZWNlbnRCbG9ja2hhc2giOiJFa1NuTldpZDJjdndFVm5WeDlhQnFhd25taUNOaURncDNnVWRrRFBUS04xTiIsInJlY2VudFNsb3QiOiIyNTAwMDAwMDAiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwidm91Y2hlclNpZ25lciI6Im9wZXJhdG9yIn0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ"
-      }
-    }
-  },
-  {
-    "id": "session-wire-request-resume-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-69c0a4f95f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Conditionally REQUIRED when channelId is absent and MUST be absent when resuming an existing channel.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Resume session challenge SessionRequest (mpp-specs e702dd8): methodDetails.channelId is present, so recentBlockhash and recentSlot MUST be absent from the wire — the frozen bytes contain neither key. An SDK that emits the pair on resume (or serializes null placeholders) diverges. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJtZXRob2REZXRhaWxzIjp7ImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwibmV0d29yayI6ImRldm5ldCJ9LCJyZWNpcGllbnQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSJ9",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"methodDetails\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"network\":\"devnet\"},\"recipient\":\"11111111111111111111111111111111\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-request-resume-frozen",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -61,19 +79,31 @@
         }
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"methodDetails\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"network\":\"devnet\"},\"recipient\":\"11111111111111111111111111111111\"}",
-        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJtZXRob2REZXRhaWxzIjp7ImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwibmV0d29yayI6ImRldm5ldCJ9LCJyZWNpcGllbnQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSJ9"
-      }
-    }
-  },
-  {
-    "id": "session-wire-action-open-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-69c0a4f95f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Conditionally REQUIRED when channelId is absent and MUST be absent when resuming an existing channel.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Session open credential payload (mpp-specs e702dd8): the channel's PDA-seed slot travels as openSlot (decimal-string u64, defaulted by the client from the challenged recentSlot). Frozen byte-for-byte through the production parser; the superseded draft echo name recentSlot must not appear in the open payload. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJvcGVuIiwiYXV0aG9yaXplZFNpZ25lciI6IkNvbmZpZzExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiZGVwb3NpdEFtb3VudCI6IjUwMDAiLCJncmFjZVBlcmlvZFNlY29uZHMiOjkwMCwiaWRsZVRpbWVvdXRTZWNvbmRzIjozMDAsIm1pbnQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm9wZW5TbG90IjoiMjUwMDAwMDAwIiwicGF5ZWUiOiJTdGFrZTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwicGF5ZXIiOiJWb3RlMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic2FsdCI6Ijc3NzciLCJ0cmFuc2FjdGlvbiI6IkFRSUQifQ",
+        "canonicalJson": "{\"action\":\"open\",\"authorizedSigner\":\"Config1111111111111111111111111111111111111\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"depositAmount\":\"5000\",\"gracePeriodSeconds\":900,\"idleTimeoutSeconds\":300,\"mint\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"openSlot\":\"250000000\",\"payee\":\"Stake11111111111111111111111111111111111111\",\"payer\":\"Vote111111111111111111111111111111111111111\",\"salt\":\"7777\",\"transaction\":\"AQID\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-open-frozen",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -93,19 +123,29 @@
         }
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"action\":\"open\",\"authorizedSigner\":\"Config1111111111111111111111111111111111111\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"depositAmount\":\"5000\",\"gracePeriodSeconds\":900,\"idleTimeoutSeconds\":300,\"mint\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"openSlot\":\"250000000\",\"payee\":\"Stake11111111111111111111111111111111111111\",\"payer\":\"Vote111111111111111111111111111111111111111\",\"salt\":\"7777\",\"transaction\":\"AQID\"}",
-        "base64Url": "eyJhY3Rpb24iOiJvcGVuIiwiYXV0aG9yaXplZFNpZ25lciI6IkNvbmZpZzExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiZGVwb3NpdEFtb3VudCI6IjUwMDAiLCJncmFjZVBlcmlvZFNlY29uZHMiOjkwMCwiaWRsZVRpbWVvdXRTZWNvbmRzIjozMDAsIm1pbnQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm9wZW5TbG90IjoiMjUwMDAwMDAwIiwicGF5ZWUiOiJTdGFrZTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwicGF5ZXIiOiJWb3RlMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic2FsdCI6Ijc3NzciLCJ0cmFuc2FjdGlvbiI6IkFRSUQifQ"
-      }
-    }
-  },
-  {
-    "id": "session-wire-request-superseded-draft-reject",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Superseded draft SessionRequest shape (top-level cap/programId, no amount/methodDetails). A migrated SDK's wire parser must refuse it — accepting it would mean the SDK still speaks the pre-e702dd8 draft. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "pre-e702dd8 draft request shape: top-level cap/programId with no amount or methodDetails"
+    },
+    "id": "session-wire-request-superseded-draft-reject",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -118,17 +158,29 @@
         }
       }
     },
-    "expect": {
-      "outcome": "reject",
-      "rejectReason": "pre-e702dd8 draft request shape: top-level cap/programId with no amount or methodDetails",
-      "rejectCode": "invalid-payload"
-    }
-  },
-  {
-    "id": "session-wire-action-open-draft-slot-echo-reject",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-69c0a4f95f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Conditionally REQUIRED when channelId is absent and MUST be absent when resuming an existing channel.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Open payload carrying the superseded draft echo name recentSlot instead of openSlot (mpp-specs e702dd8 renamed the open payload's slot field). openSlot is required, so a migrated SDK must refuse this payload rather than silently defaulting the PDA-seed slot. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "draft slot echo: open payload uses recentSlot where the final contract requires openSlot"
+    },
+    "id": "session-wire-action-open-draft-slot-echo-reject",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -147,17 +199,29 @@
         }
       }
     },
-    "expect": {
-      "outcome": "reject",
-      "rejectReason": "draft slot echo: open payload uses recentSlot where the final contract requires openSlot",
-      "rejectCode": "invalid-payload"
-    }
-  },
-  {
-    "id": "session-wire-action-unknown-tag-reject",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Credential payload with an action tag outside the frozen set open/voucher/use/topUp/close (multiDelegate was removed from the final contract). A migrated SDK must refuse unknown action tags. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "unknown credential action tag"
+    },
+    "id": "session-wire-action-unknown-tag-reject",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -168,17 +232,31 @@
         }
       }
     },
-    "expect": {
-      "outcome": "reject",
-      "rejectReason": "unknown credential action tag",
-      "rejectCode": "invalid-payload"
-    }
-  },
-  {
-    "id": "session-wire-action-voucher-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ebee0156c7"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Voucher action payload (mpp-specs e702dd8): a top-level channelId routing key is REQUIRED next to the signed voucher, and the signed voucher's inner data field is named voucher (not the superseded data). Frozen byte-for-byte through the production parser; servers MUST reject the action when the top-level channelId differs from the signed voucher's inner channelId. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJ2b3VjaGVyIiwiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsInZvdWNoZXIiOnsic2lnbmF0dXJlIjoiQUtBaDlMVW9XRkcyc3hBTW90em1MTnBLd1BUQ2lHNlE0WVR3QWluWk1ua3ZZS1BBS1ZQd1lTZm9RRHA4WExLV3pwYkNOeDY2WEIxQnJjRDFaVVBxVTM5Iiwic2lnbmF0dXJlVHlwZSI6ImVkMjU1MTkiLCJzaWduZXIiOiJDb25maWcxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiY3VtdWxhdGl2ZUFtb3VudCI6IjI1MCIsImV4cGlyZXNBdCI6NDEwMjQ0NDgwMH19fQ",
+        "canonicalJson": "{\"action\":\"voucher\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"250\",\"expiresAt\":4102444800}}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-voucher-frozen",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -198,19 +276,31 @@
         }
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"action\":\"voucher\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"250\",\"expiresAt\":4102444800}}}",
-        "base64Url": "eyJhY3Rpb24iOiJ2b3VjaGVyIiwiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsInZvdWNoZXIiOnsic2lnbmF0dXJlIjoiQUtBaDlMVW9XRkcyc3hBTW90em1MTnBLd1BUQ2lHNlE0WVR3QWluWk1ua3ZZS1BBS1ZQd1lTZm9RRHA4WExLV3pwYkNOeDY2WEIxQnJjRDFaVVBxVTM5Iiwic2lnbmF0dXJlVHlwZSI6ImVkMjU1MTkiLCJzaWduZXIiOiJDb25maWcxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiY3VtdWxhdGl2ZUFtb3VudCI6IjI1MCIsImV4cGlyZXNBdCI6NDEwMjQ0NDgwMH19fQ"
-      }
-    }
-  },
-  {
-    "id": "session-wire-action-close-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ebee0156c7"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Close action payload with a nested final voucher (mpp-specs e702dd8): the nested signed voucher uses the same inner voucher key as the voucher action, and this voucher omits expiresAt (never-expires) — the frozen bytes contain no expiresAt key, so a serializer that emits a null/sentinel placeholder diverges. The nested voucher's channelId MUST equal the close channelId; servers reject a divergent pair. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJjbG9zZSIsImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJ2b3VjaGVyIjp7InNpZ25hdHVyZSI6IkFLQWg5TFVvV0ZHMnN4QU1vdHptTE5wS3dQVENpRzZRNFlUd0FpblpNbmt2WUtQQUtWUHdZU2ZvUURwOFhMS1d6cGJDTng2NlhCMUJyY0QxWlVQcVUzOSIsInNpZ25hdHVyZVR5cGUiOiJlZDI1NTE5Iiwic2lnbmVyIjoiQ29uZmlnMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsImN1bXVsYXRpdmVBbW91bnQiOiIxMDAwIn19fQ",
+        "canonicalJson": "{\"action\":\"close\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"1000\"}}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-close-frozen",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -229,19 +319,29 @@
         }
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"action\":\"close\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"1000\"}}}",
-        "base64Url": "eyJhY3Rpb24iOiJjbG9zZSIsImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJ2b3VjaGVyIjp7InNpZ25hdHVyZSI6IkFLQWg5TFVvV0ZHMnN4QU1vdHptTE5wS3dQVENpRzZRNFlUd0FpblpNbmt2WUtQQUtWUHdZU2ZvUURwOFhMS1d6cGJDTng2NlhCMUJyY0QxWlVQcVUzOSIsInNpZ25hdHVyZVR5cGUiOiJlZDI1NTE5Iiwic2lnbmVyIjoiQ29uZmlnMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsImN1bXVsYXRpdmVBbW91bnQiOiIxMDAwIn19fQ"
-      }
-    }
-  },
-  {
-    "id": "session-wire-action-voucher-legacy-inner-data-reject",
     "intent": "session",
     "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ebee0156c7"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "Superseded voucher action shape: signed voucher nested under inner key data with no top-level channelId. A migrated SDK's wire parser must refuse it — accepting it would mean the SDK still speaks the pre-e702dd8 draft voucher shape, which is exactly how the three SDKs drifted from the spec undetected while the freeze covered challenge/open only. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "pre-e702dd8 voucher shape: inner key data and no top-level channelId"
+    },
+    "id": "session-wire-action-voucher-legacy-inner-data-reject",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -260,10 +360,18 @@
         }
       }
     },
-    "expect": {
-      "outcome": "reject",
-      "rejectReason": "pre-e702dd8 voucher shape: inner key data and no top-level channelId",
-      "rejectCode": "invalid-payload"
-    }
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ebee0156c7"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
   }
 ]

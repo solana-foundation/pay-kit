@@ -353,6 +353,25 @@ export type VectorInput = {
   // echoed `extensions["payment-identifier"].info.id` is missing or does
   // not match ^[A-Za-z0-9_-]{16,128}$.
   x402ServerRequiresPaymentIdentifier?: boolean;
+  // verify-transaction (x402): the route's sponsor. The pinned transaction
+  // names it as fee payer with an empty signature slot; the secret lets a
+  // runner configure a signing sponsor where its SDK requires one.
+  x402ServerFeePayer?: string;
+  x402ServerFeePayerSecretKey?: number[];
+  // verify-transaction (x402): the route's `extra.memo`. When present the
+  // verifier MUST require exactly one Memo instruction carrying it
+  // (scheme_exact_svm §3.1), and the route's accepted object carries it.
+  x402ServerMemo?: string;
+};
+
+// Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a
+// pinned spec repository: `mpp-specs/...` (external/mpp-specs) or `x402/...`
+// (typescript/external/x402). `quote` appears verbatim (whitespace and
+// markdown emphasis normalised) in that file; `pkc req-lint` enforces it.
+export type VectorSpecRef = {
+  doc: string;
+  section: string;
+  quote: string;
 };
 
 export type ConformanceVector = {
@@ -360,9 +379,23 @@ export type ConformanceVector = {
   intent: "charge" | "x402-exact" | "session";
   mode: VectorMode;
   description?: string;
+  // Required traceability (filled by `pkc fill`; never hand-edited).
+  spec: VectorSpecRef;
+  // Requirement ids from harness/requirements/{mpp,x402}.toml.
+  requirements?: string[];
+  bugType?: "replay" | "auth-bypass" | "settlement" | "wire" | "defaults" | "malleability" | "precedence";
+  tier?: "offline" | "interop" | "onchain";
+  role?: "client" | "server" | "both";
+  // generated: expected value computed by the Rust kit. authored: taken
+  // from the spec text.
+  provenance?: "generated" | "authored";
   input: VectorInput;
   expect: VectorExpect;
 };
+
+// The fields a runner receives on stdin: the vector ABI without the
+// traceability metadata, so runners keep working unchanged.
+export const RUNNER_VECTOR_KEYS = ["id", "intent", "mode", "description", "input", "expect"] as const;
 
 // `RunnerOutcome` (declared near the top of this file) is the per-runner
 // outcome including the `unsupported-mode` skip signal.

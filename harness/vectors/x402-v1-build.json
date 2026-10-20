@@ -1,126 +1,27 @@
 [
   {
-    "id": "x402-exact-v1-build-devnet",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "Client builds a legacy v1 X-PAYMENT envelope from a devnet USDC offer. Asserts the v1 shape: x402Version=1, top-level scheme=\"exact\" and plain network slug \"solana-devnet\" (NOT CAIP-2), payloadHasTransaction=true, and NO accepted object (v1 commits only to scheme+network, unlike v2). Mirrors rust build_payment_header_v1 (client/exact/payment.rs:153-170) + v1_network_for_requirements (payment.rs:393-404). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
-    "input": {
-      "x402Version": 1,
-      "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "amount": "1000",
-        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 60,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
-      },
-      "signerSecretKey": [
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        234,
-        74,
-        108,
-        99,
-        226,
-        156,
-        82,
-        10,
-        190,
-        245,
-        80,
-        123,
-        19,
-        46,
-        197,
-        249,
-        149,
-        71,
-        118,
-        174,
-        190,
-        190,
-        123,
-        146,
-        66,
-        30,
-        234,
-        105,
-        20,
-        70,
-        210,
-        44
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
-    },
+    "bugType": "wire",
+    "description": "Client builds a legacy v1 X-PAYMENT envelope from a devnet USDC offer. Asserts the v1 shape: x402Version=1, top-level scheme=\"exact\" and plain network slug \"solana-devnet\" (NOT CAIP-2), payloadHasTransaction=true, and NO accepted object (v1 commits only to scheme+network, unlike v2). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
-        "x402Version": 1,
-        "scheme": "exact",
-        "network": "solana-devnet",
         "hasAccepted": false,
-        "payloadHasTransaction": true
-      }
-    }
-  },
-  {
-    "id": "x402-exact-v1-build-mainnet-network-name",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "v1 SVM network-name mapping: a mainnet CAIP-2 offer produces the plain legacy slug \"solana\" (everything not devnet-family maps to \"solana\"). Confirms the producer emits a plain name, never the CAIP-2 string, on the top-level network field. Mirrors rust v1_network_for_requirements default arm (client/exact/payment.rs:402). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
-    "input": {
-      "x402Version": 1,
-      "x402Offer": {
+        "network": "solana-devnet",
+        "payloadHasTransaction": true,
         "scheme": "exact",
-        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-        "amount": "10000",
-        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+        "x402Version": 1
+      }
+    },
+    "id": "x402-exact-v1-build-devnet",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
       },
       "signerSecretKey": [
         7,
@@ -188,43 +89,57 @@
         210,
         44
       ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 60,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 1
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25",
+      "X402-6b3e9350c8"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "v1 SVM network-name mapping: a mainnet CAIP-2 offer produces the plain legacy slug \"solana\" (everything not devnet-family maps to \"solana\"). Confirms the producer emits a plain name, never the CAIP-2 string, on the top-level network field. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "hasAccepted": false,
+        "network": "solana",
+        "payloadHasTransaction": true,
+        "scheme": "exact",
+        "x402Version": 1
+      }
+    },
+    "id": "x402-exact-v1-build-mainnet-network-name",
+    "input": {
       "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
         "mints": {
           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           }
-        }
-      }
-    },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 1,
-        "scheme": "exact",
-        "network": "solana",
-        "hasAccepted": false,
-        "payloadHasTransaction": true
-      }
-    }
-  },
-  {
-    "id": "x402-exact-v2-build-default-producer",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "Default producer stays v2: with no version pinned, the client emits a v2 PAYMENT-SIGNATURE envelope (x402Version=2, accepted echoes the offer, NO top-level scheme/network). Guards that adding v1 support does not flip the default emitter. Mirrors rust build_payment_header (client/exact/payment.rs:132-150) being the default path. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
-    "input": {
-      "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "amount": "1000",
-        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
       },
       "signerSecretKey": [
         7,
@@ -292,28 +207,152 @@
         210,
         44
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402Offer": {
+        "amount": "10000",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 1
     },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25",
+      "X402-6b3e9350c8"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Default producer stays v2: with no version pinned, the client emits a v2 PAYMENT-SIGNATURE envelope (x402Version=2, accepted echoes the offer, NO top-level scheme/network). Guards that adding v1 support does not flip the default emitter. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
-        "x402Version": 2,
+        "acceptedAmount": "1000",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedScheme": "exact",
         "hasAccepted": true,
         "payloadHasTransaction": true,
-        "acceptedScheme": "exact",
-        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "acceptedAmount": "1000"
+        "x402Version": 2
       }
-    }
+    },
+    "id": "x402-exact-v2-build-default-producer",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      }
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25",
+      "X402-6b3e9350c8"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "| accepted | object | Required | PaymentRequirements object indicating the payment method chosen |",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
   }
 ]

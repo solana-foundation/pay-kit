@@ -1,0 +1,1072 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "SPL charge verify: the primary transfer pays one base unit less than the challenge amount. Mutation: transfer #0 amount changed by -1 base units.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-wrong-amount-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AQQfdMsyR4KEUqvaqALL9GzY1pUTlncQeVeGB4NbshvqbgjD0fNvJhu7evBmBDMeUsHSPneQiKHIwyCC8w096gOAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCcGtVjr09OcKPR/pHmD/8JpHpzY093Kxjt9k/rkX7uhrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQCBQEACgznAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Verify that at least one matching transferChecked instruction uses that derived ATA as destination and has tokenAmount.amount equal to the primary payment amount.",
+      "section": "SPL Token Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "SPL charge verify: the primary transfer lands in another owner's ATA. Mutation: transfer #0 redirected to Vote111111111111111111111111111111111111111.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-wrong-recipient-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "Aem5DRcK/ScMLTKJo4SctLt7lmNdJx6rZcNIM868DrDce44Sbi48SsrJdaI8OTI1NueBNm3Kalj2ZLAysjBEJAuAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+yrdwLir3fcXyrlzGc45iNmH9OmTBLLAuXdezheYpFyJAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQBBQIACgzoAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Verify that at least one matching transferChecked instruction uses that derived ATA as destination and has tokenAmount.amount equal to the primary payment amount.",
+      "section": "SPL Token Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "SPL charge verify: the primary transfer pays the right owner in another mint. Mutation: transfer #0 paid in mint Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-wrong-mint-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AfhUwsZz1UteZQLffEj084KSFfbzWC1L6tL4GAL3xTAuCmUvTfioqZHma3kb/hmdMBNLDqHbUqYKrtgb/1o82geAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTdBUKhnESkvaOAOJ+HHCnMzuEmxrUR3J47FPjIYgjorXxl8AkQqzO4aonD6HrDWelyryMoolCI0onub2nSQgXAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKnOAQ5gr+2yJxe9YxkvVBRaP5ZaM7uC0scCnrLOHiCCZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQCBQEACgzoAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Verify that at least one matching transferChecked instruction uses that derived ATA as destination and has tokenAmount.amount equal to the primary payment amount.",
+      "section": "SPL Token Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Positive control: two SOL splits to the same recipient, each paid by its own System transfer.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "transfers": [
+          {
+            "amount": "800",
+            "destination": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "sol"
+          },
+          {
+            "amount": "100",
+            "destination": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "sol"
+          },
+          {
+            "amount": "100",
+            "destination": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "sol"
+          }
+        ]
+      }
+    },
+    "id": "charge-split-duplicate-recipient-sol-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "sol",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "leg 1",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "leg 2",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            }
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "ASfKf/YfhieehHeJ4DYgBC+svTIFhCvclke+3XdLGbzPiwK9itE/IAd9AjUzIx7mTgVOuCIJuQk7J8PVl+r31guAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIskaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzr9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwQABQJADQMABAAJAwEAAAAAAAAAAwIAAgwCAAAAIAMAAAAAAAADAgABDAIAAABkAAAAAAAAAAUABWxlZyAxAwIAAQwCAAAAZAAAAAAAAAAFAAVsZWcgMgA="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4a77950278",
+      "MPP-6ce505e77b"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A single transfer instruction MUST NOT satisfy more than one required payment leg, even if multiple legs share the same recipient.",
+      "section": "Native SOL Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Two SOL splits to the same recipient, but only one split transfer is present, so one instruction would have to satisfy both legs. Mutation: transfer #2 removed so one instruction must cover two identical legs.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-split-duplicate-recipient-sol-reuse-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "sol",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "leg 1",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "leg 2",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            }
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "ASTpp5b3MrxLKYiSvEZQI398mrmoBq58n4aKXnAXapKxTN1vb9mF+xI7tLfoabM5fitSXPtsXfIveWF07BVI6QaAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIskaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzr9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgQABQJADQMABAAJAwEAAAAAAAAAAwIAAgwCAAAAIAMAAAAAAAADAgABDAIAAABkAAAAAAAAAAUABWxlZyAxBQAFbGVnIDIA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4a77950278",
+      "MPP-6e9ac6c31d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A single transfer instruction MUST NOT satisfy more than one required payment leg, even if multiple legs share the same recipient.",
+      "section": "Native SOL Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Positive control: two SPL splits to the same recipient, each paid by its own transferChecked.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "transfers": [
+          {
+            "amount": "800",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-split-duplicate-recipient-spl-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "leg 1",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "leg 2",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AWZaA4CTGTpHfUsekrZNStLBviwZHAq5Jo+eeZSEhu7b0caEjas7REPxOcT3hl1UXLKs01t+ixvNRtTaSrF4pQmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcEAAUCQA0DAAQACQMBAAAAAAAAAAYEAwcCAAoMIAMAAAAAAAAGBgQDBwEACgxkAAAAAAAAAAYFAAVsZWcgMQYEAwcBAAoMZAAAAAAAAAAGBQAFbGVnIDIA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d90a2b66e5",
+      "MPP-6ce505e77b"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A single instruction MUST NOT satisfy more than one required payment leg, even if multiple legs resolve to the same destination ATA.",
+      "section": "SPL Token Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Two SPL splits to the same recipient, but only one split transferChecked is present, so one instruction would have to satisfy both legs. Mutation: transfer #2 removed so one instruction must cover two identical legs.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-split-duplicate-recipient-spl-reuse-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "leg 1",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "leg 2",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AWBnReSs+4GLUmEyzCeXw1oSAgFn6h6XmY511X01uwQ6Cc6vpxmZbJVAV2CmqeFeGG/6nulnnhwTYM8VRpQo7A2AAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYEAAUCQA0DAAQACQMBAAAAAAAAAAYEAwcCAAoMIAMAAAAAAAAGBgQDBwEACgxkAAAAAAAAAAYFAAVsZWcgMQUABWxlZyAyAA=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d90a2b66e5",
+      "MPP-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A single instruction MUST NOT satisfy more than one required payment leg, even if multiple legs resolve to the same destination ATA.",
+      "section": "SPL Token Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Positive control: two splits with the same memo text, each carried by its own Memo instruction.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "memo": [
+          "platform fee",
+          "platform fee"
+        ],
+        "transfers": [
+          {
+            "amount": "800",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "Vote111111111111111111111111111111111111111",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-split-duplicate-memo-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "platform fee",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "platform fee",
+              "recipient": "Vote111111111111111111111111111111111111111"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AR/iaxF92x7+gFc/sQNGG4s9yIqQEO0FdeIN+JC8Yu41E+yAp1rwixbfJok6rQ34HeKwJrv9/xfvTfLIar4i0QCAAQAECepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsq3cC4q933F8q5cxnOOYjZh/TpkwSywLl3Xs4XmKRciQDBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwUABQJADQMABQAJAwEAAAAAAAAABwQDCAIACgwgAwAAAAAAAAYHBAMIAQAKDGQAAAAAAAAABgYADHBsYXRmb3JtIGZlZQcEAwgEAAoMZAAAAAAAAAAGBgAMcGxhdGZvcm0gZmVlAA=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-6ce505e77b"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If the same recipient appears more than once in splits, each occurrence is a distinct payment leg and MUST be verified separately; servers MUST NOT implicitly aggregate such entries.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Two splits with the same memo text but a single Memo instruction: one memo must not satisfy two legs. The spec does not require split memos on-chain; this pins the Rust kit's per-leg memo check. Mutation: memo #1 removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "charge-split-duplicate-memo-reuse-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "platform fee",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "platform fee",
+              "recipient": "Vote111111111111111111111111111111111111111"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "Afz1ste4D4QTjylLiOf97fZOvz/VN4WwPESBcq9Z83vZrYwDq7doQXpjTuTf64P92OBPT8fTdgETEo2QQBOTsAmAAQAECepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsq3cC4q933F8q5cxnOOYjZh/TpkwSywLl3Xs4XmKRciQDBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgUABQJADQMABQAJAwEAAAAAAAAABwQDCAIACgwgAwAAAAAAAAYHBAMIAQAKDGQAAAAAAAAABgYADHBsYXRmb3JtIGZlZQcEAwgEAAoMZAAAAAAAAAAGAA=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-6ce505e77b",
+      "MPP-1a2e7c737e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "If the same recipient appears more than once in splits, each occurrence is a distinct payment leg and MUST be verified separately; servers MUST NOT implicitly aggregate such entries.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  }
+]

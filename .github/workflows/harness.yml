@@ -130,7 +130,7 @@ jobs:
           test/conformance.test.ts test/protocol-conformance.test.ts test/flow-conformance.test.ts
       - name: Check generated coverage tables
         working-directory: harness
-        run: pnpm coverage:check && pnpm interop:check && pnpm vectors:x402:check
+        run: pnpm coverage:check && pnpm interop:check
       # Keep pairing coverage after test failures, but not failed setup or cancellation.
       - name: Run TypeScript end-to-end harness smoke
         if: ${{ !cancelled() && steps.harness-setup.outcome == 'success' }}
@@ -491,6 +491,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # pkc req-lint reads the pinned spec repositories
+          # (external/mpp-specs, typescript/external/x402).
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v5
         with:
@@ -500,6 +504,18 @@ jobs:
             rust/target
           key: ${{ runner.os }}-${{ runner.arch }}-harness-conformance-${{ hashFiles('rust/**/Cargo.toml', 'rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-harness-conformance-
+      - name: Conformance case registry (one positive-control test per case)
+        working-directory: rust
+        run: cargo test -q -p paykit-conformance
+      - name: Vectors are filled from the registry (pkc fill --check)
+        working-directory: rust
+        run: cargo run -q -p paykit-conformance --bin pkc -- fill --check
+      - name: Requirements lint (pkc req-lint)
+        working-directory: rust
+        # Prints sentence / mapped / unmapped counts; fails only when a vector
+        # or RULINGS quote is missing from the pinned text or a mapped
+        # requirement's text changed.
+        run: cargo run -q -p paykit-conformance --bin pkc -- req-lint
       - uses: ./.github/actions/setup-harness-leg
       - name: Build Rust conformance runners
         working-directory: rust

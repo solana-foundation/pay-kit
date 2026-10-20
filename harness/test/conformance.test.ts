@@ -31,6 +31,7 @@ import {
   VECTOR_INTENTS,
 } from "../src/expectations";
 import { assertSuiteComplete, CaseRecorder, discoveryMode, observe } from "../src/expectations-run";
+import { RUNNER_VECTOR_KEYS } from "../src/conformance/schema";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -71,7 +72,12 @@ async function runVector(
 ): Promise<{ result: RunnerResult; rpcCalls: string[] }> {
   const rpc = await startFixtureRpc(fixturesFor(vector));
   try {
-    const result = await spawnRunner(command, { ...vector, input: { ...vector.input, rpcUrl: rpc.url } }, cwd);
+    // Runners receive the vector ABI only; traceability metadata (spec,
+    // requirements, bugType, tier, role, provenance) stays in the driver.
+    const abi = Object.fromEntries(
+      RUNNER_VECTOR_KEYS.filter((k) => vector[k] !== undefined).map((k) => [k, vector[k]]),
+    ) as ConformanceVector;
+    const result = await spawnRunner(command, { ...abi, input: { ...vector.input, rpcUrl: rpc.url } }, cwd);
     return { result, rpcCalls: rpc.calls };
   } finally {
     await rpc.close();

@@ -1,21 +1,30 @@
 [
   {
-    "id": "x402-exact-v2-build",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
+    "bugType": "wire",
     "description": "Client builds a v2 PAYMENT-SIGNATURE envelope from a devnet USDC offer. Asserts the canonical v2 shape: x402Version=2, hasAccepted=true, accepted echoes the offer (scheme/network/asset/payTo/amount), payloadHasTransaction=true, and NO top-level scheme/network (v2 must not leak the legacy fields). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "acceptedAmount": "1000",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedScheme": "exact",
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "x402Version": 2
+      }
+    },
+    "id": "x402-exact-v2-build",
     "input": {
-      "x402Version": 2,
-      "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "amount": "1000",
-        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
       },
       "signerSecretKey": [
         7,
@@ -83,28 +92,32 @@
         210,
         44
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
     },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 2,
-        "hasAccepted": true,
-        "payloadHasTransaction": true,
-        "acceptedScheme": "exact",
-        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "acceptedAmount": "1000"
-      }
-    }
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25",
+      "X402-6b3e9350c8"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "| accepted | object | Required | PaymentRequirements object indicating the payment method chosen |",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
   }
 ]

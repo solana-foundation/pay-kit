@@ -1,51 +1,149 @@
 [
   {
+    "bugType": "wire",
+    "description": "Divergence class: canonical JSON (RFC 8785 JCS). Object keys must sort by UTF-16 code unit at every nesting level. Pins exact canonical JSON and its base64url.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhIjpbeyJhIjpmYWxzZSwiYiI6dHJ1ZX1dLCJiIjoyfQ",
+        "canonicalJson": "{\"a\":[{\"a\":false,\"b\":true}],\"b\":2}"
+      },
+      "outcome": "accept"
+    },
     "id": "canonical-json-nested-key-order",
+    "input": {
+      "value": {
+        "a": [
+          {
+            "a": false,
+            "b": true
+          }
+        ],
+        "b": 2
+      }
+    },
     "intent": "charge",
     "mode": "canonical-bytes",
-    "description": "Divergence class: canonical JSON (RFC 8785 JCS). Object keys must sort by UTF-16 code unit at every nesting level. Pins exact canonical JSON and its base64url.",
-    "input": {
-      "value": { "b": 2, "a": [{ "b": true, "a": false }] }
+    "provenance": "generated",
+    "requirements": [
+      "MPP-51806e831a",
+      "MPP-71198689c1"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "All JSON {{RFC8259}} objects carried in auth-params or HTTP headers in this specification MUST be serialized using the JSON Canonicalization Scheme (JCS) {{RFC8785}} before encoding.",
+      "section": "Encoding Conventions"
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "canonicalJson": "{\"a\":[{\"a\":false,\"b\":true}],\"b\":2}",
-        "base64Url": "eyJhIjpbeyJhIjpmYWxzZSwiYiI6dHJ1ZX1dLCJiIjoyfQ"
-      }
-    }
+    "tier": "offline"
   },
   {
-    "id": "canonical-bytes-48-base64url",
-    "intent": "charge",
-    "mode": "canonical-bytes",
+    "bugType": "wire",
     "description": "Divergence class: 48-byte / base64url encoding. A fixed 48-byte sequence (0x00..0x2f) must base64url-encode identically across SDKs (no padding, URL-safe alphabet).",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v",
+        "bytes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "canonical-bytes-48-base64url",
     "input": {
       "encodeBase64Url": {
         "hexBytes": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
       }
     },
-    "expect": {
-      "outcome": "accept",
-      "exactBytes": {
-        "bytes": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47],
-        "base64Url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v"
-      }
-    }
-  },
-  {
-    "id": "canonical-bytes-utf8-base64url",
     "intent": "charge",
     "mode": "canonical-bytes",
-    "description": "Divergence class: base64url of a UTF-8 string. Pins the URL-safe, unpadded base64url of an ASCII label so every SDK's base64url helper agrees.",
-    "input": {
-      "encodeBase64Url": { "utf8": "mpp-conformance" }
+    "provenance": "generated",
+    "requirements": [
+      "MPP-71198689c1",
+      "MPP-f4eca94243"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "The resulting bytes MUST then be encoded using base64url {{RFC4648}} Section 5 without padding characters (=).",
+      "section": "Encoding Conventions"
     },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Divergence class: base64url of a UTF-8 string. Pins the URL-safe, unpadded base64url of an ASCII label so every SDK's base64url helper agrees.",
     "expect": {
-      "outcome": "accept",
       "exactBytes": {
         "base64Url": "bXBwLWNvbmZvcm1hbmNl"
+      },
+      "outcome": "accept"
+    },
+    "id": "canonical-bytes-utf8-base64url",
+    "input": {
+      "encodeBase64Url": {
+        "utf8": "mpp-conformance"
       }
-    }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-71198689c1",
+      "MPP-f4eca94243"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "The resulting bytes MUST then be encoded using base64url {{RFC4648}} Section 5 without padding characters (=).",
+      "section": "Encoding Conventions"
+    },
+    "tier": "offline"
   }
 ]

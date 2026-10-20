@@ -1,390 +1,433 @@
 [
   {
+    "bugType": "wire",
+    "description": "(a) Client echoes a server-advertised payment-identifier (info.required=true) and populates a fresh client-side id. The outbound v2 PAYMENT-SIGNATURE carries extensions['payment-identifier'].info with required=true preserved and a generated pay_-shaped id matching ^[A-Za-z0-9_-]{16,128}$. The schema field the server published is echoed verbatim. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "acceptedAmount": "1000",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedScheme": "exact",
+        "extensionKeys": [
+          "payment-identifier"
+        ],
+        "hasAccepted": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "payloadHasTransaction": true,
+        "paymentIdentifierRequired": true,
+        "x402Version": 2
+      }
+    },
     "id": "x402-ext-echo-payment-identifier",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "(a) Client echoes a server-advertised payment-identifier (info.required=true) and populates a fresh client-side id. The outbound v2 PAYMENT-SIGNATURE carries extensions['payment-identifier'].info with required=true preserved and a generated pay_-shaped id matching ^[A-Za-z0-9_-]{16,128}$ (rust PaymentExtensions::echoing + with_payment_identifier_id; coinbase x402 v2 §5.1.2 echo-and-append). The schema field the server published is echoed verbatim. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
     "input": {
-      "x402Version": 2,
-      "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "amount": "1000",
-        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
       },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
       "x402AdvertisedExtensions": {
         "payment-identifier": {
           "info": {
             "required": true
           },
           "schema": {
-            "type": "object",
             "required": [
               "id"
-            ]
+            ],
+            "type": "object"
           }
         }
       },
-      "signerSecretKey": [
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        234,
-        74,
-        108,
-        99,
-        226,
-        156,
-        82,
-        10,
-        190,
-        245,
-        80,
-        123,
-        19,
-        46,
-        197,
-        249,
-        149,
-        71,
-        118,
-        174,
-        190,
-        190,
-        123,
-        146,
-        66,
-        30,
-        234,
-        105,
-        20,
-        70,
-        210,
-        44
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
-    },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 2,
-        "hasAccepted": true,
-        "payloadHasTransaction": true,
-        "acceptedScheme": "exact",
-        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "acceptedAmount": "1000",
-        "hasExtensions": true,
-        "hasPaymentIdentifier": true,
-        "paymentIdentifierRequired": true,
-        "extensionKeys": [
-          "payment-identifier"
-        ]
-      }
-    }
-  },
-  {
-    "id": "x402-ext-echo-payment-identifier-pinned-id",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "Deterministic variant of (a): the vector pins the client id so the echoed payment-identifier.info.id is byte-asserted. Confirms the client appends its id WITHOUT overwriting the server's info.required (rust with_payment_identifier_id_appends_without_overwriting_server_fields). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
-    "input": {
-      "x402Version": 2,
       "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
         "amount": "1000",
         "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
         "extra": {
           "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
       },
-      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
-      "x402AdvertisedExtensions": {
-        "payment-identifier": {
-          "info": {
-            "required": true
-          }
-        }
-      },
-      "signerSecretKey": [
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        234,
-        74,
-        108,
-        99,
-        226,
-        156,
-        82,
-        10,
-        190,
-        245,
-        80,
-        123,
-        19,
-        46,
-        197,
-        249,
-        149,
-        71,
-        118,
-        174,
-        190,
-        190,
-        123,
-        146,
-        66,
-        30,
-        234,
-        105,
-        20,
-        70,
-        210,
-        44
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402Version": 2
     },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "The client must include at least the info received; it may append additional info but cannot delete or overwrite existing info.",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Deterministic variant of (a): the vector pins the client id so the echoed payment-identifier.info.id is byte-asserted. Confirms the client appends its id WITHOUT overwriting the server's info.required. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
-        "x402Version": 2,
+        "extensionKeys": [
+          "payment-identifier"
+        ],
         "hasAccepted": true,
-        "payloadHasTransaction": true,
         "hasExtensions": true,
         "hasPaymentIdentifier": true,
-        "paymentIdentifierRequired": true,
+        "payloadHasTransaction": true,
         "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
-        "extensionKeys": [
-          "payment-identifier"
-        ]
+        "paymentIdentifierRequired": true,
+        "x402Version": 2
       }
-    }
-  },
-  {
-    "id": "x402-ext-preserve-unknown-verbatim",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "(b) Forward-compat echo-and-append: the server advertises an extension this SDK does not type natively alongside payment-identifier. The client MUST re-emit the unknown extension verbatim (rust PaymentExtensions.other flatten; payment_extensions_echoes_unknown_keys_verbatim). extensionKeys pins that BOTH keys survive, sorted. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    },
+    "id": "x402-ext-echo-payment-identifier-pinned-id",
     "input": {
-      "x402Version": 2,
-      "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-        "amount": "1000",
-        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
-        "extra": {
-          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
-      },
-      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
-      "x402AdvertisedExtensions": {
-        "payment-identifier": {
-          "info": {
-            "required": true
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           }
         },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402AdvertisedExtensions": {
+        "payment-identifier": {
+          "info": {
+            "required": true
+          }
+        }
+      },
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "The client must include at least the info received; it may append additional info but cannot delete or overwrite existing info.",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "(b) Forward-compat echo-and-append: the server advertises an extension this SDK does not type natively alongside payment-identifier. The client MUST re-emit the unknown extension verbatim. extensionKeys pins that BOTH keys survive, sorted. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "extensionKeys": [
+          "future-extension",
+          "payment-identifier"
+        ],
+        "hasAccepted": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "payloadHasTransaction": true,
+        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+        "paymentIdentifierRequired": true,
+        "x402Version": 2
+      }
+    },
+    "id": "x402-ext-preserve-unknown-verbatim",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402AdvertisedExtensions": {
         "future-extension": {
           "info": {
             "foo": "bar"
           }
-        }
-      },
-      "signerSecretKey": [
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        7,
-        234,
-        74,
-        108,
-        99,
-        226,
-        156,
-        82,
-        10,
-        190,
-        245,
-        80,
-        123,
-        19,
-        46,
-        197,
-        249,
-        149,
-        71,
-        118,
-        174,
-        190,
-        190,
-        123,
-        146,
-        66,
-        30,
-        234,
-        105,
-        20,
-        70,
-        210,
-        44
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
+        },
+        "payment-identifier": {
+          "info": {
+            "required": true
           }
         }
-      }
-    },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 2,
-        "hasAccepted": true,
-        "payloadHasTransaction": true,
-        "hasExtensions": true,
-        "hasPaymentIdentifier": true,
-        "paymentIdentifierRequired": true,
-        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
-        "extensionKeys": [
-          "future-extension",
-          "payment-identifier"
-        ]
-      }
-    }
-  },
-  {
-    "id": "x402-ext-omit-when-none-advertised",
-    "intent": "x402-exact",
-    "mode": "build-transaction",
-    "description": "(c) Echo-and-omit: the server advertised NO extensions, so the outbound v2 PAYMENT-SIGNATURE MUST NOT carry an `extensions` key at all (no empty {}). Mirrors rust skip_serializing_if = Option::is_none + PaymentExtensions::is_empty; payment_extensions_echoing_returns_none_when_inbound_absent. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
-    "input": {
-      "x402Version": 2,
+      },
       "x402Offer": {
-        "scheme": "exact",
-        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
         "amount": "1000",
         "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300,
         "extra": {
           "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
-        }
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "The client must include at least the info received; it may append additional info but cannot delete or overwrite existing info.",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "(c) Echo-and-omit: the server advertised NO extensions, so the outbound v2 PAYMENT-SIGNATURE MUST NOT carry an `extensions` key at all (no empty {}). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "extensionKeys": [],
+        "hasAccepted": true,
+        "hasExtensions": false,
+        "hasPaymentIdentifier": false,
+        "payloadHasTransaction": true,
+        "x402Version": 2
+      }
+    },
+    "id": "x402-ext-omit-when-none-advertised",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
       },
       "signerSecretKey": [
         7,
@@ -452,145 +495,65 @@
         210,
         44
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
     },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 2,
-        "hasAccepted": true,
-        "payloadHasTransaction": true,
-        "hasExtensions": false,
-        "hasPaymentIdentifier": false,
-        "extensionKeys": []
-      }
-    }
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "The client must include at least the info received; it may append additional info but cannot delete or overwrite existing info.",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
   },
   {
-    "id": "x402-ext-server-accepts-valid-id",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "(e) Server ACCEPTS a credential when payment-identifier.info.required=true on the route and the credential echoed a valid pay_-shaped id. The pinned header is exactly what build (a)/(b) emits, so build and verify are mutually consistent.",
-    "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiJ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQm9OQzRmWFRKRWpYZHUvUS9UZVEwbmFMbnFVU3RXZU9aVDNlL3dXTWNwUHBhaDJBMTZWbThza1d5MVBLUklXNTlpS0pHWUNZaG5TWGIwb29kUmhkc0ZnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc2E0VCtWQVdaa0ticUl3amNaWWhWclpXS1pSNFVWeVlqOS9yVGs5dXdFK3dGMHY5WlZ1bGJoa09zUUg5dHRXNnVKamwwa0YwUUkrY2RvOTVUS09IS1d6dEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZuQXdaR2IrVWhGekwvN0syNmNzT2I1N3lNNWJ2Rjl4SnJMRU9iT2tBQUFBQUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJRQUZBa0FOQXdBRkFBa0RBUUFBQUFBQUFBQUhCQUlFQXdFS0RPZ0RBQUFBQUFBQUJnWUFJSGcwTURKbGVIUnpaWEoyWlhKaFkyTXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJyZXF1aXJlZCI6dHJ1ZSwiaWQiOiJwYXlfYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTAifX19fQ==",
-      "x402ServerNetwork": "devnet",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      "x402ServerAmount": "1000",
-      "x402ServerRequiresPaymentIdentifier": true,
-      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-      "x402ServerFeePayerSecretKey": [
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        253,
-        23,
-        36,
-        56,
-        90,
-        160,
-        199,
-        91,
-        100,
-        251,
-        120,
-        205,
-        96,
-        47,
-        161,
-        217,
-        145,
-        253,
-        235,
-        247,
-        107,
-        19,
-        197,
-        142,
-        215,
-        2,
-        234,
-        200,
-        53,
-        233,
-        246,
-        24
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
-    },
+    "bugType": "replay",
+    "description": "(e) Server ACCEPTS a credential when payment-identifier.info.required=true on the route and the credential echoed a valid pay_-shaped id.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
-        "x402Version": 2,
-        "hasAccepted": true,
-        "payloadHasTransaction": true,
-        "hasExtensions": true,
-        "hasPaymentIdentifier": true,
-        "paymentIdentifierRequired": true,
-        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
         "extensionKeys": [
           "payment-identifier"
-        ]
+        ],
+        "hasAccepted": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "payloadHasTransaction": true,
+        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+        "paymentIdentifierRequired": true,
+        "x402Version": 2
       }
-    }
-  },
-  {
-    "id": "x402-ext-server-rejects-required-missing-id",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "(d) Server REJECTS a credential when payment-identifier.info.required=true on the route but the credential echoed no valid id (the echoed extension carries info.required but no info.id). Reject category payment-identifier-required (coinbase spec: HTTP 400). All other route fields (network/amount/recipient/asset) match, so this isolates the missing-id gate.",
+    },
+    "id": "x402-ext-server-accepts-valid-id",
     "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiJ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUs4TDlkMTl5U0F0dXIzQ0FaNkpkUUtiMEkvZUpnNTNvN0JCU3A2WjBWbzNCdEgzZXZCTUVtdmlIMzdzTURtZkVNRVpjTTA0dG9sdmo3WGFnbDhjSUlnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc2E0VCtWQVdaa0ticUl3amNaWWhWclpXS1pSNFVWeVlqOS9yVGs5dXdFK3dGMHY5WlZ1bGJoa09zUUg5dHRXNnVKamwwa0YwUUkrY2RvOTVUS09IS1d6dEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZuQXdaR2IrVWhGekwvN0syNmNzT2I1N3lNNWJ2Rjl4SnJMRU9iT2tBQUFBQUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJRQUZBa0FOQXdBRkFBa0RBUUFBQUFBQUFBQUhCQUlFQXdFS0RPZ0RBQUFBQUFBQUJnWUFJSGcwTURKbGVIUnpaWEoyWlhKeVpXb3dNREF3TURBd01EQXdNREF3TURBd0FBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJyZXF1aXJlZCI6dHJ1ZX19fX0=",
-      "x402ServerNetwork": "devnet",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiJ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQjdOcEJEUEljelVPUktxV2xRUmpiZ3l6WXpMTGQ5L2tDazk2THQrbW9kZ0l0MmhzVnZJQUkrT3pZZDVBOFR2K09OQzJoV3JYWnBLNU43SERVc0pFVUtnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc0JkTC9XVmJwVzRaRHJFQi9iYlZ1cmlZNWRKQmRFQ1BuSGFQZVV5amh5bHRyaFA1VUJabVFwdW9qQ054bGlGV3RsWXBsSGhSWEppUDMrdE9UMjdBVDdBTUdSbS9sSVJjeS8reXR1bkxEbStlOGpPVzd4ZmNTYXl4RG16cEFBQUFBQlVwVFdwa3BJUVpOSk9oeFlObzRmSHcxdGQyOGtydUI1QitvUUVFRlJJMEczZmJoMTJXaGs5bkw0VWJPNjNtc0hMU0Y3VjliTjVFNmpQV0ZmdjhBcVR0RUxMT1JJVmZ4T3BNOUFUUW9MUU1yWC83TkFhTGI4YmQ1QmdqZkFDNm5BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJBQUZBa0FOQXdBRUFBa0RBUUFBQUFBQUFBQUdCQU1IQWdFS0RPZ0RBQUFBQUFBQUJnVUFJSGcwTURKbGVIUnpaWEoyWlhKaFkyTXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJpZCI6InBheV9hYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MCIsInJlcXVpcmVkIjp0cnVlfX19fQ==",
       "x402ServerAmount": "1000",
-      "x402ServerRequiresPaymentIdentifier": true,
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
       "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
       "x402ServerFeePayerSecretKey": [
         9,
@@ -658,20 +621,129 @@
         246,
         24
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerRequiresPaymentIdentifier": true
     },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/extensions/payment_identifier.md",
+      "quote": "required: true, no id provided | Return 400 Bad Request",
+      "section": "Idempotency Behavior"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "replay",
+    "description": "(d) Server REJECTS a credential when payment-identifier.info.required=true on the route but the credential echoed no valid id (the echoed extension carries info.required but no info.id). All other route fields match, so this isolates the missing-id gate.",
     "expect": {
       "outcome": "reject",
       "rejectCode": "payment-identifier-required",
       "rejectReason": "payment-identifier required but credential echoed no id"
-    }
+    },
+    "id": "x402-ext-server-rejects-required-missing-id",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiJ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQzBBSzl0NWtTSG5aZVlFbG44R1hkK0FRUGI1TnZ4L3ZsTTgwMXptbk1BMEdWMi9BaTFPcHU3czM0Zi8wY2VjNi9NYldDamRRd2VxNmVzci9VeDdtVURnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc0JkTC9XVmJwVzRaRHJFQi9iYlZ1cmlZNWRKQmRFQ1BuSGFQZVV5amh5bHRyaFA1VUJabVFwdW9qQ054bGlGV3RsWXBsSGhSWEppUDMrdE9UMjdBVDdBTUdSbS9sSVJjeS8reXR1bkxEbStlOGpPVzd4ZmNTYXl4RG16cEFBQUFBQlVwVFdwa3BJUVpOSk9oeFlObzRmSHcxdGQyOGtydUI1QitvUUVFRlJJMEczZmJoMTJXaGs5bkw0VWJPNjNtc0hMU0Y3VjliTjVFNmpQV0ZmdjhBcVR0RUxMT1JJVmZ4T3BNOUFUUW9MUU1yWC83TkFhTGI4YmQ1QmdqZkFDNm5BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJBQUZBa0FOQXdBRUFBa0RBUUFBQUFBQUFBQUdCQU1IQWdFS0RPZ0RBQUFBQUFBQUJnVUFJSGcwTURKbGVIUnpaWEoyWlhKeVpXb3dNREF3TURBd01EQXdNREF3TURBd0FBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJyZXF1aXJlZCI6dHJ1ZX19fX0=",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+      "x402ServerFeePayerSecretKey": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        253,
+        23,
+        36,
+        56,
+        90,
+        160,
+        199,
+        91,
+        100,
+        251,
+        120,
+        205,
+        96,
+        47,
+        161,
+        217,
+        145,
+        253,
+        235,
+        247,
+        107,
+        19,
+        197,
+        142,
+        215,
+        2,
+        234,
+        200,
+        53,
+        233,
+        246,
+        24
+      ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerRequiresPaymentIdentifier": true
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/extensions/payment_identifier.md",
+      "quote": "required: true, no id provided | Return 400 Bad Request",
+      "section": "Idempotency Behavior"
+    },
+    "tier": "offline"
   }
 ]

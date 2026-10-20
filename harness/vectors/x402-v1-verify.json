@@ -1,114 +1,31 @@
 [
   {
-    "id": "x402-exact-v1-verify-accept-devnet",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "Server accepts a legacy v1 X-PAYMENT envelope (x402Version=1, top-level scheme=\"exact\" + plain network \"solana-devnet\", payload.transaction) against a devnet route. v1 has no accepted object: the server binds only scheme + network (normalized via caip2_network_for_cluster), then settles. Mirrors rust parse_payment_signature v1 arm (server/exact.rs:316-327). The decoded shape carries scheme/network and hasAccepted=false.",
-    "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFCKzhtWkpsT1pZNU9lQWdCYk1zelZucGVtRWFETU51SXFCRmhNS0Z6Y3BVQkV1cVZveVZlSEF0Qm5ZUi9pdWs3TzNQMGJkcG9vTWdFa2FrWXVMM2tLZ0FJQkJBajlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNhNFQrVkFXWmtLYnFJd2pjWlloVnJaV0taUjRVVnlZajkvclRrOXV3RSt3RjB2OVpWdWxiaGtPc1FIOXR0VzZ1SmpsMGtGMFFJK2Nkbzk1VEtPSEtXenRFTExPUklWZnhPcE05QVRRb0xRTXJYLzdOQWFMYjhiZDVCZ2pmQUM2bkF3WkdiK1VoRnpMLzdLMjZjc09iNTd5TTVidkY5eEpyTEVPYk9rQUFBQUFGU2xOYW1Ta2hCazBrNkhGZzJqaDhmRFcxM2J5U3U0SGtINmhBUVFWRWpRYmQ5dUhYWmFHVDJjdmhSczdyZWF3Y3RJWHRYMXMza1RxTTlZVisvd0NwQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUVCUUFGQWtBTkF3QUZBQWtEQVFBQUFBQUFBQUFIQkFJRUF3RUtET2dEQUFBQUFBQUFCZ1lBSUhnME1ESmxlR0ZqZEhZeGRtVnlhV1l3TURBd01EQXdNREF3TURBd01EQXdBQT09In19",
-      "x402ServerNetwork": "devnet",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      "x402ServerAmount": "1000",
-      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
-      "x402ServerFeePayerSecretKey": [
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        9,
-        253,
-        23,
-        36,
-        56,
-        90,
-        160,
-        199,
-        91,
-        100,
-        251,
-        120,
-        205,
-        96,
-        47,
-        161,
-        217,
-        145,
-        253,
-        235,
-        247,
-        107,
-        19,
-        197,
-        142,
-        215,
-        2,
-        234,
-        200,
-        53,
-        233,
-        246,
-        24
-      ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
-    },
+    "bugType": "wire",
+    "description": "Server accepts a legacy v1 X-PAYMENT envelope (x402Version=1, top-level scheme=\"exact\" + plain network \"solana-devnet\", payload.transaction) against a devnet route. v1 has no accepted object: the server binds only scheme + network, then verifies the transaction. The decoded shape carries scheme/network and hasAccepted=false.",
     "expect": {
       "outcome": "accept",
       "x402EnvelopeShape": {
-        "x402Version": 1,
-        "scheme": "exact",
-        "network": "solana-devnet",
         "hasAccepted": false,
-        "payloadHasTransaction": true
+        "network": "solana-devnet",
+        "payloadHasTransaction": true,
+        "scheme": "exact",
+        "x402Version": 1
       }
-    }
-  },
-  {
-    "id": "x402-exact-v1-verify-accept-mainnet",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "v1 SVM network-name mapping on the server side: a v1 credential with plain network \"solana\" verifies against a mainnet-beta route. The server normalizes \"solana\" -> mainnet CAIP-2 before the network gate, so the plain legacy slug is accepted. Mirrors caip2_network_for_cluster(\"solana\") (types.rs:33) in the v1 arm (server/exact.rs:321-326).",
+    },
+    "id": "x402-exact-v1-verify-accept-devnet",
     "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRGVHd084MGxaNzlockhyWVhlWHNVWmthMUk4N0EyZ0JhaWpHdzhFZXFWS3dzeXlwOTFSSWVtUExHeWNUZTJUMWMzY09jbmlYNENhVGJCQ3dIczVLOENnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc0lUd21ZbDgwbjRJOXA4Umw2dkNrVEx4OURKMXNNMGRZa1JhbFZLU3VpNFJuTUM1SkdKVFhTUzZtdmsrUlRxVDBYNkZDNWtXR2ZKRmtvbmJWM1hid2RnTUdSbS9sSVJjeS8reXR1bkxEbStlOGpPVzd4ZmNTYXl4RG16cEFBQUFBeHZwNjg3N2JyVG85WmZOcXE4bDBNYkc3NU1MUzl1RGtmS1lDQTBVdlhXRUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJBQUZBa0FOQXdBRUFBa0RBUUFBQUFBQUFBQUhCQU1GQWdFS0RCQW5BQUFBQUFBQUJnWUFJSGcwTURKbGVHRmpkSFl4ZG1WeWFXWXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifX0=",
-      "x402ServerNetwork": "mainnet-beta",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      "x402ServerAmount": "10000",
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJRTUFpa0g5Z0d6SFhUZlFQZitDNEpWQk1SQ0JGM0M2YURpa3d6cTFlRkUwZkZtU3Q0Ujd3YW5rUHNzb0FtTHZyMnN0TXRFSzFCV1U2bE5KcWMvcE1CZ0FJQkJBajlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNCZEwvV1ZicFc0WkRyRUIvYmJWdXJpWTVkSkJkRUNQbkhhUGVVeWpoeWx0cmhQNVVCWm1RcHVvakNOeGxpRld0bFlwbEhoUlhKaVAzK3RPVDI3QVQ3QU1HUm0vbElSY3kvK3l0dW5MRG0rZThqT1c3eGZjU2F5eERtenBBQUFBQUJVcFRXcGtwSVFaTkpPaHhZTm80Zkh3MXRkMjhrcnVCNUIrb1FFRUZSSTBHM2ZiaDEyV2hrOW5MNFViTzYzbXNITFNGN1Y5Yk41RTZqUFdGZnY4QXFUdEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZuQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUVCQUFGQWtBTkF3QUVBQWtEQVFBQUFBQUFBQUFHQkFNSEFnRUtET2dEQUFBQUFBQUFCZ1VBSUhnME1ESmxlR0ZqZEhZeGRtVnlhV1l3TURBd01EQXdNREF3TURBd01EQXdBQT09In19",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
       "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
       "x402ServerFeePayerSecretKey": [
         9,
@@ -176,38 +93,50 @@
         246,
         24
       ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "v1 SVM network-name mapping on the server side: a v1 credential with plain network \"solana\" verifies against a mainnet-beta route. The server normalizes \"solana\" -> mainnet CAIP-2 before the network gate, so the plain legacy slug is accepted.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "hasAccepted": false,
+        "network": "solana",
+        "payloadHasTransaction": true,
+        "scheme": "exact",
+        "x402Version": 1
+      }
+    },
+    "id": "x402-exact-v1-verify-accept-mainnet",
+    "input": {
       "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
         "mints": {
           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
           }
-        }
-      }
-    },
-    "expect": {
-      "outcome": "accept",
-      "x402EnvelopeShape": {
-        "x402Version": 1,
-        "scheme": "exact",
-        "network": "solana",
-        "hasAccepted": false,
-        "payloadHasTransaction": true
-      }
-    }
-  },
-  {
-    "id": "x402-exact-v1-verify-reject-unknown-version",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "Server still REJECTS a genuinely-unknown version even on the v1 dual-accept path: an envelope shaped like v1 (top-level scheme/network) but carrying x402Version=9 is neither v1 nor v2. Adding v1 support must not widen the version gate. Mirrors the catch-all arm in rust parse_payment_signature (server/exact.rs:342-346).",
-    "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6OSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFCKzhtWkpsT1pZNU9lQWdCYk1zelZucGVtRWFETU51SXFCRmhNS0Z6Y3BVQkV1cVZveVZlSEF0Qm5ZUi9pdWs3TzNQMGJkcG9vTWdFa2FrWXVMM2tLZ0FJQkJBajlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNhNFQrVkFXWmtLYnFJd2pjWlloVnJaV0taUjRVVnlZajkvclRrOXV3RSt3RjB2OVpWdWxiaGtPc1FIOXR0VzZ1SmpsMGtGMFFJK2Nkbzk1VEtPSEtXenRFTExPUklWZnhPcE05QVRRb0xRTXJYLzdOQWFMYjhiZDVCZ2pmQUM2bkF3WkdiK1VoRnpMLzdLMjZjc09iNTd5TTVidkY5eEpyTEVPYk9rQUFBQUFGU2xOYW1Ta2hCazBrNkhGZzJqaDhmRFcxM2J5U3U0SGtINmhBUVFWRWpRYmQ5dUhYWmFHVDJjdmhSczdyZWF3Y3RJWHRYMXMza1RxTTlZVisvd0NwQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUVCUUFGQWtBTkF3QUZBQWtEQVFBQUFBQUFBQUFIQkFJRUF3RUtET2dEQUFBQUFBQUFCZ1lBSUhnME1ESmxlR0ZqZEhZeGRtVnlhV1l3TURBd01EQXdNREF3TURBd01EQXdBQT09In19",
-      "x402ServerNetwork": "devnet",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      "x402ServerAmount": "1000",
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQkNMa3JCK2E4Tm5NaDIrcFAzdFZjRGpWdFpWSWd2VHpSaWpJaWg5YU1LNjlHMDIxZ2JwS0J2MHM1N1gyQ05mcDRoaE1OUFZtVDdCWWsvck1ZVUhpZ0pnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc0lUd21ZbDgwbjRJOXA4Umw2dkNrVEx4OURKMXNNMGRZa1JhbFZLU3VpNFJuTUM1SkdKVFhTUzZtdmsrUlRxVDBYNkZDNWtXR2ZKRmtvbmJWM1hid2RnTUdSbS9sSVJjeS8reXR1bkxEbStlOGpPVzd4ZmNTYXl4RG16cEFBQUFBQlVwVFdwa3BJUVpOSk9oeFlObzRmSHcxdGQyOGtydUI1QitvUUVFRlJJMEczZmJoMTJXaGs5bkw0VWJPNjNtc0hMU0Y3VjliTjVFNmpQV0ZmdjhBcWNiNmV2TysyNjA2UFdYemFxdkpkREd4dStUQzB2Ymc1SHltQWdORkwxMWhBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJBQUZBa0FOQXdBRUFBa0RBUUFBQUFBQUFBQUdCQU1IQWdFS0RCQW5BQUFBQUFBQUJnVUFJSGcwTURKbGVHRmpkSFl4ZG1WeWFXWXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifX0=",
+      "x402ServerAmount": "10000",
+      "x402ServerCurrency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
       "x402ServerFeePayerSecretKey": [
         9,
@@ -275,33 +204,45 @@
         246,
         24
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402ServerNetwork": "mainnet-beta",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
     },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Server still REJECTS a genuinely-unknown version even on the v1 dual-accept path: an envelope shaped like v1 (top-level scheme/network) but carrying x402Version=9 is neither v1 nor v2. Adding v1 support must not widen the version gate.",
     "expect": {
       "outcome": "reject",
       "rejectCode": "unsupported-version",
       "rejectReason": "x402Version 9 is neither v1 nor v2"
-    }
-  },
-  {
-    "id": "x402-exact-v1-verify-reject-wrong-network",
-    "intent": "x402-exact",
-    "mode": "verify-transaction",
-    "description": "Server rejects a v1 credential signed for the wrong network: a v1 envelope with plain network \"solana\" (mainnet) presented to a devnet route fails the v1 network gate (caip2_network_for_cluster(\"solana\") != devnet CAIP-2). Mirrors the network-mismatch branch of the v1 arm (server/exact.rs:322-326).",
+    },
+    "id": "x402-exact-v1-verify-reject-unknown-version",
     "input": {
-      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUIrOG1aSmxPWlk1T2VBZ0JiTXN6Vm5wZW1FYURNTnVJcUJGaE1LRnpjcFVCRXVxVm95VmVIQXRCbllSL2l1azdPM1AwYmRwb29NZ0VrYWtZdUwza0tnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc2E0VCtWQVdaa0ticUl3amNaWWhWclpXS1pSNFVWeVlqOS9yVGs5dXdFK3dGMHY5WlZ1bGJoa09zUUg5dHRXNnVKamwwa0YwUUkrY2RvOTVUS09IS1d6dEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZuQXdaR2IrVWhGekwvN0syNmNzT2I1N3lNNWJ2Rjl4SnJMRU9iT2tBQUFBQUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJRQUZBa0FOQXdBRkFBa0RBUUFBQUFBQUFBQUhCQUlFQXdFS0RPZ0RBQUFBQUFBQUJnWUFJSGcwTURKbGVHRmpkSFl4ZG1WeWFXWXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifX0=",
-      "x402ServerNetwork": "devnet",
-      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6OSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJRTUFpa0g5Z0d6SFhUZlFQZitDNEpWQk1SQ0JGM0M2YURpa3d6cTFlRkUwZkZtU3Q0Ujd3YW5rUHNzb0FtTHZyMnN0TXRFSzFCV1U2bE5KcWMvcE1CZ0FJQkJBajlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNCZEwvV1ZicFc0WkRyRUIvYmJWdXJpWTVkSkJkRUNQbkhhUGVVeWpoeWx0cmhQNVVCWm1RcHVvakNOeGxpRld0bFlwbEhoUlhKaVAzK3RPVDI3QVQ3QU1HUm0vbElSY3kvK3l0dW5MRG0rZThqT1c3eGZjU2F5eERtenBBQUFBQUJVcFRXcGtwSVFaTkpPaHhZTm80Zkh3MXRkMjhrcnVCNUIrb1FFRUZSSTBHM2ZiaDEyV2hrOW5MNFViTzYzbXNITFNGN1Y5Yk41RTZqUFdGZnY4QXFUdEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZuQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUVCQUFGQWtBTkF3QUVBQWtEQVFBQUFBQUFBQUFHQkFNSEFnRUtET2dEQUFBQUFBQUFCZ1VBSUhnME1ESmxlR0ZqZEhZeGRtVnlhV1l3TURBd01EQXdNREF3TURBd01EQXdBQT09In19",
       "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
       "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
       "x402ServerFeePayerSecretKey": [
         9,
@@ -369,20 +310,127 @@
         246,
         24
       ],
-      "rpcFixtures": {
-        "recentBlockhash": "11111111111111111111111111111111",
-        "mints": {
-          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
-            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "decimals": 6
-          }
-        }
-      }
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
     },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Server rejects a v1 credential signed for the wrong network: a v1 envelope with plain network \"solana\" (mainnet) presented to a devnet route fails the v1 network gate.",
     "expect": {
       "outcome": "reject",
       "rejectCode": "wrong-network",
       "rejectReason": "v1 network solana normalizes to mainnet, route is devnet"
-    }
+    },
+    "id": "x402-exact-v1-verify-reject-wrong-network",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFnQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQlFNQWlrSDlnR3pIWFRmUVBmK0M0SlZCTVJDQkYzQzZhRGlrd3pxMWVGRTBmRm1TdDRSN3dhbmtQc3NvQW1MdnIyc3RNdEVLMUJXVTZsTkpxYy9wTUJnQUlCQkFqOUZ5UTRXcURIVzJUN2VNMWdMNkhaa2Yzcjkyc1R4WTdYQXVySU5lbjJHT3BLYkdQaW5GSUt2dlZRZXhNdXhmbVZSM2F1dnI1N2trSWU2bWtVUnRJc0JkTC9XVmJwVzRaRHJFQi9iYlZ1cmlZNWRKQmRFQ1BuSGFQZVV5amh5bHRyaFA1VUJabVFwdW9qQ054bGlGV3RsWXBsSGhSWEppUDMrdE9UMjdBVDdBTUdSbS9sSVJjeS8reXR1bkxEbStlOGpPVzd4ZmNTYXl4RG16cEFBQUFBQlVwVFdwa3BJUVpOSk9oeFlObzRmSHcxdGQyOGtydUI1QitvUUVFRlJJMEczZmJoMTJXaGs5bkw0VWJPNjNtc0hMU0Y3VjliTjVFNmpQV0ZmdjhBcVR0RUxMT1JJVmZ4T3BNOUFUUW9MUU1yWC83TkFhTGI4YmQ1QmdqZkFDNm5BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRUJBQUZBa0FOQXdBRUFBa0RBUUFBQUFBQUFBQUdCQU1IQWdFS0RPZ0RBQUFBQUFBQUJnVUFJSGcwTURKbGVHRmpkSFl4ZG1WeWFXWXdNREF3TURBd01EQXdNREF3TURBd0FBPT0ifX0=",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+      "x402ServerFeePayerSecretKey": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        253,
+        23,
+        36,
+        56,
+        90,
+        160,
+        199,
+        91,
+        100,
+        251,
+        120,
+        205,
+        96,
+        47,
+        161,
+        217,
+        145,
+        253,
+        235,
+        247,
+        107,
+        19,
+        197,
+        142,
+        215,
+        2,
+        234,
+        200,
+        53,
+        233,
+        246,
+        24
+      ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v1.md",
+      "quote": "Protocol version identifier (must be 1)",
+      "section": "5.2.2 Field Descriptions (PaymentPayload)"
+    },
+    "tier": "offline"
   }
 ]
