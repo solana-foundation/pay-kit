@@ -2,7 +2,7 @@
 //!
 //! Split out of `charge.rs` (behavior-preserving move): gateway-paid bundle
 //! settlement (`Mpp::settle_confidential_bundle`), the orphan sweeper
-//! (`Mpp::sweep_confidential_orphans` + `broadcast_close`), and the per-tx
+//! (`Mpp::sweep_confidential_orphans` + `broadcast_close`, gated by `orphan`), and the per-tx
 //! bundle allow-list (`verify_confidential_bundle_tx`). The rest of the charge
 //! handler — and the shared helpers this module imports — stays in `charge.rs`.
 
@@ -14,8 +14,6 @@ use solana_transaction::versioned::VersionedTransaction;
 
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{programs, MethodDetails};
-#[cfg(feature = "worker")]
-use crate::mpp::store::Store;
 
 use super::charge::{
     check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, ComputeBudgetOp, Mpp,
@@ -452,11 +450,9 @@ impl Mpp {
     ///
     /// Race safety: a bundle that is currently settling also has live context
     /// accounts, but it creates and closes them within one bounded
-    /// `settle_confidential_bundle` call (well under the blockhash window). To
-    /// avoid closing those, this uses a two-pass guard backed by the store: an
-    /// account is closed only if it was already seen in a PRIOR sweep. First
-    /// sighting ⇒ record + defer; still present next sweep ⇒ orphaned ⇒ close.
-    /// Schedule this with an interval comfortably larger than settlement latency.
+    /// `settle_confidential_bundle` call. The shared store records when each
+    /// account was first seen, by any replica; it is closed only once it has
+    /// outlived [`orphan::GRACE_SECS`] from that first sighting.
     #[cfg(feature = "worker")]
     pub async fn sweep_confidential_orphans(
         &self,
@@ -513,40 +509,32 @@ impl Mpp {
                     .collect())
             };
 
-        let candidates: Vec<(Pubkey, bool)> = scan(&zk_program, 0)?
+        let candidates: Vec<(Pubkey, orphan::OrphanKind)> = scan(&zk_program, 0)?
             .into_iter()
-            .map(|pk| (pk, false))
-            .chain(scan(&record_program, 1)?.into_iter().map(|pk| (pk, true)))
+            .map(|pk| (pk, orphan::OrphanKind::ProofContext))
+            .chain(
+                scan(&record_program, 1)?
+                    .into_iter()
+                    .map(|pk| (pk, orphan::OrphanKind::Record)),
+            )
             .collect();
 
         let mut report = ConfidentialSweepReport::default();
-        for (pubkey, is_record) in candidates {
-            // First sighting ⇒ mark + defer (it could be an in-flight bundle);
-            // already seen ⇒ it survived a full sweep interval ⇒ orphaned.
-            if !confirm_orphan_seen(self.store.as_ref(), &pubkey).await? {
+        for (pubkey, kind) in candidates {
+            // Defer until it outlives the grace period (it could be in flight).
+            let Some(confirmed) = orphan::confirm(self.store.as_ref(), pubkey, kind).await? else {
                 report.deferred += 1;
                 continue;
-            }
-            // Survived a full sweep interval ⇒ orphaned. Close it to the gateway.
-            let ix = if is_record {
-                spl_record::instruction::close_account(&pubkey, &gateway, &gateway)
-            } else {
-                let gw = solana_address::Address::from(gateway.to_bytes());
-                solana_zk_elgamal_proof_interface::instruction::close_context_state(
-                    solana_zk_elgamal_proof_interface::instruction::ContextStateInfo {
-                        context_state_account: &solana_address::Address::from(pubkey.to_bytes()),
-                        context_state_authority: &gw,
-                    },
-                    &gw,
-                )
             };
-            match self.broadcast_close(signer.as_ref(), &gateway, ix).await {
+            match self
+                .broadcast_close(signer.as_ref(), &gateway, &confirmed)
+                .await
+            {
                 Ok(()) => {
-                    self.store.delete(&orphan_seen_key(&pubkey)).await.ok();
-                    if is_record {
-                        report.closed_records += 1;
-                    } else {
-                        report.closed_contexts += 1;
+                    self.store.delete(&orphan::seen_key(&pubkey)).await.ok();
+                    match kind {
+                        orphan::OrphanKind::Record => report.closed_records += 1,
+                        orphan::OrphanKind::ProofContext => report.closed_contexts += 1,
                     }
                 }
                 Err(e) => {
@@ -559,16 +547,17 @@ impl Mpp {
         Ok(report)
     }
 
-    /// Build, gateway-sign, simulate, broadcast, and confirm a single close
-    /// instruction. Used by the orphan sweeper.
+    /// Build, gateway-sign, simulate, broadcast, and confirm the close of a
+    /// confirmed orphan. Used by the orphan sweeper.
     #[cfg(feature = "worker")]
     pub(crate) async fn broadcast_close(
         &self,
         signer: &dyn solana_keychain::TransactionSigner,
         gateway: &Pubkey,
-        ix: solana_instruction::Instruction,
+        confirmed: &orphan::OrphanConfirmed,
     ) -> Result<(), VerificationError> {
         use solana_commitment_config::CommitmentConfig;
+        let ix = confirmed.close_instruction(gateway);
         let blockhash = self
             .rpc
             .get_latest_blockhash()
@@ -911,35 +900,123 @@ pub(crate) fn verify_confidential_account_lifecycle(
     Ok(())
 }
 
-/// Store key marking that the orphan sweeper has seen `pubkey` in a prior pass.
+/// Orphan guard. An account may be closed only through an [`orphan::OrphanConfirmed`],
+/// which only [`orphan::confirm`] issues once the grace period has elapsed.
 #[cfg(feature = "worker")]
-pub(crate) fn orphan_seen_key(pubkey: &Pubkey) -> String {
-    format!("confidential-orphan:seen:{pubkey}")
-}
+pub(crate) mod orphan {
+    use solana_pubkey::Pubkey;
 
-/// Two-pass orphan guard: returns `true` only if `pubkey` was already recorded
-/// in a previous sweep (⇒ it has survived a full interval and is genuinely
-/// orphaned, not an in-flight settlement's transient account). On the first
-/// sighting it records the mark and returns `false` (defer to the next sweep).
-#[cfg(feature = "worker")]
-pub(crate) async fn confirm_orphan_seen(
-    store: &dyn Store,
-    pubkey: &Pubkey,
-) -> Result<bool, VerificationError> {
-    let key = orphan_seen_key(pubkey);
-    let seen = store
-        .get(&key)
-        .await
-        .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
-        .is_some();
-    if !seen {
-        store
-            .put(&key, serde_json::json!(true))
-            .await
-            .map_err(|e| VerificationError::new(format!("Store error: {e}")))?;
-        return Ok(false);
+    use super::{
+        VerificationError, CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS,
+        CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS, MAX_CONFIDENTIAL_BUNDLE_TXS,
+    };
+    use crate::mpp::store::Store;
+
+    /// How long an account must have been seen before it counts as orphaned.
+    /// Far above a bundle's worst-case settlement time, so a replica never
+    /// closes accounts another replica's in-flight bundle still needs.
+    pub(crate) const GRACE_SECS: u64 = 600;
+
+    const _: () = assert!(
+        GRACE_SECS * 1_000
+            > (MAX_CONFIDENTIAL_BUNDLE_TXS * CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS) as u64
+                * CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS
+    );
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum OrphanKind {
+        ProofContext,
+        Record,
     }
-    Ok(true)
+
+    /// An account that outlived the grace period from its first sighting.
+    #[derive(Debug)]
+    pub(crate) struct OrphanConfirmed {
+        pubkey: Pubkey,
+        kind: OrphanKind,
+    }
+
+    impl OrphanConfirmed {
+        /// The instruction closing this account back to the gateway.
+        pub(crate) fn close_instruction(
+            &self,
+            gateway: &Pubkey,
+        ) -> solana_instruction::Instruction {
+            match self.kind {
+                OrphanKind::Record => {
+                    spl_record::instruction::close_account(&self.pubkey, gateway, gateway)
+                }
+                OrphanKind::ProofContext => {
+                    let gw = solana_address::Address::from(gateway.to_bytes());
+                    solana_zk_elgamal_proof_interface::instruction::close_context_state(
+                        solana_zk_elgamal_proof_interface::instruction::ContextStateInfo {
+                            context_state_account: &solana_address::Address::from(
+                                self.pubkey.to_bytes(),
+                            ),
+                            context_state_authority: &gw,
+                        },
+                        &gw,
+                    )
+                }
+            }
+        }
+    }
+
+    /// Shared-store key holding the unix time `pubkey` was first seen.
+    pub(crate) fn seen_key(pubkey: &Pubkey) -> String {
+        format!("confidential-orphan:seen:{pubkey}")
+    }
+
+    /// Record the first sighting of `pubkey` (by any replica) and confirm it
+    /// once [`GRACE_SECS`] have passed since then.
+    pub(crate) async fn confirm(
+        store: &dyn Store,
+        pubkey: Pubkey,
+        kind: OrphanKind,
+    ) -> Result<Option<OrphanConfirmed>, VerificationError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| VerificationError::new(format!("system clock: {e}")))?
+            .as_secs();
+        confirm_at(store, pubkey, kind, now).await
+    }
+
+    pub(crate) async fn confirm_at(
+        store: &dyn Store,
+        pubkey: Pubkey,
+        kind: OrphanKind,
+        now: u64,
+    ) -> Result<Option<OrphanConfirmed>, VerificationError> {
+        let store_err =
+            |e: crate::core::store::StoreError| VerificationError::new(format!("Store error: {e}"));
+        let key = seen_key(&pubkey);
+        if store
+            .put_if_absent(&key, serde_json::json!(now))
+            .await
+            .map_err(store_err)?
+        {
+            return Ok(None);
+        }
+        match store
+            .get(&key)
+            .await
+            .map_err(store_err)?
+            .and_then(|v| v.as_u64())
+        {
+            Some(first_seen) if now.saturating_sub(first_seen) >= GRACE_SECS => {
+                Ok(Some(OrphanConfirmed { pubkey, kind }))
+            }
+            Some(_) => Ok(None),
+            None => {
+                // Untimed mark (legacy or deleted concurrently): restart the clock.
+                store
+                    .put(&key, serde_json::json!(now))
+                    .await
+                    .map_err(store_err)?;
+                Ok(None)
+            }
+        }
+    }
 }
 
 #[cfg(feature = "confidential")]

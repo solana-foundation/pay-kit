@@ -4025,7 +4025,7 @@ mod tests {
     // Confidential bundle verification + orphan-guard moved to `server::confidential`;
     // the unit tests below stay here (they reuse this module's `dummy_tx` helper).
     #[cfg(feature = "worker")]
-    use crate::mpp::server::confidential::{confirm_orphan_seen, orphan_seen_key};
+    use crate::mpp::server::confidential::orphan::{self, OrphanKind};
     #[cfg(feature = "confidential")]
     use crate::mpp::server::confidential::{
         verify_confidential_account_lifecycle, verify_confidential_bundle_tx,
@@ -4433,19 +4433,81 @@ mod tests {
 
     #[cfg(feature = "worker")]
     #[tokio::test]
-    async fn orphan_guard_defers_first_sighting_then_confirms() {
+    async fn orphan_guard_defers_until_grace_from_first_sighting() {
         let store = MemoryStore::new();
         let acct = Pubkey::new_unique();
-        // First sweep: never seen ⇒ deferred (not closed), and now recorded.
-        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
-        // Second sweep: still present ⇒ confirmed orphaned.
-        assert!(confirm_orphan_seen(&store, &acct).await.unwrap());
-        // A different account starts over (independent two-pass state).
+        let kind = OrphanKind::Record;
+        let grace = orphan::GRACE_SECS;
+        let t0 = 1_000_000;
+        // First sighting (any replica) records the time and defers.
+        assert!(orphan::confirm_at(&store, acct, kind, t0)
+            .await
+            .unwrap()
+            .is_none());
+        // A second sighting before the grace period still defers...
+        assert!(orphan::confirm_at(&store, acct, kind, t0 + 1)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(orphan::confirm_at(&store, acct, kind, t0 + grace - 1)
+            .await
+            .unwrap()
+            .is_none());
+        // ...and does not move the first-seen time forward.
+        let confirmed = orphan::confirm_at(&store, acct, kind, t0 + grace)
+            .await
+            .unwrap()
+            .expect("orphan confirmed after grace");
+        let gateway = Pubkey::new_unique();
+        assert_eq!(
+            confirmed.close_instruction(&gateway).accounts[0].pubkey,
+            acct
+        );
+        // A different account starts its own clock.
         let other = Pubkey::new_unique();
-        assert!(!confirm_orphan_seen(&store, &other).await.unwrap());
+        assert!(orphan::confirm_at(&store, other, kind, t0 + grace)
+            .await
+            .unwrap()
+            .is_none());
         // After a successful close we clear the mark; it then starts fresh.
-        store.delete(&orphan_seen_key(&acct)).await.unwrap();
-        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
+        store.delete(&orphan::seen_key(&acct)).await.unwrap();
+        assert!(orphan::confirm_at(&store, acct, kind, t0 + 2 * grace)
+            .await
+            .unwrap()
+            .is_none());
+        // The wall-clock entry point defers a fresh account.
+        assert!(orphan::confirm(&store, Pubkey::new_unique(), kind)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(feature = "worker")]
+    #[tokio::test]
+    async fn orphan_guard_restarts_the_clock_on_an_untimed_mark() {
+        let store = MemoryStore::new();
+        let acct = Pubkey::new_unique();
+        let kind = OrphanKind::ProofContext;
+        store
+            .put(&orphan::seen_key(&acct), serde_json::json!(true))
+            .await
+            .unwrap();
+        assert!(orphan::confirm_at(&store, acct, kind, 10)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(
+            orphan::confirm_at(&store, acct, kind, 10 + orphan::GRACE_SECS - 1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            orphan::confirm_at(&store, acct, kind, 10 + orphan::GRACE_SECS)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[cfg(feature = "confidential")]

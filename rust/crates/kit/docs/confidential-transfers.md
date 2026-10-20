@@ -517,8 +517,10 @@ behalf of some *other* recipient and cannot decrypt that recipient's handle.
   gateway as a signer — a token-drain vector the allow-list closes.
 - **Orphan sweeper.** A partially-failed bundle can strand gateway-funded
   proof/record accounts; `Mpp::sweep_confidential_orphans` (worker feature) scans
-  for gateway-owned ones and closes them back, with a two-pass guard so it never
-  closes an in-flight settlement's accounts.
+  for gateway-owned ones and closes them back. The shared store records when each
+  account was first seen, by any replica, and an account is closed only once it is
+  older than a grace period well above worst-case settlement time, so no replica
+  closes another's in-flight settlement accounts.
 - **Confirm each tx before the next.** Later txs depend on earlier ones (the
   transfer references the context accounts), so the gateway waits for
   `confirmed` between txs.

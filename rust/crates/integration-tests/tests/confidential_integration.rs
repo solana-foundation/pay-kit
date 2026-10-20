@@ -391,6 +391,16 @@ fn confidential_request(s: &Setup, amount: u64) -> solana_pay_kit::mpp::ChargeRe
 /// Gateway `Mpp` that both issues the challenge and (in the direct test)
 /// settles with recipient-key amount enforcement.
 fn gateway_mpp(s: &Setup) -> Mpp {
+    gateway_mpp_with_store(
+        s,
+        std::sync::Arc::new(solana_pay_kit::mpp::store::MemoryStore::new()),
+    )
+}
+
+fn gateway_mpp_with_store(
+    s: &Setup,
+    store: std::sync::Arc<solana_pay_kit::mpp::store::MemoryStore>,
+) -> Mpp {
     Mpp::new(Config {
         recipient: s.gateway.pubkey().to_string(),
         currency: s.mint.to_string(),
@@ -402,9 +412,7 @@ fn gateway_mpp(s: &Setup) -> Mpp {
         fee_payer: true,
         fee_payer_signer: Some(s.gateway_signer.clone()),
         recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
-        store: Some(std::sync::Arc::new(
-            solana_pay_kit::mpp::store::MemoryStore::new(),
-        )),
+        store: Some(store),
         ..Default::default()
     })
     .unwrap()
@@ -478,8 +486,8 @@ async fn confidential_charge_via_worker() {
 }
 
 /// Orphan sweep: create gateway-owned proof-context + record accounts (as a
-/// partially-failed bundle would strand) and confirm the two-pass sweep defers
-/// on the first pass and closes them back to the gateway on the second.
+/// partially-failed bundle would strand) and confirm the sweep defers them until
+/// the grace period from their first sighting has passed, then closes them.
 #[cfg(feature = "worker")]
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
@@ -544,15 +552,41 @@ async fn confidential_orphan_sweep() {
         "create orphan context",
     );
 
-    // One long-lived Mpp so the two-pass guard's store persists across sweeps.
-    let mpp = gateway_mpp(&s);
+    use solana_pay_kit::mpp::store::Store;
+
+    // The orphan guard's first-seen marks live in this shared store.
+    let store = std::sync::Arc::new(solana_pay_kit::mpp::store::MemoryStore::new());
+    let mpp = gateway_mpp_with_store(&s, store.clone());
 
     // First pass: first sighting ⇒ deferred, nothing closed.
     let first = mpp.sweep_confidential_orphans().await.unwrap();
     assert_eq!(first.closed_contexts + first.closed_records, 0);
     assert!(first.deferred >= 2, "expected >=2 deferred, got {first:?}");
 
-    // Second pass: confirmed orphaned ⇒ closed back to the gateway.
+    // A second sighting inside the grace period (another replica, a restart)
+    // must still defer.
+    let early = mpp.sweep_confidential_orphans().await.unwrap();
+    assert_eq!(early.closed_contexts + early.closed_records, 0, "{early:?}");
+    assert!(s.rpc.get_account(&record.pubkey()).is_ok());
+    assert!(s.rpc.get_account(&ctx.pubkey()).is_ok());
+
+    // Age the first sightings past the grace period.
+    let aged = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3_600;
+    for pk in [record.pubkey(), ctx.pubkey()] {
+        store
+            .put(
+                &format!("confidential-orphan:seen:{pk}"),
+                serde_json::json!(aged),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Past the grace period: confirmed orphaned ⇒ closed back to the gateway.
     let second = mpp.sweep_confidential_orphans().await.unwrap();
     assert!(second.closed_records >= 1, "record not closed: {second:?}");
     assert!(
