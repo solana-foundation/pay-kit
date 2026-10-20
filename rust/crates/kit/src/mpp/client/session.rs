@@ -394,6 +394,32 @@ pub struct PaymentChannelOpenOptions {
     pub recipients: Option<Vec<Distribution>>,
     pub salt: Option<u64>,
     pub token_program: Option<Pubkey>,
+    /// Payout terms the caller approved, typically [`SessionPayout::from_request`]
+    /// checked against a destination policy. When set, opening fails unless
+    /// the channel's payee and distribution splits are exactly these, so a
+    /// challenge cannot commit escrow to destinations nobody approved.
+    pub approved_payout: Option<SessionPayout>,
+}
+
+/// Where a session channel pays out: the payee and the ordered distribution
+/// splits committed at open. These, not the deposit, decide who can settle
+/// the escrow, so they belong in any approval of a session challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPayout {
+    /// Channel payee (`recipient`).
+    pub payee: Pubkey,
+    /// `methodDetails.distributionSplits`, in challenge order.
+    pub splits: Vec<Distribution>,
+}
+
+impl SessionPayout {
+    /// The payout a session challenge asks the client to commit to.
+    pub fn from_request(request: &SessionRequest) -> Result<Self> {
+        Ok(Self {
+            payee: parse_pubkey(&request.recipient, "recipient")?,
+            splits: parse_splits(request)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +514,14 @@ pub fn derive_payment_channel_open(
         Some(recipients) => recipients,
         None => parse_splits(request)?,
     };
+    if let Some(approved) = &params.options.approved_payout {
+        if approved.payee != payee || approved.splits != recipients {
+            return Err(Error::Other(
+                "session payout does not match the approved payee and distribution splits"
+                    .to_string(),
+            ));
+        }
+    }
     let salt = params.options.salt.unwrap_or_else(random_salt);
     let open_slot = match params.options.open_slot {
         Some(open_slot) => {
@@ -926,6 +960,57 @@ mod tests {
             active.sign_increment(1).await.unwrap().data.expires_at,
             Some(999)
         );
+    }
+
+    #[test]
+    fn open_refuses_a_payout_other_than_the_approved_one() {
+        let payee = Pubkey::new_unique();
+        let split = Pubkey::new_unique();
+        let mut req = request(payee);
+        req.method_details.distribution_splits.push(SessionSplit {
+            recipient: split.to_string(),
+            share_bps: 250,
+        });
+        let payout = SessionPayout::from_request(&req).unwrap();
+        assert_eq!(payout.payee, payee);
+        assert_eq!(
+            payout.splits,
+            vec![Distribution {
+                recipient: split,
+                bps: 250
+            }]
+        );
+
+        let derive = |request: &SessionRequest, approved: SessionPayout| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request,
+                payer: Pubkey::new_unique(),
+                authorized_signer: Pubkey::new_unique(),
+                options: PaymentChannelOpenOptions {
+                    open_slot: Some(42),
+                    approved_payout: Some(approved),
+                    ..Default::default()
+                },
+            })
+        };
+        assert!(derive(&req, payout.clone()).is_ok());
+
+        // Same challenge, payee swapped for an attacker's.
+        let mut redirected = req.clone();
+        redirected.recipient = Pubkey::new_unique().to_string();
+        let err = derive(&redirected, payout.clone()).unwrap_err();
+        assert!(err.to_string().contains("approved payee"), "{err}");
+
+        // Same payee, an extra split nobody approved.
+        let mut extra_split = req.clone();
+        extra_split
+            .method_details
+            .distribution_splits
+            .push(SessionSplit {
+                recipient: Pubkey::new_unique().to_string(),
+                share_bps: 100,
+            });
+        assert!(derive(&extra_split, payout).is_err());
     }
 
     #[test]
