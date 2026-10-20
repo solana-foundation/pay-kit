@@ -9,6 +9,8 @@ import type { HarnessScenario } from "../contracts";
 // the authorized ceiling; the server broadcasts the open, then settles
 // the metered actual amount with a voucher after the handler runs.
 // Live settlement requires the payment-channels program on surfpool.
+// The Rust upto server binds every challenge to its route (extra.memo), as
+// the axum gate does, so each client must sign the declared memo.
 export const x402UptoScenarios: readonly HarnessScenario[] = [
   {
     id: "x402-upto-basic",

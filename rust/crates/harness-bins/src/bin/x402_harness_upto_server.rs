@@ -29,6 +29,8 @@ struct UptoHarnessState {
     resource_path: String,
     settlement_header: String,
     actual_amount: String,
+    /// Route every challenge is bound to (declared as `extra.memo`).
+    route: String,
     runtime: Arc<tokio::runtime::Runtime>,
 }
 
@@ -98,6 +100,9 @@ fn read_state(
     let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
         .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
     let program_id = env::var("PAYMENT_CHANNELS_PROGRAM_ID").ok();
+    // Bound like the axum gate, so every client in the matrix must sign
+    // the challenge's extra.memo into its open.
+    let route = format!("GET {resource_path}");
     let receiver_authorizer = receiver_authorizer_signer.pubkey().to_string();
     let payout = harness_upto_payout(pay_to, &receiver_authorizer);
 
@@ -125,6 +130,7 @@ fn read_state(
         resource_path,
         settlement_header,
         actual_amount,
+        route,
         runtime,
     })
 }
@@ -198,7 +204,9 @@ fn handle_connection(
                         )?;
                     }
                     Err(error) => {
-                        let (_, header_value) = state.upto.payment_required_header(&max_amount)?;
+                        let (_, header_value) = state
+                            .upto
+                            .payment_required_header_for_route(&max_amount, Some(&state.route))?;
                         write_json_response(
                             &mut stream,
                             402,
@@ -211,7 +219,9 @@ fn handle_connection(
                     }
                 }
             } else {
-                let (_, header_value) = state.upto.payment_required_header(&max_amount)?;
+                let (_, header_value) = state
+                    .upto
+                    .payment_required_header_for_route(&max_amount, Some(&state.route))?;
                 write_json_response(
                     &mut stream,
                     402,
@@ -231,9 +241,11 @@ fn settle_upto_payment(
     payment_header: &str,
     max_amount: &str,
 ) -> Result<(UptoSettlementResponse, String), Box<dyn std::error::Error + Send + Sync>> {
-    let verified = state
-        .runtime
-        .block_on(state.upto.verify_open(payment_header, max_amount))?;
+    let verified = state.runtime.block_on(state.upto.verify_open_for_route(
+        payment_header,
+        max_amount,
+        Some(&state.route),
+    ))?;
     let actual: u64 = state.actual_amount.parse().unwrap_or(0);
     let settlement = state
         .runtime
