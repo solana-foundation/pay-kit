@@ -410,3 +410,87 @@ async def test_unsupported_x402_network_is_not_signed(monkeypatch: pytest.Monkey
     assert response.status_code == 402
     build.assert_not_called()
     assert len(inner.requests) == 1
+
+
+@pytest.mark.parametrize("network", [None, SOLANA_MAINNET_CAIP2])
+async def test_x402_offer_without_network_is_not_signed(monkeypatch: pytest.MonkeyPatch, network: str | None) -> None:
+    mint = resolve_stablecoin_mint("USDC", "mainnet")
+    offer: dict[str, object] = {"scheme": "exact", "asset": mint, "amount": "1000", "payTo": PAYEE}
+    if network is not None:
+        offer["network"] = network
+    # Hand the transport the offer directly: the selector already skips
+    # network-less offers, and the permission layer must not rely on that.
+    monkeypatch.setattr("solana_pay_kit.client.client.parse_x402_challenge_with_version", lambda *_args: (offer, 2))
+
+    async def x402_credential(*_args: object, **_kwargs: object) -> str:
+        return "x402 credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_credential)
+    inner = MockTransport([httpx.Response(402, headers={"payment-required": "e30="}), httpx.Response(200)])
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("x402",),
+        base_transport=inner,
+    )
+
+    if network is None:
+        with pytest.raises(PermissionDeniedError) as raised:
+            await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+        assert raised.value.rejections[0].code == "invalid_challenge_terms"
+        assert "missing network" in raised.value.rejections[0].message
+        assert len(inner.requests) == 1
+    else:
+        response = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+        assert response.status_code == 200
+        assert inner.requests[1].headers["payment-signature"] == "x402 credential"
+
+
+async def test_x402_recipient_alias_is_ignored_by_the_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RULINGS X1: only payTo names the destination. An allowlisted legacy
+    # `recipient` beside an unlisted payTo does not approve the payment.
+    mint = resolve_stablecoin_mint("USDC", "mainnet")
+    offer = {
+        "scheme": "exact",
+        "network": SOLANA_MAINNET_CAIP2,
+        "asset": mint,
+        "amount": "1000",
+        "payTo": PAYEE,
+        "recipient": SPLIT,
+        "maxTimeoutSeconds": 60,
+        "extra": {},
+    }
+    payment_required = base64.b64encode(json.dumps({"x402Version": 2, "accepts": [offer]}).encode()).decode()
+
+    async def x402_credential(*_args: object, **_kwargs: object) -> str:
+        return "x402 credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_credential)
+
+    def transport(allowed: str) -> tuple[PermissionedPaymentTransport, MockTransport]:
+        inner = MockTransport(
+            [httpx.Response(402, headers={"payment-required": payment_required}), httpx.Response(200)]
+        )
+        return (
+            PermissionedPaymentTransport(
+                MagicMock(),
+                MagicMock(),
+                network="mainnet",
+                permissions=ClientPermissions.builder().allow_recipient(allowed).build(),
+                protocols=("x402",),
+                base_transport=inner,
+            ),
+            inner,
+        )
+
+    denied, inner = transport(SPLIT)
+    with pytest.raises(PermissionDeniedError) as raised:
+        await denied.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+    assert raised.value.rejections[0].code == "recipient_not_allowed"
+    assert len(inner.requests) == 1
+
+    allowed, _ = transport(PAYEE)
+    response = await allowed.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+    assert response.status_code == 200

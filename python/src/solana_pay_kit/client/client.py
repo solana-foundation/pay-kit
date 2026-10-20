@@ -90,7 +90,9 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                     challenge_network = details.get("network")
                     if challenge_network is not None and not isinstance(challenge_network, str):
                         raise _invalid("invalid MPP network")
-                    network = _network(challenge_network, self._network)
+                    # draft-solana-charge-00: methodDetails.network "Defaults to
+                    # "mainnet" if omitted". x402 has no such default.
+                    network = _network(challenge_network or "mainnet", self._network)
                     mint = resolve_stablecoin_mint(currency, network) or currency
                     destinations = _charge_destinations(raw.get("recipient"), amount, details.get("splits"))
                     authorized = self._permissions.authorize(
@@ -119,7 +121,10 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
             if requirement is not None:
                 try:
                     network = _network(requirement.get("network"), self._network)
-                    amount = _amount(requirement.get("amount") or requirement.get("maxAmountRequired"))
+                    # The same v2 fields build_payment signs (RULINGS X1): a
+                    # legacy alias such as maxAmountRequired or recipient is
+                    # ignored, so the approval covers what the transfer pays.
+                    amount = _amount(requirement.get("amount"))
                     asset = requirement.get("asset")
                     destinations = (PaymentDestination(x402_exact_pay_to(requirement), amount),)
                     self._permissions.authorize(
@@ -306,7 +311,11 @@ def _charge_destinations(recipient: object, amount: int, splits: object) -> tupl
 
 
 def _network(value: object, configured: SolanaNetwork) -> SolanaNetwork:
-    if value in {None, "mainnet", "mainnet-beta", SOLANA_MAINNET_CAIP2}:
+    # Never default a missing network: an offer that names no ledger would
+    # otherwise be approved and signed as a mainnet payment.
+    if value is None:
+        raise _invalid("payment offer is missing network")
+    if value in {"mainnet", "mainnet-beta", SOLANA_MAINNET_CAIP2}:
         return "mainnet"
     if value == "localnet":
         return "localnet"
