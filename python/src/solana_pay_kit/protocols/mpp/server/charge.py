@@ -22,12 +22,14 @@ from typing import Any
 from solana_keychain import TransactionSigner
 
 from solana_pay_kit._paycore.errors import (
+    CODE_SIGNATURE_CONSUMED,
     ChallengeExpiredError,
     ChallengeMismatchError,
     PaymentError,
     ReplayError,
 )
 from solana_pay_kit._paycore.network_check import check_network_blockhash
+from solana_pay_kit._paycore.rpc import PreflightRejectedError, _RpcError
 from solana_pay_kit._paycore.solana import (
     MIN_SECRET_KEY_BYTES,
     CredentialPayload,
@@ -41,7 +43,7 @@ from solana_pay_kit._paycore.solana import (
     validate_network,
     validate_splits,
 )
-from solana_pay_kit._paycore.store import ConsumedSignatures, Store
+from solana_pay_kit._paycore.store import ConsumedSignatures, Store, consumed_signature_key
 from solana_pay_kit._paycore.transaction import require_reported_version
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
@@ -106,6 +108,32 @@ __all__ = [
     "_verify_parsed_sol_transfers",
     "_verify_parsed_spl_transfers",
 ]
+
+
+def _local_signature(raw_tx: bytes) -> str:
+    """The fee-payer signature of a fully signed wire transaction.
+
+    Derived before broadcast so the charge is tracked under the signature the
+    cluster will record, whatever the RPC answers.
+    """
+    from solders.transaction import VersionedTransaction
+
+    try:
+        signatures = VersionedTransaction.from_bytes(raw_tx).signatures
+    except Exception as exc:  # noqa: BLE001
+        raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
+    if not signatures:
+        raise PaymentError("signed transaction has no signature", code="invalid-payload")
+    return str(signatures[0])
+
+
+def _settlement_in_progress(signature: str, detail: str) -> PaymentError:
+    """The charge is pending under ``signature``: retry the same credential."""
+    return PaymentError(
+        f"settlement of {signature} is in progress ({detail}); retry the same credential",
+        code="settlement-in-progress",
+        retryable=True,
+    )
 
 
 def _invalid_payload(message: str) -> PaymentError:
@@ -581,54 +609,106 @@ class Mpp:
             assert self._fee_payer_signer is not None  # validated before transaction inspection
             signed_b64 = await _co_sign_with_fee_payer(payload.transaction, self._fee_payer_signer)
 
-        # L8 lock: broadcast first, then consume_signature, then await
-        # confirmation. The previous order (consume → broadcast → await,
-        # with a rollback in the except block) had a fatal flaw: a
-        # confirmation timeout after a successful broadcast triggered the
-        # rollback path which DELETED the consume marker, so a retry of the
-        # same credential could re-broadcast the same signed transaction
-        # and re-issue a receipt for it. Mirrors the canonical L8 order
-        # documented in lua/mpp/server/charge_handler.lua and the fix that
-        # landed on Ruby + PHP + Rust in PR #96 / #102. This is the same
-        # confirmation-timeout double-pay window Ludo found on the Rust
-        # spine; closing it here brings Python into parity.
-
+        # Claim the locally derived signature BEFORE broadcast, so the
+        # transfer is recorded whatever happens after it leaves. The claim is
+        # a pending record bound to this challenge; it is only ever released
+        # on a preflight rejection, which proves the node never forwarded the
+        # transaction. Any other send error (a lost response, a 5xx from a
+        # proxy that already forwarded it) leaves the outcome unknown, so the
+        # charge stays pending and a retry of the same credential reconciles
+        # it by signature instead of the client paying a fresh challenge.
         raw_tx = base64.b64decode(signed_b64)
-        send_resp = await self._rpc.send_raw_transaction(raw_tx)
-        signature = str(_rpc_value(send_resp))
+        signature = _local_signature(raw_tx)
+        ledger = ConsumedSignatures(self._store)
+        pending = {"state": "pending", "challengeId": credential.challenge.id}
+        if not await ledger.claim(signature, pending):
+            return await self._reconcile_pending(credential, request, details, signature)
 
-        # CONSUME the signature now that we know it has been accepted by the
-        # cluster. Keying by signature (not by the credential bytes) means a
-        # retry of the same credential always tries to insert the same key,
-        # so the second attempt fails fast and the network is never asked
-        # to settle the same transaction twice.
-        inserted = await ConsumedSignatures(self._store).claim(signature)
-        if not inserted:
-            raise ReplayError()
+        try:
+            send_resp = await self._rpc.send_raw_transaction(raw_tx)
+        except PreflightRejectedError as exc:
+            await ledger.release(signature)
+            raise PaymentError(f"transaction rejected in preflight: {exc}", code="transaction-failed") from exc
+        except _RpcError as exc:
+            if exc.code != CODE_SIGNATURE_CONSUMED:
+                raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+            # The node already processed this exact transaction: confirm it.
+        except Exception as exc:  # noqa: BLE001 — transport errors leave the outcome unknown
+            raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+        else:
+            sent = str(_rpc_value(send_resp))
+            if sent != signature:
+                raise _settlement_in_progress(
+                    signature, f"RPC reported signature {sent} for a transaction signed as {signature}"
+                )
 
-        # AWAIT confirmation. A timeout here MUST NOT roll back the consume:
-        # the signature is on the wire and may finalize asynchronously.
-        # Use ``await_confirmation`` (not ``confirm_transaction``) so an
-        # on-chain failure surfaces as ``transaction-failed`` while a
-        # polling timeout surfaces as ``transaction-not-found``; the
-        # canonical code mapping in ``_errors`` collapses both to the
-        # same client-facing 402 body, so the discrimination is purely
-        # diagnostic.
-        # Pass the raw signature string straight through. The previous
-        # ``Signature.from_string(signature)`` call sat between the
-        # durable consume marker (above) and the get_transaction call;
-        # if that parse ever raised (malformed RPC response, future
-        # solders API change), the consume would be durable but no
-        # receipt would be issued, stranding the user. ``get_transaction``
-        # already calls ``str(signature)`` internally on the wire, so the
-        # conversion is redundant work on the post-consume critical path.
+        # AWAIT confirmation. A timeout here MUST NOT release the claim: the
+        # signature is on the wire and may finalize asynchronously. Use
+        # ``await_confirmation`` (not ``confirm_transaction``) so an on-chain
+        # failure surfaces as ``transaction-failed`` while a polling timeout
+        # surfaces as ``transaction-not-found``.
         await self._rpc.await_confirmation(signature)
+        return await self._grant_confirmed(credential, request, details, signature)
 
+    async def _reconcile_pending(
+        self,
+        credential: PaymentCredential,
+        request: ChargeRequest,
+        details: MethodDetails,
+        signature: str,
+    ) -> Receipt:
+        """Resolve a retry of a credential whose settlement is still pending.
+
+        Only the same challenge may reconcile its own pending claim; any other
+        holder of the signature (a settled charge, an x402 payment, another
+        challenge) is a replay. Reconciliation is confirmation-only: the
+        transaction is never rebroadcast, and only an explicit on-chain
+        outcome resolves the record.
+        """
+        assert self._rpc is not None
+        current = await self._store.get(consumed_signature_key(signature))
+        if not (
+            isinstance(current, dict)
+            and current.get("state") == "pending"
+            and current.get("challengeId") == credential.challenge.id
+        ):
+            raise ReplayError()
+        statuses = await self._rpc.get_signature_statuses([signature])
+        status = statuses[0] if statuses else None
+        if isinstance(status, dict):
+            err = status.get("err")
+            if err is not None:
+                await self._store.put(
+                    consumed_signature_key(signature),
+                    {"state": "failed", "challengeId": credential.challenge.id},
+                )
+                raise PaymentError(f"transaction {signature} failed on-chain: {err}", code="transaction-failed")
+            if status.get("confirmationStatus") in {"confirmed", "finalized"}:
+                return await self._grant_confirmed(credential, request, details, signature)
+        raise _settlement_in_progress(signature, "transaction has not confirmed yet")
+
+    async def _grant_confirmed(
+        self,
+        credential: PaymentCredential,
+        request: ChargeRequest,
+        details: MethodDetails,
+        signature: str,
+    ) -> Receipt:
+        """Verify the confirmed transaction and issue its one receipt.
+
+        The receipt is claimed atomically, so concurrent retries reconciling
+        the same pending charge cannot each be granted the protected response.
+        """
+        assert self._rpc is not None
         tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
         self._verify_confirmed_transaction(tx, request, details)
+        key = consumed_signature_key(signature)
+        if not await self._store.put_if_absent(f"{key}:receipt", True):
+            raise ReplayError()
+        await self._store.put(key, {"state": "settled", "challengeId": credential.challenge.id})
         return Receipt.success(
             method="solana",
             reference=signature,

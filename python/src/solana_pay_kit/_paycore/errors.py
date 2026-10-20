@@ -74,6 +74,8 @@ _LEGACY_TO_CANONICAL = {
     "missing-transaction": CODE_PAYMENT_INVALID,
     "transaction-failed": CODE_PAYMENT_INVALID,
     "transaction-not-found": CODE_PAYMENT_INVALID,
+    # Retryable: the charge is pending; the same credential reconciles it.
+    "settlement-in-progress": CODE_PAYMENT_INVALID,
     "no-transfer": CODE_PAYMENT_INVALID,
     # Compute-budget allowlist failures and splits-count cap. Mirrors the
     # Rust / PHP / Ruby pre-broadcast guards: the wire body still surfaces

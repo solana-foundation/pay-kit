@@ -32,6 +32,18 @@ class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
 
 
+class PreflightRejectedError(_RpcError):
+    """``sendTransaction`` failed preflight simulation (JSON-RPC -32002).
+
+    The one send failure that proves the node did not forward the
+    transaction; every other send error leaves the outcome unknown.
+    """
+
+
+#: JSON-RPC error code of a ``sendTransaction`` preflight failure.
+_PREFLIGHT_FAILURE_CODE = -32002
+
+
 class _RpcResponse:
     """Minimal value-wrapper matching the ``solana-py`` AsyncClient
     response shape that the rest of the codebase expects (``.value``
@@ -104,7 +116,11 @@ class SolanaRpc:
             duplicate = method == "sendTransaction" and (
                 "already been processed" in message.lower() or "transaction already processed" in message.lower()
             )
-            raise _RpcError(message, code="signature_consumed" if duplicate else "payment_invalid")
+            if duplicate:
+                raise _RpcError(message, code="signature_consumed")
+            if method == "sendTransaction" and err.get("code") == _PREFLIGHT_FAILURE_CODE:
+                raise PreflightRejectedError(message, code="payment_invalid")
+            raise _RpcError(message, code="payment_invalid")
         return data.get("result")
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any:
