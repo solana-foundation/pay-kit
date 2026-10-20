@@ -67,18 +67,12 @@ type rawAcceptsEntry struct {
 	Scheme            string    `json:"scheme"`
 	Network           string    `json:"network"`
 	Asset             string    `json:"asset"`
-	Currency          string    `json:"currency"`
 	Amount            string    `json:"amount"`
 	MaxAmountRequired string    `json:"maxAmountRequired"`
 	PayTo             string    `json:"payTo"`
-	Recipient         string    `json:"recipient"`
 	MaxTimeoutSeconds *int      `json:"maxTimeoutSeconds"`
 	MaxAge            *int      `json:"maxAge"`
-	Decimals          *int      `json:"decimals"`
-	TokenProgram      string    `json:"tokenProgram"`
-	RecentBlockhash   string    `json:"recentBlockhash"`
 	FeePayer          *bool     `json:"feePayer"`
-	FeePayerKey       string    `json:"feePayerKey"`
 	Extra             *rawExtra `json:"extra"`
 }
 
@@ -102,10 +96,15 @@ func (e *AcceptsEntry) UnmarshalJSON(data []byte) error {
 	e.Protocol = r.Protocol
 	e.Scheme = r.Scheme
 	e.Network = normalizeNetwork(r.Network)
-	e.Asset = firstNonEmpty(r.Asset, r.Currency)
+	// RULINGS X1: a term is read from its x402 field only. `amount` and
+	// `maxTimeoutSeconds` fall back to the v1 names a legacy credential uses;
+	// fields a server adds beside them (`currency`, `recipient`, top-level
+	// `tokenProgram`, `decimals`, `recentBlockhash`, `feePayerKey`) are
+	// ignored, so the signed transfer pays what the echoed `accepted` names.
+	e.Asset = r.Asset
 	e.Amount = firstNonEmpty(r.Amount, r.MaxAmountRequired)
-	e.MaxAmountRequired = firstNonEmpty(r.MaxAmountRequired, r.Amount)
-	e.PayTo = firstNonEmpty(r.Recipient, r.PayTo)
+	e.MaxAmountRequired = e.Amount
+	e.PayTo = r.PayTo
 	switch {
 	case r.MaxTimeoutSeconds != nil:
 		e.MaxTimeoutSeconds = *r.MaxTimeoutSeconds
@@ -114,18 +113,15 @@ func (e *AcceptsEntry) UnmarshalJSON(data []byte) error {
 	default:
 		e.MaxTimeoutSeconds = DefaultMaxTimeoutSeconds
 	}
-	e.Extra.RecentBlockhash = firstNonEmpty(r.RecentBlockhash, r.Extra.RecentBlockhash)
-	e.Extra.TokenProgram = firstNonEmpty(r.TokenProgram, r.Extra.TokenProgram)
+	e.Extra.RecentBlockhash = r.Extra.RecentBlockhash
+	e.Extra.TokenProgram = r.Extra.TokenProgram
 	e.Extra.Memo = r.Extra.Memo
-	switch {
-	case r.Decimals != nil:
-		e.Extra.Decimals, e.Extra.DecimalsSet = *r.Decimals, true
-	case r.Extra.Decimals != nil:
+	if r.Extra.Decimals != nil {
 		e.Extra.Decimals, e.Extra.DecimalsSet = *r.Extra.Decimals, true
-	default:
+	} else {
 		e.Extra.Decimals, e.Extra.DecimalsSet = DefaultDecimals, false
 	}
-	e.Extra.FeePayerKey = firstNonEmpty(r.FeePayerKey, r.Extra.FeePayer)
+	e.Extra.FeePayerKey = r.Extra.FeePayer
 	switch {
 	case r.FeePayer != nil:
 		e.Extra.FeePayer, e.Extra.FeePayerSet = *r.FeePayer, true
