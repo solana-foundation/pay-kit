@@ -369,14 +369,14 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-1659a03107`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-4a77950278`* | draft-solana-charge-00.md § Native SOL Verification | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-6e9ac6c31d`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `MPP-c1ed754e32`* | draft-solana-charge-00.md § Pull Mode Verification | 2 | 1 · 1k | — | 2 | 2 | 1 · 1k | 2 | 2 | 0 · 2u | 2 |
+| `MPP-c1ed754e32`* | draft-solana-charge-00.md § Pull Mode Verification | 2 | 2 | — | 2 | 2 | 1 · 1k | 2 | 2 | 0 · 2u | 2 |
 | `MPP-4f9c5997c8`* | draft-solana-charge-00.md § SPL Token Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-96ba338b1e`* | draft-solana-charge-00.md § SPL Token Verification | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
 | `MPP-d90a2b66e5`* | draft-solana-charge-00.md § SPL Token Verification | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-1fe20b9485`* | draft-solana-charge-00.md § SPL Tokens | 3 | 1 · 2k | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 3 |
 | `MPP-5b4687796d`* | draft-solana-charge-00.md § SPL Tokens | 1 | 0 · 1k | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-64da85f4f3`* | draft-solana-charge-00.md § SPL Tokens | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `MPP-2d30d806c0`* | draft-solana-charge-00.md § Server Requirements | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 5 · 2u | 7 |
+| `MPP-2d30d806c0`* | draft-solana-charge-00.md § Server Requirements | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
 | `MPP-3d2ad6ef40`* | draft-solana-charge-00.md § Shared Fields | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-a6f3950ec9`* | draft-solana-charge-00.md § Shared Fields | 2 | 2 | — | 0 · 2u | 0 · 2u | 1 · 1k | 0 · 2u | 2 | 2 | 1 · 1k |
 | `MPP-0399450c79`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
@@ -391,7 +391,7 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-d63913e921`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 1 · 1k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-048617f9d7`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 5 | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
 | `MPP-1a2e7c737e`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 4 · 1k | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
-| `MPP-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 7 | 6 · 1k | — | 7 | 7 | 6 · 1k | 7 | 7 | 3 · 4u | 7 |
+| `MPP-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 7 | 7 | — | 7 | 7 | 6 · 1k | 7 | 7 | 0 · 7u | 7 |
 | `MPP-dc4603ccd4`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
 | `MPP-ebee0156c7`* | draft-solana-session-00.md § Action: "voucher" | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
 | `MPP-69c0a4f95f`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
@@ -529,7 +529,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-a93234f1d7`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 2 · 1k | — | 1 · 2k |
 | `X402-ae18578132`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
 | `X402-ebd20058fd`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
-| `X402-8fcdf05fbf`* | scheme_exact.md § Client-submitted (payment proof) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
+| `X402-8fcdf05fbf`* | scheme_exact.md § Client-submitted (payment proof) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `X402-f870a56d25`* | scheme_exact.md § Client-submitted (payment proof) | 19 | 19 | — | 9 · 10u | 9 · 10u | 19 | 9 · 10u | 19 | 10 · 9u | 12 · 7u |
 | `X402-fc2225a882`* | scheme_exact.md § Critical Validation Requirements | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1k |
 | `X402-f45fed3f51`* | scheme_exact.md § SVM | 3 | 3 | — | 2 · 1u | 2 · 1u | 3 | 2 · 1u | 3 | 1 · 2u | 3 |
@@ -548,7 +548,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-a1cf65b0f0`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `X402-a8bd75d71b`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
 | `X402-c9a227ad88`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 3 |
-| `X402-d844c67736`* | scheme_exact_svm.md § 3.4 Post-Settlement Verification (TOCTOU defense) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
+| `X402-d844c67736`* | scheme_exact_svm.md § 3.4 Post-Settlement Verification (TOCTOU defense) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `X402-d5f1ded529`* | scheme_exact_svm.md § PaymentRequirements for exact | 4 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 4 | 1 | 4 |
 | `X402-d851126afb`* | scheme_upto.md § 2. Time-Bound Authorization | 10 | — | — | — | — | — | — | 10 | — | 10 |
 | `X402-4504985ded`* | scheme_upto.md § 3. Recipient Binding | 1 | — | — | — | — | — | — | 1 | — | 1 |
