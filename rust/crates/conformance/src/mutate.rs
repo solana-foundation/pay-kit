@@ -202,9 +202,7 @@ impl Mutation {
             (
                 V1PriorityFee { .. } | V1Budget { .. },
                 Suite::Charge | Suite::X402Exact | Suite::Session,
-            ) => {
-                Some(ComputePriceOverCap)
-            }
+            ) => Some(ComputePriceOverCap),
             (
                 V1DropComputeUnitLimit | V1DropLoadedAccountsDataSizeLimit,
                 Suite::Charge | Suite::X402Exact | Suite::Session,
