@@ -29,6 +29,11 @@ ids = [
 [[unsupported]]
 reason = "swift is a client-only SDK and does not implement verify-transaction"
 ids = [
+  "vector/charge-verify-client-signature-accept",
+  "vector/charge-verify-forged-client-signature-reject",
+  "vector/charge-verify-sponsored-client-signature-accept",
+  "vector/charge-verify-sponsored-forged-client-signature-reject",
+  "vector/charge-verify-sponsored-truncated-signatures-reject",
   "vector/charge-verify-sponsored-split-one-authority-accept",
   "vector/charge-verify-sponsored-split-second-authority-reject",
   "vector/charge-verify-sponsored-unused-signer-reject",
@@ -80,6 +85,8 @@ ids = [
 [[unsupported]]
 reason = "swift is a client-only SDK and does not implement x402 verify-transaction"
 ids = [
+  "vector/x402-exact-verify-forged-client-signature-reject",
+  "vector/x402-exact-verify-truncated-signatures-reject",
   "vector/x402-exact-verify-priority-fee-over-cap-reject",
   "vector/x402-exact-unknown-version-reject",
   "vector/x402-exact-v1-verify-accept-devnet",

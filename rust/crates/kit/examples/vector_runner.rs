@@ -1030,6 +1030,13 @@ fn classify_reject(message: &str) -> Option<&'static str> {
         // A message version the server does not accept, or a client whose
         // signer can build no advertised version.
         "unsupported-version"
+    } else if has("signature verification failed")
+        || has("signature slots do not match")
+        || has("invalid client transaction signature")
+    {
+        // RULINGS SIG1: a client signature that does not verify over the
+        // message, or a signature list short of the required signers.
+        "invalid-payload"
     } else if has("must not contain computebudget instructions") {
         // A ComputeBudget instruction in a version-1 charge transaction.
         "unexpected-instruction"

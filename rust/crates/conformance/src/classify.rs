@@ -24,6 +24,13 @@ pub fn classify(message: &str) -> Option<RejectCode> {
         // instruction is inspected; x402 §1.5 `unsupported_transaction_version`),
         // or a client whose signer cannot build any advertised version.
         UnsupportedVersion
+    } else if has("signature verification failed")
+        || has("signature slots do not match")
+        || has("invalid client transaction signature")
+    {
+        // RULINGS SIG1: a client signature that does not verify over the
+        // message, or a signature list short of the required signers.
+        InvalidPayload
     } else if has("compute_price_instruction_too_high")
         || (has("compute unit price") && (has("exceed") || has("cap") || has("maximum")))
     {

@@ -51,6 +51,9 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // incomplete header config, a size over the version's limit, a lookup
   // table. Checked first: the messages also contain generic words.
   [/transaction version .*not accepted|unsupported_transaction_version|signs up to version/i, "unsupported-version"],
+  // RULINGS SIG1: a client signature that does not verify over the message,
+  // or a signature list short of the required signers.
+  [/signature verification failed|signature slots do not match|invalid client transaction signature/i, "invalid-payload"],
   [/^(?!.*invalid_exact_svm).*must not contain computebudget instructions/i, "unexpected-instruction"],
   [/must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables/i, "invalid-payload"],
   // Charge verification policy (split arithmetic, split-recipient ATA
