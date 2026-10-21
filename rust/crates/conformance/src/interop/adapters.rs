@@ -480,21 +480,29 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The packages and features of the Rust adapter build. They include `pkc`
-/// itself (with `interop`, as `pkc run --tier interop` is built), so cargo
-/// resolves the same features for every shared dependency as the build that
-/// produced `pkc`: when `pkc` and the adapters were built together (CI's
-/// setup-pkc runs exactly this selection), this build compiles nothing.
-pub const RUST_ADAPTER_BUILD: [&str; 8] = [
-    "-p",
-    "paykit-conformance",
-    "--bin",
-    "pkc",
-    "--features",
-    "paykit-conformance/interop",
-    "-p",
-    "paykit-harness-bins",
-];
+/// The packages and features of the Rust adapter build. A `pkc` built with
+/// `interop` (the one `pkc run --tier interop` needs) includes itself, so
+/// cargo resolves the same features for every shared dependency as the build
+/// that produced it: when `pkc` and the adapters were built together (CI's
+/// setup-pkc with `adapters: true` runs exactly this selection), this build
+/// compiles nothing. An offline `pkc` builds the adapters alone, without
+/// compiling the validator `interop` links.
+pub fn rust_adapter_build() -> &'static [&'static str] {
+    if cfg!(feature = "interop") {
+        &[
+            "-p",
+            "paykit-conformance",
+            "--bin",
+            "pkc",
+            "--features",
+            "paykit-conformance/interop",
+            "-p",
+            "paykit-harness-bins",
+        ]
+    } else {
+        &["-p", "paykit-harness-bins"]
+    }
+}
 
 /// Compile each distinct native target once into `out` (the layout
 /// [`command`] resolves). Targets whose executable already exists are kept
@@ -514,7 +522,7 @@ pub fn build(root: &Path, targets: &[Native], out: &Path, force: bool) -> Result
         let mut cmd = Command::new("cargo");
         cmd.current_dir(&harness)
             .args(["build", "--manifest-path", "../rust/Cargo.toml"]);
-        cmd.args(RUST_ADAPTER_BUILD);
+        cmd.args(rust_adapter_build());
         for t in &rust {
             cmd.args(["--bin", t.product]);
         }

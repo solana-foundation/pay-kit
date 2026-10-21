@@ -2,15 +2,21 @@ name: Build pkc
 description: >-
   Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) and
   put it on PATH. `features: interop` links surfpool for `pkc run --tier
-  interop` and builds the Rust interop adapters (paykit-harness-bins) in the
-  same invocation, so solana-pay-kit and every shared dependency compile once
-  and `pkc`'s own adapter build finds them fresh.
+  interop`; `adapters: true` also builds the Rust interop adapters
+  (paykit-harness-bins) in the same invocation, so solana-pay-kit and every
+  shared dependency compile once and pkc's own adapter build finds them fresh.
 
 inputs:
   features:
     description: Cargo features for pkc (`interop` for the interop tier).
     required: false
     default: ""
+  adapters:
+    description: >-
+      Also build the Rust interop adapters (paykit-harness-bins) with pkc, for
+      jobs that run `pkc run --tier interop`. Requires `features: interop`.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -27,16 +33,17 @@ runs:
       working-directory: rust
       env:
         FEATURES: ${{ inputs.features }}
+        ADAPTERS: ${{ inputs.adapters }}
       run: |
         # No debug info: the binaries are a fraction of the size, so a build
         # writes far less. Exported so every later cargo call in the job
         # (pkc's own adapter build) sees the same profile and reuses this one.
         echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
         export CARGO_PROFILE_DEV_DEBUG=0
-        if [ "$FEATURES" = interop ]; then
+        if [ "$ADAPTERS" = true ]; then
           # pkc and the Rust interop adapters in one build, with the package
           # and feature selection pkc's own adapter build uses
-          # (interop::adapters::RUST_ADAPTER_BUILD), so the interop step
+          # (interop::adapters::rust_adapter_build), so the interop step
           # finds every target fresh and compiles nothing.
           cargo build -q -p paykit-conformance --bin pkc --features paykit-conformance/interop \
             -p paykit-harness-bins --bins
