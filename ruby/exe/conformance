@@ -122,6 +122,9 @@ REJECT_PATTERNS = [
   # x402 v2: the credential's `accepted` matches no offered requirement.
   [/No matching payment requirements|accepted payment requirement does not match/i, "accepted-mismatch"],
   [/no memo instruction found|memo_mismatch|memo_count/i, "invalid-payload"],
+  # RULINGS SIG1: a client signature that does not verify over the message,
+  # or a signature list short of the required signers.
+  [/signature verification failed|signature slots do not match|invalid client transaction signature/i, "invalid-payload"],
   [/unsupported x402\s*version/i, "unsupported-version"],
   [/network mismatch/i, "wrong-network"],
   [/payment.identifier .*(required|missing|invalid)/i, "payment-identifier-required"],
