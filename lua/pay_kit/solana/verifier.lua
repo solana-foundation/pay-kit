@@ -23,6 +23,7 @@ local instructions = require('pay_kit.solana.instructions')
 local ata = require('pay_kit.solana.ata')
 local protocol = require('pay_kit.solana.mints')
 local error_codes = require('pay_kit.protocol.core.error_codes')
+local signatures = require('pay_kit.solana.signatures')
 
 local M = {}
 
@@ -303,6 +304,16 @@ local function verify_required_signers(tx, authorities)
   end
 end
 
+-- Every client signature must verify over this message, and the list must
+-- hold exactly the signatures the message requires (RULINGS SIG1). Only the
+-- server's own fee-payer slot may still be empty: it co-signs after this.
+local function verify_client_signatures(tx, fee_payer)
+  local ok, reason = signatures.check(tx, { fee_payer })
+  if not ok then
+    verifier_error('invalid transaction signature: ' .. reason)
+  end
+end
+
 --- Verify a parsed transaction against a charge request. Raises on
 --- mismatch; returns silently on success.
 function M.verify_transaction(tx, request)
@@ -367,6 +378,7 @@ function M.verify_transaction(tx, request)
     verify_memos(tx, request, splits, matched)
     validate_allowlist(tx, matched, mint, token_program, fee_payer, splits)
   end
+  verify_client_signatures(tx, fee_payer)
 end
 
 --- Verify a base64-encoded transaction payload against a charge request.

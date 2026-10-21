@@ -670,6 +670,16 @@ helper.test('verify_client_signatures accepts a v0 message signed over its prefi
   x402_verify.verify_client_signatures(base64.encode(signed_envelope(false)), {})
 end)
 
+-- RULINGS SIG1: the signature list holds exactly the signatures the message
+-- requires; an extra slot is not a signature of anything it names.
+helper.test('verify_client_signatures rejects more signatures than the message requires', function()
+  local raw = signed_envelope(false)
+  local padded = tx_mod.compact_u16(2) .. raw:sub(2, 65) .. string.rep('\0', 64) .. raw:sub(66)
+  local ok, err = pcall(x402_verify.verify_client_signatures, base64.encode(padded), {})
+  helper.assert_true(not ok, 'a padded signature list must be refused')
+  helper.assert_true(tostring(err):find('invalid_exact_svm_payload_signature', 1, true), tostring(err))
+end)
+
 helper.test('verify_client_signatures rejects a legacy message whose signature covers other bytes', function()
   -- Sign the v0 framing, then strip the prefix and lookup vector: the
   -- legacy message decodes, but the signature no longer covers it.

@@ -147,8 +147,13 @@ end
 -- would otherwise name the charge: the node refuses it without a preflight
 -- result, it is kept as possibly sent, and a retry would reconcile on the
 -- status of whatever landed transaction owns that signature.
+-- This runs on the transaction as sent, after any co-sign, so no slot is
+-- exempt; the charge verifier runs the same check before co-signing with
+-- only the server's fee-payer slot exempt.
 local function default_signature_verifier(signed_base64)
-  require('pay_kit.protocols.x402.exact.verify').verify_client_signatures(signed_base64, {})
+  local tx = require('pay_kit.solana.transaction').from_base64(signed_base64)
+  local ok, reason = require('pay_kit.solana.signatures').check(tx, {})
+  if not ok then error(reason) end
 end
 
 function M.new(config)

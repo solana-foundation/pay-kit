@@ -27,10 +27,9 @@ is consistent with the rest of the SDK.
 ]]
 
 local base64 = require('pay_kit.util.base64_std')
-local base58 = require('pay_kit.solana.base58')
 local tx_mod = require('pay_kit.solana.transaction')
 local ata    = require('pay_kit.solana.ata')
-local ed25519 = require('pay_kit.util.ed25519')
+local signatures = require('pay_kit.solana.signatures')
 local uint    = require('pay_kit.util.uint')
 
 local M = {}
@@ -309,80 +308,22 @@ function M.verify(transaction_b64, requirement, managed_signers)
 end
 
 -- Verify non-managed client signatures on the transaction envelope.
--- Mirrors Ruby `verify_client_signatures!`. The transaction bytes
--- carry [signatures... | message]; the server-managed signers
--- (facilitator pubkey) are skipped because the facilitator signs
--- after verification.
+-- Mirrors Ruby `verify_client_signatures!`. The server-managed signers
+-- (facilitator pubkey) are skipped because the facilitator signs after
+-- verification; every other slot must verify over the message, and the
+-- list must hold exactly the signatures the message requires
+-- (`pay_kit.solana.signatures`, shared with MPP charge).
 function M.verify_client_signatures(transaction_b64, managed_signer_b58_list)
   local decode_ok, raw = pcall(base64.decode, transaction_b64)
   if not decode_ok or not raw or raw == '' then
     error('invalid_exact_svm_payload_signature')
   end
-
-  -- compact-u16 short-vec at offset 0 = signature count.
-  local function read_short_vec(bytes, offset)
-    local value, shift = 0, 0
-    local i = offset + 1
-    repeat
-      local b = bytes:byte(i)
-      if not b then error('invalid_exact_svm_payload_signature') end
-      value = value + (b % 128) * (2 ^ shift)
-      i = i + 1
-      shift = shift + 7
-    until b < 128
-    return value, i - 1
-  end
-
-  local signature_count, signatures_offset = read_short_vec(raw, 0)
-  local message_offset = signatures_offset + (signature_count * 64)
-  if message_offset >= #raw then
+  local parse_ok, parsed = pcall(tx_mod.from_bytes, raw)
+  if not parse_ok then
     error('invalid_exact_svm_payload_signature')
   end
-  local message = raw:sub(message_offset + 1)
-  -- A legacy (unprefixed) message starts at the header; a v0 message carries
-  -- the 0x80 prefix first. Both are accepted, and the signature covers the
-  -- message bytes exactly as framed.
-  local first = message:byte(1)
-  local header = 0
-  if first >= 128 then
-    if first ~= 0x80 then
-      error('invalid_exact_svm_payload_signature')
-    end
-    header = 1
-  end
-  local required_signatures = message:byte(header + 1)
-  if not required_signatures or required_signatures > signature_count then
+  if not signatures.check(parsed, managed_signer_b58_list) then
     error('invalid_exact_svm_payload_signature')
-  end
-  local account_count, account_offset = read_short_vec(message, header + 3)
-  if required_signatures > account_count then
-    error('invalid_exact_svm_payload_signature')
-  end
-
-  local zero_sig = string.rep(string.char(0), 64)
-  local managed_set = {}
-  for i = 1, #managed_signer_b58_list do
-    managed_set[managed_signer_b58_list[i]] = true
-  end
-
-  for index = 0, required_signatures - 1 do
-    local signer_key_start = account_offset + (index * 32) + 1
-    if signer_key_start + 31 > #message then
-      error('invalid_exact_svm_payload_signature')
-    end
-    local signer_key_bytes = message:sub(signer_key_start, signer_key_start + 31)
-    local signer_key_b58 = base58.encode(signer_key_bytes)
-    if not managed_set[signer_key_b58] then
-      local sig = raw:sub(signatures_offset + (index * 64) + 1,
-                          signatures_offset + (index * 64) + 64)
-      if sig == zero_sig then
-        error('invalid_exact_svm_payload_signature')
-      end
-      local ok = ed25519.verify(signer_key_bytes, message, sig)
-      if not ok then
-        error('invalid_exact_svm_payload_signature')
-      end
-    end
   end
 end
 

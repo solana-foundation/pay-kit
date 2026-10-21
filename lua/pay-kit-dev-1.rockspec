@@ -56,6 +56,7 @@ build = {
     ['pay_kit.solana.rpc']               = 'pay_kit/solana/rpc.lua',
     ['pay_kit.solana.rpc_transport']     = 'pay_kit/solana/rpc_transport.lua',
     ['pay_kit.solana.rpc_transport_resty'] = 'pay_kit/solana/rpc_transport_resty.lua',
+    ['pay_kit.solana.signatures']        = 'pay_kit/solana/signatures.lua',
     ['pay_kit.solana.transaction']       = 'pay_kit/solana/transaction.lua',
     ['pay_kit.solana.tx_cosign']         = 'pay_kit/solana/tx_cosign.lua',
     ['pay_kit.solana.verifier']          = 'pay_kit/solana/verifier.lua',
