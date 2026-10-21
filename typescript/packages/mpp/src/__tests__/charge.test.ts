@@ -2179,6 +2179,51 @@ test('pull: a grant interrupted between its two keys is finished by the retry', 
     expect(rpcMethods.filter(m => m === 'sendTransaction')).toHaveLength(1);
 });
 
+// A grant can stop after marking the ledger record granting and before it
+// confirms the legacy key. If a previous-release replica then recovers the
+// legacy record and confirms (and serves) it, the retry must not take that
+// confirmation for its own: only the grant id written with the confirmation
+// proves ownership.
+test('pull: a legacy key confirmed by an old replica during a grant stays consumed', async () => {
+    type AtomicStore = Store.Store & {
+        update<T>(
+            key: string,
+            fn: (current: unknown) => { op: 'noop'; result: T } | { op: 'set'; result: T; value: unknown },
+        ): Promise<T>;
+    };
+    const atomicStore = store as AtomicStore;
+    const update = atomicStore.update.bind(atomicStore);
+    let updates = 0;
+    let fail = true;
+    const failingStore: AtomicStore = {
+        ...store,
+        async update(key, fn) {
+            updates++;
+            // Updates: claim, legacy claim, grant begin, legacy confirm, ledger consume.
+            if (fail && updates === 4) throw new Error('atomic storage unavailable');
+            return update(key, fn);
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
+    expect(await store.get(key)).toMatchObject({ state: 'granting' });
+    expect(await store.get(legacy)).toMatchObject({ state: 'pending' });
+
+    // The previous release recovers the legacy record and serves it: it
+    // confirms the key the way it always did, with no grant id.
+    const pending = (await store.get(legacy)) as object;
+    await store.put(legacy, { ...pending, leaseUntil: 0, state: 'confirmed' });
+    await store.put(key, { ...((await store.get(key)) as object), leaseUntil: 0 });
+    fail = false;
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+});
+
 // Without that ownership record a confirmed legacy key is someone else's
 // grant (a replica on the previous release): it is never granted again.
 test('pull: a legacy key confirmed by another grant stays consumed', async () => {

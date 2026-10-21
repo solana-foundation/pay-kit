@@ -35,12 +35,13 @@ import {
     beginGrantReplayKey,
     claimConsumedSignature,
     claimReplayKey,
+    confirmLegacyForGrant,
     consumedBeforeLedger,
     consumedSignatureKey,
     consumeReplayKey,
     inspectReplayKey,
-    isGrantingReplayKey,
     legacyConsumedSignatureKey,
+    ownsConfirmedLegacy,
 } from './replay.js';
 
 /**
@@ -914,8 +915,11 @@ async function verifyTransaction(
         const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
         // A confirmed legacy key is this grant's own unfinished step when the
         // ledger record says a grant began: the retry finishes it.
+        // A confirmed legacy key is this grant's own unfinished step only when
+        // it carries the id of the grant the ledger record has in progress; a
+        // previous-release replica confirms it without one.
         const ownUnfinishedGrant =
-            legacyClaim === 'retry' && (await isGrantingReplayKey(store, replayKey, replayBinding));
+            legacyClaim === 'retry' && (await ownsConfirmedLegacy(store, replayKey, legacyKey, replayBinding));
         if (legacyClaim === 'conflict' || (legacyClaim === 'retry' && !ownUnfinishedGrant)) {
             throw new Error('Transaction signature already consumed');
         }
@@ -954,17 +958,15 @@ async function verifyTransaction(
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
     // One grant per payment across both releases. The ledger record is
-    // marked as granting first, so a failure between the two keys below leaves
-    // a state a retry can finish; then the previous release's key (a replica
-    // on that release consumes it the same way), then the ledger key, whose
-    // transition is the single winner.
-    if (!(await beginGrantReplayKey(store, replayKey, replayBinding))) {
-        throw new Error('Transaction signature already consumed');
-    }
-    if (
-        !(await consumeReplayKey(store, legacyKey, replayBinding)) &&
-        (await inspectReplayKey(store, legacyKey, replayBinding)) !== 'retry'
-    ) {
+    // marked as granting under a grant id first. The previous release's key
+    // is then confirmed with that id in one atomic step: the single-winner
+    // transition a replica on that release takes too, so whichever confirms
+    // it first owns the payment, and a confirmed legacy key without this id
+    // is someone else's grant. A failure before the ledger key below leaves a
+    // state the retry can finish; the ledger transition picks one winner
+    // among this release's requests.
+    const grant = await beginGrantReplayKey(store, replayKey, replayBinding);
+    if (!grant || !(await confirmLegacyForGrant(store, legacyKey, replayBinding, grant))) {
         throw new Error('Transaction signature already consumed');
     }
     if (!(await consumeReplayKey(store, replayKey, replayBinding))) {

@@ -11,12 +11,18 @@ type AtomicStore = Store.Store & {
 
 type ReplayRecord = {
     binding: string;
+    /**
+     * On the ledger key: the grant in progress. On the legacy key: the grant
+     * that confirmed it, written in the same atomic step. A replica on the
+     * previous release confirms the legacy key without one, so a confirmed
+     * legacy key proves this grant's ownership only when the ids match.
+     */
+    grant?: string;
     leaseUntil: number;
     /**
-     * `granting`: the payment landed and its grant began, which takes the
-     * previous release's key and then this one. Only this release writes the
-     * ledger key, so a `granting` record proves a confirmed legacy key with
-     * the same binding was confirmed by this grant, and a retry may finish it.
+     * `granting`: the payment landed and its grant began, which confirms the
+     * previous release's key and then this one. The legacy key's
+     * pending-to-confirmed step is the single winner both releases share.
      */
     state: 'confirmed' | 'granting' | 'pending';
 };
@@ -62,12 +68,12 @@ export async function claimReplayKey(store: Store.Store, key: string, binding: s
         if (current.state === 'confirmed') return 'retry';
         return current.leaseUntil <= now ? 'reserved' : 'pending';
     };
-    // Taking over an expired lease keeps a grant in progress marked as one.
-    const fresh = (current: unknown): ReplayRecord => ({
-        binding,
-        leaseUntil: now + PENDING_LEASE_MS,
-        state: isReplayRecord(current) && current.state === 'granting' ? 'granting' : 'pending',
-    });
+    // Taking over an expired lease keeps a grant in progress, and its id,
+    // marked as one.
+    const fresh = (current: unknown): ReplayRecord =>
+        isReplayRecord(current) && current.state === 'granting'
+            ? { binding, grant: current.grant, leaseUntil: now + PENDING_LEASE_MS, state: 'granting' }
+            : { binding, leaseUntil: now + PENDING_LEASE_MS, state: 'pending' };
     const atomicStore = store as AtomicStore;
     if (typeof atomicStore.update === 'function') {
         return await atomicStore.update(key, current => {
@@ -115,19 +121,30 @@ export async function consumeReplayKey(store: Store.Store, key: string, binding:
 
 /**
  * Mark a reservation whose payment landed as being granted, before the grant
- * takes any other key. `false` unless it is pending or already granting under
- * `binding`.
+ * takes any other key, and return the grant's id: a fresh one, or the one an
+ * earlier attempt of this grant recorded. `undefined` unless the record is
+ * pending or granting under `binding`.
  */
-export async function beginGrantReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
+export async function beginGrantReplayKey(
+    store: Store.Store,
+    key: string,
+    binding: string,
+): Promise<string | undefined> {
+    const fresh = crypto.randomUUID();
     const begin = (current: unknown) => {
         if (
             !isReplayRecord(current) ||
             current.binding !== binding ||
             (current.state !== 'pending' && current.state !== 'granting')
         ) {
-            return { op: 'noop' as const, result: false };
+            return { op: 'noop' as const, result: undefined };
         }
-        return { op: 'set' as const, result: true, value: { ...current, state: 'granting' } satisfies ReplayRecord };
+        const grant = current.state === 'granting' && current.grant ? current.grant : fresh;
+        return {
+            op: 'set' as const,
+            result: grant,
+            value: { ...current, grant, state: 'granting' } satisfies ReplayRecord,
+        };
     };
     const atomicStore = store as AtomicStore;
     if (typeof atomicStore.update === 'function') return await atomicStore.update(key, begin);
@@ -138,10 +155,61 @@ export async function beginGrantReplayKey(store: Store.Store, key: string, bindi
     });
 }
 
-/** Whether `key` holds a grant in progress under `binding`. */
-export async function isGrantingReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
-    const current = await store.get(key);
-    return isReplayRecord(current) && current.binding === binding && current.state === 'granting';
+/**
+ * Confirm the previous release's key for `grant`, in one atomic step: the
+ * single-winner transition a replica on that release also takes. `true` when
+ * this grant confirmed it, now or in an earlier attempt; `false` when it is
+ * confirmed by anyone else (a previous-release replica) or not held under
+ * `binding`.
+ */
+export async function confirmLegacyForGrant(
+    store: Store.Store,
+    key: string,
+    binding: string,
+    grant: string,
+): Promise<boolean> {
+    const confirm = (current: unknown) => {
+        if (!isReplayRecord(current) || current.binding !== binding) {
+            return { op: 'noop' as const, result: false };
+        }
+        if (current.state === 'confirmed') return { op: 'noop' as const, result: current.grant === grant };
+        return {
+            op: 'set' as const,
+            result: true,
+            value: { ...current, grant, state: 'confirmed' } satisfies ReplayRecord,
+        };
+    };
+    const atomicStore = store as AtomicStore;
+    if (typeof atomicStore.update === 'function') return await atomicStore.update(key, confirm);
+    return await withKeyLock(key, async () => {
+        const change = confirm(await store.get(key));
+        if (change.op === 'set') await store.put(key, change.value);
+        return change.result;
+    });
+}
+
+/**
+ * Whether the confirmed legacy key was confirmed by the grant the ledger
+ * record has in progress: this release's own unfinished grant.
+ */
+export async function ownsConfirmedLegacy(
+    store: Store.Store,
+    ledgerKey: string,
+    legacyKey: string,
+    binding: string,
+): Promise<boolean> {
+    const ledger = await store.get(ledgerKey);
+    const legacy = await store.get(legacyKey);
+    return (
+        isReplayRecord(ledger) &&
+        isReplayRecord(legacy) &&
+        ledger.binding === binding &&
+        legacy.binding === binding &&
+        ledger.state === 'granting' &&
+        legacy.state === 'confirmed' &&
+        ledger.grant !== undefined &&
+        legacy.grant === ledger.grant
+    );
 }
 
 /** Mark a challenge-bound subscription proof as fully verified and receipt-ready. */
