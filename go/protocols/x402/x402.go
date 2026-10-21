@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -91,6 +92,11 @@ func (e *AcceptsEntry) UnmarshalJSON(data []byte) error {
 	}
 	if r.Extra == nil {
 		r.Extra = &rawExtra{}
+	}
+	// `network` is a required PaymentRequirements field: an offer without
+	// it is refused, never signed for a network the client guessed.
+	if r.Network == "" {
+		return errors.New("invalid payment requirement: missing network")
 	}
 	e.raw = append(json.RawMessage(nil), data...)
 	e.Protocol = r.Protocol

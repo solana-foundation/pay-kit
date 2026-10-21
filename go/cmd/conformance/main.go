@@ -342,7 +342,7 @@ var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)primary amount is zero after splits|split amounts exceed`), "splits-exceed-amount"},
 	{regexp.MustCompile(`(?i)splits exceed maximum`), "too-many-splits"},
 	{regexp.MustCompile(`(?i)ata creation owner is not authorized|unsupported compute budget|unexpected_signer|x402: unexpected instruction`), "unexpected-instruction"},
-	{regexp.MustCompile(`(?i)atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey`), "invalid-challenge"},
+	{regexp.MustCompile(`(?i)atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey|invalid payment requirement: missing`), "invalid-challenge"},
 	{regexp.MustCompile(`(?i)ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed|is not a computebudget|exactly one memo`), "invalid-payload"},
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
 	{regexp.MustCompile(`(?i)compute unit limit .* exceeds (maximum|cap)`), "compute-limit-over-cap"},

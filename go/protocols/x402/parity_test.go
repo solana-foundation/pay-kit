@@ -209,3 +209,21 @@ func TestParseMaxTimeoutDefaultsTo300(t *testing.T) {
 		t.Errorf("maxTimeoutSeconds default: got %d want 300", e.MaxTimeoutSeconds)
 	}
 }
+
+// `network` is required: an offer without it is refused rather than signed
+// for a network the client would have to guess.
+func TestParseRejectsOfferWithoutNetwork(t *testing.T) {
+	var offer map[string]any
+	if err := json.Unmarshal([]byte(v2Offer), &offer); err != nil {
+		t.Fatal(err)
+	}
+	delete(offer, "network")
+	raw, err := json.Marshal(offer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e AcceptsEntry
+	if err := json.Unmarshal(raw, &e); err == nil {
+		t.Fatalf("parsed an offer without network: %+v", e)
+	}
+}
