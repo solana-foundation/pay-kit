@@ -291,11 +291,13 @@ pub fn mutation_words(case: &Case) -> Option<String> {
 
 /// Pinned SHA of a spec submodule, from the superproject's index.
 pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
-    let checkout = if doc.starts_with("mpp-specs/") {
-        "external/mpp-specs"
-    } else {
-        "typescript/external/x402"
-    };
+    let checkout = crate::case::SpecRepo::ALL
+        .into_iter()
+        .find(|repo| {
+            doc.strip_prefix(repo.prefix())
+                .is_some_and(|rest| rest.starts_with('/'))
+        })?
+        .checkout();
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -356,9 +358,10 @@ impl Context {
             .into_iter()
             .map(|c| (c.id.to_string(), c))
             .collect();
-        let shas = ["mpp-specs/", "x402/"]
+        let shas = crate::case::SpecRepo::ALL
             .iter()
-            .filter_map(|d| pinned_sha(root, d).map(|s| (d.to_string(), s)))
+            .map(|repo| format!("{}/", repo.prefix()))
+            .filter_map(|d| pinned_sha(root, &d).map(|s| (d, s)))
             .collect();
         Self {
             root: root.to_path_buf(),
