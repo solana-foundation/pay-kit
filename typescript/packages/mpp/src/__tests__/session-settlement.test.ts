@@ -739,48 +739,28 @@ describe('session() verify() close monotonicity', () => {
     });
 });
 
-describe('session() close charges reserved deliveries', () => {
-    async function withExpiredDelivery() {
+describe('session() close does not bill unauthenticated reservations', () => {
+    // Reservations come only from POST /__402/session/deliveries, which checks
+    // no credential: they prove neither the payer's request nor a delivery.
+    async function withForeignReservation() {
         const fixture = await watermarkedFixture();
         await fixture.f.store.updateChannel(fixture.f.channel.address, current => ({
             ...current!,
-            // The directive was handed out and its commit window has passed.
+            // Reserved by anyone who knows the channel id, never committed.
             pendingDeliveries: [{ amount: 100n, deliveryId: 'delivery-1', expiresAt: 1n, sequence: 1n }],
         }));
         return fixture;
     }
 
-    test('a close that does not pay an expired delivery is rejected', async () => {
-        const { f, method, sent, voucher } = await withExpiredDelivery();
-        await expect(
-            verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher })),
-        ).rejects.toThrow(/100 in uncommitted deliveries; the final voucher must reach cumulative 350/);
-
-        const state = await f.store.getChannel(f.channel.address);
-        expect(state?.closeRequestedAt).toBeUndefined();
-        expect(state?.pendingDeliveries).toHaveLength(1);
-        expect(sent).toHaveLength(0);
-    });
-
-    test('a final voucher covering the delivery settles it', async () => {
-        const { active, f, method, sent } = await withExpiredDelivery();
-        const short = await active.prepareVoucher(349n);
-        await expect(
-            verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher: short })),
-        ).rejects.toThrow(/uncommitted deliveries/);
-
+    test('a reservation neither blocks the close nor raises what it settles', async () => {
+        const { f, method, sent, voucher } = await withForeignReservation();
         const before = await f.store.getChannel(f.channel.address);
-        const finalVoucher = await active.prepareVoucher(350n);
-        const receipt = await verify(
-            method,
-            makeCred(f, { action: 'close', channelId: f.channel.address, voucher: finalVoucher }),
-        );
+        const receipt = await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
         expect(receipt.status).toBe('success');
         expect(sent).toHaveLength(1);
         const state = await f.store.getChannel(f.channel.address);
-        expect(state?.settledOnChain).toBe(350n);
-        expect(state?.pendingDeliveries).toHaveLength(0);
-        expect(state?.spentAmount).toBe(before!.spentAmount + 100n);
+        expect(state?.settledOnChain).toBe(before!.cumulative);
+        expect(state?.spentAmount).toBe(before!.spentAmount);
     });
 });
 
