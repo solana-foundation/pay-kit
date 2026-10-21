@@ -1436,10 +1436,15 @@ impl Mpp {
                         )));
                     }
                     Ok(false) => {}
-                    // The record is still pending: issuing the receipt here
-                    // would let a retry's confirm_pending grant a second one
-                    // once the store recovers. That retry is the one receipt.
-                    Err(e) if method_details.channel_charge.is_none() => {
+                    // A pull broadcast recorded as pending: issuing the
+                    // receipt here would let a retry's confirm_pending grant a
+                    // second one once the store recovers, so that retry is the
+                    // one receipt. A push charge records no pending broadcast,
+                    // so no retry can reach confirm_pending: it keeps its
+                    // receipt (below).
+                    Err(e)
+                        if method_details.channel_charge.is_none() && fence.pending.is_some() =>
+                    {
                         tracing::warn!(
                             error = %e,
                             challenge_id = %challenge_id,
@@ -9352,6 +9357,104 @@ mod tests {
         let receipt = mpp.verify(&credential, &expected).await.unwrap();
         assert_eq!(receipt.reference, signature.to_string());
         assert_eq!(sends.load(Ordering::SeqCst), 1);
+    }
+
+    /// JSON-RPC stub for a landed push payment: `getTransaction` returns a
+    /// confirmed SOL transfer of `lamports` from `sender` to `recipient`.
+    async fn stub_push_rpc(sender: Pubkey, recipient: Pubkey, lamports: u64) -> String {
+        use axum::{routing::post, Json, Router};
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| async move {
+                let result = match request["method"].as_str() {
+                    Some("getTransaction") => serde_json::json!({
+                        "slot": 1,
+                        "blockTime": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
+                        "version": 0,
+                        "transaction": {
+                            "signatures": [request["params"][0]],
+                            "message": {
+                                "accountKeys": [
+                                    {"pubkey": sender.to_string(), "signer": true, "writable": true, "source": "transaction"},
+                                    {"pubkey": recipient.to_string(), "signer": false, "writable": true, "source": "transaction"},
+                                    {"pubkey": "11111111111111111111111111111111", "signer": false, "writable": false, "source": "transaction"},
+                                ],
+                                "recentBlockhash": Hash::new_unique().to_string(),
+                                "instructions": [{
+                                    "program": "system",
+                                    "programId": "11111111111111111111111111111111",
+                                    "parsed": {"type": "transfer", "info": {
+                                        "source": sender.to_string(),
+                                        "destination": recipient.to_string(),
+                                        "lamports": lamports,
+                                    }},
+                                    "stackHeight": null,
+                                }],
+                                "addressTableLookups": [],
+                            },
+                        },
+                        "meta": {
+                            "err": null, "status": {"Ok": null}, "fee": 5000,
+                            "preBalances": [10_000_000, 0, 1], "postBalances": [9_994_000, lamports, 1],
+                            "innerInstructions": [], "logMessages": [],
+                            "preTokenBalances": [], "postTokenBalances": [], "rewards": [],
+                            "loadedAddresses": {"writable": [], "readonly": []},
+                            "computeUnitsConsumed": 150,
+                        },
+                    }),
+                    other => panic!("unexpected RPC method {other:?}"),
+                };
+                Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    // A push charge records no pending broadcast, so no retry can reach
+    // confirm_pending: a landed push payment whose confirmed record cannot be
+    // written keeps its receipt (settlement-in-progress would never resolve).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_landed_push_charge_keeps_its_receipt_when_the_store_fails() {
+        let sender = seed_pubkey(13);
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let rpc_url = stub_push_rpc(sender, recipient, 1000).await;
+        let store = Arc::new(FlakyStore {
+            inner: MemoryStore::new(),
+            prefix: "solana-charge:record:",
+            failing: std::sync::atomic::AtomicBool::new(true),
+            only_state: Some("confirmed"),
+        });
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            accept_push_mode: true,
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let expected = ChargeRequest {
+            amount: "1000".into(),
+            currency: "SOL".into(),
+            recipient: Some(TEST_RECIPIENT.into()),
+            method_details: Some(serde_json::json!({ "network": "devnet", "decimals": 9 })),
+            ..Default::default()
+        };
+        let signature = Signature::from([9u8; 64]).to_string();
+        let credential = build_credential(
+            &mpp,
+            &expected,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let receipt = mpp.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, signature);
     }
 
     // A charge that lands while its confirmed record cannot be written is
