@@ -94,6 +94,19 @@ hand-written, not generated from `idl/`; `reference` metadata is derived per
 (intent, mode), not stored per case. The Kotlin testee's `--serve` mode was
 written without a local JVM and is first compiled in CI.
 
+Phase 4, first part, on `feat/pkc-report`:
+
+- `pkc report`: requirement × SDK traceability (README markers, `--check` in
+  CI; observed outcomes in `harness/results/report.json`), with the unmapped
+  sentences per spec file and section.
+- `pkc req-lint` fails when a `required = true` requirement has no case;
+  every mapped requirement with cases is marked.
+- The cross-verification matrix is gating: `cross/<case>/<client>/<server>`
+  cells reconciled against the server's expectations, a `cross` CI job fed
+  by the client legs' build artifacts (`pkc run --cross --require --check`).
+- 42 cases for 37 previously unmapped charge / x402-exact MUSTs
+  (`charge_policy.rs`, `x402_policy.rs`); 13 new FINDINGS.md sections.
+
 Done:
 
 - Expectations files with exact-set reconciliation for the vector,
