@@ -12,7 +12,10 @@ network or protocol would only give each protocol its own namespace again.
 The store must expose `put_if_absent(key, value)` (atomic, durable: the claim
 must not expire while the transaction could still be presented) and
 `delete(key)`. Both `pay_kit.protocols.mpp.store` and `pay_kit.store` do;
-`pay_kit.store` keeps a non-numeric value with no expiry.
+`pay_kit.store` keeps a non-numeric value for its bounded durable retention
+(`DURABLE_RETENTION_SECONDS`, far past the claimed transaction's blockhash
+lifetime) and raises, rather than reporting a duplicate, when it cannot
+store a claim.
 ]]
 
 local M = {}

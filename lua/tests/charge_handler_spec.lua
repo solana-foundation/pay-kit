@@ -504,13 +504,56 @@ t.test('PayKit adapters resolve one ledger store for MPP and x402', function()
     { mpp = { replay_store = operator_store } }, dispatcher_store), operator_store)
 end)
 
-t.test('pay_kit.store keeps a consumed-signature claim with no expiry', function()
-  local memory = require('pay_kit.store').memory()
+t.test('pay_kit.store keeps a consumed-signature claim for the durable retention', function()
+  local store_mod = require('pay_kit.store')
+  local memory = store_mod.memory()
+  local now = os.time()
   t.assert_true(memory:put_if_absent('durable', true))
   t.assert_true(memory:put_if_absent('leased', 15))
-  t.assert_equal(memory._entries.durable, math.huge)
-  t.assert_true(memory._entries.leased < math.huge)
+  t.assert_true(memory._entries.durable >= now + store_mod.DURABLE_RETENTION_SECONDS)
+  t.assert_true(memory._entries.leased < now + 60)
   t.assert_true(not memory:put_if_absent('durable', true))
+end)
+
+-- A full shared zone must fail the claim loudly, never read as a duplicate
+-- (which would answer every later, already-sent payment SIGNATURE_CONSUMED),
+-- and durable claims carry a bounded expiry so the zone does not fill up.
+t.test('pay_kit.store shared dict bounds durable claims and raises when full', function()
+  local store_mod = require('pay_kit.store')
+  local calls = {}
+  local full = false
+  local dict = {
+    _data = {},
+    safe_add = function(self, key, value, exptime)
+      calls[#calls + 1] = { 'safe_add', key, exptime }
+      if full then return false, 'no memory' end
+      if self._data[key] then return false, 'exists' end
+      self._data[key] = value
+      return true
+    end,
+    add = function(self, key, value, exptime)
+      calls[#calls + 1] = { 'add', key, exptime }
+      if self._data[key] then return false, 'exists' end
+      self._data[key] = value
+      return true
+    end,
+    get = function(self, key) return self._data[key] end,
+    delete = function(self, key) self._data[key] = nil end,
+  }
+  local saved = rawget(_G, 'ngx')
+  rawset(_G, 'ngx', { shared = { pay_kit_replay = dict } })
+  local ok, err = pcall(function()
+    local shared = assert(store_mod.shared_dict('pay_kit_replay'))
+    t.assert_true(shared:put_if_absent('claim', true))
+    t.assert_equal(calls[1][3], store_mod.DURABLE_RETENTION_SECONDS)
+    t.assert_true(not shared:put_if_absent('claim', true))
+    full = true
+    local raised_ok, raised_err = pcall(shared.put_if_absent, shared, 'another', true)
+    t.assert_true(not raised_ok, 'a full zone must raise')
+    t.assert_true(tostring(raised_err):find('no memory', 1, true) ~= nil, tostring(raised_err))
+  end)
+  rawset(_G, 'ngx', saved)
+  if not ok then error(err, 0) end
 end)
 
 -- ─── Push mode ────────────────────────────────────────────────────────────
