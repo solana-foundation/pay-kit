@@ -47,7 +47,9 @@ final class SolanaChargeHandler
      * the challenge that broadcast it, so that challenge alone may reconcile
      * it after expiry.
      */
-    private const PENDING_BINDING_PREFIX = 'solana-charge:pending:';
+    // Namespaced to this SDK: another SDK's pending record under a look-alike
+    // key must never be reconciled (and authorized) here, nor ours there.
+    private const PENDING_BINDING_PREFIX = 'pay-kit:php:charge-pending:';
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential

@@ -252,7 +252,9 @@ module PayKit::Protocols::Mpp
 
         # Prefix of the record binding a claimed, possibly broadcast signature
         # to the challenge that broadcast it: only that challenge reconciles it.
-        PENDING_PREFIX = "solana-charge:pending:"
+        # Namespaced to this SDK: another SDK's pending record under a
+        # look-alike key must never be reconciled (and granted) here.
+        PENDING_PREFIX = "pay-kit:ruby:charge-pending:"
         # Single-winner token for the one response a payment grants.
         GRANTED_PREFIX = "solana-charge:granted:"
 

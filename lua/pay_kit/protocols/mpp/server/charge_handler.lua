@@ -64,7 +64,9 @@ local DEFAULT_SIMULATION_RETRY_DELAY_SECONDS = 0.4
 local SEND_PREFLIGHT_FAILURE = -32002
 -- A charge whose transaction may have been broadcast but whose outcome is
 -- unknown. Written next to the ledger claim; resolved only by reconciliation.
-local PENDING_PREFIX = 'solana-charge:pending:'
+-- Namespaced to this SDK: another SDK's pending record under a look-alike
+-- key must never be reconciled (and granted) here, nor ours there.
+local PENDING_PREFIX = 'pay-kit:lua:charge-pending:'
 -- Single-winner token for the one request a reconciled transaction grants.
 local RECONCILED_PREFIX = 'solana-charge:reconciled:'
 -- The ledger shared with x402 `exact`, so a payment settled through either

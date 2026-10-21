@@ -937,3 +937,21 @@ t.test('a forged client signature is refused before it is claimed', function()
   pcall(function() handler:settle_pull(signed, {}) end)
   t.assert_equal(rpc.calls[1] and rpc.calls[1].method, 'simulateTransaction')
 end)
+
+-- Pending records are namespaced per SDK. Go records its pending charges as
+-- `solana-charge:pending:<sig>`; Lua must not mistake one for its own and
+-- grant a payment the Go replica owns (and grants itself).
+t.test('a pending charge another SDK recorded is not reconciled here', function()
+  local replay = store.memory()
+  require('pay_kit.consumed_signatures').new(replay):claim('sig-go')
+  replay:put_if_absent('solana-charge:pending:sig-go', '{"challengeId":"go-challenge"}')
+  local handler = new_handler({
+    replay_store = replay,
+    pull_signature_extractor = function() return 'sig-go' end,
+    rpc = fake_rpc({
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+end)

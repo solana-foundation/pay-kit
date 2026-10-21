@@ -837,6 +837,19 @@ final class SolanaChargeHandlerTest extends TestCase
             self::assertStringContainsString('already consumed', $result->body['detail']);
         }
         self::assertFalse($store->has('solana:authorized-signature:' . $signature));
+
+        // A look-alike pending record another SDK wrote for this very
+        // challenge is not this handler's to reconcile either.
+        $challenge = Credential::fromAuthorizationHeader($authorization)->challenge;
+        $store->putIfAbsent('solana-charge:pending:' . $signature . ':' . $challenge->id, true);
+        $result = $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            rpcGateway: new FakeRpcGateway(signature: $signature),
+        )->handle($authorization, $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertStringContainsString('already consumed', $result->body['detail']);
     }
 
     // A missing signature status is not proof the transaction never landed
