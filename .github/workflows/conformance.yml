@@ -122,9 +122,9 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
-      - name: Build @solana/mpp and install the harness
+      - name: Build @solana/mpp and @solana/pay-kit, install the harness
         run: |
-          (cd typescript && pnpm install --frozen-lockfile && pnpm --filter @solana/mpp build)
+          (cd typescript && pnpm install --frozen-lockfile && pnpm --filter @solana/mpp build && pnpm --filter @solana/pay-kit build)
           (cd harness && pnpm install --frozen-lockfile)
       - name: Harness unit tests
         working-directory: harness

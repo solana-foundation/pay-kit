@@ -72,6 +72,10 @@ pub struct Running {
 pub struct AdapterError {
     pub message: String,
     pub stderr: String,
+    /// The client adapter exited non-zero, before or after its result: the
+    /// SDK refused (threw). Timeouts, signals, unparsable output and spawn
+    /// failures are not refusals.
+    pub refused: bool,
 }
 
 impl std::fmt::Display for AdapterError {
@@ -100,6 +104,7 @@ impl Launcher<'_> {
             adapters::command(adapter, self.harness, self.prebuilt).map_err(|e| AdapterError {
                 message: e,
                 stderr: String::new(),
+                refused: false,
             })?;
         let (bin, args) = argv.split_first().expect("non-empty argv");
         let mut cmd = Command::new(bin);
@@ -121,6 +126,7 @@ impl Launcher<'_> {
                 adapter.intent, adapter.role, adapter.id
             ),
             stderr: String::new(),
+            refused: false,
         })?;
         let stderr = Tail::default();
         drain(child.stderr.take().expect("stderr"), stderr.clone());
@@ -195,6 +201,7 @@ impl Launcher<'_> {
                         adapter.id
                     ),
                     stderr,
+                    refused: code > 0,
                 })
             }
             None => {
@@ -204,6 +211,7 @@ impl Launcher<'_> {
                         adapter.id
                     ),
                     stderr,
+                    refused: false,
                 })
             }
         }
@@ -262,10 +270,15 @@ impl ClientResult {
 
 impl Running {
     fn fail(&mut self, message: String) -> AdapterError {
+        self.fail_with(false, message)
+    }
+
+    fn fail_with(&mut self, refused: bool, message: String) -> AdapterError {
         self.kill();
         AdapterError {
             message,
             stderr: self.stderr.snapshot(),
+            refused,
         }
     }
 
@@ -302,15 +315,19 @@ impl Running {
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     let code = self.wait(Duration::from_secs(5));
-                    return Err(self.fail(format!(
-                        "adapter {} exited with code {} before {}",
-                        self.adapter.id,
-                        code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
-                        match self.adapter.role {
-                            super::claims::Role::Server => "readiness",
-                            super::claims::Role::Client => "its result",
-                        }
-                    )));
+                    let refused = matches!(code, Some(c) if c > 0);
+                    return Err(self.fail_with(
+                        refused,
+                        format!(
+                            "adapter {} exited with code {} before {}",
+                            self.adapter.id,
+                            code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
+                            match self.adapter.role {
+                                super::claims::Role::Server => "readiness",
+                                super::claims::Role::Client => "its result",
+                            }
+                        ),
+                    ));
                 }
             }
         }
@@ -409,6 +426,11 @@ mod tests {
         &["sh", "-c", "echo \"{\\\"type\\\":\\\"result\\\",\\\"implementation\\\":\\\"fake\\\",\\\"role\\\":\\\"client\\\",\\\"ok\\\":true,\\\"status\\\":200,\\\"responseHeaders\\\":{\\\"X-Fixture-Settlement\\\":\\\"sig\\\"},\\\"responseBody\\\":{\\\"ok\\\":true},\\\"settlement\\\":\\\"$MPP_HARNESS_TARGET_URL\\\"}\""],
     );
     static SILENT: Adapter = fake(Role::Server, &["sh", "-c", "sleep 30"]);
+    static REFUSES: Adapter = fake(
+        Role::Client,
+        &["sh", "-c", "echo 'challenge rejected' >&2; exit 1"],
+    );
+    static HANGS: Adapter = fake(Role::Client, &["sh", "-c", "sleep 30"]);
 
     fn launcher(timeout: Duration) -> Launcher<'static> {
         let harness: &'static Path = Box::leak(std::env::temp_dir().into_boxed_path());
@@ -482,5 +504,21 @@ mod tests {
             Some("http://127.0.0.1:1/protected")
         );
         assert_eq!(r.headers["x-fixture-settlement"], "sig");
+    }
+
+    // Client fault cases accept a refusal (non-zero exit before a result)
+    // but not a hang: a stuck client did not refuse the tampered challenge.
+    #[test]
+    fn a_client_that_exits_non_zero_refused_one_that_hangs_did_not() {
+        let err = launcher(Duration::from_secs(10))
+            .run_client(&REFUSES, "http://127.0.0.1:1/", &BTreeMap::new())
+            .err()
+            .unwrap();
+        assert!(err.refused, "{err}");
+        let err = launcher(Duration::from_millis(300))
+            .run_client(&HANGS, "http://127.0.0.1:1/", &BTreeMap::new())
+            .err()
+            .unwrap();
+        assert!(!err.refused && err.message.contains("timed out"), "{err}");
     }
 }

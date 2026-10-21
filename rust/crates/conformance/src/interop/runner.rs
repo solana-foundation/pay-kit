@@ -545,6 +545,16 @@ fn judge(
             expect_code(code, &body, &who)
         }
         (Kind::ClientFault(_), Expect::NoCredential) => {
+            // A refusal is a result, or a non-zero exit before one; a hung
+            // or broken client did not refuse anything.
+            if let Err(e) = client {
+                if !e.refused {
+                    return Err(format!(
+                        "client {} did not refuse the tampered challenge cleanly: {}",
+                        case.client.id, e.message
+                    ));
+                }
+            }
             if let Some(e) = &observed.fault_error {
                 return Err(format!(
                     "the fault proxy could not tamper with the challenge: {e}"
