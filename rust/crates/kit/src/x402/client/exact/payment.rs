@@ -864,11 +864,11 @@ mod tests {
             "accepts": [{
                 "scheme": EXACT_SCHEME,
                 "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-                "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
                 "amount": "10000",
-                "currency": "USDC",
+                "asset": "USDC",
                 "resource": "/api/v1/data",
-                "decimals": 6
+                "extra": { "decimals": 6 }
             }]
         });
 
@@ -1000,9 +1000,9 @@ mod tests {
             "accepts": [{
                 "scheme": EXACT_SCHEME,
                 "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-                "recipient": "from-header",
+                "payTo": "from-header",
                 "amount": "100",
-                "currency": "SOL",
+                "asset": "SOL",
                 "resource": "/test"
             }]
         });

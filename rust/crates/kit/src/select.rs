@@ -589,10 +589,10 @@ mod tests {
             "accepts": [{
                 "network": "solana:mainnet",
                 "cluster": "mainnet-beta",
-                "recipient": RECIPIENT,
+                "payTo": RECIPIENT,
                 "amount": amount.to_string(),
-                "currency": currency,
-                "decimals": 6,
+                "asset": currency,
+                "extra": { "decimals": 6 },
                 "resource": "https://example.com/r",
             }],
         })
@@ -745,10 +745,10 @@ mod tests {
             "x402Version": 1,
             "accepts": [{
                 "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-                "recipient": RECIPIENT,
+                "payTo": RECIPIENT,
                 "amount": "1000",
-                "currency": "USDC",
-                "decimals": 6,
+                "asset": "USDC",
+                "extra": { "decimals": 6 },
                 "resource": "https://example.com/r",
             }],
         })
