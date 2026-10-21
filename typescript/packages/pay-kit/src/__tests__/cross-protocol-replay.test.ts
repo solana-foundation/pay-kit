@@ -7,6 +7,16 @@
  * the consumed-signature ledger MPP charge claims in, held in the replay store
  * every adapter of a PayKit shares.
  */
+import {
+    address,
+    type Blockhash,
+    compileTransaction,
+    createTransactionMessage,
+    getBase64EncodedWireTransaction,
+    pipe,
+    setTransactionMessageFeePayer,
+    setTransactionMessageLifetimeUsingBlockhash,
+} from '@solana/kit';
 import { claimConsumedSignature } from '@solana/mpp/server';
 import { encodePaymentSignatureHeader } from '@x402/core/http';
 import { describe, expect, it, vi } from 'vitest';
@@ -38,6 +48,23 @@ import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
 
+/**
+ * An unsigned, instruction-less version-0 wire transaction: the adapter
+ * decodes the payload before it reaches the (mocked) facilitator.
+ */
+function wireTransaction(): string {
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        m => setTransactionMessageFeePayer(address('11111111111111111111111111111111'), m),
+        m =>
+            setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash, lastValidBlockHeight: 1n },
+                m,
+            ),
+    );
+    return getBase64EncodedWireTransaction(compileTransaction(message));
+}
+
 describe('x402 exact shares the MPP consumed-signature ledger', () => {
     it('refuses a signature already consumed by either protocol', async () => {
         const config = await configure({
@@ -50,7 +77,7 @@ describe('x402 exact shares the MPP consumed-signature ledger', () => {
         const accepted = await adapter.acceptsEntry(gate, new Request('http://localhost/r'));
         const header = encodePaymentSignatureHeader({
             accepted,
-            payload: { transaction: 'AA==' },
+            payload: { transaction: wireTransaction() },
             x402Version: 2,
         } as never);
         const paid = () =>
