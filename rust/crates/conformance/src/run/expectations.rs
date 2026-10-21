@@ -33,16 +33,21 @@ pub enum Suite {
     Vector,
     Protocol,
     Flow,
+    /// Offline cross-verification (`pkc run --cross`), claimed by the
+    /// verifying (server) SDK. Case key `cross/<case>/<client>/<server>`;
+    /// a cell passes when the server agrees with the Rust judge.
+    Cross,
 }
 
 impl Suite {
-    pub const ALL: [Suite; 3] = [Suite::Vector, Suite::Protocol, Suite::Flow];
+    pub const ALL: [Suite; 4] = [Suite::Vector, Suite::Protocol, Suite::Flow, Suite::Cross];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Suite::Vector => "vector",
             Suite::Protocol => "protocol",
             Suite::Flow => "flow",
+            Suite::Cross => "cross",
         }
     }
 
@@ -208,7 +213,7 @@ fn suite_of(key: &str, source: &str) -> Result<Suite, String> {
         Some(suite) if key.starts_with(&format!("{prefix}/")) => Ok(suite),
         _ => fail(
             source,
-            format!("\"{key}\" must start with one of vector/, protocol/, flow/"),
+            format!("\"{key}\" must start with one of vector/, protocol/, flow/, cross/"),
         ),
     }
 }

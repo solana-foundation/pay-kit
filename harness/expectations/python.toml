@@ -6,6 +6,9 @@ language = "python"
 vector = ["charge", "x402-exact", "session"]
 protocol = true
 flow = false
+# Offline cross-verification: this SDK verifies every other SDK's saved builds
+# (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
+cross = true
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true

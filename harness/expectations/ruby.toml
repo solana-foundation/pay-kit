@@ -6,6 +6,9 @@ language = "ruby"
 vector = ["charge", "x402-exact"]
 protocol = true
 flow = false
+# Offline cross-verification: this SDK verifies every other SDK's saved builds
+# (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
+cross = true
 # Whether the testee drives the SDK at the clock a vector pins; claims no session intent, so no clock-pinned case runs.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = false

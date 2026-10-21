@@ -25,8 +25,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const EXPECTATIONS_DIR = join(here, "..", "expectations");
 export const FINDINGS_FILE = "harness/expectations/FINDINGS.md";
 
-export type Suite = "vector" | "protocol" | "flow";
-export const SUITES: readonly Suite[] = ["vector", "protocol", "flow"];
+// `cross`: offline cross-verification cells (`cross/<case>/<client>/<server>`),
+// claimed and reconciled by the verifying SDK; run by `pkc run --cross --require`.
+export type Suite = "vector" | "protocol" | "flow" | "cross";
+export const SUITES: readonly Suite[] = ["vector", "protocol", "flow", "cross"];
 
 // Vector intents an SDK may claim (ConformanceVector["intent"]). A claim
 // outside this list is a typo that would otherwise silently leave every

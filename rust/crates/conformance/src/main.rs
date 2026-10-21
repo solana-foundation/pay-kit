@@ -9,7 +9,7 @@
 //! pkc req-lint                  requirements lint over the pinned spec repositories
 //! pkc req-lint --list mpp|x402  print every extracted normative sentence with its id
 //! pkc run --sdk <lang>[,..]|all --tier offline [--require] [...]   drive SDK testees
-//! pkc run --cross [--sdk <servers>] [--check]                      client x server matrix
+//! pkc run --cross [--sdk <servers>] [--check] [--require]          client x server matrix
 //! pkc case show <id>            input, decoded expectation, mutation, spec, reference
 //! pkc case run --sdk <lang> <id>
 //! pkc next --sdk <lang>         the smallest failing class, blocking classes first
@@ -25,7 +25,7 @@ use std::time::Duration;
 use paykit_conformance::case::SpecRepo;
 use paykit_conformance::run::driver::{self, Options};
 use paykit_conformance::run::testee::{Abi, Manifest};
-use paykit_conformance::run::{cross, explain, next, scaffold, vectors};
+use paykit_conformance::run::{cross, cross_gate, explain, next, scaffold, vectors};
 use paykit_conformance::{annotate, cases, fill, realize, repo_root, reqlint};
 
 const HELP: &str = "pkc: pay-kit conformance
@@ -48,10 +48,14 @@ const HELP: &str = "pkc: pay-kit conformance
       --prebuilt <dir>       prebuilt native runners (default $HARNESS_PREBUILT_DIR)
       --cross                after the run, cross-verify every build on every server
       --verbose              full decoded trees in failure output
-  pkc run --cross [--sdk <servers>] [--check]
+  pkc run --cross [--sdk <servers>] [--check] [--require]
       feed every saved build (harness/results/<sdk>/builds) to every server-capable
       SDK's verify; writes harness/results/cross.json and the README table
-      (--check: fail if the table in harness/README.md is stale)
+      (--check: fail if the table in harness/README.md is stale). Each cell
+      cross/<case>/<client>/<server> is reconciled against the server's
+      expectations (claim `cross = true`; unsupported / known_failing as for
+      vectors). --require: also fail when a verifier does not claim cross or
+      a promised client build is missing from harness/results/<sdk>/builds
 
   pkc case show <id>
   pkc case run --sdk <lang> <id> [--legacy] [--verbose]
@@ -301,8 +305,20 @@ fn cross_cmd(root: &Path, opts: &Options, check: bool) -> Result<(), ()> {
         std::fs::write(&readme_path, next).map_err(|e| eprintln!("{e}"))?;
         println!("cross: rewrote the table in harness/README.md");
     }
-    // A disagreement, including a server that could not start, fails the run.
-    if disagreements.is_empty() {
+    // Every cell, including one whose server could not start, is reconciled
+    // against the server's expectations (`cross/<case>/<client>/<server>`).
+    let gate =
+        cross_gate::gate(root, opts, &report).map_err(|e| eprintln!("pkc run --cross: {e}"))?;
+    println!(
+        "cross: {} cells reconciled, {} expected failures (known_failing / unsupported), {} problems",
+        report.cells.len(),
+        gate.expected_failures,
+        gate.problems.len()
+    );
+    for p in &gate.problems {
+        eprintln!("FAIL {p}");
+    }
+    if gate.problems.is_empty() {
         Ok(())
     } else {
         Err(())

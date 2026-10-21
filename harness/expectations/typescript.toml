@@ -6,6 +6,9 @@ language = "typescript"
 vector = ["charge", "x402-exact", "session"]
 protocol = true
 flow = true
+# Offline cross-verification: this SDK verifies every other SDK's saved builds
+# (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
+cross = true
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -28,6 +31,10 @@ ids = [
   "vector/x402-exact-v1-verify-accept-mainnet",
   "vector/x402-exact-v1-verify-reject-wrong-network",
 ]
+
+[[unsupported]]
+reason = "@solana/pay-kit speaks x402 v2 only, so its verifier cannot check other SDKs' v1 X-PAYMENT builds"
+pattern = "cross/x402-exact-v1-build-*/*/typescript"
 
 [[unsupported]]
 reason = "@solana/pay-kit generates the payment-identifier id itself and has no option to supply the caller-chosen id these vectors pin"

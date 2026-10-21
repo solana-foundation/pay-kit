@@ -126,6 +126,12 @@ jobs:
         env:
           HARNESS_REQUIRE: "1"
         run: pkc run --sdk typescript --tier offline --require
+      - name: Upload typescript offline builds for cross-verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-typescript
+          path: harness/results/typescript/builds
+          if-no-files-found: error
       - name: Run typescript offline conformance (protocol + flows)
         working-directory: harness
         env:
@@ -182,6 +188,12 @@ jobs:
         env:
           HARNESS_REQUIRE: "1"
         run: pkc run --sdk go --tier offline --require
+      - name: Upload go offline builds for cross-verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-go
+          path: harness/results/go/builds
+          if-no-files-found: error
       - name: Run go offline conformance (protocol)
         working-directory: harness
         env:
@@ -228,6 +240,12 @@ jobs:
         env:
           HARNESS_REQUIRE: "1"
         run: pkc run --sdk python --tier offline --require
+      - name: Upload python offline builds for cross-verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-python
+          path: harness/results/python/builds
+          if-no-files-found: error
       - name: Run python offline conformance (protocol)
         working-directory: harness
         env:
@@ -442,6 +460,12 @@ jobs:
         env:
           HARNESS_REQUIRE: "1"
         run: pkc run --sdk swift --tier offline --require
+      - name: Upload swift offline builds for cross-verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-swift
+          path: harness/results/swift/builds
+          if-no-files-found: error
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness
         env:
@@ -574,12 +598,102 @@ jobs:
         env:
           HARNESS_REQUIRE: "1"
         run: cargo run -q -p paykit-conformance --bin pkc -- run --sdk rust --tier offline --require
+      - name: Upload rust offline builds for cross-verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-rust
+          path: harness/results/rust/builds
+          if-no-files-found: error
       - name: Run rust offline conformance (protocol)
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
           HARNESS_REQUIRE: "1"
         run: pnpm exec vitest run test/protocol-conformance.test.ts
+
+  # Offline cross-verification gate (DESIGN.md §3.9): every client's saved
+  # builds, uploaded by its offline leg above, verified by every server SDK,
+  # each cell reconciled against harness/expectations/<server>.toml
+  # (`cross/<case>/<client>/<server>`). Builds arrive as artifacts rather
+  # than being rebuilt here, because the Swift client only runs on macOS;
+  # this job installs the server toolchains only. --require fails when a
+  # promised client build is missing, so a dropped artifact cannot pass.
+  cross:
+    name: "Harness: offline cross-verification (every client x every server)"
+    needs: [build, build-native, ts, go, python, swift, rust-conformance]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+      - name: Cache rocks tree
+        id: cache-rocks
+        uses: actions/cache@v4
+        with:
+          path: lua/lua_modules
+          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-runtime-v3-
+      - name: Install runtime rocks
+        if: steps.cache-rocks.outputs.cache-hit != 'true'
+        working-directory: lua
+        run: |
+          mkdir -p lua_modules
+          luarocks --lua-version=5.1 init --lua-versions 5.1 || true
+          luarocks --lua-version=5.1 install --tree lua_modules luasocket
+          luarocks --lua-version=5.1 install --tree lua_modules luasodium
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+          luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
+          luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
+      - uses: ./.github/actions/setup-harness-leg
+        with:
+          native-artifact: harness-adapters-${{ runner.os }}
+          pay-kit-dist: "true"
+      - name: Install server SDK dependencies
+        run: |
+          (cd typescript && pnpm install --frozen-lockfile)
+          (cd python && uv sync --extra dev)
+          (cd php && composer install --no-interaction --no-progress)
+      - uses: ./.github/actions/setup-pkc
+        with:
+          cache-key: pkc-cross
+      - name: Build the Rust vector runner
+        working-directory: rust
+        run: cargo build -q -p solana-pay-kit --features mpp,x402,client,server,testkit --example vector_runner
+      - name: Download every client's offline builds
+        uses: actions/download-artifact@v7
+        with:
+          pattern: pkc-builds-*
+          path: .pkc-builds
+      - name: Place builds under harness/results/<sdk>/builds
+        run: |
+          set -euo pipefail
+          for dir in .pkc-builds/pkc-builds-*; do
+            sdk="${dir##*/pkc-builds-}"
+            mkdir -p "harness/results/$sdk"
+            mv "$dir" "harness/results/$sdk/builds"
+          done
+          ls harness/results
+      - name: Cross-verify every build on every server (pkc)
+        run: pkc run --cross --require --check
 
   onchain:
     name: "Harness: on-chain settlement (mainnet fork)"

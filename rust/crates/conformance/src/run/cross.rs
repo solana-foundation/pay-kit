@@ -107,7 +107,9 @@ pub fn cross(opts: &Options) -> Result<CrossReport, String> {
             .iter()
             .filter(|sdk| {
                 all_exp.get(*sdk).is_some_and(|e| {
-                    e.claims(Suite::Vector).contains(intent) && server_capable(e, intent, &vectors)
+                    e.claims(Suite::Cross).contains("cross")
+                        && e.claims(Suite::Vector).contains(intent)
+                        && server_capable(e, intent, &vectors)
                 })
             })
             .cloned()

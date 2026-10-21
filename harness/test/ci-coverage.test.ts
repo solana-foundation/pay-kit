@@ -21,7 +21,23 @@ const SUITE_RUNNER: Record<Suite, string> = {
   vector: "pkc run --sdk <lang> --tier offline --require",
   protocol: "pnpm exec vitest run test/protocol-conformance.test.ts (HARNESS_REQUIRE=1)",
   flow: "pnpm exec vitest run test/flow-conformance.test.ts (HARNESS_REQUIRE=1)",
+  cross: "pkc run --cross --require (after every client's offline run)",
 };
+
+// The servers a `pkc run --cross` step reconciles ("*" when not narrowed),
+// or undefined when it does not require completeness: without --require a
+// missing client build or an unclaimed verifier is not an error.
+export function pkcCrossLanguages(step: WorkflowStep): string[] | undefined {
+  if (!PKC_RUN.test(step.run) || !/--cross\b/.test(step.run)) return undefined;
+  if (!/--require\b/.test(step.run) && step.env.HARNESS_REQUIRE !== "1") return undefined;
+  const sdk = step.run.match(/--sdk[ =](\S+)/)?.[1];
+  if (!sdk) return ["*"];
+  return sdk
+    .split(",")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => (l === "all" ? "*" : l));
+}
 
 // `pkc run ...` or `cargo run ... --bin pkc -- run ...`.
 const PKC_RUN = /\bpkc\b(?:\s+--)?\s+run\b/;
@@ -53,6 +69,7 @@ function requiredRuns(steps: readonly WorkflowStep[] = workflowRunSteps()): Map<
   };
   for (const step of steps) {
     for (const language of pkcVectorLanguages(step) ?? []) add("vector", language, step.origin);
+    for (const language of pkcCrossLanguages(step) ?? []) add("cross", language, step.origin);
     if (step.env.HARNESS_REQUIRE !== "1") continue;
     if (testNamePattern(step.run) !== undefined) continue;
     const languages = (step.env.MPP_CONFORMANCE_LANGUAGES ?? "*")
@@ -92,6 +109,18 @@ describe("requiredRuns", () => {
     ]) {
       expect(requiredRuns([step(run, {})]).get("vector:go"), run).toBeUndefined();
     }
+  });
+
+  it("counts a required cross run for every server (control)", () => {
+    expect(requiredRuns([step("pkc run --cross --require --check", {})]).get("cross:*")).toHaveLength(1);
+    expect(requiredRuns([step("pkc run --cross", { HARNESS_REQUIRE: "1" })]).get("cross:*")).toHaveLength(1);
+    expect(requiredRuns([step("pkc run --cross --require --sdk go", {})]).get("cross:go")).toHaveLength(1);
+  });
+
+  it("ignores a cross run that does not require completeness", () => {
+    expect(requiredRuns([step("pkc run --cross --check", {})]).get("cross:*")).toBeUndefined();
+    // A cross run is never a vector run.
+    expect(requiredRuns([step("pkc run --cross --require --sdk go", {})]).get("vector:go")).toBeUndefined();
   });
 
   it("counts an unfiltered required vitest step (control)", () => {

@@ -14,6 +14,7 @@
 //! - [`scaffold`]: testee skeletons.
 
 pub mod cross;
+pub mod cross_gate;
 pub mod driver;
 pub mod expectations;
 pub mod explain;
