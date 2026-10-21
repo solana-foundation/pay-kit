@@ -1048,10 +1048,10 @@ impl ServedUpto {
 }
 
 /// The protected body leaves the gate only together with the receipt of a
-/// confirmed settlement. A settlement still retrying in the background has not
-/// landed, so its body is withheld (502) rather than served unpaid; the retry
-/// keeps the channel reserved and settles what the handler metered. A body that
-/// never completed also answers 502.
+/// confirmed settlement. A settlement that did not confirm inline has not
+/// landed, so its body is withheld (502) rather than served unpaid; the
+/// background retry keeps the channel reserved and refunds it in full (see
+/// [`settle_served_upto`]). A body that never completed also answers 502.
 fn release_upto_response(
     upto: &X402Upto,
     body: Result<Response, axum::Error>,
@@ -1156,19 +1156,58 @@ where
     Err(last.unwrap_or_else(|| crate::x402::Error::Other("settlement did not run".into())))
 }
 
+/// Settles one amount against a verified open; the seam tests observe.
+type UptoSettler = Arc<
+    dyn for<'a> Fn(
+            &'a crate::x402::server::VerifiedUptoOpen,
+            u64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::x402::upto::UptoSettlementResponse,
+                            crate::x402::Error,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > + Send
+        + Sync,
+>;
+
 /// Settle a request whose handler already ran. The handler's effects cannot be
 /// undone, so a failed settlement is never dropped: after the inline attempts
 /// the verified open moves into a background task that keeps retrying while
 /// holding the channel's in-flight guard, so the authorization cannot be
 /// presented again in the meantime. Returns the receipt when settled inline.
+///
+/// The body leaves the gate only with a confirmed settlement, so once the
+/// inline attempts fail the response is withheld (502). The background retry
+/// then settles **zero**, refunding the whole deposit: charging the metered
+/// amount for a response the payer never received would be payment without
+/// delivery, and `upto` has no replay path to deliver it later.
 async fn settle_served_upto(
     upto: &Arc<X402Upto>,
     open: crate::x402::server::VerifiedUptoOpen,
     actual: u64,
     retry: UptoSettlementRetry,
 ) -> Option<crate::x402::upto::UptoSettlementResponse> {
+    let upto = Arc::clone(upto);
+    let settler: UptoSettler = Arc::new(move |open, amount| {
+        let upto = Arc::clone(&upto);
+        Box::pin(async move { upto.settle_actual(open, amount).await })
+    });
+    settle_served_upto_with(settler, open, actual, retry).await
+}
+
+async fn settle_served_upto_with(
+    settle: UptoSettler,
+    open: crate::x402::server::VerifiedUptoOpen,
+    actual: u64,
+    retry: UptoSettlementRetry,
+) -> Option<crate::x402::upto::UptoSettlementResponse> {
     match retry_upto_settlement(retry.inline_attempts, retry.base_delay, || {
-        upto.settle_actual(&open, actual)
+        settle(&open, actual)
     })
     .await
     {
@@ -1178,28 +1217,26 @@ async fn settle_served_upto(
                 channel = %open.channel_id,
                 actual,
                 error = %error,
-                "upto settlement failed after the handler ran; retrying in the background"
+                "upto settlement failed after the handler ran; the response is withheld and \
+                 the deposit is refunded in the background"
             );
-            let upto = Arc::clone(upto);
             tokio::spawn(async move {
                 let delay = retry
                     .base_delay
                     .saturating_mul(1 << retry.inline_attempts.min(16));
-                match retry_upto_settlement(retry.background_attempts, delay, || {
-                    upto.settle_actual(&open, actual)
-                })
-                .await
+                match retry_upto_settlement(retry.background_attempts, delay, || settle(&open, 0))
+                    .await
                 {
                     Ok(settlement) => tracing::info!(
                         channel = %open.channel_id,
                         tx = %settlement.transaction,
-                        "upto settlement recovered in the background"
+                        "withheld upto response refunded in the background"
                     ),
                     Err(error) => tracing::error!(
                         channel = %open.channel_id,
                         actual,
                         error = %error,
-                        "upto settlement abandoned; the served request is unpaid"
+                        "upto refund abandoned; the deposit stays locked until the channel expires"
                     ),
                 }
             });
@@ -2456,10 +2493,58 @@ mod tests {
         assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
         assert!(
             upto.is_in_flight(&channel),
-            "the background retry still settles the open"
+            "the background retry still refunds the open"
         );
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert!(!body.as_ref().windows(6).any(|w| w == b"served"));
+    }
+
+    /// A withheld response must not be charged: the inline attempts settle the
+    /// metered amount, and once they fail (the body is withheld) the
+    /// background retry settles zero, refunding the deposit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn withheld_upto_response_is_refunded_not_charged() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let open = upto.test_open(channel, 1_000);
+        let amounts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&amounts);
+        let settle: UptoSettler = Arc::new(move |_open, amount| {
+            let seen = Arc::clone(&seen);
+            Box::pin(async move {
+                let mut seen = seen.lock().unwrap();
+                seen.push(amount);
+                // Inline attempts fail; the background refund lands.
+                if seen.len() <= 2 {
+                    return Err(crate::x402::Error::Rpc("node unreachable".into()));
+                }
+                Ok(crate::x402::upto::UptoSettlementResponse {
+                    success: true,
+                    error_reason: None,
+                    payer: None,
+                    transaction: "refund".into(),
+                    network: "solana:devnet".into(),
+                    amount: amount.to_string(),
+                })
+            })
+        });
+        let retry = UptoSettlementRetry {
+            inline_attempts: 2,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(1),
+        };
+
+        assert!(settle_served_upto_with(settle, open, 500, retry)
+            .await
+            .is_none());
+        for _ in 0..100 {
+            if amounts.lock().unwrap().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(*amounts.lock().unwrap(), vec![500, 500, 0]);
     }
 
     /// Positive control: a confirmed settlement releases the body with its
