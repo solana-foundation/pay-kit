@@ -414,7 +414,8 @@ pub async fn build_prepared_charge(
             splits,
             fee_payer_pubkey.as_ref(),
             options.allow_unknown_token_2022,
-        )?;
+        )
+        .await?;
     } else {
         build_sol_instructions(
             &mut instructions,
@@ -811,7 +812,7 @@ fn build_sol_instructions(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_spl_instructions(
+async fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
     recipient: &Pubkey,
@@ -825,7 +826,7 @@ fn build_spl_instructions(
     allow_unknown_token_2022: bool,
 ) -> Result<(), Error> {
     let mint = Pubkey::from_str(spl).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
-    let token_program = resolve_token_program(rpc, &mint, method_details)?;
+    let token_program = resolve_token_program(rpc, &mint, method_details).await?;
 
     // Spec §13.3: refuse to sign for an arbitrary Token-2022 mint unless
     // the caller opted in. Transfer hooks run on every transfer and can
@@ -929,7 +930,7 @@ fn push_memo_instruction(
     Ok(())
 }
 
-fn resolve_token_program(
+async fn resolve_token_program(
     rpc: &RpcClient,
     mint: &Pubkey,
     method_details: &MethodDetails,
@@ -941,7 +942,11 @@ fn resolve_token_program(
         Pubkey::from_str(token_program)
             .map_err(|e| Error::InvalidChallenge(format!("Invalid token program: {e}")))?
     } else {
-        rpc.get_account(mint)
+        // The nonblocking client, as for the blockhash: the blocking one runs
+        // on its own runtime, and mixing the two on one connection pool hangs.
+        rpc.get_inner_client()
+            .get_account(mint)
+            .await
             .map_err(|e| {
                 Error::InvalidChallenge(format!(
                     "tokenProgram omitted and the mint account lookup failed: {e}"
@@ -2291,45 +2296,45 @@ mod tests {
 
     // ── resolve_token_program ──
 
-    #[test]
-    fn resolve_tp_token_program() {
+    #[tokio::test]
+    async fn resolve_tp_token_program() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some(programs::TOKEN_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(&rpc, &mint, &md).await.unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_PROGRAM);
     }
 
-    #[test]
-    fn resolve_tp_token_2022() {
+    #[tokio::test]
+    async fn resolve_tp_token_2022() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(&rpc, &mint, &md).await.unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_2022_PROGRAM);
     }
 
-    #[test]
-    fn resolve_tp_invalid_program_string() {
+    #[tokio::test]
+    async fn resolve_tp_invalid_program_string() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some("invalid-key!!!".to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(&rpc, &mint, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid token program"));
     }
 
-    #[test]
-    fn resolve_tp_unsupported_program() {
+    #[tokio::test]
+    async fn resolve_tp_unsupported_program() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         // System program is a valid pubkey but not a supported token program.
@@ -2337,7 +2342,7 @@ mod tests {
             token_program: Some(programs::SYSTEM_PROGRAM.to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(&rpc, &mint, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
     }
@@ -2369,34 +2374,38 @@ mod tests {
 
     // RULINGS C3: with tokenProgram omitted, the owner read from the mint wins
     // (positive control for the two rejections below).
-    #[test]
-    fn resolve_tp_reads_mint_owner_when_omitted() {
+    #[tokio::test]
+    async fn resolve_tp_reads_mint_owner_when_omitted() {
         let mint = Pubkey::new_unique();
         let md = MethodDetails::default();
         for owner in [programs::TOKEN_PROGRAM, programs::TOKEN_2022_PROGRAM] {
-            let tp = resolve_token_program(&mint_lookup_rpc(Some(owner)), &mint, &md).unwrap();
+            let tp = resolve_token_program(&mint_lookup_rpc(Some(owner)), &mint, &md)
+                .await
+                .unwrap();
             assert_eq!(tp.to_string(), owner);
         }
     }
 
-    #[test]
-    fn resolve_tp_rejects_challenge_when_mint_lookup_fails() {
+    #[tokio::test]
+    async fn resolve_tp_rejects_challenge_when_mint_lookup_fails() {
         let err = resolve_token_program(
             &mint_lookup_rpc(None),
             &Pubkey::new_unique(),
             &MethodDetails::default(),
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
     }
 
-    #[test]
-    fn resolve_tp_rejects_challenge_when_mint_owner_unexpected() {
+    #[tokio::test]
+    async fn resolve_tp_rejects_challenge_when_mint_owner_unexpected() {
         let err = resolve_token_program(
             &mint_lookup_rpc(Some(programs::SYSTEM_PROGRAM)),
             &Pubkey::new_unique(),
             &MethodDetails::default(),
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
     }
@@ -2920,8 +2929,8 @@ mod tests {
 
     // ── build_spl_instructions ──
 
-    #[test]
-    fn build_spl_no_splits() {
+    #[tokio::test]
+    async fn build_spl_no_splits() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -2944,12 +2953,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 1);
     }
 
-    #[test]
-    fn build_spl_rejects_missing_decimals() {
+    #[tokio::test]
+    async fn build_spl_rejects_missing_decimals() {
         // Audit #42: spec §7.2 requires `decimals` for SPL challenges;
         // we now error instead of silently defaulting to 6.
         let signer_pk = Pubkey::new_unique();
@@ -2974,6 +2984,7 @@ mod tests {
             None,
             false,
         )
+        .await
         .expect_err("missing decimals should be rejected");
         assert!(
             format!("{err}").contains("decimals is required"),
@@ -2981,8 +2992,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_spl_with_external_id_memo() {
+    #[tokio::test]
+    async fn build_spl_with_external_id_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -3005,6 +3016,7 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
 
         assert_eq!(ixs.len(), 2);
@@ -3016,8 +3028,8 @@ mod tests {
         assert_eq!(ixs[1].data, b"order-123");
     }
 
-    #[test]
-    fn build_spl_with_fee_payer() {
+    #[tokio::test]
+    async fn build_spl_with_fee_payer() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let fee_payer = Pubkey::new_unique();
@@ -3041,12 +3053,13 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 1);
     }
 
-    #[test]
-    fn build_spl_with_splits() {
+    #[tokio::test]
+    async fn build_spl_with_splits() {
         // Audit #20: with ata_creation_required=None the client must NOT
         // emit the ATA-create instruction (even in client-paid mode).
         let signer_pk = Pubkey::new_unique();
@@ -3070,13 +3083,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
         // 1 primary transfer + 1 split transfer. No split ATA create.
         assert_eq!(ixs.len(), 2);
     }
 
-    #[test]
-    fn build_spl_creates_split_ata_only_when_flagged() {
+    #[tokio::test]
+    async fn build_spl_creates_split_ata_only_when_flagged() {
         // Audit #20: ata_creation_required = Some(true) means the client
         // MUST include the ATA-create ix.
         let signer_pk = Pubkey::new_unique();
@@ -3100,13 +3114,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
         // 1 primary transfer + 1 ATA create + 1 split transfer.
         assert_eq!(ixs.len(), 3);
     }
 
-    #[test]
-    fn build_spl_with_split_memo() {
+    #[tokio::test]
+    async fn build_spl_with_split_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3128,6 +3143,7 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
 
         // 1 primary transfer + 1 split transfer + 1 split memo (no ATA create).
@@ -3140,8 +3156,8 @@ mod tests {
         assert_eq!(ixs[2].data, b"platform fee");
     }
 
-    #[test]
-    fn build_spl_rejects_long_split_memo() {
+    #[tokio::test]
+    async fn build_spl_rejects_long_split_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3163,13 +3179,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap_err();
 
         assert!(format!("{err}").contains("memo cannot exceed 566 bytes"));
     }
 
-    #[test]
-    fn build_spl_with_fee_payer_split_ata_creation() {
+    #[tokio::test]
+    async fn build_spl_with_fee_payer_split_ata_creation() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3203,6 +3220,7 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
 
         assert_eq!(ixs.len(), 3);
@@ -3210,8 +3228,8 @@ mod tests {
         assert_eq!(ixs[1].accounts[2].pubkey, split_recipient);
     }
 
-    #[test]
-    fn build_spl_fee_payer_excludes_unmarked_split_ata_creation() {
+    #[tokio::test]
+    async fn build_spl_fee_payer_excludes_unmarked_split_ata_creation() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3245,12 +3263,13 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 2);
     }
 
-    #[test]
-    fn build_spl_refuses_unknown_token_2022_without_opt_in() {
+    #[tokio::test]
+    async fn build_spl_refuses_unknown_token_2022_without_opt_in() {
         // A made-up base58 mint NOT in the known stablecoin allowlist,
         // explicitly placed on Token-2022. Default (allow_unknown_token_2022
         // = false) must refuse.
@@ -3277,7 +3296,8 @@ mod tests {
             &[],
             None,
             false,
-        );
+        )
+        .await;
         let err = err.expect_err("should refuse unknown Token-2022 mint");
         assert!(
             format!("{err}").contains("unknown Token-2022 mint"),
@@ -3285,8 +3305,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_spl_allows_unknown_token_2022_with_opt_in() {
+    #[tokio::test]
+    async fn build_spl_allows_unknown_token_2022_with_opt_in() {
         // Same setup as above but with the opt-in flag set — gate passes
         // and the function builds successfully.
         // Valid base58 pubkey not in the stablecoin allowlist.
@@ -3313,12 +3333,13 @@ mod tests {
             None,
             true,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_allows_unknown_vanilla_token_mint() {
+    #[tokio::test]
+    async fn build_spl_allows_unknown_vanilla_token_mint() {
         // Arbitrary mint on the vanilla Token Program (no transfer hooks)
         // — gate does not apply.
         // Valid base58 pubkey not in the stablecoin allowlist.
@@ -3345,12 +3366,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_does_not_gate_known_token_2022_stablecoin() {
+    #[tokio::test]
+    async fn build_spl_does_not_gate_known_token_2022_stablecoin() {
         // PYUSD is Token-2022 but in the known allowlist — gate must not
         // fire even with allow_unknown_token_2022 = false.
         let signer_pk = Pubkey::new_unique();
@@ -3375,12 +3397,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_invalid_mint() {
+    #[tokio::test]
+    async fn build_spl_invalid_mint() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let rpc = dummy_rpc();
@@ -3401,13 +3424,14 @@ mod tests {
             &[],
             None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid mint"));
     }
 
-    #[test]
-    fn build_spl_invalid_split_recipient() {
+    #[tokio::test]
+    async fn build_spl_invalid_split_recipient() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -3427,13 +3451,14 @@ mod tests {
         let err = build_spl_instructions(
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split recipient"));
     }
 
-    #[test]
-    fn build_spl_invalid_split_amount() {
+    #[tokio::test]
+    async fn build_spl_invalid_split_amount() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3454,7 +3479,8 @@ mod tests {
         let err = build_spl_instructions(
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split amount"));
     }
