@@ -610,6 +610,9 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 _REJECT_PATTERNS: list[tuple[str, str]] = [
     # Charge verification policy and client challenge checks (mirrors the
     # block at the top of harness/src/conformance/reject.ts).
+    # RULINGS SIG1: a client signature that does not verify over the
+    # message, or a signature list short of the required signers.
+    (r"signature verification failed", "invalid-payload"),
     (r"fee payer (token account )?cannot fund", "fee-payer-is-funds-source"),
     (r"primary amount is zero after splits|split amounts exceed", "splits-exceed-amount"),
     (r"splits exceed maximum", "too-many-splits"),
