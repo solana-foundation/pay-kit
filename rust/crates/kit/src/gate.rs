@@ -3476,7 +3476,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn x402_credential_for_one_route_is_rejected_on_another() {
-        use crate::x402::server::exact::test_support::{exact_transaction, transaction_header};
+        use crate::x402::server::exact::test_support::{
+            exact_transaction, test_client, transaction_header,
+        };
 
         let pay = test_paykit();
         let app: Router = Router::new()
@@ -3505,7 +3507,7 @@ mod tests {
         );
 
         let requirement = &challenge_a.accepts[0];
-        let payer = solana_pubkey::Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(requirement, &payer, &payer);
         let header = transaction_header(requirement, requirement.resource_info(), &tx);
 
@@ -3625,7 +3627,9 @@ mod tests {
 
     /// Pay the route's challenge with an unsigned client transaction.
     async fn unsigned_exact_payment(app: &Router) -> (String, solana_pubkey::Pubkey) {
-        use crate::x402::server::exact::test_support::{exact_transaction, transaction_header};
+        use crate::x402::server::exact::test_support::{
+            exact_transaction, test_client, transaction_header,
+        };
         let challenge = x402_challenge(
             &app.clone()
                 .oneshot(get_with_host("/paid", None))
@@ -3638,15 +3642,9 @@ mod tests {
             .as_deref()
             .map(|key| key.parse().unwrap())
             .unwrap_or_else(solana_pubkey::Pubkey::new_unique);
-        let tx = exact_transaction(
-            requirement,
-            &solana_pubkey::Pubkey::new_unique(),
-            &fee_payer,
-        );
-        assert!(tx
-            .signatures
-            .iter()
-            .all(|signature| *signature == Default::default()));
+        let tx = exact_transaction(requirement, &test_client(), &fee_payer);
+        // The sponsor's slot is left for the server; the client's is signed.
+        assert_eq!(tx.signatures[0], Default::default());
         (
             transaction_header(requirement, requirement.resource_info(), &tx),
             fee_payer,

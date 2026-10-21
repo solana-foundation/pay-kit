@@ -940,6 +940,11 @@ impl X402 {
 
                 let managed_signers = managed_signers_for_requirements(requirements)?;
                 verify_exact_versioned_transaction(&tx, requirements, &managed_signers)?;
+                // The client's signature verifies over this message before
+                // the sponsor co-signs, claims or sends it (RULINGS SIG1);
+                // the sponsor's slot is still empty.
+                crate::core::tx::require_presigned(&tx, managed_signers.first())
+                    .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
                 Ok(VerifiedExactPayment::Transaction(tx))
             }
             PaymentProof::Signature { signature } => {
@@ -1259,14 +1264,43 @@ pub(crate) mod test_support {
                 data: memo.as_bytes().to_vec(),
             });
         }
-        crate::core::tx::build_unsigned(
+        let mut tx = crate::core::tx::build_unsigned(
             TxVersion::V0,
             fee_payer,
             &instructions,
             Hash::new_unique(),
             Some(&crate::core::tx::ComputeBudget::new(20_000, 1)),
         )
-        .unwrap()
+        .unwrap();
+        sign_as_test_client(&mut tx);
+        tx
+    }
+
+    fn test_client_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+    }
+
+    /// A client whose slot [`exact_transaction`] signs, as an honest client
+    /// does: the server verifies it before co-signing (RULINGS SIG1).
+    pub(crate) fn test_client() -> Pubkey {
+        Pubkey::new_from_array(test_client_key().verifying_key().to_bytes())
+    }
+
+    /// Sign the test client's slot, if it is a required signer.
+    pub(crate) fn sign_as_test_client(tx: &mut VersionedTransaction) {
+        use ed25519_dalek::Signer;
+        let client = test_client();
+        let required = usize::from(tx.message.header().num_required_signatures);
+        if let Some(index) = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .take(required)
+            .position(|key| *key == client)
+        {
+            let signature = test_client_key().sign(&tx.message.serialize());
+            tx.signatures[index] = solana_signature::Signature::from(signature.to_bytes());
+        }
     }
 
     /// Wrap a transaction proof in a v2 `PAYMENT-SIGNATURE` header.
@@ -1642,7 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn verify_transaction_header_rejects_non_exact_transaction() {
         let x402 = X402::new(config()).unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let recipient = Pubkey::new_unique();
         let ix = system_instruction::transfer(&payer, &recipient, 1000);
         let message =
@@ -2220,7 +2254,7 @@ mod tests {
         // The canonical accepted objects are identical; only the resource differs.
         assert_eq!(route_a.to_accepted_value(), route_b.to_accepted_value());
 
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&route_a, &payer, &payer);
         let header = transaction_header(&route_a, route_a.resource_info(), &tx);
 
@@ -2293,7 +2327,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", bound(Some("GET route-a")))
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &payer);
         let verify = |header: String, options: ExactOptions<'static>| {
             let x402 = &x402;
@@ -2356,7 +2390,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &payer);
         let header = transaction_header(&requirements, None, &tx);
         assert!(matches!(
@@ -2387,7 +2421,7 @@ mod tests {
             .unwrap()
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let confirmed = confirmed_transfer(&requirements, &payer, 10_000, 6, Some(now_unix()));
         let x402 = with_rpc(
             X402::new(config()).unwrap(),
@@ -2450,7 +2484,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &sponsor.pubkey());
 
         let settled = x402
@@ -2575,7 +2609,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         let settle = || {
             x402.settle_exact(
                 VerifiedExactPayment::Transaction(tx.clone()),
@@ -2627,7 +2661,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         let settle = || {
             x402.settle_exact(
                 VerifiedExactPayment::Transaction(tx.clone()),
@@ -2677,7 +2711,7 @@ mod tests {
 
         // Positive control: a first broadcast refused at preflight was never
         // forwarded, so the payer may present it again.
-        let first = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let first = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         send.store(1, Ordering::SeqCst);
         let err = settle(first.clone()).await.unwrap_err();
         assert!(err.to_string().contains("not landed"), "{err}");
@@ -2687,7 +2721,7 @@ mod tests {
 
         // A refusal that is not a preflight rejection proves nothing.
         status.store(2, Ordering::SeqCst);
-        let unhealthy = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let unhealthy = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         send.store(2, Ordering::SeqCst);
         let err = settle(unhealthy.clone()).await.unwrap_err();
         assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
@@ -2714,7 +2748,7 @@ mod tests {
             .unwrap()
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         let failing = with_rpc(
@@ -2746,7 +2780,7 @@ mod tests {
             .exact_requirements("1.00", ExactOptions::default())
             .unwrap();
         assert_eq!(requirements.amount, "1000000");
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         // 1_000_000 raw units of a nine-decimal mint is 0.001 tokens, not 1.00.
         let nine = confirmed_transfer(&requirements, &payer, 1_000_000, 9, Some(now_unix()));
         let six = confirmed_transfer(&requirements, &payer, 1_000_000, 6, Some(now_unix()));
@@ -2778,7 +2812,7 @@ mod tests {
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
         assert_eq!(requirements.to_accepted_value()["maxTimeoutSeconds"], 60);
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let now = now_unix();
         let cases = [
             (Some(now - 3_600), false),
@@ -2932,7 +2966,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &payer);
         let envelope = PaymentSignatureEnvelope {
             scheme: None,
@@ -3077,7 +3111,7 @@ mod tests {
         requirements: &PaymentRequirements,
         accepted: serde_json::Value,
     ) -> String {
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(requirements, &payer, &payer);
         let envelope = PaymentSignatureEnvelope {
             scheme: None,
@@ -3098,6 +3132,52 @@ mod tests {
 
     // Regression: an `accepted` without the server's non-spec hints was
     // rejected as a structural mismatch.
+    // RULINGS SIG1: the client's signature verifies over this message
+    // before the sponsor co-signs; a copied or missing one is refused.
+    #[tokio::test]
+    async fn a_client_signature_that_does_not_verify_is_refused() {
+        use ed25519_dalek::Signer;
+        let sponsor = Pubkey::new_unique();
+        let mut server_config = config();
+        server_config.fee_payer_key = Some(sponsor.to_string());
+        let x402 = X402::new(server_config).unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let honest = exact_transaction(&requirements, &test_client(), &sponsor);
+        let verify = |tx: &VersionedTransaction| {
+            let header = transaction_header(&requirements, requirements.resource_info(), tx);
+            let x402 = &x402;
+            let requirements = &requirements;
+            async move {
+                x402.verify_payment_signature_for_requirements(&header, requirements)
+                    .await
+            }
+        };
+        verify(&honest).await.unwrap();
+
+        let client = honest
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| *key == test_client())
+            .unwrap();
+        let mut forged = honest.clone();
+        forged.signatures[client] = solana_signature::Signature::from(
+            ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                .sign(b"a transaction that already landed")
+                .to_bytes(),
+        );
+        assert!(verify(&forged).await.is_err(), "a copied signature passed");
+
+        let mut truncated = honest.clone();
+        truncated.signatures.truncate(1);
+        assert!(
+            verify(&truncated).await.is_err(),
+            "a short signature list passed"
+        );
+    }
+
     #[tokio::test]
     async fn spec_shaped_accepted_without_server_hints_matches() {
         let x402 = X402::new(config()).unwrap();

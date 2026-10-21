@@ -1834,12 +1834,7 @@ impl Mpp {
             .await
             .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
         } else {
-            verify_versioned_transaction_pre_broadcast(
-                &tx,
-                request,
-                method_details,
-                &self.accepted_versions,
-            )?;
+            verify_client_pull_transaction(&tx, request, method_details, &self.accepted_versions)?;
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
 
@@ -2356,15 +2351,15 @@ pub mod testkit {
 
     /// Run the offline pre-broadcast checks [`Mpp`] applies to a pull-mode
     /// charge transaction before it co-signs and broadcasts: envelope and
-    /// compute caps, fee-payer isolation, and the exact transfer set for
-    /// `request` and `method_details`.
+    /// compute caps, fee-payer isolation, the exact transfer set for
+    /// `request` and `method_details`, and the client's signatures.
     pub fn verify_transaction_pre_broadcast(
         tx: &VersionedTransaction,
         request: &ChargeRequest,
         method_details: &MethodDetails,
         accepted_versions: &[TxVersion],
     ) -> Result<(), VerificationError> {
-        verify_versioned_transaction_pre_broadcast(tx, request, method_details, accepted_versions)
+        verify_client_pull_transaction(tx, request, method_details, accepted_versions)
     }
 }
 
@@ -2385,6 +2380,27 @@ fn verify_transaction_pre_broadcast(
         method_details,
         &[TxVersion::V0, TxVersion::V1],
     )
+}
+
+/// The pull-mode checks a client transaction passes before the server
+/// co-signs it: [`verify_versioned_transaction_pre_broadcast`], then the
+/// client's signatures. One that does not verify over this message names
+/// another transaction, which a pending retry would reconcile by that
+/// transaction's status (RULINGS SIG1); the fee payer slot stays empty for
+/// the server.
+fn verify_client_pull_transaction(
+    tx: &VersionedTransaction,
+    request: &ChargeRequest,
+    method_details: &MethodDetails,
+    accepted_versions: &[TxVersion],
+) -> Result<(), VerificationError> {
+    verify_versioned_transaction_pre_broadcast(tx, request, method_details, accepted_versions)?;
+    let fee_payer = expected_fee_payer(tx, method_details)?;
+    crate::core::tx::require_presigned(tx, fee_payer.as_ref()).map_err(|e| {
+        VerificationError::invalid_payload(format!(
+            "Transaction signature verification failed: {e}"
+        ))
+    })
 }
 
 fn verify_versioned_transaction_pre_broadcast(
@@ -5555,6 +5571,45 @@ mod tests {
         let method_details = MethodDetails::default();
 
         assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    // RULINGS SIG1: the pull path refuses a transaction whose client
+    // signature does not verify over it, or whose signature list is short,
+    // before anything is co-signed, claimed or sent.
+    #[test]
+    fn a_client_pull_transaction_must_carry_its_own_valid_signatures() {
+        use ed25519_dalek::Signer;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[21u8; 32]);
+        let sender = Pubkey::new_from_array(key.verifying_key().to_bytes());
+        let recipient = Pubkey::new_unique();
+        let amount = 1_000_000u64;
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+        let versions = [TxVersion::V0, TxVersion::V1];
+        let mut tx = dummy_v0_tx(
+            vec![system_transfer_ix(&sender, &recipient, amount)],
+            &sender,
+            vec![],
+        );
+        let check = |tx: &VersionedTransaction| {
+            verify_client_pull_transaction(tx, &request, &method_details, &versions)
+        };
+
+        assert!(check(&tx).is_err(), "an unsigned client slot passed");
+        tx.signatures[0] = Signature::from(key.sign(&tx.message.serialize()).to_bytes());
+        check(&tx).unwrap();
+
+        let mut forged = tx.clone();
+        forged.signatures[0] =
+            Signature::from(key.sign(b"a transaction that already landed").to_bytes());
+        assert!(
+            check(&forged).is_err(),
+            "a signature over another message passed"
+        );
+
+        let mut truncated = tx.clone();
+        truncated.signatures.clear();
+        assert!(check(&truncated).is_err(), "a short signature list passed");
     }
 
     #[test]
