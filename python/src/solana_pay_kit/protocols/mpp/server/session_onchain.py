@@ -27,7 +27,11 @@ from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
-from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+from solana_pay_kit._paycore.transaction import (
+    SignatureCheckError,
+    build_partially_signed_v0_transaction,
+    verify_required_signatures,
+)
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
@@ -212,6 +216,23 @@ def top_up_transaction_signature(transaction_b64: str) -> str | None:
     return str(signatures[0])
 
 
+def _verify_signers(raw: bytes, what: str, *, unsigned: Pubkey | None = None) -> None:
+    """Refuse ``raw`` unless every required signer has signed it.
+
+    See :func:`~solana_pay_kit._paycore.transaction.verify_required_signatures`:
+    the signature count must equal ``num_required_signatures`` and every slot
+    but ``unsigned``'s placeholder must verify.
+    """
+    from solders.transaction import VersionedTransaction
+
+    try:
+        verify_required_signatures(VersionedTransaction.from_bytes(raw), unsigned=unsigned)
+    except SignatureCheckError as exc:
+        raise PaymentError(f"{what} transaction signature verification failed: {exc}", code="invalid-payload") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise PaymentError(f"could not decode {what} transaction: {exc}", code="invalid-payload") from exc
+
+
 def _signed_message_bytes(message: Any) -> bytes:
     """Return the exact bytes covered by signatures: ``0x80`` prefix + body
     for v0, the bare message for legacy."""
@@ -261,7 +282,7 @@ async def verify_open_tx(
         )
 
     try:
-        _raw, message, account_keys, instructions, signatures = _decode_transaction(payload.transaction)
+        raw, message, account_keys, instructions, signatures = _decode_transaction(payload.transaction)
     except PaymentError:
         # Already a structured rejection (e.g. the address-lookup-table guard);
         # surface it verbatim rather than wrapping it as a generic decode error.
@@ -421,6 +442,9 @@ async def verify_open_tx(
         raise PaymentError("channel payer signature is missing", code="invalid-payload")
     if not signatures[payer_index].verify(payer, _signed_message_bytes(message)):
         raise PaymentError("channel payer signature is invalid", code="invalid-payload")
+    # Every other required signer must have signed too; only the advertised
+    # fee payer's slot may still be empty, for the server to co-sign.
+    _verify_signers(raw, "open", unsigned=Pubkey.from_string(expected.fee_payer) if expected.fee_payer else None)
 
     return VerifyOpenTxResult(
         channel_id=str(channel),
@@ -583,6 +607,9 @@ def new_top_up_tx_verifier(
         payer = Pubkey.from_string(state.payer)
         if payer_index >= len(signatures) or not signatures[payer_index].verify(payer, _signed_message_bytes(message)):
             raise PaymentError("top-up payer signature is invalid", code="invalid-payload")
+        # The broadcast-failure rescue below resolves on ``signatures[0]``,
+        # so every required signature must verify, not just the payer's.
+        _verify_signers(raw, "top-up")
         try:
             sent = await rpc_client.send_raw_transaction(raw)
             signature = str(sent.value)
@@ -875,8 +902,9 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Transact
             "server-funded open requires the client-built transaction in the payload",
             code="invalid-payload",
         )
-    cosigned = await _co_sign_with_fee_payer(payload.transaction, fee_payer)
-    sent = await rpc.send_raw_transaction(base64.b64decode(cosigned))
+    cosigned = base64.b64decode(await _co_sign_with_fee_payer(payload.transaction, fee_payer))
+    _verify_signers(cosigned, "open")
+    sent = await rpc.send_raw_transaction(cosigned)
     signature = str(sent.value)
     await confirm_transaction_signature(rpc, signature, "open")
     return signature

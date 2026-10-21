@@ -1347,6 +1347,68 @@ class TestAmbiguousBroadcast:
         assert rpc.sends == 0
         assert await store.get(consumed_signature_key(str(forged))) is None
 
+    @staticmethod
+    def _two_signer_transaction() -> VersionedTransaction:
+        """A USDC charge paid by one key with fees paid by another: two
+        required signers, both signed, as it would have landed."""
+        fee_payer, authority = Keypair(), Keypair()
+        destination = Pubkey.from_string(_derive_ata(TEST_RECIPIENT, USDC_DEVNET, TOKEN_PROGRAM))
+        data = bytes([12]) + (1_000_000).to_bytes(8, "little") + bytes([6])
+        transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(destination, False, True),
+                AccountMeta(authority.pubkey(), True, False),
+            ],
+        )
+        message = MessageV0.try_compile(fee_payer.pubkey(), [transfer], [], Hash.from_string(TEST_BLOCKHASH))
+        assert message.header.num_required_signatures == 2
+        return VersionedTransaction(message, [fee_payer, authority])
+
+    def _two_signer_credential(self, handler: Mpp, transaction: VersionedTransaction):
+        challenge = handler.charge("1.00")
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "transaction", "transaction": base64.b64encode(bytes(transaction)).decode()},
+        )
+        return credential, challenge
+
+    async def test_landed_two_signer_payment_truncated_to_its_first_signature_is_refused_before_it_is_claimed(self):
+        """Every present signature verifies, but the message requires two: the
+        truncated wire names the landed transaction without authorizing this
+        charge. It is refused before the claim, and nothing is sent, so a
+        retry can never reconcile it on the landed transaction's status."""
+        landed = self._two_signer_transaction()
+        truncated = VersionedTransaction.populate(landed.message, [landed.signatures[0]])
+        assert all(truncated.verify_with_results())  # what the old check relied on
+
+        rpc = _PendingRPC(send_error=_RpcError("Transaction signature verification failure", code="payment_invalid"))
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}  # the landed transaction's status
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge = self._two_signer_credential(handler, truncated)
+        for _ in range(2):
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "invalid-payload"
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+    async def test_fully_signed_two_signer_payment_settles(self):
+        """Positive control: the same payment with both signatures settles."""
+        transaction = self._two_signer_transaction()
+        rpc = _PendingRPC()
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge = self._two_signer_credential(handler, transaction)
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == str(transaction.signatures[0])
+        assert rpc.sends == 1
+
     async def test_already_processed_with_a_fresh_claim_is_a_replay(self):
         """The node already processed this exact transaction, but this store
         never claimed it (another worker's per-process store, or a restart):

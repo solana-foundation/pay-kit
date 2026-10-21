@@ -40,6 +40,7 @@ from solana_pay_kit._paycore.store import (
     consumed_before_ledger,
     consumed_signature_key,
 )
+from solana_pay_kit._paycore.transaction import SignatureCheckError, verify_required_signatures
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError, SettlementInProgressError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.extensions import PaymentIdentifierError, verify_payment_identifier
@@ -551,7 +552,18 @@ async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
         raise InvalidProofError("solana_pay_kit: fee payer is not a required signer", code="payment_invalid")
 
     signed = await signer.sign_transaction(vtx)
-    return bytes(signed.transaction)
+    cosigned = bytes(signed.transaction)
+    # Every required signer, the payer included, must have signed before the
+    # signature is claimed or the transaction sent: a landed multi-signer
+    # transaction cut down to its first signature would otherwise be claimed
+    # and reconciled on the landed transaction's status.
+    try:
+        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+    except SignatureCheckError as exc:
+        raise InvalidProofError(
+            f"solana_pay_kit: transaction signature verification failed: {exc}", code="payment_invalid"
+        ) from exc
+    return cosigned
 
 
 def _transaction_parse_error(message: str) -> InvalidProofError:

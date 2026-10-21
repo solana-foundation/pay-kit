@@ -20,6 +20,7 @@ from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.message import MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 import solana_pay_kit.protocols.x402 as xmod
@@ -167,13 +168,15 @@ def _build_envelope(adapter, gate, op_kp, *, amount_override=None, memo_override
     memo_text = memo_override if memo_override is not None else offer["extra"]["memo"]
     memo = Instruction(Pubkey.from_string(MEMO_PROGRAM), memo_text.encode(), [])
     msg = MessageV0.try_compile(op_kp.pubkey(), [cl, cp, transfer, memo], [], Hash.from_string(BH))
-    # Unsigned v0 wire form: zeroed sig slots, then the 0x80-prefixed message.
+    # The v0 wire form a client sends: the transfer authority's slot signed,
+    # the fee payer's slot left as a zero placeholder for the server to co-sign.
     num = int(msg.header.num_required_signatures)
-    wire = bytearray()
-    wire.append(num)
-    wire.extend(bytes(64) * num)
-    wire.extend(bytes(to_bytes_versioned(msg)))
-    tx_b64 = base64.b64encode(bytes(wire)).decode()
+    signed_bytes = bytes(to_bytes_versioned(msg))
+    sigs = [
+        authority.sign_message(signed_bytes) if key == authority.pubkey() else Signature.default()
+        for key in msg.account_keys[:num]
+    ]
+    tx_b64 = base64.b64encode(bytes(VersionedTransaction.populate(msg, sigs))).decode()
     envelope = {
         "x402Version": X402_VERSION,
         "accepted": offer,
@@ -803,3 +806,71 @@ async def test_pending_record_is_claimed_before_sending(monkeypatch):
     store.fail = False
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == await _settlement_signature(header, op_kp)
+
+
+# -- every required signer must have signed ------------------------------------
+
+
+def _with_client_signatures(header: str, op_kp: Keypair, build) -> tuple[str, VersionedTransaction]:
+    """Re-sign the envelope's transaction as a landed payment would carry it
+    (fee payer and transfer authority both signed), then hand ``build`` that
+    landed transaction to derive the wire the client actually submits."""
+    envelope = json.loads(base64.b64decode(header))
+    vtx = VersionedTransaction.from_bytes(base64.b64decode(envelope["payload"]["transaction"]))
+    signed_bytes = bytes(to_bytes_versioned(vtx.message))
+    landed = VersionedTransaction.populate(vtx.message, [op_kp.sign_message(signed_bytes), *list(vtx.signatures)[1:]])
+    assert all(landed.verify_with_results())
+    submitted = build(landed)
+    envelope["payload"]["transaction"] = base64.b64encode(bytes(submitted)).decode()
+    return base64.b64encode(json.dumps(envelope).encode()).decode(), landed
+
+
+@pytest.mark.asyncio
+async def test_landed_two_signer_payment_truncated_to_its_first_signature_is_refused_before_it_is_claimed(
+    monkeypatch,
+):
+    """Every present signature verifies, but the message requires two: the
+    truncated wire names the landed transaction without the payer's
+    authorization. It is refused before any claim or send."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header, landed = _with_client_signatures(
+        _build_envelope(adapter, gate, op_kp),
+        op_kp,
+        lambda tx: VersionedTransaction.populate(tx.message, [tx.signatures[0]]),
+    )
+    for _ in range(2):
+        with pytest.raises(InvalidProofError) as exc:
+            await adapter.verify_and_settle(gate, _Req(header))
+        assert exc.value.code == "payment_invalid"
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+
+@pytest.mark.asyncio
+async def test_unsigned_transfer_authority_is_refused_before_it_is_claimed(monkeypatch):
+    """The server co-signs only the fee payer: a transfer authority slot left
+    empty authorizes nothing and is refused before any claim or send."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header, landed = _with_client_signatures(
+        _build_envelope(adapter, gate, op_kp),
+        op_kp,
+        lambda tx: VersionedTransaction.populate(tx.message, [Signature.default()] * len(tx.signatures)),
+    )
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "payment_invalid"
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+
+@pytest.mark.asyncio
+async def test_fully_signed_two_signer_payment_settles(monkeypatch):
+    """Positive control: the landed shape, both slots signed, settles once."""
+    adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch)
+    header, landed = _with_client_signatures(_build_envelope(adapter, gate, op_kp), op_kp, lambda tx: tx)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == str(landed.signatures[0])
