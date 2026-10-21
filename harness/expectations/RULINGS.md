@@ -105,6 +105,37 @@ include”, uses the v1 field name, and is superseded by the network binding's
 normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
 as an explicit stricter policy; default verifiers MUST accept it.
 
+## x402 batch-settlement on SVM
+
+Pinned `scheme_batch_settlement_svm.md` (x402 @03b3919b); transaction-version
+rules from the x402-txv1 draft (`external/x402-txv1` @3d723dd).
+
+**B1. A client-mode voucher steps the server's watermark by exactly the
+amount.** Phase 3: “In client mode, require `maxClaimableAmount ==
+chargedCumulativeAmount + PaymentRequirements.amount` and `maxClaimableAmount
+<= channel.deposit`.” The verify vectors take the verifying party's role as
+the resource server that owns `chargedCumulativeAmount` (the store record is
+the vector's `batchServerChannel`), so `charged + amount + 1` is rejected
+with `cumulative-amount-mismatch`. A stateless facilitator cannot apply this
+rule: it sees only onchain `settled`, and the txv1 draft gives it a floor
+instead (“the facilitator MUST require `maxClaimableAmount >= Channel.settled +
+PaymentRequirements.amount`”). An SDK whose only verify entry point is a
+facilitator therefore fails the above-amount vectors; that is a known
+failure of the facilitator-only testee, not a reading of the server rule.
+
+**B2. A client-mode refund carries the voucher.** “| `voucher` | `BatchVoucher`
+| REQUIRED in client mode.” The `request_close` transaction is the retry path
+after `invalid_batch_settlement_svm_receiver_binding_unavailable`. A
+single-shot verifier holds no receiver binding, so the refund vectors pin
+that retry (voucher plus transaction) and judge the `request_close` policy.
+
+**B3. Codes the spec does not name.** An `accepted` that differs from the
+requirements is `accepted-mismatch` and a non-v2 envelope `unsupported-version`
+(the x402 `exact` vocabulary); a client refusing an offer it may not act on
+(untrusted server-mode operator, `extra.operator` in client mode, a malformed
+requirement) is `invalid-challenge`; wire objects that do not parse are
+`invalid-payload`.
+
 ## Harness consequences
 
 - Vectors encode these rulings. Runners pass chain state through the fixture

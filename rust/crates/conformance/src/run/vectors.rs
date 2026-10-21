@@ -112,16 +112,17 @@ fn check_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// `<repo>/specs/<path>.md` for any pinned repository (`SpecRepo::ALL`).
 fn check_doc(doc: &str) -> bool {
-    let rest = doc
-        .strip_prefix("mpp-specs/specs/")
-        .or_else(|| doc.strip_prefix("x402/specs/"));
+    let rest = crate::case::SpecRepo::ALL.iter().find_map(|repo| {
+        doc.strip_prefix(repo.prefix())
+            .and_then(|r| r.strip_prefix("/specs/"))
+    });
     matches!(rest, Some(r) if !r.starts_with('.') && r.ends_with(".md") && !r.chars().any(char::is_whitespace))
 }
 
 fn check_req(id: &str) -> bool {
-    let hex = id.strip_prefix("MPP-").or_else(|| id.strip_prefix("X402-"));
-    matches!(hex, Some(h) if h.len() == 10 && h.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
+    crate::case::ReqId::new(id).is_ok()
 }
 
 fn one_of(value: &Value, allowed: &[&str]) -> bool {
@@ -173,7 +174,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .is_some_and(check_doc)
     {
-        return Err("spec.doc must be mpp-specs/specs/... or x402/specs/....md".into());
+        return Err("spec.doc must be <pinned repo>/specs/....md (mpp-specs, x402, mpp-specs-solana, mpp-specs-txv1, x402-txv1)".into());
     }
     if spec
         .get("section")

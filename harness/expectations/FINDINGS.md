@@ -358,3 +358,89 @@ regression tests, against [RULINGS.md](RULINGS.md):
   payment-identifier id.
 - The Kotlin conformance runner implements only the session voucher preimage
   vectors.
+
+## x402 batch-settlement findings (`x402-batch-settlement` vectors, 2026-10-21)
+
+Recorded by the first run of the batch-settlement vector suite against the
+pinned `scheme_batch_settlement_svm.md` (x402 @03b3919b) and the
+transaction-version draft (x402-txv1 @3d723dd). The SDK sources were not
+changed.
+
+## batch-open-binding-memo
+
+**Cases:** `batch-build-deposit-open`, `batch-build-terms-payment-flow-authorization`,
+`batch-verify-open-accept`, `batch-verify-open-missing-binding-memo-reject`,
+`batch-verify-open-foreign-binding-reject`,
+`batch-verify-open-grace-period-mismatch-reject` (rust)
+
+The spec binds every channel to one receiver authorizer at open: “The client's
+open transaction carries, in addition to the seller/nonce Memo, a binding Memo
+whose UTF-8 data is exactly:” `x402:batch-settlement:svm:rcvauth:v1:<key>`, and
+the layout rule is “An `open` suffix also carries exactly one binding Memo
+from section 3.” The Rust client emits the binding memo only for server-signed
+channels (`x402/client/batch_settlement/payment.rs` `resolve_terms`), and the
+server's `scan_channel_tx_layout` (`MemoPolicy::Required`) admits exactly one
+memo, so it accepts an unbound open and refuses a conforming one with
+`setup_transaction` at the memo scan, before decoding `grace_period` or the
+binding key. The other open-path rejects (`diverting-distribution`,
+`deposit-mismatch`, `stale-slot`, `future-slot`, `channel-pda-mismatch`)
+therefore match by code only: Rust reaches the same `setup_transaction` at the
+memo scan. They become discriminating once the server accepts the binding memo.
+
+## batch-refund-superseded-shape
+
+**Cases:** `batch-build-refund`, `batch-verify-refund-*` (all but
+`batch-verify-refund-with-amount-reject`), `batch-txv1-refund-v1-not-advertised-reject`,
+`batch-wire-payload-refund-cooperative`,
+`batch-wire-payload-refund-transaction-without-voucher-reject` (rust)
+
+In the pinned spec a refund is a cooperative close by default: the client-mode
+payload carries the accepted voucher (“| `voucher` | `BatchVoucher` | REQUIRED
+in client mode.”), and the `request_close` transaction is “Omitted unless
+retrying after `invalid_batch_settlement_svm_receiver_binding_unavailable`”.
+The kit implements the superseded shape: `BatchPayload::Refund` requires
+`transaction` and makes `voucher` optional, `build_refund` sends no voucher,
+and the server refuses any refund carrying a voucher with `close_authorization`
+(`check_no_cooperative_close`) while accepting one without. The
+`request_close` envelope policy (`validate_request_close_transaction`) is
+therefore unreachable with a conforming payload; the vectors pin the spec's
+retry path (voucher plus transaction, binding unavailable).
+
+## batch-claims-unbounded
+
+**Cases:** `batch-wire-redemption-claim-empty-reject`,
+`batch-wire-redemption-claim-five-entries-reject` (rust)
+
+“`claims[]` MUST contain between one and four entries so the instruction pairs
+fit in a legacy Solana transaction without address lookup tables.” The kit's
+`BatchRedemptionPayload::Claim` is an unbounded `Vec`; the server never
+receives a claim payload over the wire (it redeems through its own
+`claim()`), so this only matters to a facilitator built on the wire type.
+
+## batch-server-reject-codes
+
+**Cases:** `batch-verify-accepted-{amount,pay-to,network}-mismatch-reject`,
+`batch-verify-x402-version-1-reject`,
+`batch-verify-top-up-{missing-receiver,frozen-payer}-ata-reject`,
+`batch-txv1-top-up-v1-not-advertised-reject` (rust)
+
+The Rust server refuses each of these for the right reason under another code.
+`paymentPayload.accepted` differing from the route's requirements and a
+non-v2 envelope come back as `channel_state` (the shared vocabulary uses
+`accepted-mismatch` and `unsupported-version`, as for x402 `exact`). An
+unusable settlement ATA comes back as `setup_transaction`; spec §7 names
+`invalid_batch_settlement_svm_settlement_simulation` for “setup or
+settlement-readiness simulation/checks failed before accepting the deposit”.
+An unadvertised message version comes back as `setup_transaction`; x402-txv1
+requires the facilitator to reject it “before inspecting any instruction,
+with `unsupported_transaction_version`”.
+
+## batch-v1-loaded-limit-pinned
+
+**Cases:** `batch-txv1-top-up-v1-loaded-limit-below-max` (rust)
+
+x402-txv1: “`loadedAccountsDataSizeLimit` MUST be present”. The kit's
+`DeclaredBudget::of` (`core/tx/budget.rs`) also requires it to equal the
+runtime maximum (67108864), refusing a version-1 setup transaction that
+declares a smaller limit. The spec sets presence, not a value, and lets a
+sponsor tighten only the caps it names.
