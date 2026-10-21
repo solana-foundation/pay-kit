@@ -526,6 +526,21 @@ pub enum Input {
     /// transaction in the scheme_exact_svm §3.1 static layout (see
     /// `x402tx.rs`), optionally mutated, wrapped in an envelope.
     X402Header(Box<X402HeaderSpec>),
+    /// A session verify vector whose `input.sessionOpenVerify.open` is the
+    /// kit client's `open` action for the challenge the kit's session server
+    /// issues under `server` (or under `built_from`, so the server verifies
+    /// an open built for another challenge), optionally mutated.
+    SessionOpen(Box<SessionOpenSpec>),
+}
+
+/// Recipe for a session `open` verify vector (`input.sessionOpenVerify`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionOpenSpec {
+    /// The verifying server's configuration (`sessionOpenVerify.server`).
+    pub server: Value,
+    /// Build the open against the challenge of this configuration instead.
+    pub built_from: Option<Value>,
+    pub mutation: Option<Mutation>,
 }
 
 /// Recipe for an x402 verify vector's payment header.

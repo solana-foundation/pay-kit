@@ -12,6 +12,15 @@
 import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
+  // Transaction versions (SIMD-0385): a message version the server does
+  // not accept, or a client whose signer builds no advertised version
+  // (x402 §1.5 `unsupported_transaction_version`). Then the version-1
+  // envelope rules: a ComputeBudget instruction in a version-1 charge, an
+  // incomplete header config, a size over the version's limit, a lookup
+  // table. Checked first: the messages also contain generic words.
+  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version/i, "unsupported-version"],
+  [/^(?!.*invalid_exact_svm).*must not contain computebudget instructions/i, "unexpected-instruction"],
+  [/must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables/i, "invalid-payload"],
   // Charge verification policy (split arithmetic, split-recipient ATA
   // creation, fee payer placement, compute budget allowlist) and the client's
   // challenge checks. Checked first: several messages contain generic words.

@@ -125,12 +125,6 @@ text = "When feePayer is true, the transaction MUST set the server's feePayerKey
 required = true
 
 [[requirement]]
-id = "MPPTX-e938c00f50"
-doc = "specs/methods/solana/draft-solana-charge-00.md"
-text = "When feePayer is false or absent, the client MUST also be the fee payer and the transaction MUST be fully signed."
-required = true
-
-[[requirement]]
 id = "MPPTX-f8468a31de"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "| transaction | string | REQUIRED | Base64-encoded serialized signed transaction bytes; the decoded size MUST NOT exceed the limit for its message version ({{transaction-versions}}) |"

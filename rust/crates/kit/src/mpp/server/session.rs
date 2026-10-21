@@ -2749,6 +2749,38 @@ async fn prepare_open_transaction(
     Ok((tx, payer_signature))
 }
 
+/// Conformance hooks (feature `testkit`). Not a payment verifier: nothing
+/// here binds the challenge id, stores the channel, co-signs or broadcasts.
+/// Use [`SessionServer`] to accept payments.
+#[cfg(all(feature = "server", feature = "testkit"))]
+pub mod testkit {
+    use super::*;
+
+    /// The offline checks [`SessionServer`] applies to a client-paid `open`
+    /// before it broadcasts: the open parameters the payload declares,
+    /// against the server's configuration (`payment_channel_open_params`),
+    /// then the transaction (`prepare_open_transaction`: accepted message
+    /// version, size, compute budget, the challenged blockhash, fee payer,
+    /// the expected open instruction and the client's signatures).
+    pub async fn verify_open_transaction_pre_broadcast<S: ChannelStore>(
+        server: &SessionServer<S>,
+        open: &OpenPayload,
+        challenged_blockhash: &str,
+    ) -> Result<()> {
+        let params = server.payment_channel_open_params(open)?;
+        prepare_open_transaction(
+            open,
+            &params,
+            challenged_blockhash,
+            None,
+            &server.accepted_versions,
+            &server.config,
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
 #[cfg(feature = "server")]
 async fn submit_and_fetch_open(
     tx: solana_transaction::versioned::VersionedTransaction,

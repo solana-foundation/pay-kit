@@ -395,6 +395,30 @@ export type VectorInput = {
   // round-tripped through the production SDK requirements type, as
   // `chargeWire`.
   x402Wire?: { value: unknown };
+  // verify-transaction (session): a client-submitted `open`. The runner
+  // configures its SDK's session server from `server` (client vouchers,
+  // client-paid opens; `transactionVersions` is the set it accepts and
+  // advertises, [0] when absent) and runs the server's checks on `open`
+  // (the credential's open action, its transaction built by the Rust kit's
+  // client, possibly mutated) against the challenged `challengedBlockhash`,
+  // before any co-sign or broadcast. Accept means the open would be
+  // broadcast.
+  sessionOpenVerify?: {
+    server: {
+      operator: string;
+      recipient: string;
+      currency: string;
+      decimals: number;
+      network: string;
+      amount: string;
+      minimumDeposit?: string;
+      suggestedDeposit?: string;
+      gracePeriodSeconds?: number;
+      transactionVersions?: Array<0 | 1>;
+    };
+    challengedBlockhash: string;
+    open: Record<string, unknown>;
+  };
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a

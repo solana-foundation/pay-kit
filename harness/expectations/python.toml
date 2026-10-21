@@ -75,3 +75,130 @@ ids = [
 ]
 reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
 tracking = "FINDINGS.md#x402-replay-route-missing"
+
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[unsupported]]
+reason = "unsupported-mode: canonical-bytes"
+ids = [
+  "vector/x402-wire-transaction-versions-golden",
+  "vector/x402-wire-transaction-versions-v1-only-golden",
+]
+
+[[known_failing]]
+ids = [
+  "vector/charge-wire-transaction-versions-both-golden",
+  "vector/charge-wire-transaction-versions-v1-only-golden",
+  "vector/charge-wire-transaction-versions-legacy-reject",
+  "vector/charge-wire-transaction-versions-unknown-reject",
+  "vector/charge-wire-transaction-versions-string-entry-reject",
+  "vector/charge-wire-transaction-versions-not-array-reject",
+  "vector/session-wire-transaction-versions-both-golden",
+  "vector/session-wire-transaction-versions-v1-only-golden",
+  "vector/session-wire-transaction-versions-v0-golden",
+  "vector/session-wire-transaction-versions-legacy-reject",
+  "vector/session-wire-transaction-versions-unknown-reject",
+  "vector/session-wire-transaction-versions-string-entry-reject",
+]
+reason = "the request types drop or mis-parse methodDetails/extra.transactionVersions (wire golden or reject): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
+tracking = "FINDINGS.md#txv1-python"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-v1-advertised",
+  "vector/charge-build-v1-only-advertised",
+  "vector/charge-build-no-buildable-version-reject",
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/charge-build-duplicate-advertisement",
+  "vector/charge-build-v1-sponsored",
+  "vector/charge-build-v1-sol",
+  "vector/charge-build-v1-large-memos",
+]
+reason = "the charge client ignores methodDetails.transactionVersions and builds version 0 (mpp-specs-txv1: \"Clients MUST build one of the advertised versions\"): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
+tracking = "FINDINGS.md#txv1-python"
+
+[[known_failing]]
+ids = [
+  "vector/charge-verify-v1-advertised-accept",
+  "vector/charge-verify-v1-only-advertised-accept",
+  "vector/charge-verify-v1-not-advertised-reject",
+  "vector/charge-verify-v1-v0-only-reject",
+  "vector/charge-verify-v0-to-v1-only-reject",
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+  "vector/charge-verify-lookup-table-reject",
+  "vector/charge-verify-v0-oversize-reject",
+  "vector/charge-verify-v1-large-memos-accept",
+  "vector/charge-verify-v1-compute-budget-instruction-reject",
+  "vector/charge-verify-v1-missing-compute-unit-limit-reject",
+  "vector/charge-verify-v1-missing-loaded-data-limit-reject",
+  "vector/charge-verify-v1-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-sponsored-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-sponsored-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-reduced-limit-price-reject",
+]
+reason = "the charge verifier has no version admission or version-1 rules (mpp-specs-txv1 Transaction Versions): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
+tracking = "FINDINGS.md#txv1-python"
+
+[[known_failing]]
+ids = [
+  "vector/x402-build-v1-advertised",
+  "vector/x402-build-duplicate-advertisement",
+  "vector/x402-build-no-intersection-reject",
+  "vector/x402-build-empty-advertisement-reject",
+  "vector/x402-build-legacy-only-reject",
+  "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-not-accepted-reject",
+  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
+  "vector/x402-verify-v1-over-1232-accept",
+  "vector/x402-verify-v0-over-1232-reject",
+  "vector/x402-verify-v1-over-4096-reject",
+  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
+  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
+  "vector/x402-verify-v1-compute-limit-at-cap-accept",
+  "vector/x402-verify-v1-compute-limit-over-cap-reject",
+  "vector/x402-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-verify-v1-too-many-instructions-reject",
+  "vector/x402-verify-v1-underpay-reject",
+  "vector/x402-verify-v1-wrong-recipient-reject",
+  "vector/x402-verify-v1-wrong-mint-reject",
+  "vector/x402-verify-v1-decimals-reject",
+  "vector/x402-verify-v1-fee-payer-authority-reject",
+  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
+]
+reason = "the x402 exact client and sponsor have no transaction-version support (scheme_exact_svm.md §1.5, x402-foundation/x402 PR 3473/3474): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
+tracking = "FINDINGS.md#txv1-python"
+
+# Cross-verification of the transaction-version builds.
+
+[[known_failing]]
+ids = [
+  "cross/charge-build-duplicate-advertisement/go/python",
+  "cross/charge-build-duplicate-advertisement/python/python",
+  "cross/charge-build-duplicate-advertisement/swift/python",
+  "cross/charge-build-duplicate-advertisement/typescript/python",
+  "cross/charge-build-v1-large-memos/go/python",
+  "cross/charge-build-v1-large-memos/python/python",
+  "cross/charge-build-v1-large-memos/swift/python",
+  "cross/charge-build-v1-large-memos/typescript/python",
+  "cross/charge-build-v1-only-advertised/go/python",
+  "cross/charge-build-v1-only-advertised/python/python",
+  "cross/charge-build-v1-only-advertised/swift/python",
+  "cross/charge-build-v1-only-advertised/typescript/python",
+]
+reason = "accepts a version-0 charge build the Rust verifier refuses: version 0 for a challenge advertising [1] only, or over the 1232-byte version-0 limit (mpp-specs-txv1 Transaction Versions)"
+tracking = "FINDINGS.md#txv1-python"
+
+[[known_failing]]
+ids = [
+  "cross/x402-build-duplicate-advertisement/rust/python",
+  "cross/x402-build-v1-advertised/rust/python",
+]
+reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
+tracking = "FINDINGS.md#txv1-python"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
+pattern = "vector/session-open-*"

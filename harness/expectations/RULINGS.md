@@ -105,6 +105,52 @@ include”, uses the v1 field name, and is superseded by the network binding's
 normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
 as an explicit stricter policy; default verifiers MUST accept it.
 
+## Transaction versions (SIMD-0385)
+
+Pinned drafts: `external/mpp-specs-txv1` (solana-foundation/mpp-specs
+feat/solana-transaction-versions `77aa6a1`, charge and session) and
+`external/x402-txv1` (x402-foundation/x402 PR 3473, solana-foundation/x402
+`3d723dd`, scheme_exact_svm.md §1.5).
+
+**T1. `transactionVersions` is an array of the integers 0 and 1, read as a
+set.** MPP: “Each entry is the integer `0` or `1`, the Wallet Standard
+`supportedTransactionVersions` vocabulary without `"legacy"`.” x402: “Entries
+are the integers `0` and `1`”. Neither text allows a string entry, a bare
+integer or another version, so an MPP charge or session request carrying one
+is malformed and the SDK's request type refuses it (`invalid-payload` in the
+wire vectors). A repeated entry names the same version: `[1, 1]` advertises
+{1}, and a client builds version 1. x402 clients intersect the advertisement
+with what they can build, so an unknown entry in an x402 offer is not by
+itself a reason to refuse; the vectors pin no x402 verdict for one.
+
+**T2. Present and empty is not absent.** Only an omitted field defaults:
+MPP “Defaults to `[0]` when omitted”, x402 “When the field is absent, the
+accepted set is `[0]`.” An empty array advertises nothing. MPP: “Clients MUST
+build one of the advertised versions”, which no build satisfies; x402: “It
+MUST fail with `unsupported_transaction_version` when the intersection is
+empty.” A client refuses (`unsupported-version`).
+
+**T3. Legacy.** MPP charge and session: “servers MUST NOT advertise
+`"legacy"` and MUST reject a legacy message.” x402: “A facilitator MAY keep
+accepting legacy messages from existing clients for backward compatibility”,
+so the x402 vectors pin no legacy verify verdict; clients of both protocols
+never build legacy.
+
+**T4. Reject codes.** A version the server does not accept is
+`unsupported-version` for both protocols (MPP: the `malformed-credential`
+problem type “before inspecting any instruction”; x402
+`unsupported_transaction_version`), as is a client that can build no
+advertised version. A lookup table, a size over the version's limit, or a
+version-1 header without `computeUnitLimit` or `loadedAccountsDataSizeLimit`
+is `invalid-payload`. A ComputeBudget instruction in a version-1 message is
+`unexpected-instruction` for MPP charge (“Any unexpected instructions MUST
+cause rejection.”) and `invalid-payload` for x402 (the static layout
+mismatch). A charge or session server accepts exactly the versions its
+challenge's `methodDetails.transactionVersions` lists; an x402 sponsor its
+own configured set (`input.x402ServerTransactionVersions`), since “The
+sponsor enforces its own accepted set; it does not read
+`PaymentRequirements.extra.transactionVersions`.”
+
 ## Harness consequences
 
 - Vectors encode these rulings. Runners pass chain state through the fixture

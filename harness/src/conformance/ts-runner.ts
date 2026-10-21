@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
 import { caip2, readPaymentIdentifier, toNetwork, verifyX402ExactCredential } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
-import { session as sessionMethod } from "@solana/mpp";
+import { charge as chargeMethod, session as sessionMethod } from "@solana/mpp";
 import {
   buildChargeTransaction,
   sessionAuthenticationMessage,
@@ -40,6 +40,7 @@ import { decodeEnvelopeShape } from "./x402";
 // same packages through the pay-kit workspace package that depends on them.
 import { x402Facilitator } from "../../../typescript/packages/pay-kit/node_modules/@x402/core/dist/esm/facilitator/index.mjs";
 import { decodePaymentSignatureHeader } from "../../../typescript/packages/pay-kit/node_modules/@x402/core/dist/esm/http/index.mjs";
+import { PaymentRequirementsV2Schema } from "../../../typescript/packages/pay-kit/node_modules/@x402/core/dist/esm/schemas/index.mjs";
 import type {
   Network,
   PaymentPayload,
@@ -188,6 +189,9 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       outcome: "unsupported-mode",
     };
   }
+  if (input.signerMaxTransactionVersion !== undefined) {
+    return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
+  }
   const signer = await createKeyPairSignerFromBytes(new Uint8Array(input.signerSecretKey));
   let captured: string | undefined;
   const server = createServer((req, res) => {
@@ -234,8 +238,22 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
 
 type X402VerifyInput = ConformanceVector["input"];
 
+// Transaction-version knobs the TypeScript SDKs do not expose. The runner
+// cannot express them, so it reports unsupported-mode instead of guessing.
+const SIGNER_VERSION_UNSUPPORTED =
+  "unsupported-mode: neither @solana/mpp buildChargeTransaction nor the @solana/pay-kit x402 client takes a highest signable transaction version (input.signerMaxTransactionVersion)";
+const SPONSOR_VERSIONS_UNSUPPORTED =
+  "unsupported-mode: the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])";
+
+function sponsorVersionsExpressible(versions: ConformanceVector["input"]["x402ServerTransactionVersions"]): boolean {
+  return versions === undefined || (versions.length === 1 && versions[0] === 0);
+}
+
 async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input as X402VerifyInput;
+  if (!sponsorVersionsExpressible(vector.input.x402ServerTransactionVersions)) {
+    return { error: SPONSOR_VERSIONS_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
+  }
   if (!input.x402PaymentHeader) {
     throw new Error("invalid payload: x402 verify vector missing input.x402PaymentHeader");
   }
@@ -392,8 +410,11 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.intent === "x402-upto") return runUpto(vector);
   if (vector.intent === "x402-batch-settlement") return runBatch(vector);
   if (vector.intent === "subscription") return runSubscription(vector);
-  if (vector.intent === "x402-exact") {
+  if (vector.intent === "x402-exact" && vector.mode !== "canonical-bytes") {
     return runX402Vector(vector);
+  }
+  if (vector.mode === "build-transaction" && vector.input.signerMaxTransactionVersion !== undefined) {
+    return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
   }
   if (vector.intent === "session" && vector.mode === "verify-transaction") {
     if (!vector.input.sessionVoucherVerify) {
@@ -467,6 +488,33 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`invalid session payload: ${detail}`);
+      }
+      const canonicalJson = canonicalizeJson(decoded);
+      exactBytes.canonicalJson = canonicalJson;
+      exactBytes.base64Url = base64UrlFromUtf8(canonicalJson);
+    }
+    if (vector.input.chargeWire) {
+      // Round-trip a charge request through the PRODUCTION schema
+      // (@solana/mpp Methods.charge request), as sessionWire does.
+      let decoded: unknown;
+      try {
+        decoded = chargeMethod.schema.request.parse(vector.input.chargeWire.value);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid payload: charge request: ${detail}`);
+      }
+      const canonicalJson = canonicalizeJson(decoded);
+      exactBytes.canonicalJson = canonicalJson;
+      exactBytes.base64Url = base64UrlFromUtf8(canonicalJson);
+    }
+    if (vector.input.x402Wire) {
+      // One accepts[] entry through the vendored @x402/core v2 schema.
+      let decoded: unknown;
+      try {
+        decoded = PaymentRequirementsV2Schema.parse(vector.input.x402Wire.value);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid payload: payment requirements: ${detail}`);
       }
       const canonicalJson = canonicalizeJson(decoded);
       exactBytes.canonicalJson = canonicalJson;

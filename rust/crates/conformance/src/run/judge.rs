@@ -761,6 +761,68 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     compare_transactions(&expected_tx, &actual_tx, nonce_memo)
 }
 
+/// For a build the judge refused: whether it is nevertheless a transaction
+/// every conforming server must accept, because the Rust verifier accepts it
+/// and it differs from the kit's build only in its message version (the same
+/// fee payer, signers and instructions once the compute budget's encoding,
+/// ComputeBudget instructions or the version-1 header, is set aside). The
+/// client picked another advertised version, which its own build vector
+/// reports; the cross matrix (`pkc run --cross`) must not then expect
+/// servers to refuse a valid payment.
+pub async fn alternative_version_accepted(vector: &Vector, artifact: &str) -> bool {
+    let intent = match vector.intent.as_str() {
+        "charge" => Intent::Charge,
+        "x402-exact" => Intent::X402Exact,
+        _ => return false,
+    };
+    let Ok(verify_input) = verify_input_for_build(vector, artifact) else {
+        return false;
+    };
+    if !matches!(
+        realize::run(intent, Mode::VerifyTransaction, &verify_input).await,
+        Observed::Accept(_)
+    ) {
+        return false;
+    }
+    let Observed::Accept(reference) =
+        realize::run(intent, Mode::BuildTransaction, vector.input()).await
+    else {
+        return false;
+    };
+    let (expected_tx, actual_tx, nonce_memo) = match intent {
+        Intent::Charge => (
+            reference.transaction.unwrap_or_default(),
+            artifact.to_string(),
+            false,
+        ),
+        _ => match (
+            header_transaction(&reference.header.unwrap_or_default()),
+            header_transaction(artifact),
+        ) {
+            (Ok(e), Ok(a)) => (
+                e,
+                a,
+                vector.input().pointer("/x402Offer/extra/memo").is_none(),
+            ),
+            _ => return false,
+        },
+    };
+    let format = |tx: &str| decode_b64(tx).map(|t| crate::tx::MessageFormat::of(&t.message));
+    if format(&expected_tx).ok() == format(&actual_tx).ok() {
+        return false;
+    }
+    let budget_free = |tx: &str| {
+        normalised(tx, nonce_memo).map(|(payer, signers, ixs)| {
+            let ixs: Vec<Ix> = ixs
+                .into_iter()
+                .filter(|ix| ix.program != keys::COMPUTE_BUDGET_PROGRAM)
+                .collect();
+            (payer, signers, ixs)
+        })
+    };
+    matches!((budget_free(&expected_tx), budget_free(&actual_tx)), (Ok(a), Ok(b)) if a == b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

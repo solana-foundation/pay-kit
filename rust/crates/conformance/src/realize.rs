@@ -16,6 +16,7 @@
 //! check is the positive control and the filler.
 
 pub mod batch;
+pub mod session_open;
 pub mod subscription;
 pub mod upto;
 
@@ -198,6 +199,7 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
             }
             x402_header_input(case.id.as_str(), spec)
         }
+        Input::SessionOpen(spec) => session_open::materialize(case, spec).await,
     }
 }
 
@@ -438,6 +440,9 @@ pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
         (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input).await,
         (Intent::X402Exact, Mode::BuildTransaction) => x402_build(input).await,
         (Intent::X402Exact, Mode::VerifyTransaction) => x402_verify(input).await,
+        (Intent::Session, Mode::VerifyTransaction) if input.get("sessionOpenVerify").is_some() => {
+            session_open::verify(input).await
+        }
         (Intent::Session, Mode::VerifyTransaction) => session_verify(input).await,
         (intent, mode) => Ok(Observed::NotExpressible(format!(
             "no kit path for {} {}",

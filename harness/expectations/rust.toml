@@ -82,8 +82,9 @@ tracking = "FINDINGS.md#x402-client-network-not-checked"
 ids = [
   "vector/charge-verify-legacy-reject",
   "vector/charge-verify-legacy-default-reject",
+  "vector/session-open-legacy-reject",
 ]
-reason = "the charge verifier polices a legacy message as version 0 and accepts it wherever version 0 is accepted (rust/crates/kit/src/core/tx/version.rs TxVersion::of); draft-solana-charge-00 (txv1): servers MUST reject a legacy message"
+reason = "the charge and session open verifiers police a legacy message as version 0 and accept it wherever version 0 is accepted (rust/crates/kit/src/core/tx/version.rs TxVersion::of); draft-solana-charge-00 (txv1): servers MUST reject a legacy message"
 tracking = "FINDINGS.md#txv1-rust-legacy-accepted"
 
 [[known_failing]]
@@ -103,3 +104,21 @@ tracking = "FINDINGS.md#txv1-rust-x402-legacy-offer-code"
 id = "vector/x402-verify-v1-missing-loaded-data-limit-reject"
 reason = "rejected, but every check_v1_budget_caps error is reported as compute_price_instruction_too_high (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs verify_exact_versioned_transaction)"
 tracking = "FINDINGS.md#txv1-rust-x402-budget-codes"
+
+# Cross-verification of the transaction-version builds.
+
+[[known_failing]]
+ids = [
+  "cross/x402-build-duplicate-advertisement/go/rust",
+  "cross/x402-build-duplicate-advertisement/python/rust",
+  "cross/x402-build-duplicate-advertisement/rust/rust",
+  "cross/x402-build-duplicate-advertisement/swift/rust",
+  "cross/x402-build-duplicate-advertisement/typescript/rust",
+  "cross/x402-build-v0-advertised/go/rust",
+  "cross/x402-build-v0-advertised/python/rust",
+  "cross/x402-build-v0-advertised/rust/rust",
+  "cross/x402-build-v0-advertised/swift/rust",
+  "cross/x402-build-v0-advertised/typescript/rust",
+]
+reason = "the kit's x402 server advertises extra.transactionVersions only as [0, 1] (TxV1Mode::On) or not at all, so an offer's echoed [0] or [1, 0, 1] fails its accepted match (an echoed hint must equal the route's); scheme_exact_svm.md §1.5: the server MUST copy the facilitator's value"
+tracking = "FINDINGS.md#txv1-rust-x402-advertisement-fixed"
