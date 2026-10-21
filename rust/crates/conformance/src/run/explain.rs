@@ -154,6 +154,7 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
     let mut refs = Vec::new();
     let input = vector.input();
     let entry = match vector.file.as_str() {
+        f if f.starts_with("batch-") => "rust/crates/conformance/src/cases/x402_batch.rs",
         f if f.ends_with("-policy.json") && f.starts_with("x402") => {
             "rust/crates/conformance/src/cases/x402_policy.rs"
         }
@@ -192,6 +193,21 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             concat_kit("x402/server/exact.rs"),
             "pub async fn verify_payment_signature_for_requirements(",
             "kit x402 verifier",
+        )),
+        ("x402-batch-settlement", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/client/batch_settlement/payment.rs"),
+            "pub async fn build_deposit(",
+            "kit batch-settlement client builders",
+        )),
+        ("x402-batch-settlement", "verify-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/server/batch_settlement.rs"),
+            "pub async fn verify_and_reserve_payment(",
+            "kit batch-settlement server verifier",
+        )),
+        ("x402-batch-settlement", "canonical-bytes") => refs.push(SourceRef::new(
+            "rust/crates/conformance/src/realize/batch.rs",
+            "fn canonical(input: &Value)",
+            "kit batch-settlement encoders and wire types",
         )),
         ("session", "verify-transaction") => refs.push(SourceRef::new(
             concat_kit("core/session.rs"),

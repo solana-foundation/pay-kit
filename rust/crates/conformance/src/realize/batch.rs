@@ -186,25 +186,26 @@ fn canonical(input: &Value) -> Result<Observed, String> {
             Err(_) => return Ok(invalid("authorizedAmount must be a decimal u64")),
         };
         let expires_at = am.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
-        return Ok(match client::authorization_message_bytes(
-            &channel,
-            &payer,
-            &operator,
-            super::str_field(am, "requestId"),
-            amount,
-            expires_at,
-        ) {
-            Ok(bytes) => {
-                set_bytes(&mut exact, &bytes);
-                accept_exact(exact)
-            }
-            Err(e) => invalid(e.to_string()),
-        });
+        return Ok(
+            match client::authorization_message_bytes(
+                &channel,
+                &payer,
+                &operator,
+                super::str_field(am, "requestId"),
+                amount,
+                expires_at,
+            ) {
+                Ok(bytes) => {
+                    set_bytes(&mut exact, &bytes);
+                    accept_exact(exact)
+                }
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
     if input.get("batchCloseAuthorizationDigest").is_some() {
         return Ok(Observed::NotExpressible(
-            "the Rust kit has no CloseAuthorization encoder: it refuses cooperative closes"
-                .into(),
+            "the Rust kit has no CloseAuthorization encoder: it refuses cooperative closes".into(),
         ));
     }
     if input.get("batchReceiverBindingMemo").is_some() {
@@ -213,15 +214,12 @@ fn canonical(input: &Value) -> Result<Observed, String> {
         ));
     }
     if let Some(ci) = input.get("batchChannelId") {
-        let config: BatchChannelConfig = match ci
-            .get("channelConfig")
-            .cloned()
-            .map(serde_json::from_value)
-        {
-            Some(Ok(c)) => c,
-            Some(Err(e)) => return Ok(invalid(format!("invalid channelConfig: {e}"))),
-            None => return Err("batchChannelId.channelConfig missing".into()),
-        };
+        let config: BatchChannelConfig =
+            match ci.get("channelConfig").cloned().map(serde_json::from_value) {
+                Some(Ok(c)) => c,
+                Some(Err(e)) => return Ok(invalid(format!("invalid channelConfig: {e}"))),
+                None => return Err("batchChannelId.channelConfig missing".into()),
+            };
         return Ok(
             match scheme::derive_channel_id(
                 &config,
@@ -238,22 +236,23 @@ fn canonical(input: &Value) -> Result<Observed, String> {
     }
     if let Some(wire) = input.get("batchWire") {
         let value = wire.get("value").cloned().unwrap_or(Value::Null);
-        let reencoded = match super::str_field(wire, "shape") {
-            "requirements" => serde_json::from_value::<BatchRequirements>(value)
-                .and_then(serde_json::to_value),
-            "paymentPayload" => serde_json::from_value::<BatchPaymentPayload>(value)
-                .and_then(serde_json::to_value),
-            "payload" => {
-                serde_json::from_value::<BatchPayload>(value).and_then(serde_json::to_value)
-            }
-            "redemption" => serde_json::from_value::<BatchRedemptionPayload>(value)
-                .and_then(serde_json::to_value),
-            "settlementResponse" => serde_json::from_value::<BatchSettlementResponse>(value)
-                .and_then(serde_json::to_value),
-            "paymentRequired" => serde_json::from_value::<BatchRequiredEnvelope>(value)
-                .and_then(serde_json::to_value),
-            other => return Err(format!("unknown batchWire shape {other:?}")),
-        };
+        let reencoded =
+            match super::str_field(wire, "shape") {
+                "requirements" => serde_json::from_value::<BatchRequirements>(value)
+                    .and_then(serde_json::to_value),
+                "paymentPayload" => serde_json::from_value::<BatchPaymentPayload>(value)
+                    .and_then(serde_json::to_value),
+                "payload" => {
+                    serde_json::from_value::<BatchPayload>(value).and_then(serde_json::to_value)
+                }
+                "redemption" => serde_json::from_value::<BatchRedemptionPayload>(value)
+                    .and_then(serde_json::to_value),
+                "settlementResponse" => serde_json::from_value::<BatchSettlementResponse>(value)
+                    .and_then(serde_json::to_value),
+                "paymentRequired" => serde_json::from_value::<BatchRequiredEnvelope>(value)
+                    .and_then(serde_json::to_value),
+                other => return Err(format!("unknown batchWire shape {other:?}")),
+            };
         return Ok(match reencoded {
             Ok(value) => {
                 let (json, b64) = canonical_json(&value)?;
@@ -269,7 +268,9 @@ fn canonical(input: &Value) -> Result<Observed, String> {
 
 /// JCS canonical JSON through the kit's encoder (authored wire cases).
 pub fn jcs(value: &Value) -> String {
-    canonical_json(value).map(|(json, _)| json).unwrap_or_default()
+    canonical_json(value)
+        .map(|(json, _)| json)
+        .unwrap_or_default()
 }
 
 // ── server verify ──────────────────────────────────────────────────────────
@@ -315,7 +316,10 @@ pub fn kit_server(
     config.max_timeout_seconds = u64_field(server, "maxTimeoutSeconds")?;
     config.withdraw_delay =
         u32::try_from(u64_field(server, "withdrawDelay")?).map_err(|e| e.to_string())?;
-    config.memo = server.get("memo").and_then(Value::as_str).map(str::to_string);
+    config.memo = server
+        .get("memo")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     config.receiver_authorizer = server
         .get("receiverAuthorizer")
         .and_then(Value::as_str)
@@ -367,30 +371,35 @@ async fn server_verify(input: &Value) -> Result<Observed, String> {
     }
     let header = super::str_field(input, "x402PaymentHeader");
     let price = super::str_field(server_json, "price");
-    Ok(match server.verify_and_reserve_payment(header, price).await {
-        Ok(BatchAccess::Serve(_) | BatchAccess::Control(_)) => Observed::Accept(Output {
-            header: Some(header.to_string()),
-            ..Default::default()
-        }),
-        Ok(other) => reject(
-            None,
-            format!(
-                "verify answered {} rather than serving the request",
-                match other {
-                    BatchAccess::Resume(_) => "resume",
-                    BatchAccess::Replay(..) => "replay",
-                    BatchAccess::InProgress => "in-progress",
-                    _ => "?",
-                }
+    Ok(
+        match server.verify_and_reserve_payment(header, price).await {
+            Ok(BatchAccess::Serve(_) | BatchAccess::Control(_)) => Observed::Accept(Output {
+                header: Some(header.to_string()),
+                ..Default::default()
+            }),
+            Ok(other) => reject(
+                None,
+                format!(
+                    "verify answered {} rather than serving the request",
+                    match other {
+                        BatchAccess::Resume(_) => "resume",
+                        BatchAccess::Replay(..) => "replay",
+                        BatchAccess::InProgress => "in-progress",
+                        _ => "?",
+                    }
+                ),
             ),
-        ),
-        Err(error) => kit_reject(&error),
-    })
+            Err(error) => kit_reject(&error),
+        },
+    )
 }
 
 // ── client: corrective 402 ─────────────────────────────────────────────────
 
-fn tracker(channel: &Value, requirements: &BatchRequirements) -> Result<client::BatchChannel, String> {
+fn tracker(
+    channel: &Value,
+    requirements: &BatchRequirements,
+) -> Result<client::BatchChannel, String> {
     let config: BatchChannelConfig = serde_json::from_value(
         channel
             .get("channelConfig")
@@ -460,8 +469,14 @@ async fn client_build(input: &Value) -> Result<Observed, String> {
         }
         "topUp" => {
             let channel = tracker(&c["channel"], &requirements)?;
-            client::build_top_up(&payer, &channel, &terms, u64_field(c, "depositAmount")?, blockhash()?)
-                .await
+            client::build_top_up(
+                &payer,
+                &channel,
+                &terms,
+                u64_field(c, "depositAmount")?,
+                blockhash()?,
+            )
+            .await
         }
         "refund" => {
             let channel = tracker(&c["channel"], &requirements)?;
@@ -486,7 +501,12 @@ fn fail(message: impl Into<String>) -> Failure {
     Failure::new(message)
 }
 
-fn fail_at(path: &str, expected: Option<&Value>, actual: Option<&Value>, message: impl Into<String>) -> Failure {
+fn fail_at(
+    path: &str,
+    expected: Option<&Value>,
+    actual: Option<&Value>,
+    message: impl Into<String>,
+) -> Failure {
     Failure {
         message: message.into(),
         path: Some(path.to_string()),
@@ -517,8 +537,8 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             "paymentPayload.accepted MUST equal the paymentRequirements",
         ));
     }
-    let requirements: BatchRequirements = serde_json::from_value(c["requirements"].clone())
-        .map_err(|e| fail(e.to_string()))?;
+    let requirements: BatchRequirements =
+        serde_json::from_value(c["requirements"].clone()).map_err(|e| fail(e.to_string()))?;
     let payload = &envelope["payload"];
     let amount = requirements.amount().map_err(|e| fail(e.to_string()))?;
     let charged = c
@@ -542,21 +562,23 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     }
     let config: BatchChannelConfig = serde_json::from_value(payload["channelConfig"].clone())
         .map_err(|e| fail(format!("payload.channelConfig: {e}")))?;
-    let channel_id = client::channel_id_for(&config, &requirements).map_err(|e| fail(e.to_string()))?;
+    let channel_id =
+        client::channel_id_for(&config, &requirements).map_err(|e| fail(e.to_string()))?;
     // Every client variant carries a voucher in client mode (refund: the
     // accepted cumulative, spec §4.3).
     let expected_cumulative = match operation {
         "refund" => charged,
         _ => charged + amount,
     };
-    let voucher: BatchVoucher = serde_json::from_value(payload["voucher"].clone()).map_err(|e| {
-        fail_at(
-            "payload.voucher",
-            Some(&json!("a BatchVoucher")),
-            Some(&payload["voucher"]),
-            format!("client-mode {want_type} payload carries no valid voucher: {e}"),
-        )
-    })?;
+    let voucher: BatchVoucher =
+        serde_json::from_value(payload["voucher"].clone()).map_err(|e| {
+            fail_at(
+                "payload.voucher",
+                Some(&json!("a BatchVoucher")),
+                Some(&payload["voucher"]),
+                format!("client-mode {want_type} payload carries no valid voucher: {e}"),
+            )
+        })?;
     if voucher.max_claimable().ok() != Some(expected_cumulative) {
         return Err(fail_at(
             "payload.voucher.maxClaimableAmount",
@@ -584,7 +606,10 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             "verify",
             Some(&json!("accept")),
             Some(&json!(other.summary())),
-            format!("the Rust server refuses the SDK's build: {}", other.summary()),
+            format!(
+                "the Rust server refuses the SDK's build: {}",
+                other.summary()
+            ),
         )),
     }
 }
@@ -609,7 +634,8 @@ fn judge_open(
         return Err(fail(format!("open is version {version}, not advertised")));
     }
     let keys = tx.message.static_account_keys();
-    let fee_payer = pc::parse_pubkey(&requirements.extra.fee_payer).map_err(|e| fail(e.to_string()))?;
+    let fee_payer =
+        pc::parse_pubkey(&requirements.extra.fee_payer).map_err(|e| fail(e.to_string()))?;
     let payer = pc::parse_pubkey(&config.payer).map_err(|e| fail(e.to_string()))?;
     if keys.first() != Some(&fee_payer) {
         return Err(fail("the open's fee payer must be extra.feePayer"));
@@ -622,11 +648,15 @@ fn judge_open(
             crate::tx::Slot::Signed
         };
         if *slot != want {
-            return Err(fail(format!("signature slot of {key} is {slot:?}, expected {want:?}")));
+            return Err(fail(format!(
+                "signature slot of {key} is {slot:?}, expected {want:?}"
+            )));
         }
     }
     if slots.len() != 2 {
-        return Err(fail("the open must require exactly {payer, feePayer} signatures"));
+        return Err(fail(
+            "the open must require exactly {payer, feePayer} signatures",
+        ));
     }
     let program = pc::default_program_id();
     let mut memos = Vec::new();
@@ -642,7 +672,9 @@ fn judge_open(
     let open = open.ok_or_else(|| fail("no payment-channels open instruction"))?;
     let at = |i: usize| open.accounts.get(i).map(|&k| keys[k as usize]);
     if at(0) != Some(payer) || at(1) != Some(fee_payer) || at(2) != Some(fee_payer) {
-        return Err(fail("open must bind payer, rent_payer = payee = extra.feePayer"));
+        return Err(fail(
+            "open must bind payer, rent_payer = payee = extra.feePayer",
+        ));
     }
     if at(5) != Some(*channel_id) {
         return Err(fail("open channel account is not the derived PDA"));
@@ -652,7 +684,9 @@ fn judge_open(
     distribution.extend_from_slice(receiver.as_ref());
     distribution.extend_from_slice(&pc::FULL_SHARE_BPS.to_le_bytes());
     if !open.data.ends_with(&distribution) || open.data.len() != 29 + distribution.len() {
-        return Err(fail("open distribution must pay 100% to payTo, nothing else"));
+        return Err(fail(
+            "open distribution must pay 100% to payTo, nothing else",
+        ));
     }
     let mut want_memos = Vec::new();
     if let Some(memo) = &requirements.extra.memo {
@@ -838,8 +872,7 @@ pub mod fx {
     }
 
     pub fn sign_voucher(channel: &str, cumulative: u64, expires_at: i64, seed: [u8; 32]) -> String {
-        let message =
-            pc::voucher_message_bytes(&pubkey(channel), cumulative, expires_at).unwrap();
+        let message = pc::voucher_message_bytes(&pubkey(channel), cumulative, expires_at).unwrap();
         bs58::encode(keys::signing_key(seed).sign(&message).to_bytes()).into_string()
     }
 
@@ -900,7 +933,8 @@ pub mod fx {
                 deposit: 10_000,
                 settled: 0,
                 closure_started_at: 0,
-                discriminator: 0,
+                // `AccountDiscriminator::Channel` in the program IDL.
+                discriminator: 1,
                 payee: fee_payer(),
                 distribution_to: keys::X402_PAY_TO.to_string(),
                 empty_distribution: false,
@@ -970,7 +1004,11 @@ pub mod fx {
 
     /// `rpcFixtures`: the mint, the settlement ATAs and, when given, the
     /// channel account.
-    pub fn rpc_fixtures(channel: Option<(&Value, &ChannelAccount)>, atas: Atas, mint_owner: &str) -> Value {
+    pub fn rpc_fixtures(
+        channel: Option<(&Value, &ChannelAccount)>,
+        atas: Atas,
+        mint_owner: &str,
+    ) -> Value {
         let mut accounts = serde_json::Map::new();
         let ata = |owner: &str| keys::ata(owner, keys::MINT, keys::TOKEN_PROGRAM).to_string();
         let treasury = pc::treasury_owner_for_cluster(CLUSTER).to_string();
@@ -986,7 +1024,10 @@ pub mod fx {
             accounts.insert(ata(&owner), token_account(&owner, state));
         }
         if let Some((config, account)) = channel {
-            accounts.insert(channel_id(config).to_string(), channel_account(config, account));
+            accounts.insert(
+                channel_id(config).to_string(),
+                channel_account(config, account),
+            );
         }
         json!({
             "recentBlockhash": keys::BLOCKHASH,
@@ -1087,7 +1128,8 @@ pub mod fx {
 
     /// Mark `key` a read-only signer on `ix` (an extra required signature).
     pub fn with_signer(mut ix: Instruction, key: &str) -> Instruction {
-        ix.accounts.push(AccountMeta::new_readonly(pubkey(key), true));
+        ix.accounts
+            .push(AccountMeta::new_readonly(pubkey(key), true));
         ix
     }
 
@@ -1117,7 +1159,10 @@ pub mod fx {
         );
         let message = VersionedMessage::Legacy(message);
         let mut tx = VersionedTransaction {
-            signatures: vec![Signature::default(); message.header().num_required_signatures as usize],
+            signatures: vec![
+                Signature::default();
+                message.header().num_required_signatures as usize
+            ],
             message,
         };
         sign_slots(&mut tx, &[PAYER_SEED]);
@@ -1136,7 +1181,10 @@ pub mod fx {
             .unwrap(),
         );
         let mut tx = VersionedTransaction {
-            signatures: vec![Signature::default(); message.header().num_required_signatures as usize],
+            signatures: vec![
+                Signature::default();
+                message.header().num_required_signatures as usize
+            ],
             message,
         };
         sign_slots(&mut tx, &[PAYER_SEED]);

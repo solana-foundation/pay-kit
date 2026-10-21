@@ -154,3 +154,20 @@ ids = [
 ]
 reason = "a version-1 setup transaction must set loadedAccountsDataSizeLimit to exactly 67108864; a smaller present value is refused (x402-txv1: \"loadedAccountsDataSizeLimit MUST be present\")"
 tracking = "FINDINGS.md#batch-v1-loaded-limit-pinned"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-voucher-onchain-closed-account-reject",
+  "vector/batch-verify-voucher-onchain-distribution-reject",
+  "vector/batch-verify-voucher-onchain-empty-distribution-reject",
+  "vector/batch-verify-voucher-onchain-payee-reject",
+]
+reason = "a stale snapshot is refreshed for status, deposit and close only; the channel account's discriminator, payee and distribution hash are not re-checked, so a voucher against a mis-bound account is served (\"A missing or stale snapshot MUST fall through to facilitator verification\")"
+tracking = "FINDINGS.md#batch-voucher-onchain-bindings"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-terms-withdraw-delay-fractional-reject",
+]
+reason = "extra.withdrawDelay is a u32, so 900.5 fails deserialization (invalid-challenge) rather than the withdrawDelay range rule (\"MUST be an integer from 900 through 2592000\")"
+tracking = "FINDINGS.md#batch-server-reject-codes"

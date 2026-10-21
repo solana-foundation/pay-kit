@@ -174,8 +174,7 @@ fn canonical(input: &Value) -> Result<Outcome, Rejection> {
     }
     if input.get("batchCloseAuthorizationDigest").is_some() {
         return Ok(Outcome::Unsupported(
-            "the Rust kit has no CloseAuthorization encoder (it refuses cooperative closes)"
-                .into(),
+            "the Rust kit has no CloseAuthorization encoder (it refuses cooperative closes)".into(),
         ));
     }
     if input.get("batchReceiverBindingMemo").is_some() {
@@ -202,22 +201,23 @@ fn canonical(input: &Value) -> Result<Outcome, Rejection> {
     }
     if let Some(wire) = input.get("batchWire") {
         let value = wire.get("value").cloned().unwrap_or(Value::Null);
-        let reencoded = match str_field(wire, "shape") {
-            "requirements" => serde_json::from_value::<BatchRequirements>(value)
-                .and_then(serde_json::to_value),
-            "paymentPayload" => serde_json::from_value::<BatchPaymentPayload>(value)
-                .and_then(serde_json::to_value),
-            "payload" => {
-                serde_json::from_value::<BatchPayload>(value).and_then(serde_json::to_value)
-            }
-            "redemption" => serde_json::from_value::<BatchRedemptionPayload>(value)
-                .and_then(serde_json::to_value),
-            "settlementResponse" => serde_json::from_value::<BatchSettlementResponse>(value)
-                .and_then(serde_json::to_value),
-            "paymentRequired" => serde_json::from_value::<BatchRequiredEnvelope>(value)
-                .and_then(serde_json::to_value),
-            other => return Ok(Outcome::Unsupported(format!("batchWire shape {other:?}"))),
-        };
+        let reencoded =
+            match str_field(wire, "shape") {
+                "requirements" => serde_json::from_value::<BatchRequirements>(value)
+                    .and_then(serde_json::to_value),
+                "paymentPayload" => serde_json::from_value::<BatchPaymentPayload>(value)
+                    .and_then(serde_json::to_value),
+                "payload" => {
+                    serde_json::from_value::<BatchPayload>(value).and_then(serde_json::to_value)
+                }
+                "redemption" => serde_json::from_value::<BatchRedemptionPayload>(value)
+                    .and_then(serde_json::to_value),
+                "settlementResponse" => serde_json::from_value::<BatchSettlementResponse>(value)
+                    .and_then(serde_json::to_value),
+                "paymentRequired" => serde_json::from_value::<BatchRequiredEnvelope>(value)
+                    .and_then(serde_json::to_value),
+                other => return Ok(Outcome::Unsupported(format!("batchWire shape {other:?}"))),
+            };
         return Ok(match reencoded {
             Ok(value) => {
                 let (json, b64) = super::canonical_json(&value)?;
@@ -276,7 +276,10 @@ fn kit_server(
     config.max_timeout_seconds = u64_field(server, "maxTimeoutSeconds")?;
     config.withdraw_delay =
         u32::try_from(u64_field(server, "withdrawDelay")?).map_err(|e| e.to_string())?;
-    config.memo = server.get("memo").and_then(Value::as_str).map(str::to_string);
+    config.memo = server
+        .get("memo")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     config.receiver_authorizer = server
         .get("receiverAuthorizer")
         .and_then(Value::as_str)
@@ -333,7 +336,10 @@ async fn server_verify(input: &Value) -> Result<Outcome, Rejection> {
             .await
         {
             Ok(BatchAccess::Serve(_) | BatchAccess::Control(_)) => Outcome::Accept(Map::new()),
-            Ok(_) => reject(None, "verify did not serve the request (replay or in progress)"),
+            Ok(_) => reject(
+                None,
+                "verify did not serve the request (replay or in progress)",
+            ),
             Err(error) => kit_reject(&error),
         },
     )

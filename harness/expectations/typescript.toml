@@ -3,7 +3,7 @@ language = "typescript"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session"]
+vector = ["charge", "x402-exact", "session", "x402-batch-settlement"]
 protocol = true
 flow = true
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -107,3 +107,166 @@ ids = [
 ]
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
 tracking = "FINDINGS.md#x402-canonical-codes"
+
+# ── x402 batch-settlement (SVM): vendored @x402/svm 2.26.0 ──
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-open",
+  "vector/batch-build-terms-payment-flow-authorization",
+  "vector/batch-verify-open-accept",
+  "vector/batch-verify-open-channel-pda-mismatch-reject",
+  "vector/batch-verify-open-deposit-mismatch-reject",
+  "vector/batch-verify-open-diverting-distribution-reject",
+  "vector/batch-verify-open-foreign-binding-reject",
+  "vector/batch-verify-open-future-slot-reject",
+  "vector/batch-verify-open-grace-period-mismatch-reject",
+  "vector/batch-verify-open-missing-binding-memo-reject",
+  "vector/batch-verify-open-stale-slot-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates the receiver-binding memo: its client opens with the seller memo only and its facilitator requires exactly one memo, so it accepts an unbound open and refuses the two-memo open (\"An open suffix also carries exactly one binding Memo from section 3.\")"
+tracking = "FINDINGS.md#ts-batch-open-binding-memo"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-version-intersection-empty-reject",
+  "vector/batch-txv1-top-up-legacy-policed-as-v0-reject",
+  "vector/batch-txv1-top-up-v0-over-1232-bytes-reject",
+  "vector/batch-txv1-top-up-v1-advertised",
+  "vector/batch-txv1-top-up-v1-compute-budget-instruction-reject",
+  "vector/batch-txv1-top-up-v1-loaded-limit-below-max",
+  "vector/batch-txv1-top-up-v1-missing-loaded-limit-reject",
+  "vector/batch-txv1-top-up-v1-missing-unit-limit-reject",
+  "vector/batch-txv1-top-up-v1-not-advertised-reject",
+  "vector/batch-txv1-top-up-v1-over-1232-bytes",
+  "vector/batch-txv1-top-up-v1-priority-fee-at-cap",
+  "vector/batch-txv1-top-up-v1-priority-fee-over-cap-reject",
+  "vector/batch-txv1-top-up-v1-unit-limit-over-cap-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates SVM transaction versions (x402-foundation/x402 PR 3473): its verifier fails on a version-1 message and does not enforce the 1232-byte version-0 limit, and its client ignores extra.transactionVersions"
+tracking = "FINDINGS.md#ts-batch-transaction-versions"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-refund-v1-not-advertised-reject",
+  "vector/batch-verify-refund-compute-price-over-cap-reject",
+  "vector/batch-verify-refund-disallowed-suffix-reject",
+  "vector/batch-verify-refund-extra-account-reject",
+  "vector/batch-verify-refund-extra-instruction-reject",
+  "vector/batch-verify-refund-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-refund-invalid-payer-signature-reject",
+  "vector/batch-verify-refund-memo-mismatch-reject",
+  "vector/batch-verify-refund-prefix-only-reject",
+  "vector/batch-verify-refund-request-close",
+  "vector/batch-verify-refund-sealed-channel-reject",
+  "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
+  "vector/batch-verify-refund-without-voucher-reject",
+  "vector/batch-verify-refund-wrong-channel-reject",
+  "vector/batch-wire-payload-refund-cooperative",
+  "vector/batch-wire-payload-refund-transaction-without-voucher-reject",
+]
+reason = "the vendored facilitator refuses a client-mode refund carrying the voucher (\"cooperative close requires a trusted server binding\") instead of validating the request_close retry, and accepts a refund without the voucher; its wire guard applies the same shape (\"| voucher | BatchVoucher | REQUIRED in client mode.\")"
+tracking = "FINDINGS.md#ts-batch-refund-cooperative"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-top-up-amount-mismatch-reject",
+  "vector/batch-verify-top-up-ata-instruction-reject",
+  "vector/batch-verify-top-up-compute-limit-over-cap-reject",
+  "vector/batch-verify-top-up-compute-price-over-cap-reject",
+  "vector/batch-verify-top-up-duplicate-limit-reject",
+  "vector/batch-verify-top-up-exceeds-deposit-reject",
+  "vector/batch-verify-top-up-extra-signer-reject",
+  "vector/batch-verify-top-up-fee-payer-as-account-reject",
+  "vector/batch-verify-top-up-fee-payer-in-memo-reject",
+  "vector/batch-verify-top-up-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-top-up-four-lighthouse-reject",
+  "vector/batch-verify-top-up-frozen-payer-ata-reject",
+  "vector/batch-verify-top-up-memo-mismatch-reject",
+  "vector/batch-verify-top-up-missing-memo-reject",
+  "vector/batch-verify-top-up-missing-payer-signature-reject",
+  "vector/batch-verify-top-up-oversized-memo-reject",
+  "vector/batch-verify-top-up-price-before-limit-reject",
+  "vector/batch-verify-top-up-second-setup-instruction-reject",
+  "vector/batch-verify-top-up-smuggled-transfer-reject",
+  "vector/batch-verify-top-up-trailing-bytes-reject",
+  "vector/batch-verify-top-up-two-memos-reject",
+  "vector/batch-verify-top-up-unsupported-compute-budget-reject",
+  "vector/batch-verify-top-up-wrong-channel-reject",
+]
+reason = "the vendored facilitator rejects every setup-transaction policy violation with the generic transaction_failed reason (and an over-deposit top-up voucher as cumulative_amount_mismatch) rather than invalid_batch_settlement_svm_setup_transaction / cumulative_exceeds_deposit; it accepts a top_up with trailing data bytes and does not check the payer return ATA on a top-up"
+tracking = "FINDINGS.md#ts-batch-setup-reason-code"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-voucher-close-pending-in-store-reject",
+  "vector/batch-verify-voucher-one-above-reject",
+  "vector/batch-verify-voucher-one-below-reject",
+  "vector/batch-verify-voucher-stale-reject",
+]
+reason = "the testee drives the stateless upstream facilitator, which never sees the resource server's chargedCumulativeAmount or close-pending mark: it accepts any voucher above the onchain settled floor (RULINGS.md B1)"
+tracking = "FINDINGS.md#ts-batch-facilitator-stateless"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-accepted-amount-mismatch-reject",
+  "vector/batch-verify-accepted-network-mismatch-reject",
+  "vector/batch-verify-accepted-pay-to-mismatch-reject",
+]
+reason = "the vendored facilitator does not compare paymentPayload.accepted with paymentRequirements (amount, payTo) and reports a network mismatch as network_mismatch (\"For every request, paymentPayload.accepted MUST equal paymentRequirements.\")"
+tracking = "FINDINGS.md#ts-batch-accepted-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-payer-is-fee-payer-reject",
+  "vector/batch-verify-voucher-server-mode-config-reject",
+]
+reason = "the vendored client builds an open whose payer is the challenge's own feePayer, and refuses a mismatched channelConfig.voucherSigner as payload_type rather than channel_state"
+tracking = "FINDINGS.md#ts-batch-client-terms"
+
+[[unsupported]]
+reason = "@x402/svm exports no batch voucher-message, channel-PDA or receiver-binding memo encoder"
+ids = [
+  "vector/batch-channel-id-derivation-frozen",
+  "vector/batch-channel-id-hex-salt-reject",
+  "vector/batch-channel-id-receiver-is-not-a-seed",
+  "vector/batch-channel-id-salt-u64-max",
+  "vector/batch-receiver-binding-memo-frozen",
+  "vector/batch-voucher-message-frozen",
+  "vector/batch-voucher-message-non-decimal-amount-reject",
+  "vector/batch-voucher-message-nonzero-expiry-layout",
+  "vector/batch-voucher-message-u64-max",
+]
+
+[[unsupported]]
+reason = "@x402/svm exports no codec or guard for batch requirements, PaymentPayload envelopes, settlement responses or PaymentRequired objects"
+ids = [
+  "vector/batch-wire-corrective-payment-required",
+  "vector/batch-wire-payment-payload-frozen",
+  "vector/batch-wire-requirements-frozen",
+  "vector/batch-wire-requirements-transaction-versions",
+  "vector/batch-wire-requirements-unknown-transaction-version-reject",
+  "vector/batch-wire-settlement-response-voucher-acceptance",
+]
+
+[[unsupported]]
+reason = "@x402/svm adopts a corrective 402 only inside its client channel flow; it has no single-shot entry point"
+ids = [
+  "vector/batch-corrective-adopt-own-signature",
+  "vector/batch-corrective-charged-below-signed",
+  "vector/batch-corrective-charged-exceeds-signed-reject",
+  "vector/batch-corrective-foreign-signature-reject",
+  "vector/batch-corrective-nonzero-expiry-reject",
+  "vector/batch-corrective-other-channel-reject",
+  "vector/batch-corrective-without-proof-reject",
+]
+
+[[unsupported]]
+reason = "@x402/svm builds a voucher, top-up or refund only from its own client channel storage, which the vector input does not model"
+ids = [
+  "vector/batch-build-refund",
+  "vector/batch-build-top-up",
+  "vector/batch-build-top-up-version-1",
+  "vector/batch-build-voucher-first",
+  "vector/batch-build-voucher-next",
+]

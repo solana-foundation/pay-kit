@@ -39,6 +39,12 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/\bduplicate_settlement\b/, "duplicate-settlement"],
   [/\bunsupported_transaction_version\b/, "unsupported-transaction-version"],
   [/\bunsupported_scheme\b/, "unsupported-scheme"],
+  // @x402/svm batch-settlement client: refusals of a challenge's terms
+  // (plain Errors, no reason code).
+  [/extra\.tokenProgram (does not own|is not a supported)/, "token-program"],
+  [/extra\.paymentFlow must be "authorization"/, "payment-flow"],
+  [/extra\.withdrawDelay is outside the allowed range/, "withdraw-delay-out-of-range"],
+  [/requires a server-signed channel whose operator|extra\.operator is only valid/, "invalid-challenge"],
   // Charge verification policy (split arithmetic, split-recipient ATA
   // creation, fee payer placement, compute budget allowlist) and the client's
   // challenge checks. Checked first: several messages contain generic words.

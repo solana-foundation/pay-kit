@@ -132,6 +132,8 @@ const KIT_SETTLEMENT_CODE: &str = "the Rust server reports an unusable settlemen
 const KIT_TX_VERSION_CODE: &str = "the Rust server reports an unadvertised message version as invalid_batch_settlement_svm_setup_transaction (tx_policy.rs check_envelope wraps core::tx::check_envelope); x402-txv1 requires unsupported_transaction_version";
 const KIT_OPEN_GRACE_CODE: &str = "the Rust server rejects the two-memo open at the memo scan with setup_transaction before decoding grace_period (KIT_TWO_MEMOS)";
 const KIT_V1_LOADED_LIMIT: &str = "the Rust server requires a version-1 loadedAccountsDataSizeLimit of exactly 67108864 (core/tx/budget.rs DeclaredBudget::of), refusing any smaller present value";
+const KIT_NO_ONCHAIN_REBIND: &str = "the Rust server refreshes a stale snapshot for status, deposit and close only (server/batch_settlement.rs reconcile_channel); the immutable bindings (discriminator, payee, distribution hash) are checked only after a deposit confirms, so a steady-state voucher against a mis-bound channel account is served";
+const KIT_FRACTIONAL_DELAY: &str = "the Rust kit types extra.withdrawDelay as u32, so a fractional value fails requirement deserialization (a malformed challenge) instead of the range check";
 const KIT_SERVER_BINDING: &str = "the Rust server rejects the open at the memo scan (setup_transaction, KIT_TWO_MEMOS) and never inspects the binding memo's key";
 
 // ── spec references ──
@@ -151,13 +153,22 @@ fn auth_layout() -> SpecRef {
     s("4.2 Shared Wire Objects and Program Mapping", "Each decoded address MUST be exactly 32 bytes, and `requestId` MUST encode to 1 through 256 UTF-8 bytes.")
 }
 fn close_digest_spec() -> SpecRef {
-    s("4.2 Shared Wire Objects and Program Mapping", "The receiver authorizer signs the SHA-256 digest of this exact byte sequence:")
+    s(
+        "4.2 Shared Wire Objects and Program Mapping",
+        "The receiver authorizer signs the SHA-256 digest of this exact byte sequence:",
+    )
 }
 fn binding_spec() -> SpecRef {
-    s("3. Payment-Channel Method", "a binding Memo whose UTF-8 data is exactly:")
+    s(
+        "3. Payment-Channel Method",
+        "a binding Memo whose UTF-8 data is exactly:",
+    )
 }
 fn pda_spec() -> SpecRef {
-    s("4.2 Shared Wire Objects and Program Mapping", "`channelId` is the program-derived address:")
+    s(
+        "4.2 Shared Wire Objects and Program Mapping",
+        "`channelId` is the program-derived address:",
+    )
 }
 fn variants_spec() -> SpecRef {
     s("4.5 Facilitator Interface", "`paymentPayload.payload` MUST be one of the client-authored `deposit`, `voucher`, `authorization`, or `refund` variants in section 4.3.")
@@ -169,7 +180,10 @@ fn claims_spec() -> SpecRef {
     s("4.5 Facilitator Interface", "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.")
 }
 fn wire_spec() -> SpecRef {
-    s("4.3 Client PaymentPayload Variants", "The client payload is a tagged union on `payload.type`.")
+    s(
+        "4.3 Client PaymentPayload Variants",
+        "The client payload is a tagged union on `payload.type`.",
+    )
 }
 fn cumulative_spec() -> SpecRef {
     s("Phase 3 - Voucher Acceptance (before serving)", "In client mode, require `maxClaimableAmount == chargedCumulativeAmount + PaymentRequirements.amount` and `maxClaimableAmount <= channel.deposit`.")
@@ -190,13 +204,22 @@ fn closing_spec() -> SpecRef {
     s("4.5 Facilitator Interface", "a `claim` for that channel, and a `voucher` or `authorization` verification against it, MUST fail with `invalid_batch_settlement_svm_channel_closing`.")
 }
 fn fee_payer_spec() -> SpecRef {
-    s("Phase 3 - Voucher Acceptance (before serving)", "Reject if `payer` or `payerAuthorizer` equals `feePayer`.")
+    s(
+        "Phase 3 - Voucher Acceptance (before serving)",
+        "Reject if `payer` or `payerAuthorizer` equals `feePayer`.",
+    )
 }
 fn ra_spec() -> SpecRef {
-    s("Phase 3 - Voucher Acceptance (before serving)", "`channelConfig.receiverAuthorizer` MUST equal `extra.receiverAuthorizer` (section 3).")
+    s(
+        "Phase 3 - Voucher Acceptance (before serving)",
+        "`channelConfig.receiverAuthorizer` MUST equal `extra.receiverAuthorizer` (section 3).",
+    )
 }
 fn accepted_spec() -> SpecRef {
-    s("4.5 Facilitator Interface", "For every request, `paymentPayload.accepted` MUST equal `paymentRequirements`.")
+    s(
+        "4.5 Facilitator Interface",
+        "For every request, `paymentPayload.accepted` MUST equal `paymentRequirements`.",
+    )
 }
 fn policy_spec(quote: &str) -> SpecRef {
     s("Client-supplied transaction acceptance policy", quote)
@@ -219,6 +242,7 @@ fn tx_versions_spec(quote: &str) -> SpecRef {
 
 // ── builders ──
 
+#[allow(clippy::too_many_arguments)]
 fn case(
     id: &str,
     file: &'static str,
@@ -388,7 +412,14 @@ fn memo() -> Vec<Instruction> {
     vec![fx::memo_ix(fx::MEMO)]
 }
 
-fn top_up_input_with(route: &Route, transaction: String, amount: &str, cumulative: u64, atas: Atas, mint_owner: &str) -> Value {
+fn top_up_input_with(
+    route: &Route,
+    transaction: String,
+    amount: &str,
+    cumulative: u64,
+    atas: Atas,
+    mint_owner: &str,
+) -> Value {
     let config = fx::config(route);
     let payload = json!({
         "type": "deposit",
@@ -420,7 +451,14 @@ fn top_up_input(transaction: String) -> Value {
     )
 }
 
-fn policy_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, transaction: String, expect: Expect) -> Case {
+fn policy_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    transaction: String,
+    expect: Expect,
+) -> Case {
     case(
         id,
         "batch-verify-setup-policy.json",
@@ -471,7 +509,14 @@ fn honest_open() -> Instruction {
     fx::open_ix(&cfg(), 10_000, X402_PAY_TO)
 }
 
-fn open_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, transaction: String, expect: Expect) -> CaseBuilder {
+fn open_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    transaction: String,
+    expect: Expect,
+) -> CaseBuilder {
     case(
         id,
         "batch-verify-open.json",
@@ -516,7 +561,15 @@ fn refund_payload(voucher: Option<Value>, transaction: Option<String>) -> Value 
     payload
 }
 
-fn refund_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, transaction: String, expect: Expect, divergence: &str) -> Case {
+fn refund_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    transaction: String,
+    expect: Expect,
+    divergence: &str,
+) -> Case {
     case(
         id,
         "batch-verify-refund.json",
@@ -562,7 +615,14 @@ fn tracked_channel(charged: u64, deposit: u64) -> Value {
 
 /// A build the judge verifies against the server: the server config, its
 /// stored record and the chain state ride along.
-fn judged_build(operation: &str, route: &Route, client: Value, charged: u64, deposit: u64, account_deposit: u64) -> Value {
+fn judged_build(
+    operation: &str,
+    route: &Route,
+    client: Value,
+    charged: u64,
+    deposit: u64,
+    account_deposit: u64,
+) -> Value {
     let config = fx::config(route);
     let account = ChannelAccount {
         deposit: account_deposit,
@@ -571,12 +631,17 @@ fn judged_build(operation: &str, route: &Route, client: Value, charged: u64, dep
     let mut input = build_input(operation, route.requirements(), client);
     input["batchServer"] = route.server_json();
     input["batchServerChannel"] = fx::store_record(&config, charged, deposit);
-    input["rpcFixtures"] = fx::rpc_fixtures(Some((&config, &account)), Atas::Healthy, TOKEN_PROGRAM);
+    input["rpcFixtures"] =
+        fx::rpc_fixtures(Some((&config, &account)), Atas::Healthy, TOKEN_PROGRAM);
     input
 }
 
 fn terms_input(requirements: Value, mint_owner: &str) -> Value {
-    let mut input = build_input("deposit", requirements, json!({ "depositAmount": "10000", "openSlot": fx::OPEN_SLOT }));
+    let mut input = build_input(
+        "deposit",
+        requirements,
+        json!({ "depositAmount": "10000", "openSlot": fx::OPEN_SLOT }),
+    );
     input["rpcFixtures"] = fx::rpc_fixtures(None, Atas::Healthy, mint_owner);
     input
 }
@@ -589,13 +654,62 @@ fn requirements_with(extra: &[(&str, Value)]) -> Value {
     r
 }
 
-fn terms_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, input: Value, expect: Expect) -> Case {
-    case(id, "batch-build.json", Mode::BuildTransaction, Role::Client, BugType::Defaults, spec, description, input, expect)
-        .requirements(reqs)
-        .build()
+fn terms_case_divergent(
+    divergence: &str,
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> Case {
+    case(
+        id,
+        "batch-build.json",
+        Mode::BuildTransaction,
+        Role::Client,
+        BugType::Defaults,
+        spec,
+        description,
+        input,
+        expect,
+    )
+    .requirements(reqs)
+    .authored(Some(divergence))
+    .build()
 }
 
-fn corrective_input(charged: u64, signed: u64, expires_at: i64, seed: [u8; 32], channel_id: Option<String>, proof: bool) -> Value {
+fn terms_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> Case {
+    case(
+        id,
+        "batch-build.json",
+        Mode::BuildTransaction,
+        Role::Client,
+        BugType::Defaults,
+        spec,
+        description,
+        input,
+        expect,
+    )
+    .requirements(reqs)
+    .build()
+}
+
+fn corrective_input(
+    charged: u64,
+    signed: u64,
+    expires_at: i64,
+    seed: [u8; 32],
+    channel_id: Option<String>,
+    proof: bool,
+) -> Value {
     let ch = channel(&cfg());
     let mut r = requirements();
     r["extra"]["channelState"] = json!({
@@ -616,12 +730,30 @@ fn corrective_input(charged: u64, signed: u64, expires_at: i64, seed: [u8; 32], 
 }
 
 fn corrective_case(id: &str, description: &str, input: Value, expect: Expect) -> Case {
-    case(id, "batch-corrective.json", Mode::VerifyTransaction, Role::Client, BugType::Settlement, corrective_spec(), description, input, expect)
-        .requirements(&[CORRECTIVE_VERIFY, CORRECTIVE_REJECT])
-        .build()
+    case(
+        id,
+        "batch-corrective.json",
+        Mode::VerifyTransaction,
+        Role::Client,
+        BugType::Settlement,
+        corrective_spec(),
+        description,
+        input,
+        expect,
+    )
+    .requirements(&[CORRECTIVE_VERIFY, CORRECTIVE_REJECT])
+    .build()
 }
 
-fn close_digest(network: &str, program: &str, fee_payer: &str, channel: &str, max: u64, voucher_expires_at: i64, valid_before: i64) -> Vec<u8> {
+fn close_digest(
+    network: &str,
+    program: &str,
+    fee_payer: &str,
+    channel: &str,
+    max: u64,
+    voucher_expires_at: i64,
+    valid_before: i64,
+) -> Vec<u8> {
     let mut message = b"x402:batch-settlement:svm:close:v1".to_vec();
     message.push(0);
     message.extend_from_slice(&(network.len() as u16).to_le_bytes());
@@ -682,12 +814,48 @@ fn wire(shape: &str, value: Value) -> Value {
     json!({ "batchWire": { "shape": shape, "value": value } })
 }
 
-fn wire_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, input: Value, expect: Expect) -> CaseBuilder {
-    case(id, "batch-wire.json", Mode::CanonicalBytes, Role::Both, BugType::Wire, spec, description, input, expect).requirements(reqs)
+fn wire_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> CaseBuilder {
+    case(
+        id,
+        "batch-wire.json",
+        Mode::CanonicalBytes,
+        Role::Both,
+        BugType::Wire,
+        spec,
+        description,
+        input,
+        expect,
+    )
+    .requirements(reqs)
 }
 
-fn bytes_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, input: Value, expect: Expect) -> CaseBuilder {
-    case(id, "batch-canonical.json", Mode::CanonicalBytes, Role::Both, BugType::Wire, spec, description, input, expect).requirements(reqs)
+fn bytes_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> CaseBuilder {
+    case(
+        id,
+        "batch-canonical.json",
+        Mode::CanonicalBytes,
+        Role::Both,
+        BugType::Wire,
+        spec,
+        description,
+        input,
+        expect,
+    )
+    .requirements(reqs)
 }
 
 fn v1_route() -> Route {
@@ -715,8 +883,26 @@ fn v1_input(route: &Route, transaction: String) -> Value {
     )
 }
 
-fn txv1_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, input: Value, expect: Expect) -> CaseBuilder {
-    case(id, "batch-txv1.json", Mode::VerifyTransaction, Role::Server, BugType::AuthBypass, spec, description, input, expect).requirements(reqs)
+fn txv1_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> CaseBuilder {
+    case(
+        id,
+        "batch-txv1.json",
+        Mode::VerifyTransaction,
+        Role::Server,
+        BugType::AuthBypass,
+        spec,
+        description,
+        input,
+        expect,
+    )
+    .requirements(reqs)
 }
 
 /// Three Lighthouse assertions of 330 bytes each: the top-up then exceeds
@@ -1066,11 +1252,11 @@ crate::registry! {
         terms_input({ let mut r = requirements_with(&[("withdrawDelay", json!(900))]); r["maxTimeoutSeconds"] = json!(901); r }, TOKEN_PROGRAM),
         rej(RejectCode::WithdrawDelayOutOfRange),
     );
-    batch_build_terms_withdraw_delay_fractional_reject => terms_case(
+    batch_build_terms_withdraw_delay_fractional_reject => terms_case_divergent(KIT_FRACTIONAL_DELAY,
         "batch-build-terms-withdraw-delay-fractional-reject", withdraw_spec(), &[WITHDRAW_RANGE],
-        "withdrawDelay 900.5 is not an integer.",
+        "withdrawDelay 900.5 is not an integer from 900 through 2592000.",
         terms_input(requirements_with(&[("withdrawDelay", json!(900.5))]), TOKEN_PROGRAM),
-        rej(RejectCode::InvalidChallenge),
+        rej(RejectCode::WithdrawDelayOutOfRange),
     );
     batch_build_terms_server_signed_untrusted_reject => terms_case(
         "batch-build-terms-server-signed-untrusted-reject", s("8. Security Properties", "Absent a grant the client MUST refuse the server-mode accept"), &[NO_GRANT, OPT_IN],
@@ -1221,6 +1407,30 @@ crate::registry! {
         { let mut i = voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount::default()); i["batchServerChannel"]["closeRequestedAt"] = json!(1_785_000_000_u64); i },
         rej(RejectCode::ChannelClosing),
     ).requirements(&[CLOSE_PENDING, CLOSING]).build();
+    batch_verify_voucher_onchain_closed_account_reject => voucher_case(
+        "batch-verify-voucher-onchain-closed-account-reject", bindings_spec(), BugType::AuthBypass,
+        "The account at the channel address carries the ClosedChannel discriminator (2): it is not an open channel, whatever the server's record says.",
+        voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { discriminator: 2, ..Default::default() }),
+        rej(RejectCode::ChannelState),
+    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    batch_verify_voucher_onchain_payee_reject => voucher_case(
+        "batch-verify-voucher-onchain-payee-reject", bindings_spec(), BugType::AuthBypass,
+        "The onchain channel's payee is not extra.feePayer (the sponsor does not hold the lifecycle seat this scheme requires).",
+        voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { payee: fx::stranger(), ..Default::default() }),
+        rej(RejectCode::ChannelState),
+    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    batch_verify_voucher_onchain_distribution_reject => voucher_case(
+        "batch-verify-voucher-onchain-distribution-reject", bindings_spec(), BugType::AuthBypass,
+        "The onchain distribution hash commits 100% to another receiver: settled funds would not reach payTo.",
+        voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { distribution_to: keys::X402_OTHER_PAY_TO.to_string(), ..Default::default() }),
+        rej(RejectCode::ChannelState),
+    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    batch_verify_voucher_onchain_empty_distribution_reject => voucher_case(
+        "batch-verify-voucher-onchain-empty-distribution-reject", bindings_spec(), BugType::AuthBypass,
+        "The onchain distribution hash is all zeros: no distribution to payTo is committed.",
+        voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { empty_distribution: true, ..Default::default() }),
+        rej(RejectCode::ChannelState),
+    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
     batch_verify_voucher_payer_is_fee_payer_reject => voucher_case(
         "batch-verify-voucher-payer-is-fee-payer-reject", fee_payer_spec(), BugType::AuthBypass,
         "channelConfig.payer is extra.feePayer.",

@@ -444,3 +444,104 @@ x402-txv1: “`loadedAccountsDataSizeLimit` MUST be present”. The kit's
 runtime maximum (67108864), refusing a version-1 setup transaction that
 declares a smaller limit. The spec sets presence, not a value, and lets a
 sponsor tighten only the caps it names.
+
+## batch-voucher-onchain-bindings
+
+**Cases:** `batch-verify-voucher-onchain-{closed-account,payee,distribution,empty-distribution}-reject` (rust)
+
+Phase 3 step 3 requires the channel to exist, be `Open`, and match
+`payee == extra.feePayer`, the authorized signer, the grace period, the open
+slot “and a distribution to `payTo` matching section 4.1”; a server MAY rely on
+its mirrored snapshot only while it is fresh, and “A missing or stale snapshot
+MUST fall through to facilitator verification”. The Rust server refreshes a
+stale snapshot in `reconcile_channel` for status, deposit, settled and close
+only; `check_channel_bindings` runs only after a deposit confirms. An account
+with the `ClosedChannel` discriminator, a foreign payee, or a distribution
+hash that does not pay `payTo` therefore serves a steady-state voucher.
+
+### TypeScript: vendored upstream `@x402/svm` 2.26.0
+
+pay-kit has no batch-settlement implementation of its own; the TypeScript
+testee drives the upstream mechanism pay-kit bundles
+(`typescript/.x402-vendor/x402-svm-2.26.0.tgz`). That tarball was packed
+before the pinned spec commit (it has no receiver-binding memo, no `seal`,
+no transaction versions), so most of these are the tarball lagging the spec,
+cross-checked against the same vectors as the Rust kit.
+
+## ts-batch-open-binding-memo
+
+**Cases:** `batch-build-deposit-open`, `batch-build-terms-payment-flow-authorization`,
+`batch-verify-open-*` (typescript)
+
+Same rule as [batch-open-binding-memo](#batch-open-binding-memo): the client
+opens without the binding memo and `verifyOpenTransaction` reports “expected
+exactly one Memo instruction matching extra.memo, found 2” for the spec's open
+(under the generic `transaction_failed` reason).
+
+## ts-batch-transaction-versions
+
+**Cases:** `batch-txv1-top-up-*`, `batch-build-version-intersection-empty-reject` (typescript)
+
+The tarball predates SVM transaction versions (x402-foundation/x402 PR 3473,
+pinned as `external/x402-txv1`). A version-1 top-up crashes verification
+(“Cannot read properties of undefined (reading 'length')”), a version-0 top-up
+over 1232 serialized bytes is accepted, and the client builds version 0 for a
+challenge that advertises only `[1]`.
+
+## ts-batch-refund-cooperative
+
+**Cases:** `batch-verify-refund-*`, `batch-txv1-refund-v1-not-advertised-reject`,
+`batch-wire-payload-refund-*` (typescript)
+
+The facilitator refuses a refund carrying the voucher with
+`close_authorization` (“cooperative close requires a trusted server binding”)
+instead of falling back to the `request_close` retry the pinned spec defines
+for an unavailable binding, and accepts a client-mode refund without the
+voucher. `isBatchPayload` applies the same superseded shape.
+
+## ts-batch-setup-reason-code
+
+**Cases:** `batch-verify-top-up-*` (typescript)
+
+Every static policy violation of a top-up comes back as
+`transaction_failed: verifyTopUpTransaction: …` / `verifyOpenTransaction: …`
+instead of `invalid_batch_settlement_svm_setup_transaction` (spec §7: “setup
+transaction fails the sponsor safety checks”). Two are not rejected at all: a
+`top_up` with a trailing data byte (“The facilitator MUST fully decode the
+instruction data, reject truncated data or trailing bytes”) and a top-up
+whose payer return ATA is frozen (“it MUST reject before escrowing when a
+settlement account is missing, frozen, has the wrong owner or mint”). A
+voucher over the topped-up ceiling is `cumulative_amount_mismatch`, not
+`cumulative_exceeds_deposit`. The accepting top-up and voucher cases, and the
+onchain binding rejects of `batch-voucher-onchain-bindings`, pass.
+
+## ts-batch-facilitator-stateless
+
+**Cases:** `batch-verify-voucher-{one-above,one-below,stale}-reject`,
+`batch-verify-voucher-close-pending-in-store-reject` (typescript)
+
+RULINGS.md B1: the vectors judge the resource server's Phase 3 rule against
+its stored `chargedCumulativeAmount`; the upstream facilitator the testee
+drives is stateless and applies only the onchain floor. Upstream's resource
+server (`BatchSvmScheme` server hooks) holds that state, but has no
+single-shot entry point the vector ABI can drive.
+
+## ts-batch-accepted-not-checked
+
+**Cases:** `batch-verify-accepted-{amount,pay-to,network}-mismatch-reject` (typescript)
+
+“For every request, `paymentPayload.accepted` MUST equal
+`paymentRequirements`.” The facilitator verifies against
+`paymentRequirements` without comparing `accepted` (amount and payTo
+mismatches are accepted) and reports a network mismatch as `network_mismatch`.
+
+## ts-batch-client-terms
+
+**Cases:** `batch-build-deposit-payer-is-fee-payer-reject`,
+`batch-verify-voucher-server-mode-config-reject` (typescript)
+
+The client opens a channel whose payer is the challenge's own `feePayer`
+(“`channelConfig.payer` and `channelConfig.payerAuthorizer` MUST NOT equal
+`extra.feePayer`.”). A `channelConfig.voucherSigner` that disagrees with the
+route is reported as `payload_type`; the vectors use `channel_state`, the
+code for a channel configuration that does not match the requirements.

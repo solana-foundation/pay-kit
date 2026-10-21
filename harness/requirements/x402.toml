@@ -657,3 +657,9 @@ id = "X402-fbdea947ae"
 doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
 text = "The channel MUST be Open or still within its Closing grace period, and the payer's canonical return ATA MUST be healthy."
 required = true
+
+[[requirement]]
+id = "X402-46d0a12f84"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "A missing or stale snapshot MUST fall through to facilitator verification, and a successful verification MUST refresh the stored snapshot timestamp."
+required = true

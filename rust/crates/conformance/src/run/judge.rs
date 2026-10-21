@@ -787,10 +787,16 @@ mod tests {
         let rt = runtime();
         let all = vectors::load(&crate::repo_root().join("harness/vectors")).unwrap();
         let mut judged = 0;
+        // Kit builds the Rust expectations record as known failures are the
+        // judge catching the kit (FINDINGS.md), not the judge being wrong.
+        let rust_toml =
+            std::fs::read_to_string(crate::repo_root().join("harness/expectations/rust.toml"))
+                .unwrap();
         for v in all.iter().filter(|v| {
             v.mode == "build-transaction"
                 && v.expect_outcome() == "accept"
                 && build_artifact(v, &json!({})).is_err()
+                && !rust_toml.contains(&format!("\"vector/{}\"", v.id))
         }) {
             let intent = Intent::parse(&v.intent).expect("known intent");
             let output = match rt.block_on(realize::run(intent, Mode::BuildTransaction, v.input()))
