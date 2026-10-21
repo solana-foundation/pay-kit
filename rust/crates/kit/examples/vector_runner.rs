@@ -144,7 +144,14 @@ impl From<solana_pay_kit::x402::Error> for Rejection {
 
 /// Intents this runner implements; `pkc run` checks them against
 /// `harness/expectations/rust.toml`.
-const INTENTS: [&str; 5] = ["charge", "x402-exact", "session", "x402-upto", "subscription"];
+const INTENTS: [&str; 6] = [
+    "charge",
+    "x402-exact",
+    "session",
+    "x402-upto",
+    "x402-batch-settlement",
+    "subscription",
+];
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {

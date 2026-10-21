@@ -261,7 +261,28 @@ export type RejectCode =
   // subscription server: the on-chain delegation is not usable at now (missing, foreign, cancelled, unpaid period, authority invalidated).
   | "subscription-inactive"
   // subscription server: the credential `source` is not the did:pkh:solana of the activation subscriber.
-  | "source-mismatch";
+  | "source-mismatch"
+  | "unsupported-scheme"
+  | "payload-type"
+  | "payment-flow"
+  | "token-program"
+  | "voucher-signature"
+  | "receiver-binding-unavailable"
+  | "close-authorization"
+  | "close-amount-unsupported"
+  | "close-state"
+  | "channel-closing"
+  | "withdraw-delay-mismatch"
+  | "withdraw-delay-out-of-range"
+  | "cumulative-amount-mismatch"
+  | "cumulative-exceeds-deposit"
+  | "voucher-expiry"
+  | "setup-transaction"
+  | "settlement-simulation"
+  | "channel-state"
+  | "refund-transaction"
+  | "duplicate-settlement"
+  | "unsupported-transaction-version";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

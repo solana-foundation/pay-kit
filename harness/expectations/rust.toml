@@ -3,7 +3,14 @@ language = "rust"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session", "x402-upto", "subscription"]
+vector = [
+  "charge",
+  "x402-exact",
+  "session",
+  "x402-upto",
+  "x402-batch-settlement",
+  "subscription",
+]
 protocol = true
 flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -217,3 +224,98 @@ ids = [
 ]
 reason = "ActivatePayload.authentication is Option (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:260): the wire type accepts an activation without the REQUIRED proof, verify_credential refuses it later; the case records the kit divergence"
 tracking = "FINDINGS.md#subscription-rust-wire-optional-authentication"
+# ── x402 batch-settlement (SVM) ──
+
+[[unsupported]]
+reason = "the Rust kit has no CloseAuthorization encoder: it refuses every cooperative close (x402/protocol/schemes/batch_settlement/verify.rs check_no_cooperative_close), so no public API produces the close digest"
+ids = [
+  "vector/batch-close-authorization-digest-binds-network",
+  "vector/batch-close-authorization-digest-binds-watermark",
+  "vector/batch-close-authorization-digest-frozen",
+]
+
+[[unsupported]]
+reason = "the Rust kit exposes no receiver-binding memo encoder (RECEIVER_BINDING_MEMO_PREFIX is private to x402/client/batch_settlement/payment.rs)"
+ids = [
+  "vector/batch-receiver-binding-memo-frozen",
+]
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-open",
+  "vector/batch-build-terms-payment-flow-authorization",
+  "vector/batch-verify-open-accept",
+  "vector/batch-verify-open-foreign-binding-reject",
+  "vector/batch-verify-open-grace-period-mismatch-reject",
+  "vector/batch-verify-open-missing-binding-memo-reject",
+]
+reason = "the client opens a client-mode channel without the receiver-binding memo, and the server admits exactly one memo in an open, so it accepts an unbound open and refuses the spec's two-memo open (\"An open suffix also carries exactly one binding Memo from section 3.\")"
+tracking = "FINDINGS.md#batch-open-binding-memo"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-refund",
+  "vector/batch-txv1-refund-v1-not-advertised-reject",
+  "vector/batch-verify-refund-compute-price-over-cap-reject",
+  "vector/batch-verify-refund-disallowed-suffix-reject",
+  "vector/batch-verify-refund-extra-account-reject",
+  "vector/batch-verify-refund-extra-instruction-reject",
+  "vector/batch-verify-refund-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-refund-invalid-payer-signature-reject",
+  "vector/batch-verify-refund-memo-mismatch-reject",
+  "vector/batch-verify-refund-prefix-only-reject",
+  "vector/batch-verify-refund-request-close",
+  "vector/batch-verify-refund-sealed-channel-reject",
+  "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
+  "vector/batch-verify-refund-without-voucher-reject",
+  "vector/batch-verify-refund-wrong-channel-reject",
+  "vector/batch-wire-payload-refund-cooperative",
+  "vector/batch-wire-payload-refund-transaction-without-voucher-reject",
+]
+reason = "the kit implements the superseded request_close-only refund: the client sends no voucher, the wire type requires transaction, and the server refuses any refund carrying a voucher (close_authorization) while accepting one without (\"| voucher | BatchVoucher | REQUIRED in client mode.\")"
+tracking = "FINDINGS.md#batch-refund-superseded-shape"
+
+[[known_failing]]
+ids = [
+  "vector/batch-wire-redemption-claim-empty-reject",
+  "vector/batch-wire-redemption-claim-five-entries-reject",
+]
+reason = "BatchRedemptionPayload::Claim parses any number of claims (\"claims[] MUST contain between one and four entries\")"
+tracking = "FINDINGS.md#batch-claims-unbounded"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-top-up-v1-not-advertised-reject",
+  "vector/batch-verify-accepted-amount-mismatch-reject",
+  "vector/batch-verify-accepted-network-mismatch-reject",
+  "vector/batch-verify-accepted-pay-to-mismatch-reject",
+  "vector/batch-verify-top-up-frozen-payer-ata-reject",
+  "vector/batch-verify-top-up-missing-receiver-ata-reject",
+  "vector/batch-verify-x402-version-1-reject",
+]
+reason = "the server rejects these for the right reason under another code: an accepted/requirements mismatch and a v1 envelope as channel_state, unusable settlement ATAs as setup_transaction, an unadvertised message version as setup_transaction"
+tracking = "FINDINGS.md#batch-server-reject-codes"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-top-up-v1-loaded-limit-below-max",
+]
+reason = "a version-1 setup transaction must set loadedAccountsDataSizeLimit to exactly 67108864; a smaller present value is refused (x402-txv1: \"loadedAccountsDataSizeLimit MUST be present\")"
+tracking = "FINDINGS.md#batch-v1-loaded-limit-pinned"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-voucher-onchain-closed-account-reject",
+  "vector/batch-verify-voucher-onchain-distribution-reject",
+  "vector/batch-verify-voucher-onchain-empty-distribution-reject",
+  "vector/batch-verify-voucher-onchain-payee-reject",
+]
+reason = "a stale snapshot is refreshed for status, deposit and close only; the channel account's discriminator, payee and distribution hash are not re-checked, so a voucher against a mis-bound account is served (\"A missing or stale snapshot MUST fall through to facilitator verification\")"
+tracking = "FINDINGS.md#batch-voucher-onchain-bindings"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-terms-withdraw-delay-fractional-reject",
+]
+reason = "extra.withdrawDelay is a u32, so 900.5 fails deserialization (invalid-challenge) rather than the withdrawDelay range rule (\"MUST be an integer from 900 through 2592000\")"
+tracking = "FINDINGS.md#batch-server-reject-codes"

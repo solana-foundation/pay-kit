@@ -1,0 +1,1166 @@
+[
+  {
+    "bugType": "wire",
+    "description": "The route's PaymentRequirements: scheme, CAIP-2 network, atomic amount, mint, payTo, maxTimeoutSeconds and extra (feePayer, receiverAuthorizer, withdrawDelay, tokenProgram, memo), round-tripped and JCS-canonicalized. No channelProgram and no paymentFlow on the wire.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifQ",
+        "canonicalJson": "{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-requirements-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "requirements",
+        "value": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7556a4ec7c",
+      "X402-04b1c68ba2"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "Per-request amount in atomic units.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "voucher payload: channelConfig (decimal-string salt, numeric openSlot and withdrawDelay) and a BatchVoucher with a string maxClaimableAmount and numeric expiresAt 0.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHlwZSI6InZvdWNoZXIiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiI1MDAwIiwic2lnbmF0dXJlIjoicEpnczNLazVYa2NkYktjd2Q2eTFBdXBRM25jZ1B0Rk1rUzZXU0NOZkR0NEZ2Z2JSZThIQ2FidUZOUEhyb0FtRThWQ3ZzV0tnSEp4V2pEd0F0RVNYbVEyIn19",
+        "canonicalJson": "{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"type\":\"voucher\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payload-voucher-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "type": "voucher",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "5000",
+            "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client payload is a tagged union on `payload.type`.",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "deposit payload: channelConfig, the first voucher, and deposit {amount, transaction}.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiZGVwb3NpdCI6eyJhbW91bnQiOiIxMDAwMDAiLCJ0cmFuc2FjdGlvbiI6IkFRSUQifSwidHlwZSI6ImRlcG9zaXQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNWtTdmlGUThoam1RcEs4c1JtZ0hENkZ4YkVMQUR6V3pmNk1xQ0c4dWJXSGF0RzRTWFlWMWJyazliUUpRdFhlOHFCdGZaYlBaem1DSGJrdDdlSm1FZGRCQiJ9fQ",
+        "canonicalJson": "{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"deposit\":{\"amount\":\"100000\",\"transaction\":\"AQID\"},\"type\":\"deposit\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5kSviFQ8hjmQpK8sRmgHD6FxbELADzWzf6MqCG8ubWHatG4SXYV1brk9bQJQtXe8qBtfZbPZzmCHbkt7eJmEddBB\"}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payload-deposit-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "deposit": {
+            "amount": "100000",
+            "transaction": "AQID"
+          },
+          "type": "deposit",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "1000",
+            "signature": "5kSviFQ8hjmQpK8sRmgHD6FxbELADzWzf6MqCG8ubWHatG4SXYV1brk9bQJQtXe8qBtfZbPZzmCHbkt7eJmEddBB"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46",
+      "X402-24cd5fed02"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client payload is a tagged union on `payload.type`.",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The PAYMENT-SIGNATURE envelope: x402Version 2, accepted (the requirements echoed verbatim) and the voucher payload.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHlwZSI6InZvdWNoZXIiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiI1MDAwIiwic2lnbmF0dXJlIjoicEpnczNLazVYa2NkYktjd2Q2eTFBdXBRM25jZ1B0Rk1rUzZXU0NOZkR0NEZ2Z2JSZThIQ2FidUZOUEhyb0FtRThWQ3ZzV0tnSEp4V2pEd0F0RVNYbVEyIn19LCJ4NDAyVmVyc2lvbiI6Mn0",
+        "canonicalJson": "{\"accepted\":{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"},\"payload\":{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"type\":\"voucher\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}},\"x402Version\":2}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payment-payload-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "paymentPayload",
+        "value": {
+          "accepted": {
+            "amount": "1000",
+            "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "extra": {
+              "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+              "memo": "invoice-42",
+              "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+              "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "withdrawDelay": 3600
+            },
+            "maxTimeoutSeconds": 300,
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "scheme": "batch-settlement"
+          },
+          "payload": {
+            "channelConfig": {
+              "openSlot": 341000000,
+              "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+              "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+              "salt": "42",
+              "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+              "withdrawDelay": 3600
+            },
+            "type": "voucher",
+            "voucher": {
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "expiresAt": 0,
+              "maxClaimableAmount": "5000",
+              "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+            }
+          },
+          "x402Version": 2
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d29d49ebde",
+      "X402-c3d9b43d25"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "For every request, `paymentPayload.accepted` MUST equal `paymentRequirements`.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The default (cooperative) client-mode refund carries channelConfig and the accepted voucher and no transaction: it must parse and round-trip unchanged.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHlwZSI6InJlZnVuZCIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjUwMDAiLCJzaWduYXR1cmUiOiJwSmdzM0trNVhrY2RiS2N3ZDZ5MUF1cFEzbmNnUHRGTWtTNldTQ05mRHQ0RnZnYlJlOEhDYWJ1Rk5QSHJvQW1FOFZDdnNXS2dISnhXakR3QXRFU1htUTIifX0",
+        "canonicalJson": "{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"type\":\"refund\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payload-refund-cooperative",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "type": "refund",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "5000",
+            "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "X402-fa34804f1b"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A refund retried after receiver_binding_unavailable carries the voucher and a request_close transaction.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBUUlEIiwidHlwZSI6InJlZnVuZCIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjUwMDAiLCJzaWduYXR1cmUiOiJwSmdzM0trNVhrY2RiS2N3ZDZ5MUF1cFEzbmNnUHRGTWtTNldTQ05mRHQ0RnZnYlJlOEhDYWJ1Rk5QSHJvQW1FOFZDdnNXS2dISnhXakR3QXRFU1htUTIifX0",
+        "canonicalJson": "{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"transaction\":\"AQID\",\"type\":\"refund\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payload-refund-with-transaction",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "transaction": "AQID",
+          "type": "refund",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "5000",
+            "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-fa34804f1b"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A client-mode refund with a transaction but no voucher is not a valid refund variant: the voucher is REQUIRED in client mode.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-payload-refund-transaction-without-voucher-reject",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "transaction": "AQID",
+          "type": "refund"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "X402-fa34804f1b"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Server-mode authorization payload: channelConfig with voucherSigner \"server\" and payerAuthorizer = operator, plus a BatchAuthorization proof (type \"proof\").",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhdXRob3JpemF0aW9uIjp7ImF1dGhvcml6ZWRBbW91bnQiOiIxMDAwIiwiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjE3NTgyMTUxMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZXF1ZXN0SWQiOiJyZXEtMSIsInNpZ25hdHVyZSI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJ0eXBlIjoicHJvb2YifSwiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiNE1meVI0RzNOV2ZWUkRXbzZpTkFIREJacVdNZ3daWDZGTnRNcUVXM2E5SlQiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiNDIiLCJ0b2tlbiI6IjR6TU1DOXNydDVSaTVYMTRHQWdYaGFIaWkzR25QQUVFUllQSmdaSkRuY0RVIiwidm91Y2hlclNpZ25lciI6InNlcnZlciIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJ0eXBlIjoiYXV0aG9yaXphdGlvbiJ9",
+        "canonicalJson": "{\"authorization\":{\"authorizedAmount\":\"1000\",\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":1758215100,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"requestId\":\"req-1\",\"signature\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"type\":\"proof\"},\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"voucherSigner\":\"server\",\"withdrawDelay\":3600},\"type\":\"authorization\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-payload-authorization-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "authorization": {
+            "authorizedAmount": "1000",
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 1758215100,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "requestId": "req-1",
+            "signature": "1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "proof"
+          },
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "voucherSigner": "server",
+            "withdrawDelay": 3600
+          },
+          "type": "authorization"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "**`authorization`** is the server-mode steady-state request.",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The superseded voucher shape with a top-level channelId and no channelConfig is not a current variant.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-payload-legacy-channel-id-reject",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+          "type": "voucher",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "1000",
+            "signature": "5kSviFQ8hjmQpK8sRmgHD6FxbELADzWzf6MqCG8ubWHatG4SXYV1brk9bQJQtXe8qBtfZbPZzmCHbkt7eJmEddBB"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client payload is a tagged union on `payload.type`.",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "maxClaimableAmount as a JSON number (1000) instead of a decimal string.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-payload-numeric-max-claimable-reject",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "type": "voucher",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": 1000,
+            "signature": "5kSviFQ8hjmQpK8sRmgHD6FxbELADzWzf6MqCG8ubWHatG4SXYV1brk9bQJQtXe8qBtfZbPZzmCHbkt7eJmEddBB"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `maxClaimableAmount` | string | Cumulative authorized total in atomic units",
+      "section": "4.2 Shared Wire Objects and Program Mapping"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "An unknown discriminator (\"withdraw\") is none of deposit, voucher, authorization, refund.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-payload-unknown-type-reject",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "type": "withdraw",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "1000",
+            "signature": "5kSviFQ8hjmQpK8sRmgHD6FxbELADzWzf6MqCG8ubWHatG4SXYV1brk9bQJQtXe8qBtfZbPZzmCHbkt7eJmEddBB"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`paymentPayload.payload` MUST be one of the client-authored `deposit`, `voucher`, `authorization`, or `refund` variants in section 4.3.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A BatchVoucher without its signature field is malformed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-payload-missing-voucher-signature-reject",
+    "input": {
+      "batchWire": {
+        "shape": "payload",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "type": "voucher",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "1000"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-3485cafa46"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `signature` | string | Base58 Ed25519 signature by `channelConfig.payerAuthorizer`. |",
+      "section": "4.2 Shared Wire Objects and Program Mapping"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "claim payload with two entries, each channelId + full channelConfig + the latest BatchVoucher.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjbGFpbXMiOlt7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjQyIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJIamcyUERnTHhZRGlRV1JIckplZVk5VjlpTnllYk05TVd1dG9BNjdlaXZzWiIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjUwMDAiLCJzaWduYXR1cmUiOiJwSmdzM0trNVhrY2RiS2N3ZDZ5MUF1cFEzbmNnUHRGTWtTNldTQ05mRHQ0RnZnYlJlOEhDYWJ1Rk5QSHJvQW1FOFZDdnNXS2dISnhXakR3QXRFU1htUTIifX0seyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwNTAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MyIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiZVc5dXVOV2dVRzZNeENGRmhoc3hBdFZzNGdCem9aMmRRa1o4ZDg1dHVaaSIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiZVc5dXVOV2dVRzZNeENGRmhoc3hBdFZzNGdCem9aMmRRa1o4ZDg1dHVaaSIsImV4cGlyZXNBdCI6MCwibWF4Q2xhaW1hYmxlQW1vdW50IjoiNzAwMCIsInNpZ25hdHVyZSI6IjNKUDJlWG92TjNla0hZdkpaWlZaOVpEeXc0a3Rzc1l1V3pVc2ZxMWdmSjMxUVNVUkZFejl4U1dMUEVYTUt0WXlSaVpNaGRxY2FwQW95cTNwTGJUNkNURWoifX1dLCJ0eXBlIjoiY2xhaW0ifQ",
+        "canonicalJson": "{\"claims\":[{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}},{\"channelConfig\":{\"openSlot\":341000050,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"43\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"eW9uuNWgUG6MxCFFhhsxAtVs4gBzoZ2dQkZ8d85tuZi\",\"voucher\":{\"channelId\":\"eW9uuNWgUG6MxCFFhhsxAtVs4gBzoZ2dQkZ8d85tuZi\",\"expiresAt\":0,\"maxClaimableAmount\":\"7000\",\"signature\":\"3JP2eXovN3ekHYvJZZVZ9ZDyw4ktssYuWzUsfq1gfJ31QSURFEz9xSWLPEXMKtYyRiZMhdqcapAoyq3pLbT6CTEj\"}}],\"type\":\"claim\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-redemption-claim-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "claims": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "42",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "voucher": {
+                "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+                "expiresAt": 0,
+                "maxClaimableAmount": "5000",
+                "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000050,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "43",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "eW9uuNWgUG6MxCFFhhsxAtVs4gBzoZ2dQkZ8d85tuZi",
+              "voucher": {
+                "channelId": "eW9uuNWgUG6MxCFFhhsxAtVs4gBzoZ2dQkZ8d85tuZi",
+                "expiresAt": 0,
+                "maxClaimableAmount": "7000",
+                "signature": "3JP2eXovN3ekHYvJZZVZ9ZDyw4ktssYuWzUsfq1gfJ31QSURFEz9xSWLPEXMKtYyRiZMhdqcapAoyq3pLbT6CTEj"
+              }
+            }
+          ],
+          "type": "claim"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7f4ee54a73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "claims: [] is below the one-entry minimum.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-redemption-claim-empty-reject",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "claims": [],
+          "type": "claim"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "X402-7f4ee54a73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Five claims exceed the four entries one legacy transaction can carry.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-redemption-claim-five-entries-reject",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "claims": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "100",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM",
+              "voucher": {
+                "channelId": "Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5webiD4DbhJpjGjToBLXPonCCcDp5jK6KvJaG6y9LZj8RFsuxUgfeH5FLUKfZwxCkhc2qpxn9d9noyNxpwe5vhWo"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "101",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3",
+              "voucher": {
+                "channelId": "96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "23ed7u1sWVL67DgP2XS5S6a8QNSNDNjx46N3WrDjQcYMkdTKwJxSovjLvESREwinqaX7qFGwZiH4KhX8whvKdyrm"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "102",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn",
+              "voucher": {
+                "channelId": "918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5M1EwT6SshyUKRhv6qKfSjk7qjjsw7rqZ1q1bjfpHnfqAUm6PUdzxMVspDQX1ptvQwjdwB4xd6xdpKJ9QC8gksdJ"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "103",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH",
+              "voucher": {
+                "channelId": "27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2yyjqaHsdiBKKHvjR8vdqqHeQ36AFruuGdsazmDBMEbtPiXjbDqA3q6s9FyugebWpzMWResiLPcNfkUBX2onVdyQ"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "104",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs",
+              "voucher": {
+                "channelId": "BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "53JvbdCtBUmDgVwdPDbvwyWXMtXaZBvXR7uUsQq8EPLYtmB8HFSadt7LdhqJ2oGwS4iCcYm1WdCBu3PTU47YDR4h"
+              }
+            }
+          ],
+          "type": "claim"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "X402-7f4ee54a73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A claim entry without its channelConfig cannot be derived or validated.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-redemption-claim-entry-without-config-reject",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "claims": [
+            {
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "voucher": {
+                "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+                "expiresAt": 0,
+                "maxClaimableAmount": "5000",
+                "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+              }
+            }
+          ],
+          "type": "claim"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7f4ee54a73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| Claim | `claims[].channelConfig` | `ChannelConfig` | Full channel configuration. |",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "settle payload: channels[] of {channelId, channelConfig}.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVscyI6W3siY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiNDIiLCJ0b2tlbiI6IjR6TU1DOXNydDVSaTVYMTRHQWdYaGFIaWkzR25QQUVFUllQSmdaSkRuY0RVIiwid2l0aGRyYXdEZWxheSI6MzYwMH0sImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIn1dLCJ0eXBlIjoic2V0dGxlIn0",
+        "canonicalJson": "{\"channels\":[{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\"}],\"type\":\"settle\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-redemption-settle-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "channels": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "42",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ"
+            }
+          ],
+          "type": "settle"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7f4ee54a73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`channels[]` MUST contain between one and four entries, the same transaction-size bound as `claims[]`.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "seal payload: the tag beside channelId, channelConfig, the latest voucher and closeAuthorization {validBefore, signature}.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJjbG9zZUF1dGhvcml6YXRpb24iOnsic2lnbmF0dXJlIjoiMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInZhbGlkQmVmb3JlIjoxNzg1MzQxMTAwfSwidHlwZSI6InNlYWwiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiI1MDAwIiwic2lnbmF0dXJlIjoicEpnczNLazVYa2NkYktjd2Q2eTFBdXBRM25jZ1B0Rk1rUzZXU0NOZkR0NEZ2Z2JSZThIQ2FidUZOUEhyb0FtRThWQ3ZzV0tnSEp4V2pEd0F0RVNYbVEyIn19",
+        "canonicalJson": "{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"42\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"closeAuthorization\":{\"signature\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"validBefore\":1785341100},\"type\":\"seal\",\"voucher\":{\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"expiresAt\":0,\"maxClaimableAmount\":\"5000\",\"signature\":\"pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2\"}}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-redemption-seal-frozen",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+          "closeAuthorization": {
+            "signature": "1111111111111111111111111111111111111111111111111111111111111111",
+            "validBefore": 1785341100
+          },
+          "type": "seal",
+          "voucher": {
+            "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+            "expiresAt": 0,
+            "maxClaimableAmount": "5000",
+            "signature": "pJgs3Kk5XkcdbKcwd6y1AupQ3ncgPtFMkS6WSCNfDt4FvgbRe8HCabuFNPHroAmE8VCvsWKgHJxWjDwAtESXmQ2"
+          }
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-45c411d301"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| Seal | `closeAuthorization` | `CloseAuthorization` | REQUIRED (section 3).",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Voucher-acceptance PAYMENT-RESPONSE: transaction and amount are the empty string (not null, not omitted), extra carries commitmentId, chargedAmount and channelState.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIiLCJleHRyYSI6eyJjaGFubmVsU3RhdGUiOnsiYmFsYW5jZSI6IjEwMDAwMCIsImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiY2hhcmdlZEN1bXVsYXRpdmVBbW91bnQiOiI1MDAwIiwidG90YWxDbGFpbWVkIjoiMzAwMCIsIndpdGhkcmF3UmVxdWVzdGVkQXQiOjB9LCJjaGFyZ2VkQW1vdW50IjoiMTAwMCIsImNvbW1pdG1lbnRJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaOjUwMDAifSwibmV0d29yayI6InNvbGFuYTpFdFdUUkFCWmFZcTZpTWZlWUtvdVJ1MTY2VlUyeHFhMSIsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJzdWNjZXNzIjp0cnVlLCJ0cmFuc2FjdGlvbiI6IiJ9",
+        "canonicalJson": "{\"amount\":\"\",\"extra\":{\"channelState\":{\"balance\":\"100000\",\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"chargedCumulativeAmount\":\"5000\",\"totalClaimed\":\"3000\",\"withdrawRequestedAt\":0},\"chargedAmount\":\"1000\",\"commitmentId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ:5000\"},\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"success\":true,\"transaction\":\"\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-settlement-response-voucher-acceptance",
+    "input": {
+      "batchWire": {
+        "shape": "settlementResponse",
+        "value": {
+          "amount": "",
+          "extra": {
+            "channelState": {
+              "balance": "100000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "5000",
+              "totalClaimed": "3000",
+              "withdrawRequestedAt": 0
+            },
+            "chargedAmount": "1000",
+            "commitmentId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ:5000"
+          },
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "success": true,
+          "transaction": ""
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-5ebca343d1"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `extra.commitmentId` | string | no | MUST be non-empty for voucher acceptance",
+      "section": "4.4 SettlementResponse (in PAYMENT-RESPONSE)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Corrective 402: error invalid_batch_settlement_svm_cumulative_amount_mismatch and an accept whose extra carries channelState and the signed voucherState proof.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY2NlcHRzIjpbeyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImNoYW5uZWxTdGF0ZSI6eyJiYWxhbmNlIjoiMTAwMDAiLCJjaGFubmVsSWQiOiJIamcyUERnTHhZRGlRV1JIckplZVk5VjlpTnllYk05TVd1dG9BNjdlaXZzWiIsImNoYXJnZWRDdW11bGF0aXZlQW1vdW50IjoiMzAwMCIsInRvdGFsQ2xhaW1lZCI6IjIwMDAiLCJ3aXRoZHJhd1JlcXVlc3RlZEF0IjowfSwiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiIsIm1lbW8iOiJpbnZvaWNlLTQyIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwidm91Y2hlclN0YXRlIjp7ImV4cGlyZXNBdCI6MCwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayIsInNpZ25lZE1heENsYWltYWJsZSI6IjMwMDAifSwid2l0aGRyYXdEZWxheSI6MzYwMH0sIm1heFRpbWVvdXRTZWNvbmRzIjozMDAsIm5ldHdvcmsiOiJzb2xhbmE6RXRXVFJBQlphWXE2aU1mZVlLb3VSdTE2NlZVMnhxYTEiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwic2NoZW1lIjoiYmF0Y2gtc2V0dGxlbWVudCJ9XSwiZXJyb3IiOiJpbnZhbGlkX2JhdGNoX3NldHRsZW1lbnRfc3ZtX2N1bXVsYXRpdmVfYW1vdW50X21pc21hdGNoIiwieDQwMlZlcnNpb24iOjJ9",
+        "canonicalJson": "{\"accepts\":[{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"channelState\":{\"balance\":\"10000\",\"channelId\":\"Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ\",\"chargedCumulativeAmount\":\"3000\",\"totalClaimed\":\"2000\",\"withdrawRequestedAt\":0},\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"voucherState\":{\"expiresAt\":0,\"signature\":\"4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk\",\"signedMaxClaimable\":\"3000\"},\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}],\"error\":\"invalid_batch_settlement_svm_cumulative_amount_mismatch\",\"x402Version\":2}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-corrective-payment-required",
+    "input": {
+      "batchWire": {
+        "shape": "paymentRequired",
+        "value": {
+          "accepts": [
+            {
+              "amount": "1000",
+              "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+              "extra": {
+                "channelState": {
+                  "balance": "10000",
+                  "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+                  "chargedCumulativeAmount": "3000",
+                  "totalClaimed": "2000",
+                  "withdrawRequestedAt": 0
+                },
+                "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+                "memo": "invoice-42",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "voucherState": {
+                  "expiresAt": 0,
+                  "signature": "4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk",
+                  "signedMaxClaimable": "3000"
+                },
+                "withdrawDelay": 3600
+              },
+              "maxTimeoutSeconds": 300,
+              "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+              "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+              "scheme": "batch-settlement"
+            }
+          ],
+          "error": "invalid_batch_settlement_svm_cumulative_amount_mismatch",
+          "x402Version": 2
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Requirements of a route whose facilitator accepts versions 0 and 1 carry extra.transactionVersions [0, 1].",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwibWF4VGltZW91dFNlY29uZHMiOjMwMCwibmV0d29yayI6InNvbGFuYTpFdFdUUkFCWmFZcTZpTWZlWUtvdVJ1MTY2VlUyeHFhMSIsInBheVRvIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJzY2hlbWUiOiJiYXRjaC1zZXR0bGVtZW50In0",
+        "canonicalJson": "{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1],\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-requirements-transaction-versions",
+    "input": {
+      "batchWire": {
+        "shape": "requirements",
+        "value": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ],
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-f39a33ff74"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "Transaction message versions the facilitator accepts, as an array of `0` and/or `1`",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "extra.transactionVersions [0, 2]: 2 is not a transaction message version.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-requirements-unknown-transaction-version-reject",
+    "input": {
+      "batchWire": {
+        "shape": "requirements",
+        "value": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              2
+            ],
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-f39a33ff74"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "Entries are the integers `0` and `1`, the Wallet Standard `supportedTransactionVersions` vocabulary.",
+      "section": "Transaction versions"
+    },
+    "tier": "offline"
+  }
+]

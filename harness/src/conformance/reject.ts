@@ -12,6 +12,39 @@
 import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
+  // x402 batch-settlement SVM (scheme_batch_settlement_svm.md §7): the
+  // scheme's machine-readable reasons map one to one. Checked first: their
+  // messages contain generic words.
+  [/invalid_batch_settlement_svm_payload_type/, "payload-type"],
+  [/invalid_batch_settlement_svm_payment_flow/, "payment-flow"],
+  [/invalid_batch_settlement_svm_token_program/, "token-program"],
+  [/invalid_batch_settlement_svm_voucher_signature/, "voucher-signature"],
+  [/invalid_batch_settlement_svm_channel_id_mismatch/, "channel-id-mismatch"],
+  [/invalid_batch_settlement_svm_fee_payer_mismatch/, "fee-payer-mismatch"],
+  [/invalid_batch_settlement_svm_receiver_authorizer_mismatch/, "receiver-authorizer-mismatch"],
+  [/invalid_batch_settlement_svm_receiver_binding_unavailable/, "receiver-binding-unavailable"],
+  [/invalid_batch_settlement_svm_close_authorization/, "close-authorization"],
+  [/invalid_batch_settlement_svm_close_amount_unsupported/, "close-amount-unsupported"],
+  [/invalid_batch_settlement_svm_close_state/, "close-state"],
+  [/invalid_batch_settlement_svm_channel_closing/, "channel-closing"],
+  [/invalid_batch_settlement_svm_withdraw_delay_mismatch/, "withdraw-delay-mismatch"],
+  [/invalid_batch_settlement_svm_withdraw_delay_out_of_range/, "withdraw-delay-out-of-range"],
+  [/invalid_batch_settlement_svm_cumulative_amount_mismatch/, "cumulative-amount-mismatch"],
+  [/invalid_batch_settlement_svm_cumulative_exceeds_deposit/, "cumulative-exceeds-deposit"],
+  [/invalid_batch_settlement_svm_voucher_expiry/, "voucher-expiry"],
+  [/invalid_batch_settlement_svm_setup_transaction/, "setup-transaction"],
+  [/invalid_batch_settlement_svm_settlement_simulation/, "settlement-simulation"],
+  [/invalid_batch_settlement_svm_channel_state/, "channel-state"],
+  [/invalid_batch_settlement_svm_refund_transaction/, "refund-transaction"],
+  [/\bduplicate_settlement\b/, "duplicate-settlement"],
+  [/\bunsupported_transaction_version\b/, "unsupported-transaction-version"],
+  [/\bunsupported_scheme\b/, "unsupported-scheme"],
+  // @x402/svm batch-settlement client: refusals of a challenge's terms
+  // (plain Errors, no reason code).
+  [/extra\.tokenProgram (does not own|is not a supported)/, "token-program"],
+  [/extra\.paymentFlow must be "authorization"/, "payment-flow"],
+  [/extra\.withdrawDelay is outside the allowed range/, "withdraw-delay-out-of-range"],
+  [/requires a server-signed channel whose operator|extra\.operator is only valid/, "invalid-challenge"],
   // Charge verification policy (split arithmetic, split-recipient ATA
   // creation, fee payer placement, compute budget allowlist) and the client's
   // challenge checks. Checked first: several messages contain generic words.

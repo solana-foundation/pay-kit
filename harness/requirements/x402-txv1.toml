@@ -76,3 +76,15 @@ id = "X402TX-dc7b0f3305"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "A legacy or version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes."
 required = true
+
+[[requirement]]
+id = "X402TX-4750df8921"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Its message version MUST be one advertised in extra.transactionVersions. |"
+required = true
+
+[[requirement]]
+id = "X402TX-f39a33ff74"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator advertises the versions it accepts as extra.transactionVersions in /supported, and the server MUST copy that value into PaymentRequirements.extra.transactionVersions."
+required = true

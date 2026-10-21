@@ -533,7 +533,7 @@ async function resultFor(vector: ConformanceVector): Promise<RunnerResult> {
 
 // Intents this runner implements; pkc checks them against
 // harness/expectations/typescript.toml.
-const INTENTS = ["charge", "x402-exact", "session", "x402-upto", "subscription"];
+const INTENTS = ["charge", "x402-exact", "session", "x402-upto", "x402-batch-settlement", "subscription"];
 
 // Testee ABI v2 (harness/README.md): newline JSON {id, op, input} in,
 // {id, ok, result | error} out, one long-lived process. `input` is the v1

@@ -1,0 +1,471 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "The server's corrective snapshot charges 3000 and proves it with the client's own voucher signature at 3000: the client adopts 3000 as its cumulative base.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-corrective-adopt-own-signature",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "3000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 0,
+              "signature": "4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "chargedCumulativeAmount 2000 under a proof signed at 3000 is adoptable (charged may not exceed the proof).",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-corrective-charged-below-signed",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "2000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 0,
+              "signature": "4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The voucherState signature is by a key other than the client's payerAuthorizer: the snapshot is not proven and must not be adopted.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-signature"
+    },
+    "id": "batch-corrective-foreign-signature-reject",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "3000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 0,
+              "signature": "8urB5gQdU6HT4iK4QPogrJwrteDAt1CN3EuewovKncksfnj3soN52Zoe3H73gahkKrnBD1BsHrpzNANpAd56G8F",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "chargedCumulativeAmount 4000 over a proof signed at 3000: the server claims more than the client ever signed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-amount-mismatch"
+    },
+    "id": "batch-corrective-charged-exceeds-signed-reject",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "4000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 0,
+              "signature": "4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A voucherState with a nonzero expiresAt is not a voucher of this scheme, even if correctly signed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-expiry"
+    },
+    "id": "batch-corrective-nonzero-expiry-reject",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "3000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 1758215100,
+              "signature": "5VwTktL4A49LK7g721prHew4BchRWiRdqbZ2cXfcu1YjbaUPJfS8CudYwws5dtVuqyFCnttcKGvTCxipJ4inZVsL",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A corrective snapshot without voucherState proves nothing: the client must not adopt its chargedCumulativeAmount (it resynchronizes from onchain state instead).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-amount-mismatch"
+    },
+    "id": "batch-corrective-without-proof-reject",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+              "chargedCumulativeAmount": "3000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The snapshot names another channel than the client's: the proof is reconstructed from the derived channelId, so it cannot be adopted.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "batch-corrective-other-channel-reject",
+    "input": {
+      "batchCorrective": {
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "1000",
+          "deposit": "10000"
+        },
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "channelState": {
+              "balance": "10000",
+              "channelId": "Stake11111111111111111111111111111111111111",
+              "chargedCumulativeAmount": "3000",
+              "totalClaimed": "2000",
+              "withdrawRequestedAt": 0
+            },
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherState": {
+              "expiresAt": 0,
+              "signature": "4Ca3J8GJ2bhiTDgY2abZqJQ78Kqn94NxFT2Q9S3b1HeWXFHMqPtrsowaxfBkUgGcRHr1PZ8AQgvQjphBNrYq6psk",
+              "signedMaxClaimable": "3000"
+            },
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-638126c26b",
+      "X402-171a57666e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client MUST reject the snapshot when the signature does not verify or when `channelState.chargedCumulativeAmount` exceeds `voucherState.signedMaxClaimable`.",
+      "section": "4.6 Corrective PaymentRequired"
+    },
+    "tier": "offline"
+  }
+]
