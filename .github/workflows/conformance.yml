@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   # Which SDKs a PR touches. Changes to the harness, the conformance crate,
@@ -264,19 +266,38 @@ jobs:
         run: pnpm exec vitest run test/flow-conformance.test.ts
       - name: Interop against the Rust reference (pkc)
         if: matrix.interop
+        timeout-minutes: 15
         env:
           PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.program.outputs.program-so }}
-        timeout-minutes: 15
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Diagnostic: where does the interop step hang?
-          echo "::group::runner"; cat /etc/os-release | head -3; uname -a; nproc; free -m; df -h / | tail -1; ulimit -a | head -20; echo "::endgroup::"
-          ( while sleep 20; do echo "--- $(date -u +%T) $(free -m | awk '/Mem:/{print "used="$3"M avail="$7"M"}') $(free -m | awk '/Swap:/{print "swap="$3"M"}') load=$(cut -d' ' -f1 /proc/loadavg)"; ps -eo rss=,etime=,stat=,args= --sort=-rss | head -6 | cut -c1-160; done ) &
+          # Diagnostic: the runner dies without uploading its log, so post the
+          # state to PR #392 every 15 s; the last update shows the moment it died.
+          cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/392/comments" -f body="diag ${{ matrix.sdk }}: starting" -q .id)
+          (
+            while true; do
+              {
+                echo "### ${{ matrix.sdk }} $(date -u +%T) (run ${{ github.run_id }})"
+                echo '```'
+                grep -E 'PRETTY_NAME' /etc/os-release; nproc; free -m; cat /proc/loadavg
+                df -h / /tmp | tail -2
+                ps -eo pid,ppid,rss,etime,stat,args --sort=-rss | head -14 | cut -c1-200
+                echo "procs: $(ps -e --no-headers | wc -l)"
+                sudo dmesg 2>/dev/null | tail -6 | cut -c1-200
+                echo "--- pkc"
+                tail -20 /tmp/pkc.log 2>/dev/null | cut -c1-200
+                echo '```'
+              } > /tmp/diag.md
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@/tmp/diag.md >/dev/null 2>&1 || true
+              sleep 15
+            done
+          ) &
           sampler=$!
           set +e
-          timeout -k 15 480 pkc run --tier interop --shard ${{ matrix.sdk }} --require
+          timeout -k 15 480 pkc run --tier interop --shard ${{ matrix.sdk }} --require > /tmp/pkc.log 2>&1
           status=$?
+          cat /tmp/pkc.log
           kill "$sampler" 2>/dev/null
-          if [ "$status" = 124 ]; then echo "::error::pkc did not finish in 8 min"; ps -eo pid,ppid,etime,stat,wchan:24,rss,args --forest | cut -c1-220; fi
           exit $status
       - uses: actions/upload-artifact@v7
         if: always()
