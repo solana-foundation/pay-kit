@@ -1475,6 +1475,31 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         .get("x402Offer")
         .cloned()
         .unwrap_or(Value::Null);
+    // The envelope (version, lookup tables, size and counts) is checked on
+    // the SDK's own bytes first: the declared-memo path below verifies a
+    // copy with a shorter memo, which the size limit would not see.
+    {
+        let envelope = decode_header(artifact).map_err(Failure::new)?;
+        let open = decode_b64(
+            envelope
+                .pointer("/payload/openTransaction")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .map_err(Failure::new)?;
+        let advertised: Option<Vec<TxVersion>> = offer
+            .pointer("/extra/transactionVersions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let accepted = solana_pay_kit::core::tx::accepted_versions(advertised.as_deref());
+        if let Err(e) = solana_pay_kit::core::tx::check_envelope(&open, accepted) {
+            return Err(Failure {
+                message: format!("the SDK's open fails the transaction envelope: {e}"),
+                path: Some("verify.envelope".into()),
+                expected: Some(json!("accept")),
+                actual: Some(json!(e.to_string())),
+            });
+        }
+    }
     let summary = open_summary(artifact, &offer).map_err(Failure::new)?;
     if let Some(Value::Object(pinned)) = vector.expect().get("exactBytes") {
         for (k, want) in pinned {
@@ -1755,6 +1780,37 @@ mod tests {
         assert_eq!(
             failure.path.as_deref(),
             Some("verify"),
+            "{}",
+            failure.message
+        );
+
+        // Over the version-0 size limit with the declared memo, under it once
+        // the shorter route memo is swapped in: the envelope sees the SDK's bytes.
+        let oversized = edited_build(&rt, &v, |e| {
+            let tx = decode_b64(e["payload"]["openTransaction"].as_str().unwrap()).unwrap();
+            let mut d = crate::tx::decompile(&tx.message).unwrap();
+            let size = |d: &crate::tx::Decompiled| {
+                let out = crate::tx::recompile(&tx.message, d).unwrap();
+                solana_pay_kit::core::tx::serialized_size(&out).unwrap()
+            };
+            let mut pad = Instruction {
+                program_id: keys::pubkey(keys::MEMO_PROGRAM),
+                accounts: vec![],
+                data: vec![],
+            };
+            d.instructions.push(pad.clone());
+            let room = 1232usize.saturating_sub(size(&d));
+            pad.data = vec![b'p'; room + 1];
+            *d.instructions.last_mut().unwrap() = pad;
+            let mut out = crate::tx::recompile(&tx.message, &d).unwrap();
+            sign_slots(&mut out, &KNOWN_SEEDS);
+            out.signatures[0] = Signature::default();
+            e["payload"]["openTransaction"] = json!(encode_b64(&out).unwrap());
+        });
+        let failure = rt.block_on(judge_build(&v, &oversized)).unwrap_err();
+        assert_eq!(
+            failure.path.as_deref(),
+            Some("verify.envelope"),
             "{}",
             failure.message
         );
