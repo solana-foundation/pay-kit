@@ -287,6 +287,8 @@ def _error_response(exc: PayKitError) -> JsonResponse:
         challenge_headers = cast("dict[str, str]", getattr(exc, "challenge_headers", {}))
         for key, value in challenge_headers.items():
             response[key] = value
+    for key, value in exc.response_headers.items():
+        response[key] = value
     return response
 
 

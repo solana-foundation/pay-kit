@@ -73,6 +73,7 @@ class TestCanonicalCodes:
                     "payment_invalid",
                     "wrong_network",
                     "signature_consumed",
+                    "settlement_in_progress",
                 }
             )
             == CANONICAL_CODES
@@ -145,3 +146,24 @@ class TestPaymentRequiredResponseBuilder:
 
         resp = payment_required_response("x", code="foo-bar-baz")
         assert resp["body"]["code"] == "payment_invalid"
+
+
+class TestSettlementInProgress:
+    """A payment that may already be broadcast keeps its retry signal."""
+
+    def test_canonical_code_keeps_settlement_in_progress_distinct(self):
+        from solana_pay_kit._paycore.errors import canonical_code
+
+        assert canonical_code("settlement-in-progress") == "settlement_in_progress"
+        # Positive control: a real rejection still maps to payment_invalid.
+        assert canonical_code("transaction-failed") == "payment_invalid"
+
+    def test_response_is_a_retryable_409_without_a_challenge(self):
+        from solana_pay_kit._paycore.errors import settlement_in_progress_response
+
+        resp = settlement_in_progress_response("pending")
+        assert resp["status_code"] == 409
+        assert resp["headers"]["retry-after"] == "1"
+        assert resp["headers"]["cache-control"] == "no-store"
+        assert "www-authenticate" not in resp["headers"]
+        assert resp["body"]["code"] == "settlement_in_progress"

@@ -27,6 +27,7 @@ __all__ = [
     "ProtocolIncompatibleError",
     "InvalidProofError",
     "ChallengeExpiredError",
+    "SettlementInProgressError",
     "PaymentRequiredError",
     "ProtocolNotSupportedError",
 ]
@@ -34,6 +35,11 @@ __all__ = [
 
 class PayKitError(Exception):
     """Root of every solana_pay_kit exception; catch this for a generic handler."""
+
+    @property
+    def response_headers(self) -> dict[str, str]:
+        """Extra headers framework adapters set on the error response."""
+        return {}
 
 
 class ConfigurationError(PayKitError):
@@ -67,6 +73,28 @@ class InvalidProofError(PayKitError):
     def http_status(self) -> int:
         """HTTP status framework adapters render for an invalid proof."""
         return 402
+
+
+class SettlementInProgressError(InvalidProofError):
+    """The credential's payment may already be broadcast and is unresolved.
+
+    Retry the same credential; never pay a fresh challenge for it. Adapters
+    render a ``409`` with ``Retry-After`` and no challenge, as the Rust and Go
+    gates do, because a client handed a new challenge could pay twice.
+    """
+
+    def __init__(self, message: str, code: str = "settlement_in_progress") -> None:
+        super().__init__(message, code=code)
+
+    @property
+    def http_status(self) -> int:
+        """HTTP status framework adapters render for an unresolved settlement."""
+        return 409
+
+    @property
+    def response_headers(self) -> dict[str, str]:
+        """Ask the client to retry the same credential shortly, uncached."""
+        return {"Retry-After": "1", "Cache-Control": "no-store"}
 
 
 class ChallengeExpiredError(InvalidProofError):

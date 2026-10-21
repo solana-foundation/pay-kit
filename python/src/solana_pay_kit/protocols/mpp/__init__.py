@@ -18,11 +18,11 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from solana_pay_kit._paycore.errors import PaymentError, canonical_code
+from solana_pay_kit._paycore.errors import CODE_SETTLEMENT_IN_PROGRESS, PaymentError, canonical_code
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.store import MemoryStore, Store
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import InvalidProofError, SettlementInProgressError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.mpp.core.headers import format_receipt, format_www_authenticate, parse_authorization
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
@@ -258,9 +258,12 @@ class MppAdapter:
             async with mpp.using_rpc(rpc):
                 receipt = await mpp.verify_credential_with_expected(credential, expected)
         except PaymentError as err:
+            code = canonical_code(err.code)
+            if code == CODE_SETTLEMENT_IN_PROGRESS:
+                raise SettlementInProgressError(str(err) or "settlement in progress", code=code) from err
             raise InvalidProofError(
                 str(err) or "verification failed",
-                code=canonical_code(err.code),
+                code=code,
             ) from err
         finally:
             await rpc.aclose()
