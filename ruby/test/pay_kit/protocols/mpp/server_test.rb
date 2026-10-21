@@ -913,6 +913,56 @@ class ChargeHandlerTest < Minitest::Test
     assert_match(/refused/, response.body["message"])
   end
 
+  # A pending charge resolves only on an explicit outcome: landed-and-failed
+  # fails it, a status short of confirmed keeps it pending, and an expired
+  # push credential has no pending charge to reconcile.
+  def test_pending_charge_reconciles_only_on_an_explicit_outcome
+    request = charge_request
+    wire = v0_transaction(
+      signer: 6,
+      account_keys: [signer_pubkey(6), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    authorization = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request, expires: (Time.now.utc + 300).iso8601).to_echo,
+      payload: {"transaction" => Base64.strict_encode64(wire)}
+    ).to_authorization_header
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    lost = ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: response lost")
+    assert_equal 409, handler_with(FailingSendRpc.new(send_error: lost), store: store).handle(authorization, request).status
+
+    processing = FakeRpc.new(statuses: [{"err" => nil, "confirmationStatus" => "processed"}])
+    assert_equal 409, handler_with(processing, store: store).handle(authorization, request).status
+    failed = FakeRpc.new(statuses: [{"err" => {"InstructionError" => [0, "Custom"]}, "confirmationStatus" => "confirmed"}])
+    response = handler_with(failed, store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_match(/failed/, response.body["message"])
+
+    push = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request, expires: (Time.now.utc + 300).iso8601).to_echo,
+      payload: {"signature" => valid_signature}
+    ).to_authorization_header
+    response = handler_with(FakeRpc.new, store: store).handle(push, request, now: Time.now.utc + 3600)
+    assert_equal 402, response.status
+    assert_equal ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED, response.body["code"]
+  end
+
+  def test_signatures_verify_refuses_a_malformed_signature_set
+    request = charge_request
+    signed = v0_transaction(
+      signer: 7,
+      account_keys: [signer_pubkey(7), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    assert ::PayCore::Solana::Transaction.from_bytes(signed).signatures_verify?
+    unsigned = v0_transaction(
+      account_keys: [signer_pubkey(7), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))],
+      signatures: ["\x00".b * 64, "\x00".b * 64]
+    )
+    refute ::PayCore::Solana::Transaction.from_bytes(unsigned).signatures_verify?
+  end
+
   # The claim and its challenge binding are written before anything is sent:
   # bound only after an ambiguous send, a store failure would strand a payment
   # that may have landed, with nothing for the retry to reconcile.
