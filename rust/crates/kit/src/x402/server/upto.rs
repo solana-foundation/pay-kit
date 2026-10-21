@@ -825,10 +825,56 @@ impl X402Upto {
         )?;
         self.sign_settlement_transaction(&mut tx).await?;
 
-        let signature = crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
-            .map_err(|e| Error::Rpc(format!("settle broadcast failed: {e}")))?;
+        // The signature names this settlement before it is sent, so an
+        // unknown outcome can be resolved later instead of guessed: a caller
+        // that gives up on it might withhold a response that was paid for.
+        let submitted = tx
+            .signatures
+            .first()
+            .map(ToString::to_string)
+            .ok_or_else(|| Error::Other("settlement transaction has no signature".into()))?;
+        use crate::core::rpc::{BroadcastFailure, PriorBroadcast};
+        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx, PriorBroadcast::None)
+        {
+            Ok(signature) => Ok(self.settlement_response(open, actual, signature.to_string())),
+            Err(
+                failure @ (BroadcastFailure::NotLanded(_) | BroadcastFailure::FailedOnChain(_)),
+            ) => Err(Error::Rpc(format!("settle broadcast failed: {failure}"))),
+            Err(BroadcastFailure::Unknown(e)) => {
+                tracing::warn!(error = %e, tx = %submitted, "upto settlement outcome unknown");
+                Err(Error::SettlementPending(submitted))
+            }
+        }
+    }
 
-        Ok(self.settlement_response(open, actual, signature.to_string()))
+    /// The outcome of a settlement [`settle_actual`](Self::settle_actual)
+    /// reported as [`Error::SettlementPending`]: its receipt once it landed,
+    /// `None` once it failed on chain, an error while its status is unknown.
+    pub async fn settlement_outcome(
+        &self,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+        signature: &str,
+    ) -> Result<Option<UptoSettlementResponse>, Error> {
+        let parsed = solana_signature::Signature::from_str(signature)
+            .map_err(|e| Error::Other(format!("invalid settlement signature: {e}")))?;
+        let status = self
+            .rpc
+            .get_signature_status_with_commitment_and_history(
+                &parsed,
+                solana_commitment_config::CommitmentConfig::confirmed(),
+                true,
+            )
+            .map_err(|e| Error::Rpc(format!("settlement status read failed: {e}")))?;
+        match status {
+            Some(Ok(())) => Ok(Some(self.settlement_response(
+                open,
+                actual,
+                signature.to_string(),
+            ))),
+            Some(Err(_)) => Ok(None),
+            None => Err(Error::SettlementPending(signature.to_string())),
+        }
     }
 
     /// Build the settlement instructions (`settle_and_seal`, ATA setup, and
