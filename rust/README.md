@@ -492,3 +492,17 @@ This SDK follows the per-language style notes in the repo-level
 ## License
 
 MIT
+
+
+### Prepare an unsigned x402 exact payment
+
+`x402::client::exact::prepare_unsigned_payment(&payer, &rpc, &requirements,
+max_tx_version).await` exposes the transaction-building stage used by
+`build_payment`. It takes a buyer public key rather than a signer and returns a
+`VersionedTransaction` with zeroed signature slots, including a sponsor slot when
+present. Existing signed builders keep their signatures and behavior.
+
+This seam lets a host inspect the exact message before its own signing and
+submission boundary. The host owns authorization, evidence, submission and
+recovery; preparing a transaction grants no spending authority. Mint-decimals and
+blockhash fallbacks still use async RPC. Supplying both values avoids those reads.
