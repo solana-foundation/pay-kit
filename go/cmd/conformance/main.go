@@ -335,6 +335,15 @@ type rejectPattern struct {
 // surfaces as the generic no-matching-transfer category, not a
 // decimals-specific code.
 var rejectPatterns = []rejectPattern{
+	// Charge verification policy and client challenge checks (mirrors the
+	// block at the top of harness/src/conformance/reject.ts), then the Go x402
+	// verifier's static-layout and memo-count messages.
+	{regexp.MustCompile(`(?i)fee payer (token account )?cannot fund`), "fee-payer-is-funds-source"},
+	{regexp.MustCompile(`(?i)primary amount is zero after splits|split amounts exceed`), "splits-exceed-amount"},
+	{regexp.MustCompile(`(?i)splits exceed maximum`), "too-many-splits"},
+	{regexp.MustCompile(`(?i)ata creation owner is not authorized|unsupported compute budget|unexpected_signer|x402: unexpected instruction`), "unexpected-instruction"},
+	{regexp.MustCompile(`(?i)atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey`), "invalid-challenge"},
+	{regexp.MustCompile(`(?i)ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed|is not a computebudget|exactly one memo`), "invalid-payload"},
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
 	{regexp.MustCompile(`(?i)compute unit limit .* exceeds (maximum|cap)`), "compute-limit-over-cap"},
 	{regexp.MustCompile(`(?i)fee payer cannot authorize|transfer authority is the fee-payer|references the fee payer in its accounts`), "fee-payer-not-authority"},

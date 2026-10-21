@@ -608,6 +608,17 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 # than passing on outcome alone. Decimals mismatch is enforced through the
 # transfer match key, so it honestly surfaces as `no-matching-transfer`.
 _REJECT_PATTERNS: list[tuple[str, str]] = [
+    # Charge verification policy and client challenge checks (mirrors the
+    # block at the top of harness/src/conformance/reject.ts).
+    (r"fee payer (token account )?cannot fund", "fee-payer-is-funds-source"),
+    (r"primary amount is zero after splits|split amounts exceed", "splits-exceed-amount"),
+    (r"splits exceed maximum", "too-many-splits"),
+    (r"ata creation owner is not authorized|unsupported compute budget|unexpected_signer", "unexpected-instruction"),
+    (
+        r"atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey",
+        "invalid-challenge",
+    ),
+    (r"ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed", "invalid-payload"),
     # x402 v2: the credential's `accepted` matches none of the route's
     # requirements (the SDK's offer match). Before the amount pattern.
     (r"charge_request_mismatch|accepted payment requirement does not match", "accepted-mismatch"),

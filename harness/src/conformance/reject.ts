@@ -12,6 +12,16 @@
 import type { RejectCode } from "./schema";
 
 const PATTERNS: Array<[RegExp, RejectCode]> = [
+  // Charge verification policy (split arithmetic, split-recipient ATA
+  // creation, fee payer placement, compute budget allowlist) and the client's
+  // challenge checks. Checked first: several messages contain generic words.
+  // Mirrored in every runner's classifier.
+  [/fee payer (token account )?cannot fund/i, "fee-payer-is-funds-source"],
+  [/primary amount is zero after splits|split amounts exceed/i, "splits-exceed-amount"],
+  [/splits exceed maximum/i, "too-many-splits"],
+  [/ata creation owner is not authorized|unsupported compute budget|unexpected_signer/i, "unexpected-instruction"],
+  [/atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey/i, "invalid-challenge"],
+  [/ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed/i, "invalid-payload"],
   // x402 v2: the credential's `accepted` matches none of the route's
   // requirements (targeted field checks or a structural offer match;
   // `accepted_mismatch` is @solana/pay-kit's x402 adapter reason).

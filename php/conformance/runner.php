@@ -246,6 +246,14 @@ function classify_reject(string $message): ?string
     }
 
     $patterns = [
+        // Charge verification policy and client challenge checks (mirrors
+        // the block at the top of harness/src/conformance/reject.ts).
+        '/fee payer (token account )?cannot fund/i' => 'fee-payer-is-funds-source',
+        '/primary amount is zero after splits|split amounts exceed/i' => 'splits-exceed-amount',
+        '/splits exceed maximum/i' => 'too-many-splits',
+        '/ata creation owner is not authorized|unsupported compute budget|unexpected_signer/i' => 'unexpected-instruction',
+        '/atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey/i' => 'invalid-challenge',
+        '/ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed/i' => 'invalid-payload',
         // x402 v2: the credential's `accepted` matches no offered requirement.
         '/charge_request_mismatch|accepted payment requirement does not match/i' => 'accepted-mismatch',
         '/no memo instruction found|memo_mismatch|memo_count/i' => 'invalid-payload',

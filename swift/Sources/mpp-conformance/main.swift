@@ -269,6 +269,16 @@ private func classifyReject(_ message: String) -> String? {
 
     func has(_ needle: String) -> Bool { m.contains(needle) }
 
+    // Client challenge checks (mirrors the block at the top of
+    // harness/src/conformance/reject.ts). Before the split patterns below:
+    // "splits exceed maximum" also contains "split" and "exceed".
+    if has("splits exceed maximum") {
+        return "too-many-splits"
+    }
+    if has("atacreationrequired requires") || has("unsupported challenge network")
+        || has("invalid amount") || has("requires feepayerkey") || has("is not a u64") {
+        return "invalid-challenge"
+    }
     if has("splits consume the entire amount")
         || (has("primary") && has("positive"))
         || (has("split") && has("exceed")) {

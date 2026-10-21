@@ -926,7 +926,33 @@ fn classify_reject(message: &str) -> Option<&'static str> {
     }
     let m = message.to_ascii_lowercase();
     let has = |needle: &str| m.contains(needle);
-    let code = if has("invalid challenge") {
+    // Charge verification policy and client challenge checks (mirrors the
+    // block at the top of harness/src/conformance/reject.ts).
+    let code = if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
+        "fee-payer-is-funds-source"
+    } else if has("primary amount is zero after splits") || has("split amounts exceed") {
+        "splits-exceed-amount"
+    } else if has("splits exceed maximum") {
+        "too-many-splits"
+    } else if has("ata creation owner is not authorized")
+        || has("unsupported compute budget")
+        || has("unexpected_signer")
+    {
+        "unexpected-instruction"
+    } else if has("atacreationrequired requires")
+        || has("unsupported challenge network")
+        || has("invalid amount")
+        || has("requires feepayerkey")
+    {
+        "invalid-challenge"
+    } else if has("ata creation")
+        || has("ata payer")
+        || has("transaction fee payer must be")
+        || has("transaction fee payer mismatch")
+        || has("memo cannot exceed")
+    {
+        "invalid-payload"
+    } else if has("invalid challenge") {
         "invalid-challenge"
     } else if has("compute unit price") && (has("exceeds") || has("cap") || has("maximum")) {
         "compute-price-over-cap"

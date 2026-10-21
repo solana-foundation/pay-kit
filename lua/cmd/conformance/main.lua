@@ -444,6 +444,32 @@ local function classify_reject(message)
   end
   local m = message:lower()
 
+  -- Charge verification policy and client challenge checks (mirrors the
+  -- block at the top of harness/src/conformance/reject.ts), plus reject.ts's
+  -- /unexpected .* instruction/ for the charge allowlist message.
+  if has(m, 'fee payer cannot fund') or has(m, 'fee payer token account cannot fund') then
+    return 'fee-payer-is-funds-source'
+  end
+  if has(m, 'primary amount is zero after splits') or has(m, 'split amounts exceed') then
+    return 'splits-exceed-amount'
+  end
+  if has(m, 'splits exceed maximum') then
+    return 'too-many-splits'
+  end
+  if has(m, 'ata creation owner is not authorized') or has(m, 'unsupported compute budget')
+    or has(m, 'unexpected_signer')
+    or has(m, 'unexpected program instruction in payment transaction') then
+    return 'unexpected-instruction'
+  end
+  if has(m, 'atacreationrequired requires') or has(m, 'unsupported challenge network')
+    or has(m, 'invalid amount') or has(m, 'requires feepayerkey') then
+    return 'invalid-challenge'
+  end
+  if has(m, 'ata creation') or has(m, 'ata payer') or has(m, 'transaction fee payer must be')
+    or has(m, 'transaction fee payer mismatch') or has(m, 'memo cannot exceed') then
+    return 'invalid-payload'
+  end
+
   -- x402 v2: the credential's `accepted` matches none of the route's
   -- requirements (the SDK's targeted field checks or its offer match).
   if has(m, 'recipient mismatch') or has(m, 'currency mismatch')
