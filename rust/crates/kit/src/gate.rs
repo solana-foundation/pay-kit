@@ -1047,11 +1047,12 @@ impl ServedUpto {
     }
 }
 
-/// The protected body leaves the gate only together with the receipt of a
-/// confirmed settlement. A settlement that did not confirm inline has not
-/// landed, so its body is withheld (502) rather than served unpaid; the
-/// background retry keeps the channel reserved and refunds it in full (see
-/// [`settle_served_upto`]). A body that never completed also answers 502.
+/// The protected body leaves the gate together with a settlement receipt:
+/// a confirmed one, or one naming a submitted settlement that may still land
+/// (`settlement_pending`). Without either, no attempt can have charged the
+/// payer, so the body is withheld (502) rather than served unpaid and the
+/// background retry refunds the channel in full (see [`settle_served_upto`]).
+/// A body that never completed also answers 502.
 fn release_upto_response(
     upto: &X402Upto,
     body: Result<Response, axum::Error>,
@@ -1202,10 +1203,13 @@ type UptoSettler = Arc<
 /// holding the channel's in-flight guard, so the authorization cannot be
 /// presented again in the meantime. Returns the receipt when settled inline.
 ///
-/// The body leaves the gate only with a confirmed settlement, so once the
-/// inline attempts fail the response is withheld (502). The background retry
-/// then settles **zero**, refunding the whole deposit: charging the metered
-/// amount for a response the payer never received would be payment without
+/// A payer who may be charged gets the response. A confirmed settlement
+/// releases the body with its receipt. A submitted settlement whose outcome
+/// is still unknown may land, so the body is released with a receipt naming
+/// it as `settlement_pending` and the background keeps settling `actual`.
+/// Only when no attempt can have landed is the response withheld (502) and
+/// the background settles **zero**, refunding the whole deposit: charging
+/// for a response the payer never received would be payment without
 /// delivery, and `upto` has no replay path to deliver it later.
 async fn settle_served_upto(
     upto: &Arc<X402Upto>,
@@ -1282,6 +1286,63 @@ async fn settle_served_upto_with(
     };
     match outcome {
         Ok(settlement) => Some(settlement),
+        // A submitted settlement of `actual` may still land, so the payer may
+        // be charged: the response is owed. It is released with a receipt
+        // naming that transaction as not yet confirmed, and the background
+        // keeps settling `actual` (never zero) until one lands.
+        Err(error) if !submitted.is_empty() => {
+            tracing::warn!(
+                channel = %open.channel_id,
+                actual,
+                error = %error,
+                unresolved = ?submitted,
+                "upto settlement outcome unknown after the handler ran; the response is \
+                 released and `actual` is settled in the background"
+            );
+            let pending = crate::x402::upto::UptoSettlementResponse {
+                success: false,
+                error_reason: Some("settlement_pending".into()),
+                payer: Some(open.payer.to_string()),
+                transaction: submitted.last().cloned().unwrap_or_default(),
+                network: open.network.clone(),
+                amount: actual.to_string(),
+            };
+            tokio::spawn(async move {
+                let delay = retry
+                    .base_delay
+                    .saturating_mul(1 << retry.inline_attempts.min(16));
+                for attempt in 0..retry.background_attempts.max(1) {
+                    tokio::time::sleep(delay.saturating_mul(1 << attempt.min(16))).await;
+                    for signature in &submitted {
+                        if let Ok(Some(settlement)) = resolve(&open, actual, signature).await {
+                            tracing::info!(
+                                channel = %open.channel_id,
+                                tx = %settlement.transaction,
+                                "pending upto settlement landed"
+                            );
+                            return;
+                        }
+                    }
+                    // A new settlement cannot double-charge: the channel
+                    // seals once, so it fails if an earlier one landed.
+                    if let Ok(settlement) = settle(&open, actual).await {
+                        tracing::info!(
+                            channel = %open.channel_id,
+                            tx = %settlement.transaction,
+                            "released upto response settled in the background"
+                        );
+                        return;
+                    }
+                }
+                tracing::error!(
+                    channel = %open.channel_id,
+                    actual,
+                    unresolved = ?submitted,
+                    "released upto response is still unsettled; reconcile these signatures"
+                );
+            });
+            Some(pending)
+        }
         Err(error) => {
             tracing::error!(
                 channel = %open.channel_id,
@@ -1301,14 +1362,6 @@ async fn settle_served_upto_with(
                         channel = %open.channel_id,
                         tx = %settlement.transaction,
                         "withheld upto response refunded in the background"
-                    ),
-                    Err(error) if !submitted.is_empty() => tracing::error!(
-                        channel = %open.channel_id,
-                        actual,
-                        error = %error,
-                        unresolved = ?submitted,
-                        "upto refund abandoned and a settlement of `actual` may have landed: the \
-                         payer may be charged for a withheld response; reconcile these signatures"
                     ),
                     Err(error) => tracing::error!(
                         channel = %open.channel_id,
@@ -2686,6 +2739,49 @@ mod tests {
             *amounts.lock().unwrap(),
             vec![500, 500],
             "no zero settlement"
+        );
+    }
+
+    /// A settlement whose outcome stays unknown may land and charge the
+    /// payer, so the body is released with a pending receipt and the
+    /// background keeps settling `actual`, never zero.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unresolved_settlement_releases_the_response_and_never_refunds() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let open = upto.test_open(solana_pubkey::Pubkey::new_unique(), 1_000);
+        let amounts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&amounts);
+        let settle: UptoSettler = Arc::new(move |_open, amount| {
+            let seen = Arc::clone(&seen);
+            Box::pin(async move {
+                seen.lock().unwrap().push(amount);
+                Err(crate::x402::Error::SettlementPending("unknown".into()))
+            })
+        });
+        let retry = UptoSettlementRetry {
+            inline_attempts: 2,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(1),
+        };
+
+        let pending = settle_served_upto_with(settle, never_resolved(), open, 500, retry)
+            .await
+            .expect("a settlement that may land releases the response");
+        assert!(!pending.success);
+        assert_eq!(pending.error_reason.as_deref(), Some("settlement_pending"));
+        assert_eq!(pending.transaction, "unknown");
+        for _ in 0..100 {
+            if amounts.lock().unwrap().len() >= 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let amounts = amounts.lock().unwrap().clone();
+        assert!(amounts.len() >= 3, "{amounts:?}");
+        assert!(
+            amounts.iter().all(|a| *a == 500),
+            "never a zero settlement: {amounts:?}"
         );
     }
 
