@@ -635,6 +635,14 @@ fn judge_open(
         return Err(fail(format!("open is version {version}, not advertised")));
     }
     let keys = tx.message.static_account_keys();
+    // A malformed build is a failed build, never a panic: every account
+    // index below is resolved through `key`, and a lookup-table account
+    // (outside the static keys) is refused.
+    let key = |index: u8| {
+        keys.get(index as usize)
+            .copied()
+            .ok_or_else(|| fail(format!("account index {index} is not a static account key")))
+    };
     let fee_payer =
         pc::parse_pubkey(&requirements.extra.fee_payer).map_err(|e| fail(e.to_string()))?;
     let payer = pc::parse_pubkey(&config.payer).map_err(|e| fail(e.to_string()))?;
@@ -663,7 +671,7 @@ fn judge_open(
     let mut memos = Vec::new();
     let mut open = None;
     for ix in tx.message.instructions() {
-        let program_id = keys[ix.program_id_index as usize];
+        let program_id = key(ix.program_id_index)?;
         if program_id == program {
             open = Some(ix);
         } else if program_id == pc::memo_program_id() {
@@ -682,7 +690,7 @@ fn judge_open(
     ];
     let mut opens = 0;
     for ix in tx.message.instructions() {
-        let program_id = keys[ix.program_id_index as usize];
+        let program_id = key(ix.program_id_index)?;
         if !allowed.contains(&program_id) {
             return Err(fail(format!(
                 "the open transaction invokes {program_id}, outside the setup allowlist"
@@ -726,7 +734,7 @@ fn judge_open(
             args.grace_period, requirements.extra.withdraw_delay
         )));
     }
-    let at = |i: usize| open.accounts.get(i).map(|&k| keys[k as usize]);
+    let at = |i: usize| open.accounts.get(i).and_then(|&k| key(k).ok());
     if at(0) != Some(payer) || at(1) != Some(fee_payer) || at(2) != Some(fee_payer) {
         return Err(fail(
             "open must bind payer, rent_payer = payee = extra.feePayer",
@@ -775,8 +783,8 @@ fn judge_open(
             })
     };
     for (i, (&index, want)) in open.accounts.iter().zip(&expected.accounts).enumerate() {
+        let got = key(index)?;
         let index = index as usize;
-        let got = keys[index];
         let signer = tx.message.is_signer(index);
         let writable = tx.message.is_maybe_writable_with_reserved_addresses(
             index,
@@ -1472,6 +1480,42 @@ mod tests {
                 failure.message
             );
         }
+    }
+
+    // An index past the static keys decodes; the judge must report it as a
+    // failed build instead of panicking the run.
+    #[test]
+    fn an_open_account_index_out_of_range_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-deposit-open");
+        let seed: [u8; 32] = v.input()["batchClient"]["secretKey"].as_array().unwrap()[..32]
+            .iter()
+            .map(|b| b.as_u64().unwrap() as u8)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let broken = edited_build(&rt, &v, |e| {
+            let mut tx =
+                crate::tx::decode_b64(e["payload"]["deposit"]["transaction"].as_str().unwrap())
+                    .unwrap();
+            let program = pc::default_program_id();
+            let keys = tx.message.static_account_keys().to_vec();
+            let at = tx
+                .message
+                .instructions()
+                .iter()
+                .position(|ix| keys[ix.program_id_index as usize] == program)
+                .unwrap();
+            match &mut tx.message {
+                VersionedMessage::Legacy(m) => m.instructions[at].accounts[6] = 200,
+                VersionedMessage::V0(m) => m.instructions[at].accounts[6] = 200,
+                _ => panic!("the kit builds legacy or version 0"),
+            }
+            crate::tx::sign_slots(&mut tx, &[seed]);
+            e["payload"]["deposit"]["transaction"] = json!(crate::tx::encode_b64(&tx).unwrap());
+        });
+        let failure = rt.block_on(judge_build(&v, &broken)).unwrap_err();
+        assert!(failure.message.contains("200"), "{}", failure.message);
     }
 
     /// A spec-shaped client refund (§4.3): channelConfig plus the voucher at
