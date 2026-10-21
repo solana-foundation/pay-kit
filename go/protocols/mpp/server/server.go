@@ -515,10 +515,10 @@ func (m *Mpp) reconcileExpired(
 			return core.Receipt{}, expired
 		}
 	}
-	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+	signature, err := solanatx.VerifiedSignature(tx)
+	if err != nil {
 		return core.Receipt{}, expired
 	}
-	signature := tx.Signatures[0]
 	raw, ok, err := m.store.Get(ctx, pendingChargePrefix+signature.String())
 	if err != nil {
 		return core.Receipt{}, err
@@ -727,13 +727,24 @@ func (m *Mpp) verifyTransaction(
 	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
 		return core.Receipt{}, core.NewError(core.ErrCodeMissingSignature, "transaction is missing a primary signature")
 	}
-	finalSignature := tx.Signatures[0].String()
+	// Every signature must verify against the exact message before its
+	// signature is claimed, recorded pending or sent. Simulation's sigVerify
+	// runs only after the pending record is written, so a forged slot-0
+	// signature copied from a landed transaction would otherwise name this
+	// charge: a concurrent copy would reconcile on that other transaction's
+	// status. The claim key comes only from VerifiedSignature; a refusal
+	// here claims and sends nothing.
+	primary, err := solanatx.VerifiedSignature(tx)
+	if err != nil {
+		return core.Receipt{}, core.WrapError(core.ErrCodeInvalidPayload, "verify transaction signatures", err)
+	}
+	finalSignature := primary.String()
 	inserted, err := m.consumed().Claim(ctx, finalSignature)
 	if err != nil {
 		return core.Receipt{}, err
 	}
 	if !inserted {
-		return m.reconcilePending(ctx, credential, request, details, tx.Signatures[0])
+		return m.reconcilePending(ctx, credential, request, details, primary)
 	}
 	cleanupConsumed := true
 	pendingKey := pendingChargePrefix + finalSignature
