@@ -858,14 +858,19 @@ impl X402Upto {
     ) -> Result<Option<UptoSettlementResponse>, Error> {
         let parsed = solana_signature::Signature::from_str(signature)
             .map_err(|e| Error::Other(format!("invalid settlement signature: {e}")))?;
-        let status = self
-            .rpc
-            .get_signature_status_with_commitment_and_history(
+        // A blocking read on a blocking thread: a slow node must not hold the
+        // async worker serving other requests.
+        let rpc = Arc::clone(&self.rpc);
+        let status = tokio::task::spawn_blocking(move || {
+            rpc.get_signature_status_with_commitment_and_history(
                 &parsed,
                 solana_commitment_config::CommitmentConfig::confirmed(),
                 true,
             )
-            .map_err(|e| Error::Rpc(format!("settlement status read failed: {e}")))?;
+        })
+        .await
+        .map_err(|e| Error::Other(format!("settlement status read task failed: {e}")))?
+        .map_err(|e| Error::Rpc(format!("settlement status read failed: {e}")))?;
         match status {
             Some(Ok(())) => Ok(Some(self.settlement_response(
                 open,
