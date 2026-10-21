@@ -496,6 +496,10 @@ async def build_payment(
     # a field a server adds (``currency``, ``recipient``, ``feePayerKey``, a
     # top-level ``tokenProgram``...) never overrides ``asset`` / ``payTo`` /
     # ``extra.feePayer``, because the server verifies against those.
+    # ``network`` is a required PaymentRequirements field: an offer without
+    # it is refused, never signed for a network the client would guess.
+    if _str_field(req, "network") is None:
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `network`")
     asset = _str_field(req, "asset")
     if asset is None:
         raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `asset`")
