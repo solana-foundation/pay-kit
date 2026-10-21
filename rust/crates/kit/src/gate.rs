@@ -1234,6 +1234,27 @@ async fn settle_served_upto(
     settle_served_upto_with(settler, resolver, open, actual, retry).await
 }
 
+/// Resolve each signature in `pending`: return the receipt of one that
+/// landed, and drop those that failed on chain (they charged nothing). The
+/// signatures left are still unknown and may land.
+async fn resolve_pending(
+    resolve: &UptoResolver,
+    open: &crate::x402::server::VerifiedUptoOpen,
+    actual: u64,
+    pending: &mut Vec<String>,
+) -> Option<crate::x402::upto::UptoSettlementResponse> {
+    let mut unknown = Vec::with_capacity(pending.len());
+    for signature in pending.drain(..) {
+        match resolve(open, actual, &signature).await {
+            Ok(Some(settlement)) => return Some(settlement),
+            Ok(None) => {}
+            Err(_) => unknown.push(signature),
+        }
+    }
+    *pending = unknown;
+    None
+}
+
 async fn settle_served_upto_with(
     settle: UptoSettler,
     resolve: UptoResolver,
@@ -1259,25 +1280,24 @@ async fn settle_served_upto_with(
         }
     })
     .await;
-    let submitted = submitted.into_inner().unwrap_or_else(|e| e.into_inner());
+    let mut submitted = submitted.into_inner().unwrap_or_else(|e| e.into_inner());
     let outcome = match outcome {
         Ok(settlement) => Ok(settlement),
         // Resolve those settlements before choosing between the body and a
-        // refund: one that landed charged the payer, so the response is owed.
+        // refund: one that landed charged the payer, so the response is owed;
+        // one that failed on chain charged nothing and is dropped.
         Err(error) => {
             let mut landed = None;
-            'resolve: for attempt in 0..retry.inline_attempts.max(1) {
+            for attempt in 0..retry.inline_attempts.max(1) {
+                if submitted.is_empty() {
+                    break;
+                }
                 if attempt > 0 {
                     tokio::time::sleep(retry.base_delay.saturating_mul(1 << (attempt - 1).min(16)))
                         .await;
                 }
-                for signature in &submitted {
-                    if let Ok(Some(settlement)) = resolve(&open, actual, signature).await {
-                        landed = Some(settlement);
-                        break 'resolve;
-                    }
-                }
-                if submitted.is_empty() {
+                landed = resolve_pending(&resolve, &open, actual, &mut submitted).await;
+                if landed.is_some() {
                     break;
                 }
             }
@@ -1308,30 +1328,38 @@ async fn settle_served_upto_with(
                 amount: actual.to_string(),
             };
             tokio::spawn(async move {
+                let mut submitted = submitted;
                 let delay = retry
                     .base_delay
                     .saturating_mul(1 << retry.inline_attempts.min(16));
                 for attempt in 0..retry.background_attempts.max(1) {
                     tokio::time::sleep(delay.saturating_mul(1 << attempt.min(16))).await;
-                    for signature in &submitted {
-                        if let Ok(Some(settlement)) = resolve(&open, actual, signature).await {
-                            tracing::info!(
-                                channel = %open.channel_id,
-                                tx = %settlement.transaction,
-                                "pending upto settlement landed"
-                            );
-                            return;
-                        }
-                    }
-                    // A new settlement cannot double-charge: the channel
-                    // seals once, so it fails if an earlier one landed.
-                    if let Ok(settlement) = settle(&open, actual).await {
+                    if let Some(settlement) =
+                        resolve_pending(&resolve, &open, actual, &mut submitted).await
+                    {
                         tracing::info!(
                             channel = %open.channel_id,
                             tx = %settlement.transaction,
-                            "released upto response settled in the background"
+                            "pending upto settlement landed"
                         );
                         return;
+                    }
+                    // A new settlement cannot double-charge: the channel
+                    // seals once, so it fails if an earlier one landed. One
+                    // whose outcome is unknown joins the signatures resolved.
+                    match settle(&open, actual).await {
+                        Ok(settlement) => {
+                            tracing::info!(
+                                channel = %open.channel_id,
+                                tx = %settlement.transaction,
+                                "released upto response settled in the background"
+                            );
+                            return;
+                        }
+                        Err(crate::x402::Error::SettlementPending(signature)) => {
+                            submitted.push(signature)
+                        }
+                        Err(_) => {}
                     }
                 }
                 tracing::error!(
@@ -2782,6 +2810,122 @@ mod tests {
         assert!(
             amounts.iter().all(|a| *a == 500),
             "never a zero settlement: {amounts:?}"
+        );
+    }
+
+    /// A submitted settlement that failed on chain charged nothing: the body
+    /// is withheld and the deposit refunded, as when nothing was submitted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_settlement_that_failed_on_chain_withholds_the_response() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let open = upto.test_open(solana_pubkey::Pubkey::new_unique(), 1_000);
+        let amounts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&amounts);
+        let settle: UptoSettler = Arc::new(move |_open, amount| {
+            let seen = Arc::clone(&seen);
+            Box::pin(async move {
+                seen.lock().unwrap().push(amount);
+                if amount == 0 {
+                    return Ok(crate::x402::upto::UptoSettlementResponse {
+                        success: true,
+                        error_reason: None,
+                        payer: None,
+                        transaction: "refund".into(),
+                        network: "solana:devnet".into(),
+                        amount: "0".into(),
+                    });
+                }
+                Err(crate::x402::Error::SettlementPending("failed".into()))
+            })
+        });
+        let failed: UptoResolver =
+            Arc::new(|_open, _amount, _signature| Box::pin(async { Ok(None) }));
+        let retry = UptoSettlementRetry {
+            inline_attempts: 2,
+            background_attempts: 2,
+            base_delay: std::time::Duration::from_millis(1),
+        };
+
+        assert!(settle_served_upto_with(settle, failed, open, 500, retry)
+            .await
+            .is_none());
+        for _ in 0..100 {
+            if amounts.lock().unwrap().contains(&0) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(*amounts.lock().unwrap(), vec![500, 500, 0]);
+    }
+
+    /// A background settlement whose own outcome is unknown is resolved
+    /// later too: if it is the one that landed, recovery finds it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn background_recovery_resolves_its_own_pending_settlements() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let open = upto.test_open(solana_pubkey::Pubkey::new_unique(), 1_000);
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&calls);
+        let settle: UptoSettler = Arc::new(move |_open, _amount| {
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                Err(crate::x402::Error::SettlementPending(if n == 0 {
+                    "inline".into()
+                } else {
+                    format!("background-{n}")
+                }))
+            })
+        });
+        let found = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&found);
+        let resolve: UptoResolver = Arc::new(move |_open, amount, signature| {
+            let landed = signature == "background-1";
+            if landed {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let signature = signature.to_string();
+            Box::pin(async move {
+                if landed {
+                    Ok(Some(crate::x402::upto::UptoSettlementResponse {
+                        success: true,
+                        error_reason: None,
+                        payer: None,
+                        transaction: signature,
+                        network: "solana:devnet".into(),
+                        amount: amount.to_string(),
+                    }))
+                } else {
+                    Err(crate::x402::Error::SettlementPending(signature))
+                }
+            })
+        });
+        let retry = UptoSettlementRetry {
+            inline_attempts: 1,
+            background_attempts: 4,
+            base_delay: std::time::Duration::from_millis(1),
+        };
+
+        let pending = settle_served_upto_with(settle, resolve, open, 500, retry)
+            .await
+            .expect("an unknown settlement releases the response");
+        assert_eq!(pending.transaction, "inline");
+        for _ in 0..200 {
+            if found.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            found.load(std::sync::atomic::Ordering::SeqCst),
+            "background-1 was never resolved"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "no settlement after it landed"
         );
     }
 
