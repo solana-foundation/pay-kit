@@ -171,52 +171,38 @@ public struct X402AcceptsEntry: Codable, Sendable {
 
     // MARK: - Computed helpers
 
-    /// The effective payment amount (prefers `amount`, falls back to
-    /// `maxAmountRequired`).
+    // RULINGS X1: each term is read from its x402 field only. `amount` falls
+    // back to the v1 `maxAmountRequired` a legacy offer uses; fields a server
+    // adds beside them (`recipient`, `currency`, top-level `tokenProgram`,
+    // `decimals`, `recentBlockhash`, `feePayerKey`) are ignored, so the signed
+    // transfer pays what the echoed `accepted` object names.
+
+    /// The effective payment amount: `amount`, else v1 `maxAmountRequired`.
     public var effectiveAmount: String? { amount ?? maxAmountRequired }
 
-    /// The effective recipient address (prefers `payTo`, falls back to
-    /// `recipient`).
-    public var effectivePayTo: String? { payTo ?? recipient }
+    /// The recipient address: `payTo`.
+    public var effectivePayTo: String? { payTo }
 
-    /// The effective mint: top-level `currency` wins, then `asset`.
-    ///
-    /// Matches the Rust deserializer precedence:
-    /// `string_field(object, "currency").or_else(|| string_field(object, "asset"))`.
-    public var effectiveAsset: String? { currency ?? asset }
+    /// The mint: `asset`.
+    public var effectiveAsset: String? { asset }
 
-    /// The effective token program: top-level `tokenProgram` wins, then
-    /// `extra.tokenProgram`.
-    ///
-    /// Matches Rust: `string_field(object, "tokenProgram")
-    ///   .or_else(|| extra_object.and_then(|e| string_field(e, "tokenProgram")))`.
-    public var effectiveTokenProgram: String? { tokenProgram ?? extraString("tokenProgram") }
+    /// The token program hint: `extra.tokenProgram`.
+    public var effectiveTokenProgram: String? { extraString("tokenProgram") }
 
-    /// The effective token decimals: top-level `decimals` wins, then
-    /// `extra.decimals`.
-    ///
-    /// Matches Rust: `u8_field(object, "decimals")
-    ///   .or_else(|| extra_object.and_then(|e| u8_field(e, "decimals")))`.
-    public var effectiveDecimals: Int? { decimals ?? extraInt("decimals") }
+    /// The token decimals hint: `extra.decimals`.
+    public var effectiveDecimals: Int? { extraInt("decimals") }
 
-    /// The effective pinned blockhash: top-level `recentBlockhash` wins,
-    /// then `extra.recentBlockhash`.
-    ///
-    /// Matches Rust: `string_field(object, "recentBlockhash")
-    ///   .or_else(|| extra_object.and_then(|e| string_field(e, "recentBlockhash")))`.
-    public var effectiveRecentBlockhash: String? {
-        recentBlockhash ?? extraString("recentBlockhash")
-    }
+    /// The pinned blockhash: `extra.recentBlockhash`.
+    public var effectiveRecentBlockhash: String? { extraString("recentBlockhash") }
 
     /// The effective managed fee-payer pubkey, or `nil` when the offer does
     /// not request one.
     ///
-    /// Mirrors the rust normalization (`types.rs`): the key is the top-level
-    /// `feePayerKey`, else the nested `extra.feePayer` alias; the `feePayer`
-    /// toggle then gates it, defaulting to true when a key is present so only
-    /// an explicit `false` opts out.
+    /// The key is `extra.feePayer`; the `feePayer` toggle then gates it,
+    /// defaulting to true when a key is present so only an explicit `false`
+    /// opts out.
     public var effectiveFeePayerKey: String? {
-        guard let key = feePayerKey ?? extraString("feePayer") else { return nil }
+        guard let key = extraString("feePayer") else { return nil }
         return feePayer != false ? key : nil
     }
 

@@ -277,7 +277,7 @@ private func _buildPaymentPayload(
         )
     }
     guard let payToStr = offer.effectivePayTo, !payToStr.isEmpty else {
-        throw PayKitError.invalidTransaction("x402 offer is missing payTo / recipient")
+        throw PayKitError.invalidTransaction("x402 offer is missing payTo")
     }
     guard let assetStr = offer.effectiveAsset, !assetStr.isEmpty else {
         throw PayKitError.invalidTransaction("x402 offer is missing asset")
