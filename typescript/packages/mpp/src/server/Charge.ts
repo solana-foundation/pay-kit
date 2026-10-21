@@ -372,7 +372,9 @@ type CompiledInstruction = {
 /**
  * RPC-free pre-broadcast verification of a base64-encoded charge transaction
  * against the challenge it answers: split-count, address-lookup-table,
- * compute-budget, transfer, memo, and instruction-allowlist checks, up to the
+ * compute-budget, transfer, memo, and instruction-allowlist checks, then the
+ * client's signatures (one slot per required signer, each verifying over the
+ * message; only a sponsoring server's fee-payer slot may be empty), up to the
  * simulate/send boundary. This is the deterministic half of the charge server
  * verify path; it runs no HMAC challenge step and reaches no live RPC.
  *
@@ -381,6 +383,18 @@ type CompiledInstruction = {
  * the transaction conforms; a rejected promise carries the rejection reason.
  */
 export async function verifyChargeTransaction(clientTxBase64: string, challenge: ChallengeRequest) {
+    await verifyChargeTransactionShape(clientTxBase64, challenge);
+    // A signature that does not verify over this message names some other
+    // transaction (RULINGS SIG1): the slots must match the required signers
+    // and every client signature must verify. Only the server's own fee-payer
+    // slot may still be empty, since it co-signs after this step;
+    // verifyChargeTransactionShape has already pinned that key to slot zero.
+    await assertTransactionSignaturesVerify(clientTxBase64, {
+        unsignedSigner: challenge.methodDetails.feePayer ? challenge.methodDetails.feePayerKey : undefined,
+    });
+}
+
+async function verifyChargeTransactionShape(clientTxBase64: string, challenge: ChallengeRequest) {
     let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);

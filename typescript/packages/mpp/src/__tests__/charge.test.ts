@@ -37,7 +37,7 @@ import {
     legacyConsumedSignatureKey,
     reserveReplayKey,
 } from '../server/replay.js';
-import { transactionSignatureFromBase64 } from '../utils/transactions.js';
+import { assertTransactionSignaturesVerify, transactionSignatureFromBase64 } from '../utils/transactions.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -3926,6 +3926,90 @@ test('verifyChargeTransaction accepts a legacy (unversioned) transaction under t
             methodDetails: { network: 'devnet' },
             recipient: RECIPIENT,
         }),
+    ).resolves.toBeUndefined();
+});
+
+// RULINGS SIG1: the verification step itself refuses a client signature
+// that does not verify over the message, so a caller of
+// verifyChargeTransaction never sees "valid" for a forged transaction. Only a
+// sponsoring server's own fee-payer slot may be empty before it co-signs.
+async function buildClientPaidSolTx() {
+    const authority = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n })],
+                msg,
+            ),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+/** Overwrite signature slot `index` (one-byte shortvec count) with a non-verifying value. */
+function forgeSignatureSlot(transaction: string, index: number, fill = 7): string {
+    const wire = Buffer.from(transaction, 'base64');
+    wire.fill(fill, 1 + index * 64, 1 + (index + 1) * 64);
+    return wire.toString('base64');
+}
+
+const CLIENT_PAID_SOL_REQUEST = {
+    amount: '1000000',
+    currency: 'sol',
+    methodDetails: { network: 'devnet' },
+    recipient: RECIPIENT,
+};
+
+test('verifyChargeTransaction refuses a forged client signature', async () => {
+    const signed = await buildClientPaidSolTx();
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0), CLIENT_PAID_SOL_REQUEST)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // An empty client slot verifies nothing either.
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0, 0), CLIENT_PAID_SOL_REQUEST)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // Positive control: the transaction as really signed is accepted.
+    await expect(verifyChargeTransaction(signed, CLIENT_PAID_SOL_REQUEST)).resolves.toBeUndefined();
+});
+
+test('verifyChargeTransaction refuses a forged client signature on a sponsored charge, leaving only the fee-payer slot empty', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: { network: 'devnet', feePayer: true, feePayerKey: feePayer.address },
+        recipient: RECIPIENT,
+    };
+    // Slot 0 is the server's (still empty), slot 1 the client's.
+    const signed = await buildSolTxWithComputePrice(feePayer.address, 5_000n);
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 1), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 1, 0), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // A non-verifying signature in the fee-payer slot is refused too.
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // Positive control: the empty fee-payer slot is left for the server.
+    await expect(verifyChargeTransaction(signed, request)).resolves.toBeUndefined();
+});
+
+test('assertTransactionSignaturesVerify exempts only the named unsigned signer', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const signed = await buildSolTxWithComputePrice(feePayer.address, 5_000n);
+    await expect(assertTransactionSignaturesVerify(signed)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    await expect(
+        assertTransactionSignaturesVerify(signed, { unsignedSigner: (await generateKeyPairSigner()).address }),
+    ).rejects.toThrow('transaction signature verification failed');
+    await expect(
+        assertTransactionSignaturesVerify(signed, { unsignedSigner: feePayer.address }),
     ).resolves.toBeUndefined();
 });
 
