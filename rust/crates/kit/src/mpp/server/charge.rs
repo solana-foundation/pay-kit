@@ -1704,11 +1704,17 @@ impl Mpp {
 
     /// Release a claim on a transaction that provably never landed.
     pub(crate) async fn release_signature(&self, signature: &str) {
-        if let Err(error) = crate::core::store::ConsumedSignatures::new(self.store.clone())
+        match crate::core::store::ConsumedSignatures::new(self.store.clone())
             .release(signature)
             .await
         {
-            tracing::warn!(%error, %signature, "failed to release unsent charge signature");
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(%signature, "unsent charge signature changed hands; not released")
+            }
+            Err(error) => {
+                tracing::warn!(%error, %signature, "failed to release unsent charge signature")
+            }
         }
     }
 

@@ -256,10 +256,16 @@ impl ConsumedSignatures {
                 }
             }
         }
-        let outcome = self
-            .store
-            .put_if_absent(&consumed_signature_key(signature), value)
-            .await;
+        let key = consumed_signature_key(signature);
+        let outcome = match self.store.put_if_absent(&key, value.clone()).await {
+            // A released claim reads as absent.
+            Ok(false) => {
+                self.store
+                    .put_if_eq(&key, Some(released_marker()), value)
+                    .await
+            }
+            outcome => outcome,
+        };
         if !matches!(outcome, Ok(true)) {
             self.give_back(&taken).await;
         }
@@ -306,18 +312,55 @@ impl ConsumedSignatures {
             .await
     }
 
-    /// Release a claim this caller made for a transaction that provably never
-    /// landed (for example a preflight rejection), so the payer may retry it.
-    /// The ledger key goes first, then the legacy keys the claim took.
-    pub async fn release(&self, signature: &str) -> Result<(), StoreError> {
-        self.store
-            .delete(&consumed_signature_key(signature))
-            .await?;
+    /// Release a [`Self::claim`] this caller made for a transaction that
+    /// provably never landed (for example a preflight rejection), so the payer
+    /// may retry it. Returns `false`, releasing nothing, when the claim no
+    /// longer holds what this caller wrote.
+    pub async fn release(&self, signature: &str) -> Result<bool, StoreError> {
+        self.release_holding(signature, serde_json::json!(true))
+            .await
+    }
+
+    /// Release a [`Self::claim_pending`] that provably never landed. Only a
+    /// claim still pending is released: once any holder (a resumed
+    /// settlement) confirmed it, a release from a holder that saw it as
+    /// unlanded (say on a lagging node) must not erase it. Returns `false`,
+    /// releasing nothing, in that case.
+    pub async fn release_pending(&self, signature: &str) -> Result<bool, StoreError> {
+        self.release_holding(signature, pending_marker()).await
+    }
+
+    /// Swap the ledger key from `held` to a released marker in one atomic
+    /// step, then give back the legacy keys the claim took. The marker stays
+    /// behind and a later claim takes it over (see [`Self::claim_with`]): the
+    /// store cannot delete conditionally, and an unconditional delete could
+    /// erase a claim that changed in between.
+    async fn release_holding(
+        &self,
+        signature: &str,
+        held: serde_json::Value,
+    ) -> Result<bool, StoreError> {
+        if !self
+            .store
+            .put_if_eq(
+                &consumed_signature_key(signature),
+                Some(held),
+                released_marker(),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         for key in legacy_consumed_signature_keys(signature) {
             self.store.delete(&key).await?;
         }
-        Ok(())
+        Ok(true)
     }
+}
+
+/// What a released claim leaves behind: absent, for every claim.
+fn released_marker() -> serde_json::Value {
+    serde_json::json!({ "state": "released" })
 }
 
 fn pending_marker() -> serde_json::Value {
@@ -3713,11 +3756,48 @@ mod tests {
 
         // A release gives every key back, so the payer may retry and an
         // older replica is not left refusing a payment that never landed.
-        ledger.release("sig-pending").await.unwrap();
+        assert!(ledger.release_pending("sig-pending").await.unwrap());
         for key in legacy_consumed_signature_keys("sig-pending") {
             assert!(raw.get(&key).await.unwrap().is_none(), "{key}");
         }
         assert!(ledger.claim("sig-pending").await.unwrap());
+    }
+
+    // A release only gives back a claim still holding what its caller wrote.
+    // A holder that saw the transaction as unlanded (say on a lagging node)
+    // must not erase a claim a resumed settlement has since confirmed.
+    #[tokio::test]
+    async fn a_release_never_erases_a_confirmed_claim() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::ResumePending
+        );
+        assert!(ledger.confirm("sig-race").await.unwrap());
+
+        assert!(!ledger.release_pending("sig-race").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::Consumed
+        );
+        for key in legacy_consumed_signature_keys("sig-race") {
+            assert!(raw.get(&key).await.unwrap().is_some(), "{key}");
+        }
+
+        // Positive control: an unconfirmed pending claim is released, and a
+        // later claim takes the released key over.
+        assert_eq!(
+            ledger.claim_pending("sig-free").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        assert!(ledger.release_pending("sig-free").await.unwrap());
+        assert!(ledger.claim("sig-free").await.unwrap());
+        assert!(!ledger.claim("sig-free").await.unwrap());
     }
 
     // A previous release's claim on one legacy key refuses the signature, and

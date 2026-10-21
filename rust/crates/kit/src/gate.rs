@@ -2241,7 +2241,7 @@ mod tests {
         assert!(pay.mpp().consume_signature(pending).await.is_err());
 
         // It provably never landed: the signature is free again.
-        ledger.release(released).await.unwrap();
+        assert!(ledger.release_pending(released).await.unwrap());
         pay.mpp().consume_signature(released).await.unwrap();
     }
 

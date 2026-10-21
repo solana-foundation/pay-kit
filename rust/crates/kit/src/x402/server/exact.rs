@@ -787,7 +787,7 @@ impl X402 {
             ) => {
                 // Definitively unsettled: these bytes moved nothing and never
                 // will, so the payer may retry.
-                if let Err(release) = ledger.release(&signature).await {
+                if let Err(release) = ledger.release_pending(&signature).await {
                     tracing::warn!(error = %release, "failed to release unsettled x402 payment");
                 }
                 Err(Error::Rpc(format!(
