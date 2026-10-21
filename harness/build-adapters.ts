@@ -4,27 +4,23 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { getNativeTarget, type NativeTarget } from "./src/artifacts.js";
-import { clientImplementations, serverImplementations } from "./src/implementations.js";
 import { discoverRunners } from "./src/conformance/runners.js";
 
-/** Separate role selectors; interpreted adapters are validated but need no build. */
-export type AdapterSelection = { clients: readonly string[]; servers: readonly string[]; conformance?: readonly string[] };
+// Builds the compiled offline conformance runners (Swift, Kotlin, Go) once
+// per platform. The interop payment adapters are built by
+// `pkc adapters build --shard <id> --out <dir>` from the Rust registry.
 
-/** Validate selections and deduplicate aliases into distinct native build targets. */
+/** Conformance runner selection; interpreted runners are validated but need no build. */
+export type AdapterSelection = { conformance: readonly string[] };
+
+/** Validate selections and deduplicate them into distinct native build targets. */
 export function planAdapterBuilds(selection: AdapterSelection): NativeTarget[] {
   const targets = new Map<string, NativeTarget>();
-  for (const [role, ids, implementations] of [
-    ["client", selection.clients, clientImplementations],
-    ["server", selection.servers, serverImplementations],
-    ["conformance", selection.conformance ?? [], discoverRunners().map(({ language }) => ({ id: language }))],
-  ] as const) {
-    for (const id of ids) {
-      if (!implementations.some((implementation) => implementation.id === id)) {
-        throw new Error(`Unknown ${role} adapter "${id}"`);
-      }
-      const target = getNativeTarget(role, id);
-      if (target) targets.set(target.key, target);
-    }
+  const known = discoverRunners().map(({ language }) => language);
+  for (const id of selection.conformance) {
+    if (!known.includes(id)) throw new Error(`Unknown conformance adapter "${id}"`);
+    const target = getNativeTarget("conformance", id);
+    if (target) targets.set(target.key, target);
   }
   return [...targets.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -34,15 +30,18 @@ export function parseBuildArguments(args: string[]): AdapterSelection & { out: s
   const { values } = parseArgs({
     args,
     options: {
-      clients: { type: "string" },
-      servers: { type: "string" },
       conformance: { type: "string" },
       out: { type: "string" },
+      clients: { type: "string" },
+      servers: { type: "string" },
     },
   });
+  if (values.clients !== undefined || values.servers !== undefined) {
+    throw new Error("payment adapters are built by `pkc adapters build`; build-adapters.ts only builds --conformance runners");
+  }
   if (!values.out?.trim()) throw new Error("--out is required");
   const split = (value?: string) => [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
-  return { clients: split(values.clients), servers: split(values.servers), conformance: split(values.conformance), out: values.out };
+  return { conformance: split(values.conformance), out: values.out };
 }
 
 const harnessDirectory = dirname(fileURLToPath(import.meta.url));
@@ -61,21 +60,7 @@ function run(command: string, args: string[], cwd: string, capture = false): str
 export function buildAdapters(targets: readonly NativeTarget[], outputDirectory: string): void {
   const out = resolve(outputDirectory);
   mkdirSync(out, { recursive: true });
-  const rust = targets.filter((target) => target.toolchain === "rust");
-  if (rust.length) {
-    // A controlled target-dir avoids dependence on CARGO_TARGET_DIR or workspace config.
-    const targetDirectory = resolve(harnessDirectory, "../rust/target/harness-artifacts");
-    run("cargo", [
-      "build", "--manifest-path", "../rust/Cargo.toml",
-      "--target-dir", targetDirectory, "-p", "paykit-harness-bins",
-      ...rust.flatMap((target) => ["--bin", target.product]),
-    ], harnessDirectory);
-    for (const target of rust) {
-      mkdirSync(resolve(out, target.key), { recursive: true });
-      cpSync(resolve(targetDirectory, "debug", target.product), resolve(out, target.executable));
-    }
-  }
-  for (const target of targets.filter((target) => target.toolchain !== "rust")) {
+  for (const target of targets) {
     const cwd = resolve(harnessDirectory, target.directory);
     const destination = resolve(out, target.key);
     mkdirSync(destination, { recursive: true });
@@ -84,9 +69,8 @@ export function buildAdapters(targets: readonly NativeTarget[], outputDirectory:
         run("go", ["build", "-o", resolve(out, target.executable), "."], cwd);
         break;
       case "swift": {
-        const configuration = target.role === "conformance" ? "release" : "debug";
-        run("swift", ["build", "--configuration", configuration, "--product", target.product], cwd);
-        const bin = run("swift", ["build", "--configuration", configuration, "--show-bin-path"], cwd, true).trim();
+        run("swift", ["build", "--configuration", "release", "--product", target.product], cwd);
+        const bin = run("swift", ["build", "--configuration", "release", "--show-bin-path"], cwd, true).trim();
         cpSync(resolve(bin, target.product), resolve(out, target.executable));
         // SwiftPM locates resources beside the executable after relocation.
         for (const entry of readdirSync(bin)) {

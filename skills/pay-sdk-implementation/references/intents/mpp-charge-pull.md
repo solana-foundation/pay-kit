@@ -201,13 +201,14 @@ Unit tests to mirror (from `rust/crates/kit/src/mpp/protocol/core/types.rs`,
 
 Integration test:
 
-- Surfpool-backed `tests/charge_integration.<ext>` mirroring
-  `rust/crates/integration-tests/tests/charge_integration.rs`. Cover SOL transfer, SPL transfer,
-  splits with ATA creation, fee-payer mode.
+- The SDK's own surfpool-backed test (`tests/charge_integration.<ext>`).
+  Cover SOL transfer, SPL transfer, splits with ATA creation, fee-payer mode.
 
-Harness scenario: `charge-basic` and `charge-split-ata` in
-`harness/src/contracts.ts`. Both must pass against the Rust
-server before the new SDK is enabled by default.
+Harness: claim `mpp:charge:server` / `mpp:charge:client` in
+`harness/expectations/<lang>.toml` and run
+`pkc run --tier interop --sdk <lang>,rust --require`. The scenarios
+(`charge-basic`, `charge-split-ata`, the replay and fault cases) live in
+`rust/crates/conformance/src/interop/scenarios.rs`.
 
 ## Transaction versions
 

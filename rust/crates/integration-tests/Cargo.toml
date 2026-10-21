@@ -50,10 +50,6 @@ solana-zk-sdk-pod = "0.1.1"
 spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
 
 [[test]]
-name = "charge_integration"
-path = "tests/charge_integration.rs"
-
-[[test]]
 name = "settlement_onchain"
 path = "tests/settlement_onchain.rs"
 required-features = ["testkit"]
