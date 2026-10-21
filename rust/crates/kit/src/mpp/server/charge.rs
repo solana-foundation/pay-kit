@@ -2887,12 +2887,20 @@ pub(crate) struct BroadcastFence {
 }
 
 impl BroadcastFence {
-    /// Record `signature` as pending and claim it, before it is sent.
+    /// Claim `signature`, then record it as pending, before it is sent.
+    ///
+    /// The claim comes first: a pending record is what a concurrent retry
+    /// reconciles and grants once the transaction lands, so it must never be
+    /// visible for a signature this charge does not own (one that already
+    /// paid another challenge). If the record cannot be written the claim is
+    /// released, since nothing was sent; on a store error it is kept, because
+    /// the write may have landed.
     pub(crate) async fn begin(
         &mut self,
         mpp: &Mpp,
         signature: &str,
     ) -> Result<(), VerificationError> {
+        mpp.consume_signature(signature).await?;
         match self
             .store
             .mark_pending(&self.challenge_id, self.generation, signature)
@@ -2901,15 +2909,18 @@ impl BroadcastFence {
             Ok(true) => {
                 self.generation += 1;
                 self.pending = Some(signature.to_string());
+                Ok(())
             }
             Ok(false) => {
-                return Err(VerificationError::settlement_in_progress(
+                // A newer owner took the reservation over and nothing was
+                // written or sent: the signature is free again.
+                mpp.release_signature(signature).await;
+                Err(VerificationError::settlement_in_progress(
                     "This charge is being settled by another request; retry shortly",
                 ))
             }
-            Err(e) => return Err(VerificationError::new(format!("Store error: {e}"))),
+            Err(e) => Err(VerificationError::new(format!("Store error: {e}"))),
         }
-        mpp.consume_signature(signature).await
     }
 
     /// The pending transaction provably never left this process (preflight
@@ -9124,6 +9135,61 @@ mod tests {
     // The signature is claimed before the broadcast, so a replay store that
     // fails provably sent nothing: no payment can land unrecorded and then be
     // paid again under a fresh challenge.
+    // The signature is claimed before the pending record a retry would grant
+    // is written, so a signature that already paid another challenge never
+    // exposes a pending charge a concurrent retry could confirm.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_signature_claim_exposes_no_pending_charge() {
+        let mpp = test_mpp();
+        let paid = Signature::from([21u8; 64]).to_string();
+        mpp.consume_signature(&paid).await.unwrap();
+
+        let mut fence = mpp.test_fence().await;
+        let err = fence.begin(&mpp, &paid).await.unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
+        assert!(fence.pending.is_none());
+        assert!(fence
+            .store
+            .pending(&fence.challenge_id, "test-digest")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Positive control: a fresh signature is claimed, then recorded.
+        let fresh = Signature::from([22u8; 64]).to_string();
+        let mut fence = mpp.test_fence().await;
+        fence.begin(&mpp, &fresh).await.unwrap();
+        assert_eq!(
+            fence
+                .store
+                .pending(&fence.challenge_id, "test-digest")
+                .await
+                .unwrap()
+                .map(|(_, signature)| signature),
+            Some(fresh.clone())
+        );
+        assert!(mpp.consume_signature(&fresh).await.is_err());
+    }
+
+    // A fence whose reservation was taken over writes nothing and sends
+    // nothing, so it gives back the signature it claimed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_superseded_fence_releases_its_signature_claim() {
+        let mpp = test_mpp();
+        let signature = Signature::from([23u8; 64]).to_string();
+        let mut fence = mpp.test_fence().await;
+        assert!(fence
+            .store
+            .mark_failed(&fence.challenge_id, fence.generation, "taken over")
+            .await
+            .unwrap());
+
+        let err = fence.begin(&mpp, &signature).await.unwrap_err();
+        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        assert!(fence.pending.is_none());
+        mpp.consume_signature(&signature).await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn store_failure_while_claiming_the_signature_sends_nothing() {
         use std::sync::atomic::Ordering;
@@ -9254,8 +9320,11 @@ mod tests {
         // The current owner begins normally.
         owner.begin(&mpp, "sig-owner").await.unwrap();
         assert_eq!(owner.pending.as_deref(), Some("sig-owner"));
+        // The stale owner cannot claim the owner's signature, and so never
+        // touches its record.
         let err = stale.begin(&mpp, "sig-owner").await.unwrap_err();
-        assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
+        assert_eq!(err.code, Some("signature-consumed"), "{err:?}");
+        assert!(mpp.consume_signature("sig-owner").await.is_err());
     }
 
     // A send error other than a preflight rejection does not prove the node
