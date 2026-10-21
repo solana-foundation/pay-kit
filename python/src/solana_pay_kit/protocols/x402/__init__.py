@@ -28,7 +28,11 @@ from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
-from solana_pay_kit._paycore.rpc import PreflightRejectedError, SolanaRpc
+from solana_pay_kit._paycore.rpc import (
+    PreflightRejectedError,
+    SolanaRpc,
+    _RpcError,  # pyright: ignore[reportPrivateUsage]
+)
 from solana_pay_kit._paycore.store import (
     ConsumedSignatures,
     MemoryStore,
@@ -229,6 +233,22 @@ class X402Adapter:
                     # transaction: nothing is recorded, the payer may retry.
                     raise InvalidProofError(
                         f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
+                    ) from exc
+                except _RpcError as exc:
+                    if exc.code != "signature_consumed":
+                        if not await ConsumedSignatures(self._store).claim(signature, replay_record):
+                            raise _settlement_in_progress(signature, "a settlement of it is already recorded") from exc
+                        raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+                    # The node already processed this exact transaction, yet
+                    # this store held no settlement of it: it was settled
+                    # somewhere this store cannot see (another instance or
+                    # store, or before a restart). Serving it again would
+                    # grant one payment twice: refuse it, and keep it consumed
+                    # here.
+                    await ConsumedSignatures(self._store).claim(signature, True)
+                    raise InvalidProofError(
+                        "solana_pay_kit: signature_consumed: the transaction was already processed",
+                        code="signature_consumed",
                     ) from exc
                 except Exception as exc:  # noqa: BLE001
                     # A lost response, a timeout, a refusal other than a

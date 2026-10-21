@@ -754,3 +754,26 @@ async def test_refused_claim_gives_back_the_legacy_keys_it_took():
     assert await ConsumedSignatures(store).claim("sig-held") is False
     assert await store.get("solana-charge:consumed:sig-held") is None
     assert await store.get(consumed_signature_key("sig-held")) is None
+
+
+@pytest.mark.asyncio
+async def test_already_processed_with_no_record_here_is_a_replay(monkeypatch):
+    """A payment settled by another instance (its own store) lands first; the
+    node then refuses this broadcast as already processed. That is a replay,
+    never a pending settlement, and it stays consumed here."""
+    from solana_pay_kit._paycore.rpc import _RpcError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        fail=_RpcError("Transaction error: This transaction has already been processed", code="signature_consumed"),
+        monkeypatch=monkeypatch,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    for _ in range(2):
+        with pytest.raises(InvalidProofError) as exc:
+            await adapter.verify_and_settle(gate, _Req(header))
+        assert not isinstance(exc.value, SettlementInProgressError)
+        assert exc.value.code == "signature_consumed"
+    assert await store.get(consumed_signature_key(signature)) is True

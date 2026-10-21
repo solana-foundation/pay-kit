@@ -690,7 +690,17 @@ class Mpp:
         except _RpcError as exc:
             if exc.code != CODE_SIGNATURE_CONSUMED:
                 raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
-            # The node already processed this exact transaction: confirm it.
+            # The node already processed this exact transaction, yet this
+            # store held no claim on it: it was settled somewhere this store
+            # cannot see (another worker's or replica's store, or before a
+            # restart). Granting it again would serve one payment twice, so it
+            # is a replay. The claim is kept, marked consumed rather than
+            # pending, so no retry reconciles it into a receipt.
+            await self._store.put(
+                consumed_signature_key(signature),
+                {"state": "consumed", "challengeId": credential.challenge.id},
+            )
+            raise ReplayError() from exc
         except Exception as exc:  # noqa: BLE001 — transport errors leave the outcome unknown
             raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
         else:

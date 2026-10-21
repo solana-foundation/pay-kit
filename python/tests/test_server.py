@@ -1322,6 +1322,23 @@ class TestAmbiguousBroadcast:
         with pytest.raises(ChallengeExpiredError):
             await _verify(handler, replayed, other)
 
+    async def test_already_processed_with_a_fresh_claim_is_a_replay(self):
+        """The node already processed this exact transaction, but this store
+        never claimed it (another worker's per-process store, or a restart):
+        granting it again would serve one payment twice."""
+        rpc = _PendingRPC(
+            send_error=_RpcError("This transaction has already been processed", code="signature_consumed")
+        )
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        for _ in range(2):  # the retry does not reconcile it into a receipt either
+            with pytest.raises(ReplayError):
+                await _verify(handler, credential, challenge)
+        record = await store.get(consumed_signature_key(signature))
+        assert record is not None and record["state"] == "consumed"
+
     async def test_pending_charge_cannot_be_reconciled_by_another_challenge(self):
         rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
         store = MemoryStore()
