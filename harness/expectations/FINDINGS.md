@@ -233,7 +233,7 @@ side the gap belongs to. The SDK sources were not changed.
 
 ## charge-client-network-not-checked
 
-**Cases:** `charge-client-wrong-network/{go,rust,swift,typescript}/rust`
+**Cases:** `charge-client-wrong-network/{go,kotlin,rust,swift,typescript}/rust`
 
 The fault proxy rewrites the Rust server's challenge to `methodDetails.network
 = "mainnet"` while the client pays a localnet validator. Every client builds
@@ -245,7 +245,7 @@ does not compare it either.
 ## charge-client-request-not-verified
 
 **Cases:** `charge-client-over-asking-price/*/rust`,
-`charge-client-mis-signed-challenge/*/rust` (go, rust, swift, typescript)
+`charge-client-mis-signed-challenge/*/rust` (go, kotlin, rust, swift, typescript)
 
 The proxy multiplies the challenged amount by 10 000, or swaps the recipient,
 after the server bound the challenge id. Every client pays. Core: “Clients
@@ -257,7 +257,7 @@ proxy-observed credential never settles).
 
 ## x402-client-network-not-checked
 
-**Cases:** `x402-exact-client-wrong-network/{go,python,rust,swift}/rust`
+**Cases:** `x402-exact-client-wrong-network/{go,kotlin,python,rust,swift}/rust`
 
 The proxy rewrites every `accepts[].network` to solana mainnet while the
 client is configured (`X402_HARNESS_NETWORK`) for the devnet CAIP-2 id. These

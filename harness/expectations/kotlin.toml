@@ -35,3 +35,31 @@ ids = [
   "vector/session-wire-request-resume-frozen",
   "vector/session-wire-request-superseded-draft-reject",
 ]
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-wrong-network/kotlin/rust",
+]
+reason = "the client submits a credential for a challenge naming another cluster (draft-solana-charge-00: \"Clients MUST reject challenges whose network does not match their configured cluster\")"
+tracking = "FINDINGS.md#charge-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-over-asking-price/kotlin/rust",
+]
+reason = "the client pays a challenge whose amount was multiplied by 10000 after the server bound it; nothing checks the amount against what it was asked to pay (core: \"Clients MUST verify before authorizing payment\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-mis-signed-challenge/kotlin/rust",
+]
+reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-client-wrong-network/kotlin/rust",
+]
+reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
+tracking = "FINDINGS.md#x402-client-network-not-checked"
