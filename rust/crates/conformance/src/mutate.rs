@@ -135,6 +135,10 @@ pub enum Mutation {
     V1ComputeUnitLimit { limit: u32 },
     /// Version 1: set the header `priorityFee` (total lamports).
     V1PriorityFee { lamports: u64 },
+    /// Version 1: set the header `computeUnitLimit` and `priorityFee`
+    /// together, so a per-unit price boundary can sit below a sponsor's cap
+    /// on the total fee.
+    V1Budget { limit: u32, lamports: u64 },
     /// Version 1: remove the header `computeUnitLimit` (budgeted zero).
     V1DropComputeUnitLimit,
     /// Version 1: remove the header `loadedAccountsDataSizeLimit` (budgeted
@@ -195,7 +199,10 @@ impl Mutation {
             (V1ComputeUnitLimit { .. }, Suite::Charge | Suite::X402Exact | Suite::Session) => {
                 Some(ComputeLimitOverCap)
             }
-            (V1PriorityFee { .. }, Suite::Charge | Suite::X402Exact | Suite::Session) => {
+            (
+                V1PriorityFee { .. } | V1Budget { .. },
+                Suite::Charge | Suite::X402Exact | Suite::Session,
+            ) => {
                 Some(ComputePriceOverCap)
             }
             (
@@ -309,6 +316,9 @@ impl Mutation {
             Mutation::V1PriorityFee { lamports } => {
                 format!("version-1 header priorityFee set to {lamports} lamports")
             }
+            Mutation::V1Budget { limit, lamports } => format!(
+                "version-1 header computeUnitLimit set to {limit} and priorityFee to {lamports} lamports"
+            ),
             Mutation::V1DropComputeUnitLimit => "version-1 header computeUnitLimit removed".into(),
             Mutation::V1DropLoadedAccountsDataSizeLimit => {
                 "version-1 header loadedAccountsDataSizeLimit removed".into()
@@ -352,6 +362,7 @@ impl Mutation {
             Mutation::AddLookupTable => return add_lookup_table(tx, signers),
             Mutation::V1ComputeUnitLimit { .. }
             | Mutation::V1PriorityFee { .. }
+            | Mutation::V1Budget { .. }
             | Mutation::V1DropComputeUnitLimit
             | Mutation::V1DropLoadedAccountsDataSizeLimit => {
                 let mut config = v1_config(&tx.message)
@@ -361,6 +372,10 @@ impl Mutation {
                         config.compute_unit_limit = Some(*limit)
                     }
                     Mutation::V1PriorityFee { lamports } => config.priority_fee = Some(*lamports),
+                    Mutation::V1Budget { limit, lamports } => {
+                        config.compute_unit_limit = Some(*limit);
+                        config.priority_fee = Some(*lamports);
+                    }
                     Mutation::V1DropComputeUnitLimit => config.compute_unit_limit = None,
                     _ => config.loaded_accounts_data_size_limit = None,
                 }
@@ -634,6 +649,7 @@ impl Mutation {
             | Mutation::AddLookupTable
             | Mutation::V1ComputeUnitLimit { .. }
             | Mutation::V1PriorityFee { .. }
+            | Mutation::V1Budget { .. }
             | Mutation::V1DropComputeUnitLimit
             | Mutation::V1DropLoadedAccountsDataSizeLimit => {
                 unreachable!("handled above")
@@ -903,6 +919,14 @@ mod tests {
             (
                 &v1,
                 Mutation::V1PriorityFee { lamports: 7 },
+                MessageFormat::V1,
+            ),
+            (
+                &v1,
+                Mutation::V1Budget {
+                    limit: 300,
+                    lamports: 7,
+                },
                 MessageFormat::V1,
             ),
             (&v1, Mutation::V1DropComputeUnitLimit, MessageFormat::V1),

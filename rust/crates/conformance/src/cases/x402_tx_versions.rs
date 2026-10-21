@@ -427,8 +427,8 @@ crate::registry! {
         BugType::Settlement,
         spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1."),
         &[FAST_PATH_PRICE, V1_CAPS],
-        "Version-1 priorityFee 1000000 lamports over 200000 units: exactly 5 lamports (5000000 micro-lamports) per unit, the fast-path cap. Accepted (the cap is inclusive).",
-        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1PriorityFee { lamports: 1_000_000 })),
+        "Version-1 priorityFee 1500 lamports over 300 units: exactly 5 lamports (5000000 micro-lamports) per unit, the fast-path cap, and under the 2000 lamport cap a sponsor may put on the total fee (scheme_exact_svm.md §2.2.1). Accepted (the cap is inclusive).",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1Budget { limit: 300, lamports: 1_500 })),
         Expect::Accept(Pin::Outcome),
     ).build();
     x402_verify_v1_priority_fee_over_cap_reject => verify(
@@ -436,9 +436,9 @@ crate::registry! {
         BugType::Settlement,
         spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1."),
         &[FAST_PATH_PRICE, V1_CAPS],
-        "Version-1 priorityFee 1000001 lamports over 200000 units: one lamport above priorityFee * 1000000 <= 5000000 * 200000. A sponsor that compares the lamport total with the per-unit cap accepts it.",
-        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1PriorityFee { lamports: 1_000_001 })),
-        from_table(&Mutation::V1PriorityFee { lamports: 1_000_001 }),
+        "Version-1 priorityFee 1501 lamports over 300 units: one lamport above priorityFee * 1000000 <= 5000000 * 300, and still under a 2000 lamport cap on the total fee, so only the per-unit rule rejects it. A sponsor that compares the lamport total with the per-unit cap accepts it.",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1Budget { limit: 300, lamports: 1_501 })),
+        from_table(&Mutation::V1Budget { limit: 300, lamports: 1_501 }),
     ).build();
     x402_verify_v1_too_many_instructions_reject => verify(
         "x402-verify-v1-too-many-instructions-reject",

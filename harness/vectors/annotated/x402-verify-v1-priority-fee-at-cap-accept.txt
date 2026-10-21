@@ -26,7 +26,7 @@ payment header (base64 JSON)
 
 transaction version 1
   recent blockhash 11111111111111111111111111111111
-  config computeUnitLimit 200000 priorityFee 1000000 lamports loadedAccountsDataSizeLimit 67108864
+  config computeUnitLimit 300 priorityFee 1500 lamports loadedAccountsDataSizeLimit 67108864
   signatures
     [0] empty  J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf (server fee payer / charge recipient)
     [1] signed GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB (client)
