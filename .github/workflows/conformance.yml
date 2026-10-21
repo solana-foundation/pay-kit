@@ -283,7 +283,7 @@ jobs:
             --uid="$(id -u)" --gid="$(id -g)" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
             --setenv=CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" --setenv=RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             --working-directory="$PWD" -- \
-            cargo build --manifest-path ../rust/Cargo.toml -p paykit-harness-bins
+            "$(command -v cargo)" build --manifest-path ../rust/Cargo.toml -p paykit-harness-bins
           status=$?
           kill "$sampler" 2>/dev/null
           sudo dmesg | grep -iE 'oom|killed process|memory' | tail -10
