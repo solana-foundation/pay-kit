@@ -6,6 +6,8 @@ language = "swift"
 vector = ["charge", "x402-exact", "session"]
 protocol = false
 flow = false
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:client", "x402:exact:client", "x402:upto:client"]
 # Whether the testee drives the SDK at the clock a vector pins; no session voucher verifier, so no clock-pinned case runs (all listed unsupported).
 # Cross-checked against the testee `capabilities` op.
 honours_clock = false
@@ -113,3 +115,31 @@ tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
 id = "vector/charge-build-unknown-network-reject"
 reason = "the client builds for network \"testnet\"; the network guard is opt-in (swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:164)"
 tracking = "FINDINGS.md#charge-client-unknown-network"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-wrong-network/swift/rust",
+]
+reason = "the client submits a credential for a challenge naming another cluster (draft-solana-charge-00: \"Clients MUST reject challenges whose network does not match their configured cluster\")"
+tracking = "FINDINGS.md#charge-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-over-asking-price/swift/rust",
+]
+reason = "the client pays a challenge whose amount was multiplied by 10000 after the server bound it; nothing checks the amount against what it was asked to pay (core: \"Clients MUST verify before authorizing payment\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-mis-signed-challenge/swift/rust",
+]
+reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-client-wrong-network/swift/rust",
+]
+reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
+tracking = "FINDINGS.md#x402-client-network-not-checked"

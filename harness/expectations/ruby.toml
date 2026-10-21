@@ -9,6 +9,8 @@ flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:server", "x402:exact:server"]
 # Whether the testee drives the SDK at the clock a vector pins; claims no session intent, so no clock-pinned case runs.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = false
@@ -54,3 +56,19 @@ ids = [
 id = "vector/x402-exact-verify-extra-required-signer-reject"
 reason = "the x402 exact verifier accepts a third required signer (scheme_exact_svm.md §2.1.4); ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/verify.rb:33 only checks that it signed"
 tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-idempotent-resubmit/rust/ruby",
+  "interop/x402-exact-idempotent-resubmit/rust/ruby-x402-server",
+]
+reason = "rejects a resubmitted payment without the canonical signature_consumed code"
+tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-cross-route-replay/rust/ruby",
+  "interop/x402-exact-cross-route-replay/rust/ruby-x402-server",
+]
+reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
+tracking = "FINDINGS.md#x402-replay-route-missing"

@@ -224,6 +224,109 @@ first and report `unknown_fourth_instruction`
 `python/src/solana_pay_kit/protocols/x402/exact/verify.py:154` before `:169`).
 The verdict is right; the reason hides the fund-safety violation, and a
 smart-wallet path that relaxes the layout would have to catch it again.
+## Interop findings (`pkc run --tier interop`, 2026-10-20)
+
+Recorded by the first run of the interop tier with every adapter paired
+against the Rust reference (Kotlin not run locally: no JVM). Case keys are
+`interop/<scenario>/<client>/<server>`; the entry lives in the toml of the
+side the gap belongs to. The SDK sources were not changed.
+
+## charge-client-network-not-checked
+
+**Cases:** `charge-client-wrong-network/{go,rust,swift,typescript}/rust`
+
+The fault proxy rewrites the Rust server's challenge to `methodDetails.network
+= "mainnet"` while the client pays a localnet validator. Every client builds
+and submits a credential. draft-solana-charge-00: “Clients MUST reject
+challenges whose network does not match their configured cluster.” Only the
+TypeScript adapter receives a network (`MPP_HARNESS_NETWORK`), and its SDK
+does not compare it either.
+
+## charge-client-request-not-verified
+
+**Cases:** `charge-client-over-asking-price/*/rust`,
+`charge-client-mis-signed-challenge/*/rust` (go, rust, swift, typescript)
+
+The proxy multiplies the challenged amount by 10 000, or swaps the recipient,
+after the server bound the challenge id. Every client pays. Core: “Clients
+MUST verify before authorizing payment: 1. Requested amount is reasonable for
+the resource 2. Recipient/address is expected”. No client SDK exposes an
+expected amount or recipient, and the adapter contract passes none; in pull
+mode the server's challenge binding is what keeps the funds safe (the
+proxy-observed credential never settles).
+
+## x402-client-network-not-checked
+
+**Cases:** `x402-exact-client-wrong-network/{go,python,rust,swift}/rust`
+
+The proxy rewrites every `accepts[].network` to solana mainnet while the
+client is configured (`X402_HARNESS_NETWORK`) for the devnet CAIP-2 id. These
+clients still pay; the TypeScript client refuses.
+
+## charge-canonical-codes-php-lua
+
+**Cases:** `charge-{network-mismatch,cross-server-portability}/rust/{php,lua}`,
+`charge-cross-route-replay/rust/php`
+
+PHP and Lua reject with `payment_invalid` where every other server emits the
+specific canonical code (`wrong_network`, `challenge_verification_failed`,
+`charge_request_mismatch`). The rejection itself is correct.
+
+## lua-charge-replay-route-missing
+
+**Case:** `charge-cross-route-replay/rust/lua`
+
+The Lua adapter does not mount `MPP_HARNESS_REPLAY_SOURCE_PATH`, so the cheap
+route a cross-route credential comes from returns 404. Adapter gap.
+
+## charge-decimals-9-servers
+
+**Cases:** `charge-decimals-9/*/rust`, `charge-decimals-9/rust/{go,lua,php}`
+
+A 9-decimal mint at amount 1000: the Rust harness server prices
+`price × 10^decimals` (1 000 000, not the scenario's 1000), Go and Lua exit
+before readiness, PHP answers 402. Previously masked by `serverIds:
+["typescript", "ruby"]`.
+
+## charge-sol-native-servers
+
+**Cases:** `charge-sol-native/rust/{go,lua}`
+
+Native SOL: the Go adapter exits before readiness; the Lua server settles a
+transaction without the System Program transfer of 1 000 000 lamports to the
+recipient. Previously masked by `serverIds`.
+
+## x402-replay-route-missing
+
+**Cases:** `x402-exact-cross-route-replay/rust/{go,lua,php,python,ruby,ruby-x402-server}`
+
+These x402 adapters do not mount `MPP_HARNESS_REPLAY_SOURCE_PATH`, so the
+cross-route case cannot present a cheap-route payment (404). Only the Rust and
+TypeScript x402 servers serve it. Adapter gap; the case never ran before
+(`clientIds: ["ts-x402"]`).
+
+## x402-canonical-codes
+
+**Cases:** `x402-exact-idempotent-resubmit/*/rust` and
+`/rust/{go,lua,php,ruby,ruby-x402-server}`,
+`x402-exact-cross-route-replay/rust/typescript`
+
+A second presentation of a settled x402 payment is refused (402) without the
+canonical `signature_consumed`: Rust says `payment_invalid`, Go returns a
+fresh challenge with no code, Lua and PHP `invalid_proof`, Ruby a raw RPC
+error. TypeScript rejects a cross-route payment with `payment_invalid`
+(sdkCode `accepted_mismatch`) instead of `charge_request_mismatch`. x402 has
+no shared reject-code table yet; the refusals are correct.
+
+## python-x402-double-delivery
+
+**Case:** `x402-exact-idempotent-resubmit/rust/python`
+
+The Python x402 server answers a second presentation of an already-settled
+payment with **200 and serves the resource again**. One payment, two
+deliveries. scheme_exact.md: “Such methods MUST deduplicate settlements
+atomically across every process serving `/settle`”, and “A consumed primitive
+MUST produce a settlement failure, never a success.” Security-relevant.
 
 ## Resolved on 2026-10-20
 

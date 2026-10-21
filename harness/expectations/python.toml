@@ -9,6 +9,8 @@ flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:upto:server", "mpp:charge:server", "mpp:session:client", "mpp:session:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -52,3 +54,24 @@ tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"
 id = "vector/x402-exact-verify-fee-payer-sol-drain-reject"
 reason = "refused by the static-layout check (unknown_fourth_instruction) before fee-payer isolation (python/src/solana_pay_kit/protocols/x402/exact/verify.py:154)"
 tracking = "FINDINGS.md#x402-fee-payer-drain-category"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-idempotent-resubmit/rust/python",
+]
+reason = "answers a second presentation of an already-settled payment with 200 and serves the resource again"
+tracking = "FINDINGS.md#python-x402-double-delivery"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-client-wrong-network/python/rust",
+]
+reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
+tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-cross-route-replay/rust/python",
+]
+reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
+tracking = "FINDINGS.md#x402-replay-route-missing"

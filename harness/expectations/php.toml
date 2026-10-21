@@ -9,6 +9,8 @@ flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:server", "x402:exact:server"]
 # Whether the testee drives the SDK at the clock a vector pins; claims no session intent, so no clock-pinned case runs.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = false
@@ -59,3 +61,45 @@ tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
 id = "vector/x402-exact-verify-fee-payer-sol-drain-reject"
 reason = "refused by the static-layout check (unknown_fourth_instruction) before fee-payer isolation (php/src/Protocols/X402/Exact/Verifier.php:115)"
 tracking = "FINDINGS.md#x402-fee-payer-drain-category"
+
+[[known_failing]]
+ids = [
+  "interop/charge-cross-route-replay/rust/php",
+]
+reason = "rejects the cross-route credential with payment_invalid instead of the canonical charge_request_mismatch"
+tracking = "FINDINGS.md#charge-canonical-codes-php-lua"
+
+[[known_failing]]
+ids = [
+  "interop/charge-network-mismatch/rust/php",
+]
+reason = "rejects with payment_invalid instead of the canonical wrong_network"
+tracking = "FINDINGS.md#charge-canonical-codes-php-lua"
+
+[[known_failing]]
+ids = [
+  "interop/charge-cross-server-portability/rust/php",
+]
+reason = "server B rejects with payment_invalid instead of the canonical challenge_verification_failed"
+tracking = "FINDINGS.md#charge-canonical-codes-php-lua"
+
+[[known_failing]]
+ids = [
+  "interop/charge-decimals-9/rust/php",
+]
+reason = "the server adapter does not serve a 9-decimal mint at the scenario amount"
+tracking = "FINDINGS.md#charge-decimals-9-servers"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-idempotent-resubmit/rust/php",
+]
+reason = "rejects a resubmitted payment without the canonical signature_consumed code"
+tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-cross-route-replay/rust/php",
+]
+reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
+tracking = "FINDINGS.md#x402-replay-route-missing"

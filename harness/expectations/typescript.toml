@@ -9,6 +9,8 @@ flow = true
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -77,3 +79,31 @@ tracking = "FINDINGS.md#charge-client-amount-not-u64-validated"
 id = "vector/charge-verify-ata-not-idempotent-reject"
 reason = "an ATA Create with empty data throws a TypeError (typescript/packages/mpp/src/server/Charge.ts:689) instead of the policy rejection"
 tracking = "FINDINGS.md#ts-charge-ata-empty-data-crash"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-wrong-network/typescript/rust",
+]
+reason = "the client submits a credential for a challenge naming another cluster (draft-solana-charge-00: \"Clients MUST reject challenges whose network does not match their configured cluster\")"
+tracking = "FINDINGS.md#charge-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-over-asking-price/typescript/rust",
+]
+reason = "the client pays a challenge whose amount was multiplied by 10000 after the server bound it; nothing checks the amount against what it was asked to pay (core: \"Clients MUST verify before authorizing payment\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-mis-signed-challenge/typescript/rust",
+]
+reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-cross-route-replay/rust/typescript",
+]
+reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
+tracking = "FINDINGS.md#x402-canonical-codes"

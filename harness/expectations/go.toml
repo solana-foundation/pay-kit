@@ -9,6 +9,8 @@ flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:upto:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -76,3 +78,59 @@ tracking = "FINDINGS.md#go-charge-ata-owner-allowlist"
 id = "vector/charge-verify-fee-payer-not-server-key-reject"
 reason = "under feePayer=true account 0 is never compared with feePayerKey (go/protocols/mpp/server/server.go:595)"
 tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-wrong-network/go/rust",
+]
+reason = "the client submits a credential for a challenge naming another cluster (draft-solana-charge-00: \"Clients MUST reject challenges whose network does not match their configured cluster\")"
+tracking = "FINDINGS.md#charge-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-over-asking-price/go/rust",
+]
+reason = "the client pays a challenge whose amount was multiplied by 10000 after the server bound it; nothing checks the amount against what it was asked to pay (core: \"Clients MUST verify before authorizing payment\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-mis-signed-challenge/go/rust",
+]
+reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-decimals-9/rust/go",
+]
+reason = "the server adapter does not serve a 9-decimal mint at the scenario amount"
+tracking = "FINDINGS.md#charge-decimals-9-servers"
+
+[[known_failing]]
+ids = [
+  "interop/charge-sol-native/rust/go",
+]
+reason = "the server adapter does not serve a native SOL charge"
+tracking = "FINDINGS.md#charge-sol-native-servers"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-idempotent-resubmit/rust/go",
+]
+reason = "rejects a resubmitted payment without the canonical signature_consumed code"
+tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-client-wrong-network/go/rust",
+]
+reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
+tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-cross-route-replay/rust/go",
+]
+reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
+tracking = "FINDINGS.md#x402-replay-route-missing"

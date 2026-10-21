@@ -9,6 +9,8 @@ flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
+# Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
+interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:upto:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -22,3 +24,54 @@ tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
 id = "vector/charge-build-fee-payer-without-key-reject"
 reason = "feePayer=true without feePayerKey falls back to a client-paid transaction (rust/crates/kit/src/mpp/client/charge.rs:333); the case records the kit divergence"
 tracking = "FINDINGS.md#charge-client-fee-payer-without-key"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-wrong-network/rust/rust",
+]
+reason = "the client submits a credential for a challenge naming another cluster (draft-solana-charge-00: \"Clients MUST reject challenges whose network does not match their configured cluster\")"
+tracking = "FINDINGS.md#charge-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-over-asking-price/rust/rust",
+]
+reason = "the client pays a challenge whose amount was multiplied by 10000 after the server bound it; nothing checks the amount against what it was asked to pay (core: \"Clients MUST verify before authorizing payment\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-client-mis-signed-challenge/rust/rust",
+]
+reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
+tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/charge-decimals-9/go/rust",
+  "interop/charge-decimals-9/kotlin/rust",
+  "interop/charge-decimals-9/rust/rust",
+  "interop/charge-decimals-9/swift/rust",
+  "interop/charge-decimals-9/typescript/rust",
+]
+reason = "the server adapter does not serve a 9-decimal mint at the scenario amount"
+tracking = "FINDINGS.md#charge-decimals-9-servers"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-idempotent-resubmit/go/rust",
+  "interop/x402-exact-idempotent-resubmit/kotlin/rust",
+  "interop/x402-exact-idempotent-resubmit/python/rust",
+  "interop/x402-exact-idempotent-resubmit/rust/rust",
+  "interop/x402-exact-idempotent-resubmit/swift/rust",
+  "interop/x402-exact-idempotent-resubmit/typescript/rust",
+]
+reason = "rejects a resubmitted payment without the canonical signature_consumed code"
+tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[known_failing]]
+ids = [
+  "interop/x402-exact-client-wrong-network/rust/rust",
+]
+reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
+tracking = "FINDINGS.md#x402-client-network-not-checked"
