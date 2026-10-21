@@ -1,0 +1,12 @@
+repo = "x402-txv1"
+commit = "3d723dd54706b9edab8a33dc2c4e9cad22f35745"
+files = [
+  "specs/schemes/exact/scheme_exact_svm.md",
+  "specs/schemes/upto/scheme_upto_svm.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+]
+
+# SVM transaction-version negotiation, pinned from x402-foundation/x402
+# PR 3473 (solana-foundation/x402 spec/svm-transaction-versions) until it
+# merges. id = "X402TX-" + sha256(normalised text)[:10]. `required = true`:
+# `pkc req-lint` fails if no case maps the id.

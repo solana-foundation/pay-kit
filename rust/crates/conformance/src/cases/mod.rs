@@ -109,7 +109,7 @@ mod tests {
     fn every_case_maps_a_known_requirement() {
         let root = crate::repo_root();
         let mut known = BTreeSet::new();
-        for name in ["mpp", "x402", "mpp-solana"] {
+        for name in ["mpp", "x402", "mpp-solana", "mpp-txv1", "x402-txv1"] {
             let raw =
                 std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
                     .unwrap();

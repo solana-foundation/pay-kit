@@ -1,0 +1,11 @@
+repo = "mpp-specs-txv1"
+commit = "77aa6a113f8abadaf2a3faa9d57c2dc3453627ce"
+files = [
+  "specs/methods/solana/draft-solana-charge-*",
+  "specs/methods/solana/draft-solana-session-*",
+]
+
+# Transaction-version negotiation for the Solana charge and session methods,
+# pinned from solana-foundation/mpp-specs feat/solana-transaction-versions
+# until it merges into tempoxyz/mpp-specs. id = "MPPTX-" + sha256(normalised
+# text)[:10]. `required = true`: `pkc req-lint` fails if no case maps the id.
