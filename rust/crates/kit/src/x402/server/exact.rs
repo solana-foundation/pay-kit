@@ -758,22 +758,23 @@ impl X402 {
         let store_err = |e: crate::core::store::StoreError| {
             Error::Other(format!("x402 replay store error: {e}"))
         };
-        match ledger.claim_pending(&signature).await.map_err(store_err)? {
-            PendingClaim::Fresh => {}
+        use crate::core::rpc::{BroadcastFailure, PriorBroadcast};
+        let prior = match ledger.claim_pending(&signature).await.map_err(store_err)? {
+            PendingClaim::Fresh => PriorBroadcast::None,
             // This same transaction (same bytes, same fee-payer signature)
             // whose earlier outcome was unknown. Re-broadcasting it is safe:
-            // one signature lands at most once.
-            PendingClaim::ResumePending => {}
+            // one signature lands at most once. The earlier send may have
+            // reached a node, so a refusal now is no proof it never will.
+            PendingClaim::ResumePending => PriorBroadcast::Possible,
             PendingClaim::Consumed => return Err(Error::SignatureConsumed),
-        }
+        };
 
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        use crate::core::rpc::BroadcastFailure;
-        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx) {
+        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx, prior) {
             Ok(confirmed) => {
                 if ledger.confirm(&signature).await.map_err(store_err)? {
                     Ok(confirmed.to_string())
@@ -2479,16 +2480,51 @@ mod tests {
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
     ) -> RpcClient {
+        stub_rpc(
+            Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            status,
+            blockhash_valid,
+        )
+        .await
+    }
+
+    /// [`accepting_rpc`] whose `sendTransaction` answer is selected by `send`:
+    /// 0 accepts it, 1 is a preflight rejection, 2 another JSON-RPC refusal
+    /// (node unhealthy).
+    async fn stub_rpc(
+        send: Arc<std::sync::atomic::AtomicU8>,
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    ) -> RpcClient {
         use axum::{routing::post, Json, Router};
         use std::sync::atomic::Ordering;
         let app = Router::new().route(
             "/",
             post(move |Json(request): Json<serde_json::Value>| {
-                let (status, blockhash_valid) = (status.clone(), blockhash_valid.clone());
+                let (send, status, blockhash_valid) =
+                    (send.clone(), status.clone(), blockhash_valid.clone());
                 async move {
                     let id = request["id"].clone();
                     let context = serde_json::json!({ "slot": 1 });
+                    let refusal = match send.load(Ordering::SeqCst) {
+                        1 => Some(serde_json::json!({
+                            "code": -32002,
+                            "message": "Transaction simulation failed: Blockhash not found",
+                            "data": { "err": "BlockhashNotFound", "logs": [] },
+                        })),
+                        2 => Some(serde_json::json!({
+                            "code": -32005,
+                            "message": "Node is unhealthy",
+                            "data": { "numSlotsBehind": 100 },
+                        })),
+                        _ => None,
+                    };
                     let result = match request["method"].as_str() {
+                        Some("sendTransaction") if refusal.is_some() => {
+                            return Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id, "error": refusal,
+                            }))
+                        }
                         Some("sendTransaction") => {
                             let tx =
                                 crate::core::tx::decode(request["params"][0].as_str().unwrap())
@@ -2573,8 +2609,11 @@ mod tests {
         ));
     }
 
+    /// A status still missing once the blockhash expired is not proof that
+    /// the transaction never landed (the node may lag or lack its history):
+    /// the claim is kept and the same payment settles once it shows up.
     #[tokio::test(flavor = "multi_thread")]
-    async fn expired_unlanded_broadcast_releases_the_claim() {
+    async fn expired_broadcast_with_no_status_keeps_the_claim() {
         use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
         let sponsor = memory_signer(9);
         let mut cfg = config();
@@ -2589,20 +2628,81 @@ mod tests {
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
         let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
-
-        // Not found after its blockhash expired: it can never land.
-        let err = x402
-            .settle_exact(
+        let settle = || {
+            x402.settle_exact(
                 VerifiedExactPayment::Transaction(tx.clone()),
                 sponsor.as_ref(),
             )
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not landed"), "{err}");
+        };
+
+        for _ in 0..2 {
+            let err = settle().await.unwrap_err();
+            assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        }
         status.store(1, Ordering::SeqCst);
-        x402.settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
-            .await
+        settle().await.unwrap();
+        assert!(matches!(
+            settle().await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
+    }
+
+    /// Only a preflight rejection of the first broadcast releases the claim.
+    /// Another refusal, or a preflight rejection of a resumed settlement whose
+    /// earlier send may have been forwarded, is followed by a missing status
+    /// that proves nothing, so the claim is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_broadcast_releases_the_claim_only_on_first_preflight_rejection() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let send = Arc::new(AtomicU8::new(0));
+        let status = Arc::new(AtomicU8::new(2));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            stub_rpc(
+                send.clone(),
+                status.clone(),
+                Arc::new(AtomicBool::new(true)),
+            )
+            .await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
+        let settle = |tx: VersionedTransaction| {
+            x402.settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+        };
+
+        // Positive control: a first broadcast refused at preflight was never
+        // forwarded, so the payer may present it again.
+        let first = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        send.store(1, Ordering::SeqCst);
+        let err = settle(first.clone()).await.unwrap_err();
+        assert!(err.to_string().contains("not landed"), "{err}");
+        send.store(0, Ordering::SeqCst);
+        status.store(1, Ordering::SeqCst);
+        settle(first).await.unwrap();
+
+        // A refusal that is not a preflight rejection proves nothing.
+        status.store(2, Ordering::SeqCst);
+        let unhealthy = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        send.store(2, Ordering::SeqCst);
+        let err = settle(unhealthy.clone()).await.unwrap_err();
+        assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        // Resumed, its earlier send may have landed: a preflight rejection
+        // now (the blockhash expired meanwhile) keeps the claim too.
+        send.store(1, Ordering::SeqCst);
+        let err = settle(unhealthy.clone()).await.unwrap_err();
+        assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        // It had landed: the same payment settles once.
+        status.store(1, Ordering::SeqCst);
+        settle(unhealthy.clone()).await.unwrap();
+        assert!(matches!(
+            settle(unhealthy).await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]

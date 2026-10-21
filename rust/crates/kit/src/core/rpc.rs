@@ -132,25 +132,44 @@ pub fn send_and_confirm_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
 ) -> Result<Signature, ClientError> {
-    send_and_confirm_with_outcome(rpc, tx).map_err(BroadcastFailure::into_error)
+    send_and_confirm_with_outcome(rpc, tx, PriorBroadcast::Possible)
+        .map_err(BroadcastFailure::into_error)
+}
+
+/// Whether `tx`'s exact bytes may already have reached a node before this
+/// broadcast.
+///
+/// A preflight rejection proves only that *this* send was not forwarded. If an
+/// earlier send of the same transaction may have been, the rejection (for
+/// instance an expired blockhash, or funds an earlier landing already moved)
+/// says nothing about whether the transaction executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorBroadcast {
+    /// No earlier send of these bytes can have reached a node.
+    None,
+    /// An earlier send may have reached a node (a resumed settlement).
+    Possible,
 }
 
 /// Why [`send_and_confirm_with_outcome`] did not confirm a transaction.
 ///
 /// Only [`BroadcastFailure::NotLanded`] proves the transaction can no longer
-/// move funds. A caller holding a replay claim on the signature may release
+/// move funds. A missing signature status is never that proof on its own: the
+/// queried node may lag or lack history for a transaction that committed. A caller holding a replay claim on the signature may release
 /// it for that variant alone; on [`BroadcastFailure::Unknown`] the
 /// transaction may still land and the claim must be kept until the
 /// signature's status is reconciled.
 #[derive(Debug)]
 pub enum BroadcastFailure {
-    /// The node refused it before forwarding (preflight or sanitize error), or
-    /// its blockhash expired with no status recorded: it can never land.
+    /// The node's preflight refused the first broadcast of these bytes, so no
+    /// node was ever handed the transaction: it can never land.
     NotLanded(ClientError),
     /// It landed and failed; its instructions moved nothing.
     FailedOnChain(ClientError),
     /// The outcome is unknown: a transport error after the request may have
-    /// reached the node, or a failed status/blockhash read.
+    /// reached the node, a refusal other than a first-broadcast preflight
+    /// rejection, a blockhash that expired with no status recorded, or a
+    /// failed status/blockhash read.
     Unknown(ClientError),
 }
 
@@ -173,19 +192,39 @@ impl std::fmt::Display for BroadcastFailure {
     }
 }
 
+/// Whether a send error is the node's preflight simulation refusing the
+/// transaction (JSON-RPC `-32002`): the one send failure that proves the node
+/// did not forward it. Matched on the code, so a simulation payload this
+/// client cannot decode still counts.
+pub(crate) fn is_preflight_rejection(error: &ClientError) -> bool {
+    matches!(
+        error.kind(),
+        ClientErrorKind::RpcError(solana_rpc_client_api::request::RpcError::RpcResponseError {
+            code: solana_rpc_client_api::custom_error::JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+            ..
+        })
+    )
+}
+
 /// [`send_and_confirm_transaction`], classifying a failure by whether the
 /// transaction could still land.
+///
+/// Only an explicit outcome resolves it: a recorded status, or a preflight
+/// rejection of a first broadcast ([`PriorBroadcast::None`]). A missing status
+/// is never proof of non-execution, even once the blockhash has expired.
 pub fn send_and_confirm_with_outcome(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
+    prior: PriorBroadcast,
 ) -> Result<Signature, BroadcastFailure> {
     let blockhash = *tx.message.recent_blockhash();
     let signature = match send_transaction(rpc, tx, preflight_config(rpc)) {
         Ok(signature) => signature,
-        // A JSON-RPC error response is the node refusing the transaction
-        // before forwarding it, unless it refused because the same signature
-        // already landed (a resubmission). Anything else may have reached
-        // the node.
+        // A JSON-RPC error response is the node refusing this send. It may
+        // still have landed: the refusal can be the node seeing an earlier
+        // send of the same signature. Only a preflight rejection of the first
+        // broadcast proves no node was ever handed it; any other refusal, or
+        // one after a send that may have been forwarded, leaves it unknown.
         Err(error)
             if matches!(
                 error.kind(),
@@ -197,6 +236,7 @@ pub fn send_and_confirm_with_outcome(
             let Some(&signature) = tx.signatures.first() else {
                 return Err(BroadcastFailure::NotLanded(error));
             };
+            let never_sent = prior == PriorBroadcast::None && is_preflight_rejection(&error);
             match rpc
                 .get_signature_status_with_commitment_and_history(
                     &signature,
@@ -205,7 +245,8 @@ pub fn send_and_confirm_with_outcome(
                 )
                 .map_err(BroadcastFailure::Unknown)?
             {
-                None => return Err(BroadcastFailure::NotLanded(error)),
+                None if never_sent => return Err(BroadcastFailure::NotLanded(error)),
+                None => return Err(BroadcastFailure::Unknown(error)),
                 Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
                 Some(Ok(())) => signature,
             }
@@ -224,8 +265,9 @@ pub fn send_and_confirm_with_outcome(
                     .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
                     .map_err(BroadcastFailure::Unknown)?;
                 if !valid {
-                    // It may have landed between the two reads; only a
-                    // missing status after expiry proves it never will.
+                    // It may have landed between the two reads. A status still
+                    // missing after expiry is not proof that it never landed:
+                    // the queried node may lag or lack its history.
                     match rpc
                         .get_signature_status_with_commitment_and_history(
                             &signature,
@@ -235,9 +277,10 @@ pub fn send_and_confirm_with_outcome(
                         .map_err(BroadcastFailure::Unknown)?
                     {
                         None => {
-                            return Err(BroadcastFailure::NotLanded(
+                            return Err(BroadcastFailure::Unknown(
                                 ClientErrorKind::Custom(
-                                    "unable to confirm transaction: its blockhash expired".into(),
+                                    "blockhash expired with no status recorded for the transaction"
+                                        .into(),
                                 )
                                 .into(),
                             ))

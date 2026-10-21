@@ -30,8 +30,9 @@ type Adapter struct {
 	// MPP charge. It is backed by cfg.MPP.Store when one is configured, so
 	// a transaction settled through MPP on the same gate cannot be
 	// presented again here, and by a process-local store otherwise.
-	ledgerOnce sync.Once
-	ledger     paycore.ConsumedSignatures
+	ledgerOnce    sync.Once
+	ledger        paycore.ConsumedSignatures
+	ledgerBacking paycore.ClaimStore
 }
 
 func New(cfg paykit.Config) (paykit.Adapter, error) {
@@ -180,30 +181,15 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: req.Gate}
 	}
-	if !claimed {
-		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
+	var signature solana.Signature
+	if claimed {
+		signature, err = a.broadcast(ctx, req.Gate, wire, replayKey)
+	} else {
+		signature, err = a.reconcilePending(ctx, req.Gate, replayKey)
 	}
-	settled := false
-	defer func() {
-		if !settled {
-			// Unsettled: let the payer retry the same transaction.
-			_ = a.consumed().Release(context.WithoutCancel(ctx), replayKey)
-		}
-	}()
-	signature, err := a.rpc.SendEncodedTransactionWithOpts(ctx,
-		base64.StdEncoding.EncodeToString(wire),
-		rpc.TransactionOpts{
-			Encoding:            solana.EncodingBase64,
-			PreflightCommitment: rpc.CommitmentConfirmed,
-		},
-	)
 	if err != nil {
-		return nil, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: req.Gate}
+		return nil, err
 	}
-	if err := a.awaitConfirmation(ctx, signature); err != nil {
-		return nil, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: req.Gate}
-	}
-	settled = true
 	respEnvelope := proto.SettlementResponse{
 		Success:     true,
 		Transaction: signature.String(),
@@ -228,6 +214,135 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	}, nil
 }
 
+// A settlement whose transaction may have left the server but whose outcome
+// is unknown (an ambiguous sendTransaction error, a confirmation timeout) is
+// recorded as pending under its signature. The consumed-signature claim is
+// kept, so the payer is told to retry the same payment rather than pay a
+// replacement while the original can still land; the retry reconciles the
+// record against the chain and is granted once.
+const (
+	pendingSettlementPrefix  = "x402-exact:pending:"
+	resolvedSettlementPrefix = "x402-exact:pending-resolved:"
+)
+
+type pendingSettlement struct {
+	Gate string `json:"gate"`
+}
+
+// Confirmation polling budget; tests shorten it.
+var (
+	confirmAttempts = 40
+	confirmDelay    = 250 * time.Millisecond
+)
+
+// errUnconfirmed is a confirmation poll that ended without a status: the
+// transaction may still land.
+var errUnconfirmed = errors.New("transaction not confirmed yet")
+
+func settlementInProgress(gate *paykit.Gate, signature string, cause error) *paykit.PaymentError {
+	return &paykit.PaymentError{
+		Code: paykit.CodeSettlementInProgress,
+		Err:  fmt.Errorf("settlement of transaction %s is in progress; retry the same payment, do not pay again: %w", signature, cause),
+		Gate: gate,
+	}
+}
+
+// broadcast sends the claimed transaction and confirms it. The claim is
+// released only when the transaction provably moved nothing: the node's
+// preflight refused it (so no node was handed it), or it landed and failed.
+// Any other outcome keeps the claim and records the settlement as pending.
+func (a *Adapter) broadcast(ctx context.Context, gate *paykit.Gate, wire []byte, replayKey string) (solana.Signature, error) {
+	release := func() { _ = a.consumed().Release(context.WithoutCancel(ctx), replayKey) }
+	signature, err := a.rpc.SendEncodedTransactionWithOpts(ctx,
+		base64.StdEncoding.EncodeToString(wire),
+		rpc.TransactionOpts{
+			Encoding:            solana.EncodingBase64,
+			PreflightCommitment: rpc.CommitmentConfirmed,
+		},
+	)
+	if err != nil {
+		if solanatx.IsPreflightRejection(err) {
+			release()
+			return solana.Signature{}, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: gate}
+		}
+		// A lost response, a timeout, a 5xx from a proxy that already
+		// forwarded it: the transaction may still land.
+		return solana.Signature{}, a.markPending(ctx, gate, replayKey, err)
+	}
+	if err := a.awaitConfirmation(ctx, signature); err != nil {
+		if errors.Is(err, errUnconfirmed) || ctx.Err() != nil {
+			return solana.Signature{}, a.markPending(ctx, gate, replayKey, err)
+		}
+		release()
+		return solana.Signature{}, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: gate}
+	}
+	return signature, nil
+}
+
+// markPending records replayKey as an in-flight settlement and returns the
+// settlement-in-progress error. It never releases the claim: if the record
+// cannot be written the payment still fails closed, it just cannot be
+// reconciled.
+func (a *Adapter) markPending(ctx context.Context, gate *paykit.Gate, replayKey string, cause error) error {
+	ctx = context.WithoutCancel(ctx)
+	if _, err := a.ledgerStore().PutIfAbsent(ctx, pendingSettlementPrefix+replayKey, pendingSettlement{Gate: gate.Name}); err != nil {
+		return settlementInProgress(gate, replayKey, fmt.Errorf("%w (recording the pending settlement failed: %w)", cause, err))
+	}
+	return settlementInProgress(gate, replayKey, cause)
+}
+
+// reconcilePending resolves a presentation whose signature is already
+// claimed. Without a pending record for this gate the signature was settled
+// before, so it is a replay. With one, only an explicit on-chain outcome
+// resolves it: a missing status is never proof of non-execution, so it
+// stays in progress.
+func (a *Adapter) reconcilePending(ctx context.Context, gate *paykit.Gate, replayKey string) (solana.Signature, error) {
+	consumed := &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: gate}
+	store := a.ledgerStore()
+	raw, ok, err := store.Get(ctx, pendingSettlementPrefix+replayKey)
+	if err != nil {
+		return solana.Signature{}, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: gate}
+	}
+	if !ok {
+		return solana.Signature{}, consumed
+	}
+	var record pendingSettlement
+	if err := json.Unmarshal(raw, &record); err != nil || record.Gate != gate.Name {
+		return solana.Signature{}, consumed
+	}
+	signature, err := solana.SignatureFromBase58(replayKey)
+	if err != nil {
+		return solana.Signature{}, consumed
+	}
+	out, err := a.rpc.GetSignatureStatuses(ctx, true, signature)
+	if err != nil {
+		return solana.Signature{}, settlementInProgress(gate, replayKey, err)
+	}
+	if out == nil || len(out.Value) == 0 || out.Value[0] == nil {
+		return solana.Signature{}, settlementInProgress(gate, replayKey, errUnconfirmed)
+	}
+	status := out.Value[0]
+	if status.Err != nil {
+		_ = store.Delete(context.WithoutCancel(ctx), pendingSettlementPrefix+replayKey)
+		return solana.Signature{}, &paykit.PaymentError{Code: "settlement_failed",
+			Err: fmt.Errorf("transaction %s landed on-chain but failed: %v", replayKey, status.Err), Gate: gate}
+	}
+	if status.ConfirmationStatus != rpc.ConfirmationStatusConfirmed &&
+		status.ConfirmationStatus != rpc.ConfirmationStatusFinalized {
+		return solana.Signature{}, settlementInProgress(gate, replayKey, errUnconfirmed)
+	}
+	// Grant the landed payment exactly once across concurrent retries.
+	granted, err := store.PutIfAbsent(ctx, resolvedSettlementPrefix+replayKey, true)
+	if err != nil {
+		return solana.Signature{}, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: gate}
+	}
+	if !granted {
+		return solana.Signature{}, consumed
+	}
+	_ = store.Delete(context.WithoutCancel(ctx), pendingSettlementPrefix+replayKey)
+	return signature, nil
+}
+
 // transactionReplayKey is the signature that identifies the fully signed
 // (co-signed) wire transaction on-chain: its first signature. MPP charge
 // claims the same signature, so the shared ledger catches a transaction
@@ -245,14 +360,26 @@ func transactionReplayKey(wire []byte) (string, error) {
 
 // consumed is the consumed-signature ledger shared with MPP charge.
 func (a *Adapter) consumed() paycore.ConsumedSignatures {
+	a.initLedger()
+	return a.ledger
+}
+
+// ledgerStore is the store behind [Adapter.consumed], which also holds the
+// pending-settlement records.
+func (a *Adapter) ledgerStore() paycore.ClaimStore {
+	a.initLedger()
+	return a.ledgerBacking
+}
+
+func (a *Adapter) initLedger() {
 	a.ledgerOnce.Do(func() {
 		var store paycore.ClaimStore = core.NewMemoryStore()
 		if a.cfg.MPP.Store != nil {
 			store = a.cfg.MPP.Store
 		}
+		a.ledgerBacking = store
 		a.ledger = paycore.NewConsumedSignatures(store)
 	})
-	return a.ledger
 }
 
 func (a *Adapter) verifyAcceptedBinding(gate *paykit.Gate, accepted *proto.AcceptsEntry) error {
@@ -386,8 +513,7 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 }
 
 func (a *Adapter) awaitConfirmation(ctx context.Context, signature solana.Signature) error {
-	const attempts = 40
-	const delay = 250 * time.Millisecond
+	attempts, delay := confirmAttempts, confirmDelay
 	for range attempts {
 		statuses, err := a.rpc.GetSignatureStatuses(ctx, true, signature)
 		if err == nil && statuses != nil && len(statuses.Value) > 0 {
@@ -408,7 +534,7 @@ func (a *Adapter) awaitConfirmation(ctx context.Context, signature solana.Signat
 		case <-time.After(delay):
 		}
 	}
-	return fmt.Errorf("timed out confirming %s", signature)
+	return fmt.Errorf("timed out confirming %s: %w", signature, errUnconfirmed)
 }
 
 func (a *Adapter) recentBlockhash() (string, error) {

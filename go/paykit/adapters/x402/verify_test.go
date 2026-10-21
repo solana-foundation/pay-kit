@@ -9,9 +9,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
@@ -288,6 +290,7 @@ type fakeRPC struct {
 	sendErr    error
 	confirm    rpc.ConfirmationStatusType
 	confirmErr *struct{ msg string } // non-nil => on-chain tx error
+	nullStatus bool                  // no status recorded for the signature
 	sends      int
 }
 
@@ -300,6 +303,9 @@ func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, _ string, _ 
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if f.nullStatus {
+		return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}, nil
+	}
 	st := &rpc.SignatureStatusesResult{ConfirmationStatus: f.confirm}
 	if f.confirmErr != nil {
 		st.Err = f.confirmErr.msg
@@ -406,19 +412,83 @@ func TestVerifyAndSettleConfirmationError(t *testing.T) {
 	}
 }
 
-func TestVerifyAndSettleSendFailureRollsBackReplay(t *testing.T) {
-	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
-	a, gate, sig := settleFixture(t, fake)
-	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err == nil {
-		t.Fatal("expected send_failed")
+func settleCode(err error) string {
+	var perr *paykit.PaymentError
+	if errorsAs(err, &perr) {
+		return perr.Code
 	}
-	// Replay reservation must have been rolled back: a retry with a
-	// working RPC then succeeds rather than tripping signature_consumed.
+	return ""
+}
+
+// Only a preflight rejection proves the node was never handed the
+// transaction, so only it releases the claim for a retry.
+func TestVerifyAndSettlePreflightRejectionReleasesTheClaim(t *testing.T) {
+	fake := &fakeRPC{sendErr: &jsonrpc.RPCError{Code: -32002, Message: "Transaction simulation failed"}}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "send_failed" {
+		t.Fatalf("expected send_failed, got %v", err)
+	}
 	fake.sendErr = nil
 	fake.sig = solana.MustSignatureFromBase58(sampleSig)
 	fake.confirm = rpc.ConfirmationStatusConfirmed
 	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
-		t.Fatalf("retry after rollback should succeed, got %v", err)
+		t.Fatalf("retry after a preflight rejection should settle, got %v", err)
+	}
+	if fake.sends != 2 {
+		t.Fatalf("the released transaction is broadcast again: sends=%d", fake.sends)
+	}
+}
+
+// Any other send error leaves the outcome unknown: the claim is kept, the
+// payer is told to retry the same payment, and the retry is reconciled from
+// the chain (never re-broadcast) and granted once.
+func TestVerifyAndSettleAmbiguousSendKeepsTheClaimUntilReconciled(t *testing.T) {
+	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	// Still no status: still in progress, not a failure.
+	fake.sendErr = nil
+	fake.nullStatus = true
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("a missing status keeps it in progress, got %v", err)
+	}
+	fake.nullStatus = false
+	fake.confirm = rpc.ConfirmationStatusConfirmed
+	pmt, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	if err != nil {
+		t.Fatalf("the landed payment reconciles, got %v", err)
+	}
+	if pmt.Transaction != settledSignature(t, a, sig) {
+		t.Fatalf("reconciled transaction %s", pmt.Transaction)
+	}
+	if fake.sends != 1 {
+		t.Fatalf("a pending settlement is never re-broadcast: sends=%d", fake.sends)
+	}
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "signature_consumed" {
+		t.Fatalf("granted once, got %v", err)
+	}
+}
+
+// A confirmation poll that ends with no status is not proof the transaction
+// never landed.
+func TestVerifyAndSettleConfirmationTimeoutKeepsTheClaim(t *testing.T) {
+	attempts, delay := confirmAttempts, confirmDelay
+	confirmAttempts, confirmDelay = 2, time.Millisecond
+	t.Cleanup(func() { confirmAttempts, confirmDelay = attempts, delay })
+	fake := &fakeRPC{sig: solana.MustSignatureFromBase58(sampleSig), nullStatus: true}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	fake.nullStatus = false
+	fake.confirm = rpc.ConfirmationStatusFinalized
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
+		t.Fatalf("the landed payment reconciles, got %v", err)
+	}
+	if fake.sends != 1 {
+		t.Fatalf("sends=%d", fake.sends)
 	}
 }
 
