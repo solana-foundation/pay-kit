@@ -68,7 +68,10 @@ pub struct ReqId(String);
 
 impl ReqId {
     pub fn new(id: &str) -> Result<Self, String> {
-        let hex = id.strip_prefix("MPP-").or_else(|| id.strip_prefix("X402-"));
+        let hex = SpecRepo::ALL.iter().find_map(|repo| {
+            id.strip_prefix(repo.req_prefix())
+                .and_then(|rest| rest.strip_prefix('-'))
+        });
         match hex {
             Some(hex)
                 if hex.len() == 10
@@ -79,7 +82,7 @@ impl ReqId {
                 Ok(Self(id.to_string()))
             }
             _ => Err(format!(
-                "invalid requirement id {id:?}: expected MPP-<10 hex> or X402-<10 hex>"
+                "invalid requirement id {id:?}: expected <MPP|X402|MPPTX|X402TX>-<10 hex>"
             )),
         }
     }
@@ -99,10 +102,24 @@ pub enum SpecRepo {
     /// `external/mpp-specs-solana` (solana-foundation/mpp-specs): Solana
     /// method drafts not yet merged upstream (the subscription method).
     MppSpecsSolana,
+    /// `external/mpp-specs-txv1` (solana-foundation/mpp-specs
+    /// feat/solana-transaction-versions): transaction-version negotiation
+    /// for the Solana charge and session methods, not yet merged upstream.
+    MppSpecsTxV1,
+    /// `external/x402-txv1` (solana-foundation/x402, x402-foundation/x402
+    /// PR 3473): SVM transaction-version negotiation for exact, upto and
+    /// batch-settlement, not yet merged upstream.
+    X402TxV1,
 }
 
 impl SpecRepo {
-    pub const ALL: [SpecRepo; 3] = [SpecRepo::MppSpecs, SpecRepo::X402, SpecRepo::MppSpecsSolana];
+    pub const ALL: [SpecRepo; 5] = [
+        SpecRepo::MppSpecs,
+        SpecRepo::X402,
+        SpecRepo::MppSpecsSolana,
+        SpecRepo::MppSpecsTxV1,
+        SpecRepo::X402TxV1,
+    ];
 
     /// Prefix of `SpecRef::doc` naming this repository.
     pub fn prefix(self) -> &'static str {
@@ -110,6 +127,8 @@ impl SpecRepo {
             SpecRepo::MppSpecs => "mpp-specs",
             SpecRepo::X402 => "x402",
             SpecRepo::MppSpecsSolana => "mpp-specs-solana",
+            SpecRepo::MppSpecsTxV1 => "mpp-specs-txv1",
+            SpecRepo::X402TxV1 => "x402-txv1",
         }
     }
 
@@ -119,6 +138,8 @@ impl SpecRepo {
             SpecRepo::MppSpecs => "external/mpp-specs",
             SpecRepo::X402 => "typescript/external/x402",
             SpecRepo::MppSpecsSolana => "external/mpp-specs-solana",
+            SpecRepo::MppSpecsTxV1 => "external/mpp-specs-txv1",
+            SpecRepo::X402TxV1 => "external/x402-txv1",
         }
     }
 
@@ -127,6 +148,10 @@ impl SpecRepo {
         match self {
             SpecRepo::MppSpecs | SpecRepo::MppSpecsSolana => "MPP",
             SpecRepo::X402 => "X402",
+            // The txv1 drafts copy most of the pinned text; a distinct prefix
+            // keeps their sentence ids apart from the merged documents'.
+            SpecRepo::MppSpecsTxV1 => "MPPTX",
+            SpecRepo::X402TxV1 => "X402TX",
         }
     }
 }
@@ -155,7 +180,7 @@ impl SpecRef {
                     .map(|path| (*repo, path))
             })
             .ok_or_else(|| {
-                format!("spec doc {doc:?} must start with mpp-specs/, mpp-specs-solana/ or x402/")
+                format!("spec doc {doc:?} must start with a pinned spec checkout prefix (mpp-specs/, x402/, ...)")
             })?;
         if !path.starts_with("specs/") || !path.ends_with(".md") || path.contains("..") {
             return Err(format!(
@@ -665,6 +690,8 @@ mod tests {
         }
         assert!(ReqId::new("MPP-0123456789").is_ok());
         assert!(ReqId::new("X402-abcdef0123").is_ok());
+        assert!(ReqId::new("X402TX-abcdef0123").is_ok());
+        assert!(ReqId::new("MPPTX-abcdef0123").is_ok());
     }
 
     #[test]

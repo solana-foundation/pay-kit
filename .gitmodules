@@ -8,3 +8,11 @@
 [submodule "external/mpp-specs-solana"]
 	path = external/mpp-specs-solana
 	url = https://github.com/solana-foundation/mpp-specs.git
+[submodule "external/mpp-specs-txv1"]
+	path = external/mpp-specs-txv1
+	url = https://github.com/solana-foundation/mpp-specs.git
+	shallow = true
+[submodule "external/x402-txv1"]
+	path = external/x402-txv1
+	url = https://github.com/solana-foundation/x402.git
+	shallow = true
