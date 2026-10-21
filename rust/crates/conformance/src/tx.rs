@@ -123,6 +123,37 @@ pub fn sign_slots(tx: &mut VersionedTransaction, seeds: &[[u8; 32]]) {
     }
 }
 
+/// What a required signer's slot holds: nothing yet (a co-signer such as a
+/// sponsoring fee payer signs later), a valid signature over the message, or
+/// bytes that do not verify.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Empty,
+    Signed,
+    Invalid,
+}
+
+/// Each required signer with the state of its slot, in message order.
+pub fn signature_slots(tx: &VersionedTransaction) -> Vec<(String, Slot)> {
+    let message = tx.message.serialize();
+    let required = tx.message.header().num_required_signatures as usize;
+    tx.message
+        .static_account_keys()
+        .iter()
+        .take(required)
+        .enumerate()
+        .map(|(index, key)| {
+            let slot = match tx.signatures.get(index) {
+                None => Slot::Invalid,
+                Some(sig) if *sig == Signature::default() => Slot::Empty,
+                Some(sig) if sig.verify(key.as_ref(), &message) => Slot::Signed,
+                Some(_) => Slot::Invalid,
+            };
+            (key.to_string(), slot)
+        })
+        .collect()
+}
+
 /// The x402 `exact` static layout every verify vector carries (§3.1):
 ///
 /// 1. ComputeBudget SetComputeUnitLimit (200_000)

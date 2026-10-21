@@ -18,7 +18,7 @@ use crate::case::{Intent, Mode};
 use crate::keys::{self, ata};
 use crate::realize::{self, Observed};
 use crate::run::vectors::Vector;
-use crate::tx::{decode_b64, decompile};
+use crate::tx::{decode_b64, decompile, signature_slots, Slot};
 
 /// Why a case failed, with the decoded expected and actual values and the
 /// first path where they diverge (DESIGN.md §6.2 element 3).
@@ -609,6 +609,7 @@ pub fn compare_transactions(
             got_signers, want_signers
         ));
     }
+    problems.extend(signature_problems(expected_tx, actual_tx)?);
     let mut missing = want.clone();
     let mut extra = Vec::new();
     for ix in &got {
@@ -643,6 +644,35 @@ pub fn compare_transactions(
         expected,
         actual,
     })
+}
+
+/// Every slot the SDK filled must hold a valid signature over the message,
+/// and the SDK must fill exactly the slots the kit fills: a co-signer's slot
+/// (the sponsoring fee payer, the x402 facilitator) stays empty.
+fn signature_problems(expected_tx: &str, actual_tx: &str) -> Result<Vec<String>, Failure> {
+    let want = signature_slots(&decode_b64(expected_tx).map_err(Failure::new)?);
+    let got = signature_slots(
+        &decode_b64(actual_tx)
+            .map_err(|e| Failure::new(format!("the SDK's transaction does not decode: {e}")))?,
+    );
+    let mut problems = Vec::new();
+    for (key, slot) in &got {
+        let name = annotate::address_name(key);
+        let reference = want.iter().find(|(k, _)| k == key).map(|(_, s)| *s);
+        match (slot, reference) {
+            (Slot::Invalid, _) => {
+                problems.push(format!("signature slot of {name} does not verify"))
+            }
+            (Slot::Signed, Some(Slot::Empty)) => problems.push(format!(
+                "signature slot of {name} is filled (Rust leaves it for the co-signer)"
+            )),
+            (Slot::Empty, Some(Slot::Signed)) => {
+                problems.push(format!("signature slot of {name} is empty (Rust signs it)"))
+            }
+            _ => {}
+        }
+    }
+    Ok(problems)
 }
 
 /// Judge an accepted build: the Rust verifier must accept it against the
@@ -840,6 +870,58 @@ mod tests {
             "{}",
             failure.message
         );
+    }
+
+    // charge-build-sponsored-fee-payer: the client signs only as transfer
+    // authority. Copying its signature into the sponsor's slot, or sending a
+    // signature that does not verify, fails the comparison.
+    #[test]
+    fn a_filled_sponsor_slot_or_a_bad_signature_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("charge-build-sponsored-fee-payer");
+        let built = match rt.block_on(realize::run(
+            Intent::Charge,
+            Mode::BuildTransaction,
+            v.input(),
+        )) {
+            Observed::Accept(o) => o.transaction.unwrap(),
+            other => panic!("{}", other.summary()),
+        };
+        compare_transactions(&built, &built, false).unwrap();
+        let tx = decode_b64(&built).unwrap();
+        let slots = signature_slots(&tx);
+        let sponsor = slots.iter().position(|(_, s)| *s == Slot::Empty).unwrap();
+        let client = slots.iter().position(|(_, s)| *s == Slot::Signed).unwrap();
+
+        let mut copied = tx.clone();
+        copied.signatures[sponsor] = copied.signatures[client];
+        let failure = compare_transactions(&built, &crate::tx::encode_b64(&copied).unwrap(), false)
+            .unwrap_err();
+        assert!(
+            failure.message.contains("does not verify"),
+            "{}",
+            failure.message
+        );
+
+        let mut corrupted = tx.clone();
+        let mut bytes: [u8; 64] = corrupted.signatures[client].into();
+        bytes[0] ^= 1;
+        corrupted.signatures[client] = bytes.into();
+        let failure =
+            compare_transactions(&built, &crate::tx::encode_b64(&corrupted).unwrap(), false)
+                .unwrap_err();
+        assert!(
+            failure.message.contains("does not verify"),
+            "{}",
+            failure.message
+        );
+
+        let mut unsigned = tx.clone();
+        unsigned.signatures[client] = Default::default();
+        let failure =
+            compare_transactions(&built, &crate::tx::encode_b64(&unsigned).unwrap(), false)
+                .unwrap_err();
+        assert!(failure.message.contains("is empty"), "{}", failure.message);
     }
 
     #[test]
