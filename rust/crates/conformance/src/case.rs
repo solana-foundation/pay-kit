@@ -464,6 +464,11 @@ pub enum Input {
     ChargeTransaction {
         base: Value,
         mutation: Option<Mutation>,
+        /// Build the transaction from this input's `request` instead of
+        /// `base.request`, so the server verifies a well-formed transaction
+        /// against a challenge the kit's builder would refuse (e.g. splits
+        /// that consume the whole amount). The vector carries `base`.
+        built_from: Option<Value>,
     },
     /// An x402 verify vector whose `input.x402PaymentHeader` carries a
     /// transaction in the scheme_exact_svm §3.1 static layout (see

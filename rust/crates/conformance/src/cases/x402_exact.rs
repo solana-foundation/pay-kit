@@ -18,23 +18,23 @@ use crate::mutate::Mutation;
 
 const V2: &str = "x402/specs/x402-specification-v2.md";
 const V1: &str = "x402/specs/x402-specification-v1.md";
-const SVM: &str = "x402/specs/schemes/exact/scheme_exact_svm.md";
+pub(super) const SVM: &str = "x402/specs/schemes/exact/scheme_exact_svm.md";
 const EXACT: &str = "x402/specs/schemes/exact/scheme_exact.md";
 const PID: &str = "x402/specs/extensions/payment_identifier.md";
 
 const PROOF_IN_PAYLOAD: &str = "X402-f870a56d25";
-const CLIENT_MEMO: &str = "X402-6b3e9350c8";
-const EXACTLY_ONE: &str = "X402-ee90546220";
+pub(super) const CLIENT_MEMO: &str = "X402-6b3e9350c8";
+pub(super) const EXACTLY_ONE: &str = "X402-ee90546220";
 const ZERO_MATCHING: &str = "X402-bac6bc288a";
 const MORE_THAN_ONE: &str = "X402-2f0d5ef017";
 const NOT_LESS: &str = "X402-516a2d7b57";
 const FEE_PAYER_NOT_AUTHORITY: &str = "X402-ed41478ffe";
-const FEE_PAYER_NOT_IN_ACCOUNTS: &str = "X402-6708749c55";
-const MEMO_ENFORCED: &str = "X402-c9a227ad88";
+pub(super) const FEE_PAYER_NOT_IN_ACCOUNTS: &str = "X402-6708749c55";
+pub(super) const MEMO_ENFORCED: &str = "X402-c9a227ad88";
 const DESTINATION: &str = "X402-f45fed3f51";
-const SPONSOR_BEFORE_SIGNING: &str = "X402-93650bf2e3";
+pub(super) const SPONSOR_BEFORE_SIGNING: &str = "X402-93650bf2e3";
 
-fn offer(network: &str, amount: &str, asset: &str, timeout: u64) -> Value {
+pub(super) fn offer(network: &str, amount: &str, asset: &str, timeout: u64) -> Value {
     json!({
         "scheme": "exact",
         "network": network,
@@ -46,7 +46,7 @@ fn offer(network: &str, amount: &str, asset: &str, timeout: u64) -> Value {
     })
 }
 
-fn build_input(version: Option<u64>, offer: Value, mint: &str, extra: Value) -> Value {
+pub(super) fn build_input(version: Option<u64>, offer: Value, mint: &str, extra: Value) -> Value {
     let mut input = json!({
         "x402Offer": offer,
         "signerSecretKey": client_secret(),
@@ -65,7 +65,7 @@ fn build_input(version: Option<u64>, offer: Value, mint: &str, extra: Value) -> 
 
 const BUILD_NOTE: &str = " Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.";
 
-const V2_SHAPE: [&str; 8] = [
+pub(super) const V2_SHAPE: [&str; 8] = [
     "x402Version",
     "hasAccepted",
     "payloadHasTransaction",
@@ -84,7 +84,7 @@ const V1_SHAPE: [&str; 5] = [
 ];
 
 #[allow(clippy::too_many_arguments)]
-fn build_case(
+pub(super) fn build_case(
     id: &str,
     file: &'static str,
     spec: SpecRef,
@@ -110,7 +110,7 @@ fn build_case(
     .build()
 }
 
-fn devnet_route() -> X402Route {
+pub(super) fn devnet_route() -> X402Route {
     X402Route {
         network: "devnet",
         recipient: X402_PAY_TO,
@@ -120,7 +120,7 @@ fn devnet_route() -> X402Route {
     }
 }
 
-fn header(route: X402Route) -> X402HeaderSpec {
+pub(super) fn header(route: X402Route) -> X402HeaderSpec {
     X402HeaderSpec {
         route,
         version: 2,
@@ -135,7 +135,7 @@ fn header(route: X402Route) -> X402HeaderSpec {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_case(
+pub(super) fn verify_case(
     id: &str,
     file: &'static str,
     bug: BugType,
@@ -166,7 +166,7 @@ fn verify_case(
 }
 
 /// A mutated verify case; the code comes from the operator table.
-fn mutation_case(
+pub(super) fn mutation_case(
     id: &str,
     spec: SpecRef,
     reqs: &[&str],
@@ -190,7 +190,7 @@ fn mutation_case(
     )
 }
 
-fn reject(code: RejectCode, reason: &str) -> Expect {
+pub(super) fn reject(code: RejectCode, reason: &str) -> Expect {
     Expect::Reject {
         code,
         reason: Some(reason.to_string()),

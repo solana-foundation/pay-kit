@@ -12,3 +12,43 @@ cross = true
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
+
+[[known_failing]]
+id = "vector/x402-exact-verify-extra-required-signer-reject"
+reason = "the x402 exact verifier accepts a third required signer (scheme_exact_svm.md §2.1.4); python/src/solana_pay_kit/protocols/x402/exact/verify.py:83 never checks the header's signer set"
+tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
+
+[[known_failing]]
+id = "vector/charge-build-sol-token-program-reject"
+reason = "the client builds a SOL charge whose challenge carries tokenProgram (python/src/solana_pay_kit/protocols/mpp/client/charge.py:208)"
+tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
+
+[[known_failing]]
+id = "vector/charge-build-fee-payer-without-key-reject"
+reason = "feePayer=true without feePayerKey falls back to a client-paid transaction (python/src/solana_pay_kit/protocols/mpp/client/charge.py:169)"
+tracking = "FINDINGS.md#charge-client-fee-payer-without-key"
+
+[[known_failing]]
+id = "vector/charge-build-unknown-network-reject"
+reason = "the client builds for network \"testnet\"; the network guard is opt-in (python/src/solana_pay_kit/protocols/mpp/client/charge.py:88)"
+tracking = "FINDINGS.md#charge-client-unknown-network"
+
+[[known_failing]]
+id = "vector/charge-build-amount-overflow-reject"
+reason = "amount 2^64 is refused only because solders cannot encode it (\"int too big to convert\"); no u64 check at python/src/solana_pay_kit/protocols/mpp/client/charge.py:155"
+tracking = "FINDINGS.md#charge-client-amount-not-u64-validated"
+
+[[known_failing]]
+id = "vector/charge-verify-sol-ata-creation-required-reject"
+reason = "refuses as a missing ATA creation (python/src/solana_pay_kit/protocols/mpp/server/_verify.py:550) instead of refusing the out-of-spec challenge"
+tracking = "FINDINGS.md#python-charge-sol-ata-creation-required-order"
+
+[[known_failing]]
+id = "vector/charge-verify-fee-payer-not-server-key-reject"
+reason = "under feePayer=true account 0 is never compared with feePayerKey before co-signing (python/src/solana_pay_kit/protocols/mpp/server/_verify.py:558)"
+tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"
+
+[[known_failing]]
+id = "vector/x402-exact-verify-fee-payer-sol-drain-reject"
+reason = "refused by the static-layout check (unknown_fourth_instruction) before fee-payer isolation (python/src/solana_pay_kit/protocols/x402/exact/verify.py:154)"
+tracking = "FINDINGS.md#x402-fee-payer-drain-category"

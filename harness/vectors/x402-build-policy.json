@@ -1,0 +1,124 @@
+[
+  {
+    "bugType": "wire",
+    "description": "The offer sets extra.memo; the client must write exactly that text as the Memo instruction data (the judge compares the decoded instructions, memo text included, with the kit's build). Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "acceptedAmount": "1000",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedScheme": "exact",
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "x402Version": 2
+      }
+    },
+    "id": "x402-exact-build-uses-extra-memo",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "memo": "pi_conformance_build_01"
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d5f1ded529",
+      "X402-6b3e9350c8"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "When present, the client MUST use this value as the Memo instruction data instead of a random nonce.",
+      "section": "PaymentRequirements for exact"
+    },
+    "tier": "offline"
+  }
+]

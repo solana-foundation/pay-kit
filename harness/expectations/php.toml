@@ -23,6 +23,16 @@ ids = [
   "vector/charge-token-program-lookup-missing-mint-reject",
   "vector/charge-token-program-unexpected-owner-reject",
   "vector/charge-token2022-program-from-mint-owner",
+  "vector/charge-build-amount-overflow-reject",
+  "vector/charge-build-fee-payer-without-key-reject",
+  "vector/charge-build-sol-ata-creation-required-reject",
+  "vector/charge-build-sol-token-program-reject",
+  "vector/charge-build-splits-exceed-amount-reject",
+  "vector/charge-build-sponsored-fee-payer",
+  "vector/charge-build-too-many-splits-reject",
+  "vector/charge-build-two-splits",
+  "vector/charge-build-unknown-network-reject",
+  "vector/charge-build-zero-amount-reject",
 ]
 
 
@@ -37,4 +47,15 @@ ids = [
   "vector/x402-ext-echo-payment-identifier-pinned-id",
   "vector/x402-ext-omit-when-none-advertised",
   "vector/x402-ext-preserve-unknown-verbatim",
+  "vector/x402-exact-build-uses-extra-memo",
 ]
+
+[[known_failing]]
+id = "vector/x402-exact-verify-extra-required-signer-reject"
+reason = "the x402 exact verifier accepts a third required signer (scheme_exact_svm.md §2.1.4); php/src/Protocols/X402/Exact/Verifier.php:61 never checks the header's signer set"
+tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
+
+[[known_failing]]
+id = "vector/x402-exact-verify-fee-payer-sol-drain-reject"
+reason = "refused by the static-layout check (unknown_fourth_instruction) before fee-payer isolation (php/src/Protocols/X402/Exact/Verifier.php:115)"
+tracking = "FINDINGS.md#x402-fee-payer-drain-category"

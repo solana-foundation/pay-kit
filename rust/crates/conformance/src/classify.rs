@@ -24,6 +24,39 @@ pub fn classify(message: &str) -> Option<RejectCode> {
         || (has("compute unit limit") && (has("exceed") || has("cap") || has("maximum")))
     {
         ComputeLimitOverCap
+    } else if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
+        // The charge verifier's SOL / SPL funding-source checks.
+        FeePayerIsFundsSource
+    } else if has("primary amount is zero after splits") || has("split amounts exceed") {
+        SplitsExceedAmount
+    } else if has("splits exceed maximum") {
+        TooManySplits
+    } else if has("ata creation owner is not authorized")
+        || has("unsupported compute budget")
+        || has("unexpected_signer")
+    {
+        // ATA creation for an owner the challenge does not authorize, a
+        // ComputeBudget instruction other than unit limit / unit price, a
+        // required signer beyond the client and the sponsor.
+        UnexpectedInstruction
+    } else if has("atacreationrequired requires")
+        || has("unsupported challenge network")
+        || has("invalid amount")
+        || has("requires feepayerkey")
+    {
+        // The challenge itself is out of spec: an SPL-only flag on a SOL
+        // charge, a cluster outside mainnet/devnet/localnet, an amount that
+        // is not a u64, feePayer without feePayerKey.
+        InvalidChallenge
+    } else if has("ata creation")
+        || has("ata payer")
+        || has("transaction fee payer must be")
+        || has("transaction fee payer mismatch")
+        || has("memo cannot exceed")
+    {
+        // A malformed ATA creation for an authorized owner, a missing
+        // required one, the wrong transaction fee payer, an oversized memo.
+        InvalidPayload
     } else if has("invalid challenge")
         || has("decimals is required")
         || has("failed to determine token program")
@@ -159,6 +192,30 @@ mod tests {
             (
                 "methodDetails.decimals is required for SPL charges (spec §7.2)",
                 RejectCode::InvalidChallenge,
+            ),
+            (
+                "Fee payer cannot fund the SOL payment transfer",
+                RejectCode::FeePayerIsFundsSource,
+            ),
+            (
+                "Primary amount is zero after splits",
+                RejectCode::SplitsExceedAmount,
+            ),
+            (
+                "ATA creation owner is not authorized by the challenge",
+                RejectCode::UnexpectedInstruction,
+            ),
+            (
+                "Unsupported compute budget instruction",
+                RejectCode::UnexpectedInstruction,
+            ),
+            (
+                "ATA payer must match the transaction fee payer",
+                RejectCode::InvalidPayload,
+            ),
+            (
+                "Missing required ATA creation instruction for split recipient X",
+                RejectCode::InvalidPayload,
             ),
         ];
         for (message, code) in table {

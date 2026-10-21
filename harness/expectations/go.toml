@@ -26,3 +26,53 @@ ids = [
   "vector/session-wire-request-resume-frozen",
   "vector/session-wire-request-superseded-draft-reject",
 ]
+
+[[known_failing]]
+id = "vector/x402-exact-verify-extra-required-signer-reject"
+reason = "the x402 exact verifier accepts a third required signer (scheme_exact_svm.md §2.1.4); go/protocols/x402/verify.go:81 never checks the header's signer set"
+tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
+
+[[known_failing]]
+id = "vector/charge-build-sol-token-program-reject"
+reason = "the client builds a SOL charge whose challenge carries tokenProgram (go/protocols/mpp/client/charge.go:92)"
+tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
+
+[[known_failing]]
+id = "vector/charge-build-fee-payer-without-key-reject"
+reason = "feePayer=true without feePayerKey falls back to a client-paid transaction (go/protocols/mpp/client/charge.go:87)"
+tracking = "FINDINGS.md#charge-client-fee-payer-without-key"
+
+[[known_failing]]
+id = "vector/charge-build-unknown-network-reject"
+reason = "the client builds for network \"testnet\"; the network guard is opt-in (go/protocols/mpp/client/charge.go:327)"
+tracking = "FINDINGS.md#charge-client-unknown-network"
+
+[[known_failing]]
+id = "vector/charge-build-sol-ata-creation-required-reject"
+reason = "the client's SOL branch ignores ataCreationRequired (go/protocols/mpp/client/charge.go:92)"
+tracking = "FINDINGS.md#go-charge-sol-ata-creation-required"
+
+[[known_failing]]
+id = "vector/charge-verify-sol-ata-creation-required-reject"
+reason = "the server's native SOL branch ignores ataCreationRequired (go/protocols/mpp/server/server.go:757)"
+tracking = "FINDINGS.md#go-charge-sol-ata-creation-required"
+
+[[known_failing]]
+id = "vector/charge-verify-ata-for-top-level-recipient-reject"
+reason = "the ATA owner allowlist includes the top-level recipient (go/protocols/mpp/server/server.go:938)"
+tracking = "FINDINGS.md#go-charge-ata-owner-allowlist"
+
+[[known_failing]]
+id = "vector/charge-verify-sponsored-ata-top-level-reject"
+reason = "under feePayer=true the ATA owner allowlist includes the top-level recipient (go/protocols/mpp/server/server.go:938)"
+tracking = "FINDINGS.md#go-charge-ata-owner-allowlist"
+
+[[known_failing]]
+id = "vector/charge-verify-sponsored-ata-unmarked-split-reject"
+reason = "under feePayer=true the ATA owner allowlist includes splits without ataCreationRequired (go/protocols/mpp/server/server.go:938)"
+tracking = "FINDINGS.md#go-charge-ata-owner-allowlist"
+
+[[known_failing]]
+id = "vector/charge-verify-fee-payer-not-server-key-reject"
+reason = "under feePayer=true account 0 is never compared with feePayerKey (go/protocols/mpp/server/server.go:595)"
+tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"

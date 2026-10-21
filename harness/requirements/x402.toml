@@ -78,6 +78,48 @@ doc = "specs/schemes/exact/scheme_exact.md"
 text = "The proof artifact MUST be carried in PaymentPayload.payload."
 required = true
 
+[[requirement]]
+id = "X402-0ad718daab"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The sponsor's signature MUST be used only to authorize payment of transaction fees."
+required = true
+
+[[requirement]]
+id = "X402-27bff260c3"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Additional signatures MAY be present but MUST NOT be required for transaction validity."
+required = true
+
+[[requirement]]
+id = "X402-985ecc1ea3"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The sponsor MUST reject any transaction in which the sponsor's funds could be debited beyond the network fee — including SOL transfers from sponsor-controlled accounts, token transfers for which the sponsor is the authority, or account closures/reallocations that move the sponsor's lamports."
+required = true
+
+[[requirement]]
+id = "X402-9b240d95a0"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The transaction MUST NOT require any signatures beyond the client and the sponsor (feePayer)."
+required = true
+
+[[requirement]]
+id = "X402-a1cf65b0f0"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "These are wallet-injected user protection mechanisms and MUST be allowed."
+required = true
+
+[[requirement]]
+id = "X402-a8bd75d71b"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The decompiled transaction MUST contain 3 to 7 instructions in this order:"
+required = true
+
+[[requirement]]
+id = "X402-d5f1ded529"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "When present, the client MUST use this value as the Memo instruction data instead of a random nonce."
+required = true
+
 # Noise: normative sentences that do not apply to SVM, with the reason.
 
 [[ignore]]

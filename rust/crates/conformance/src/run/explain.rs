@@ -154,6 +154,10 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
     let mut refs = Vec::new();
     let input = vector.input();
     let entry = match vector.file.as_str() {
+        f if f.ends_with("-policy.json") && f.starts_with("x402") => {
+            "rust/crates/conformance/src/cases/x402_policy.rs"
+        }
+        f if f.ends_with("-policy.json") => "rust/crates/conformance/src/cases/charge_policy.rs",
         f if f.starts_with("x402") => "rust/crates/conformance/src/cases/x402_exact.rs",
         f if f.starts_with("session") => "rust/crates/conformance/src/cases/session.rs",
         f if f.starts_with("charge") => "rust/crates/conformance/src/cases/charge.rs",

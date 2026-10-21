@@ -10,8 +10,10 @@ use crate::keys;
 
 pub mod canonical;
 pub mod charge;
+pub mod charge_policy;
 pub mod session;
 pub mod x402_exact;
+pub mod x402_policy;
 
 /// `registry! { name => case_expr; ... }`: one constructor fn per case, the
 /// module's `cases()`, and a positive-control `#[test]` per case that also
@@ -54,8 +56,10 @@ pub fn all() -> Vec<crate::case::Case> {
     let mut out = Vec::new();
     out.extend(canonical::cases());
     out.extend(charge::cases());
+    out.extend(charge_policy::cases());
     out.extend(session::cases());
     out.extend(x402_exact::cases());
+    out.extend(x402_policy::cases());
     out
 }
 

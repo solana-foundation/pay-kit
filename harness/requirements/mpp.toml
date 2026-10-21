@@ -151,3 +151,183 @@ id = "MPP-f4eca94243"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "Implementations MUST NOT append = padding when encoding, and MUST accept input with or without padding when decoding."
 required = true
+
+[[requirement]]
+id = "MPP-0399450c79"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The instruction mint MUST be the challenge currency."
+required = true
+
+[[requirement]]
+id = "MPP-1180595e82"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Servers MUST verify each split transfer on-chain during credential verification."
+required = true
+
+[[requirement]]
+id = "MPP-1659a03107"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Each required payment leg MUST be matched to a distinct transfer instruction."
+required = true
+
+[[requirement]]
+id = "MPP-1fe20b9485"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When feePayer is true, the client MUST include an idempotent ATA creation instruction for each split recipient whose split entry sets ataCreationRequired to true, and MUST NOT include ATA creation instructions for the top-level recipient, unmarked split recipients, or arbitrary owners."
+required = true
+
+[[requirement]]
+id = "MPP-2d30d806c0"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "MUST verify the transaction contents before signing (see {{transaction-verification}})"
+required = true
+
+[[requirement]]
+id = "MPP-304370cfc4"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The instruction payer MUST be the transaction fee payer."
+required = true
+
+[[requirement]]
+id = "MPP-3d2ad6ef40"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "MUST NOT exceed 566 bytes (Solana Memo Program limit)."
+required = true
+
+[[requirement]]
+id = "MPP-438c3bfb12"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The instruction token program MUST be the challenge tokenProgram."
+required = true
+
+[[requirement]]
+id = "MPP-4b02ff0c39"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When present, the client MUST include a transfer instruction for each split in addition to the primary transfer to recipient."
+required = true
+
+[[requirement]]
+id = "MPP-4f9c5997c8"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Each required payment leg MUST be matched to a distinct transferChecked instruction."
+required = true
+
+[[requirement]]
+id = "MPP-58f2b1922a"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When true, the feePayerKey field MUST also be present."
+required = true
+
+[[requirement]]
+id = "MPP-5b4687796d"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The client MUST NOT include ATA creation instructions for the top-level recipient."
+required = true
+
+[[requirement]]
+id = "MPP-681f5e090f"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The instruction owner MUST be a recipient listed in splits, subject to the fee payer restrictions below."
+required = true
+
+[[requirement]]
+id = "MPP-6d81f2478f"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When true, the client MUST include an idempotent Associated Token Account creation instruction for this split recipient's ATA before the split transfer."
+required = true
+
+[[requirement]]
+id = "MPP-73af393543"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The sum of all split amounts MUST NOT exceed amount."
+required = true
+
+[[requirement]]
+id = "MPP-74cf327879"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The ATA address MUST be the canonical Associated Token Account PDA for the owner, mint, and token program."
+required = true
+
+[[requirement]]
+id = "MPP-837333ec9f"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The client MUST set the server's feePayerKey as the transaction fee payer."
+required = true
+
+[[requirement]]
+id = "MPP-95730a55e2"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Servers MUST reject challenges where splits consume the entire amount."
+required = true
+
+[[requirement]]
+id = "MPP-a6f3950ec9"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The value MUST be a positive integer that fits in a 64-bit unsigned integer (max 18,446,744,073,709,551,615)."
+required = true
+
+[[requirement]]
+id = "MPP-ab401714b4"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The instruction MUST be the Associated Token Program's idempotent create instruction."
+required = true
+
+[[requirement]]
+id = "MPP-b333c50e7e"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The client MUST include an ATA creation instruction for that split recipient before the split transfer."
+required = true
+
+[[requirement]]
+id = "MPP-b4a76cab12"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The fee payer signature slot MUST be left empty for the server to fill."
+required = true
+
+[[requirement]]
+id = "MPP-b769615b39"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "This field MUST NOT be true unless currency is an SPL token mint address."
+required = true
+
+[[requirement]]
+id = "MPP-baa94f08cb"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Clients MUST NOT include fee-payer-funded ATA creation instructions for the top-level recipient, unmarked split recipients, or arbitrary owners."
+required = true
+
+[[requirement]]
+id = "MPP-c1ed754e32"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The transaction MUST have the server's feePayerKey set as the fee payer account."
+required = true
+
+[[requirement]]
+id = "MPP-d5e5d796c6"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When feePayer is true, the transaction MUST set the server's feePayerKey as fee payer, and the client signs only as transfer authority; the server adds the fee payer signature before broadcasting (see {{fee-sponsorship}})."
+required = true
+
+[[requirement]]
+id = "MPP-d63913e921"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Clients MUST NOT include ATA creation instructions for the top-level recipient or any other owner."
+required = true
+
+[[requirement]]
+id = "MPP-de0815e07c"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When feePayer is true: clients MUST set feePayerKey from methodDetails as the transaction fee payer and MUST sign only with the transfer authority key."
+required = true
+
+[[requirement]]
+id = "MPP-ec29292f9d"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "MUST be one of \"mainnet\", \"devnet\", or \"localnet\"."
+required = true
+
+[[requirement]]
+id = "MPP-fde6ebf8c7"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "MUST NOT be present when currency is \"sol\"."
+required = true

@@ -12,18 +12,33 @@
 //! so a mutation never fails for an unrelated reason such as a stale
 //! signature (except [`Mutation::DropSignature`], whose point that is).
 
-use solana_instruction::AccountMeta;
+use solana_instruction::{AccountMeta, Instruction};
 use solana_transaction::versioned::VersionedTransaction;
 
 use crate::case::{RejectCode, Suite};
 use crate::keys::{
-    self, ata, pubkey, MEMO_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
+    self, ata, pubkey, ATA_PROGRAM, MEMO_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
 };
 use crate::tx::{compile_v0, decompile, sign_slots};
 
 /// Selects the n-th (0-based) value transfer: System `Transfer` or SPL
 /// `TransferChecked`, in instruction order.
 pub type TransferIndex = usize;
+
+/// One field of an Associated Token Account creation instruction, changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtaEdit {
+    /// The account that funds the rent (account 0).
+    Payer(&'static str),
+    /// The mint (account 3); the ATA address is re-derived to match.
+    Mint(&'static str),
+    /// The token program (account 5); the ATA address is re-derived.
+    TokenProgram(&'static str),
+    /// The ATA address (account 1) set to `owner`'s ATA instead.
+    Address { owner: &'static str },
+    /// Non-idempotent `Create` (empty data) instead of `CreateIdempotent`.
+    NonIdempotent,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mutation {
@@ -70,6 +85,35 @@ pub enum Mutation {
     FeePayerAsAccount { memo: usize },
     /// Make the fee payer the transfer authority.
     FeePayerAsAuthority { transfer: TransferIndex },
+    /// Make the fee payer the funding source of the n-th SOL transfer (its
+    /// `from`, which on a System transfer is also the authority).
+    FeePayerAsSolSource { transfer: TransferIndex },
+    /// Append a System transfer of `lamports` from the fee payer to `to`: a
+    /// sponsor drain that is not a payment leg.
+    FeePayerSystemTransfer { to: &'static str, lamports: u64 },
+    /// Insert an idempotent Associated Token Account creation for `owner`
+    /// (mint and token program of transfer #0, payer = fee payer) before
+    /// transfer #0.
+    AddCreateAta { owner: &'static str },
+    /// Edit the n-th Associated Token Program instruction the kit built.
+    EditCreateAta { index: usize, edit: AtaEdit },
+    /// Remove the n-th Associated Token Program instruction.
+    DropCreateAta { index: usize },
+    /// Insert a ComputeBudget instruction with raw `data` at the front.
+    AddComputeBudget { data: &'static [u8] },
+    /// Replace the data of the n-th ComputeBudget instruction.
+    SetComputeBudgetData { index: usize, data: &'static [u8] },
+    /// Insert an instruction of `program` (no accounts, `data`) after the
+    /// last value transfer.
+    AddProgramInstruction {
+        program: &'static str,
+        data: &'static [u8],
+    },
+    /// Duplicate the n-th Memo instruction right after itself.
+    DuplicateMemo { memo: usize },
+    /// Make the key of `seed` a required signer (a read-only signer account
+    /// of the n-th Memo instruction) and sign with it.
+    ExtraSigner { memo: usize, seed: [u8; 32] },
     /// Envelope: claim another network in `accepted.network` (x402 v2).
     WrongNetwork { network: &'static str },
     /// Challenge expiry in the past. Not expressible offline in the vector
@@ -108,6 +152,19 @@ impl Mutation {
             (FeePayerAsAuthority { .. }, Suite::Charge | Suite::X402Exact) => {
                 Some(FeePayerNotAuthority)
             }
+            (FeePayerAsSolSource { .. }, Suite::Charge) => Some(FeePayerIsFundsSource),
+            (FeePayerSystemTransfer { .. }, Suite::Charge) => Some(UnexpectedInstruction),
+            (FeePayerSystemTransfer { .. }, Suite::X402Exact) => Some(FeePayerNotAuthority),
+            (AddCreateAta { .. }, Suite::Charge) => Some(UnexpectedInstruction),
+            (EditCreateAta { .. } | DropCreateAta { .. }, Suite::Charge) => Some(InvalidPayload),
+            (AddComputeBudget { .. }, Suite::X402Exact) => Some(InvalidPayload),
+            (AddComputeBudget { .. }, Suite::Charge) => Some(UnexpectedInstruction),
+            (SetComputeBudgetData { .. }, Suite::X402Exact) => Some(InvalidPayload),
+            (AddProgramInstruction { .. }, Suite::Charge | Suite::X402Exact) => {
+                Some(UnexpectedInstruction)
+            }
+            (ExtraSigner { .. }, Suite::X402Exact) => Some(UnexpectedInstruction),
+            (DuplicateMemo { .. }, Suite::X402Exact) => Some(InvalidPayload),
             (Mutation::WrongNetwork { .. }, Suite::X402Exact) => Some(RejectCode::AcceptedMismatch),
             _ => None,
         }
@@ -158,6 +215,42 @@ impl Mutation {
             Mutation::FeePayerAsAuthority { transfer } => {
                 format!("fee payer made the authority of transfer #{transfer}")
             }
+            Mutation::FeePayerAsSolSource { transfer } => {
+                format!("fee payer made the funding source of SOL transfer #{transfer}")
+            }
+            Mutation::FeePayerSystemTransfer { to, lamports } => {
+                format!("System transfer of {lamports} lamports from the fee payer to {to} added")
+            }
+            Mutation::AddCreateAta { owner } => {
+                format!("idempotent ATA creation for {owner}, paid by the fee payer, added")
+            }
+            Mutation::EditCreateAta { index, edit } => {
+                let what = match edit {
+                    AtaEdit::Payer(p) => format!("payer set to {p}"),
+                    AtaEdit::Mint(m) => format!("mint set to {m} (address re-derived)"),
+                    AtaEdit::TokenProgram(p) => {
+                        format!("token program set to {p} (address re-derived)")
+                    }
+                    AtaEdit::Address { owner } => format!("address set to {owner}'s ATA"),
+                    AtaEdit::NonIdempotent => "made a non-idempotent Create".into(),
+                };
+                format!("ATA creation #{index} {what}")
+            }
+            Mutation::DropCreateAta { index } => format!("ATA creation #{index} removed"),
+            Mutation::AddComputeBudget { data } => {
+                format!("ComputeBudget instruction with data {data:?} added")
+            }
+            Mutation::SetComputeBudgetData { index, data } => {
+                format!("ComputeBudget instruction #{index} data set to {data:?}")
+            }
+            Mutation::AddProgramInstruction { program, data } => {
+                format!("instruction of program {program} with data {data:?} added")
+            }
+            Mutation::DuplicateMemo { memo } => format!("memo #{memo} duplicated"),
+            Mutation::ExtraSigner { memo, seed } => format!(
+                "{} added as a required signer of memo #{memo}",
+                keys::pubkey_of_seed(*seed)
+            ),
             Mutation::WrongNetwork { network } => format!("accepted.network set to {network}"),
             Mutation::ExpireChallenge => "challenge expiry moved into the past".into(),
         }
@@ -208,6 +301,18 @@ impl Mutation {
                 .get(n)
                 .copied()
                 .ok_or_else(|| format!("transaction has no transfer #{n}"))
+        };
+        let atas: Vec<usize> = d
+            .instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, ix)| ix.program_id == pubkey(ATA_PROGRAM))
+            .map(|(i, _)| i)
+            .collect();
+        let ata_at = |n: usize| {
+            atas.get(n)
+                .copied()
+                .ok_or_else(|| format!("transaction has no ATA creation #{n}"))
         };
         let memo_at = |n: usize| {
             memos
@@ -306,6 +411,124 @@ impl Mutation {
                     ix.accounts[3] = AccountMeta::new_readonly(fee_payer, true);
                 }
             }
+            Mutation::FeePayerAsSolSource { transfer } => {
+                let at = transfer_at(*transfer)?;
+                let fee_payer = d.fee_payer;
+                let ix = &mut d.instructions[at];
+                if ix.program_id != pubkey(SYSTEM_PROGRAM) {
+                    return Err("FeePayerAsSolSource needs a System transfer".into());
+                }
+                ix.accounts[0] = AccountMeta::new(fee_payer, true);
+            }
+            Mutation::FeePayerSystemTransfer { to, lamports } => {
+                let mut data = 2u32.to_le_bytes().to_vec();
+                data.extend_from_slice(&lamports.to_le_bytes());
+                let ix = Instruction {
+                    program_id: pubkey(SYSTEM_PROGRAM),
+                    accounts: vec![
+                        AccountMeta::new(d.fee_payer, true),
+                        AccountMeta::new(pubkey(to), false),
+                    ],
+                    data,
+                };
+                let after = transfers
+                    .last()
+                    .map(|t| t + 1)
+                    .unwrap_or(d.instructions.len());
+                d.instructions.insert(after, ix);
+            }
+            Mutation::AddCreateAta { owner } => {
+                let at = transfer_at(0)?;
+                let transfer = &d.instructions[at];
+                if transfer.program_id == pubkey(SYSTEM_PROGRAM) {
+                    return Err("AddCreateAta needs an SPL transfer".into());
+                }
+                let mint = transfer.accounts[1].pubkey.to_string();
+                let program = transfer.program_id.to_string();
+                let ix = create_ata(d.fee_payer, owner, &mint, &program, owner);
+                d.instructions.insert(at, ix);
+            }
+            Mutation::EditCreateAta { index, edit } => {
+                let at = ata_at(*index)?;
+                let ix = &mut d.instructions[at];
+                let owner = ix.accounts[2].pubkey.to_string();
+                let mut mint = ix.accounts[3].pubkey.to_string();
+                let mut program = ix.accounts[5].pubkey.to_string();
+                match edit {
+                    AtaEdit::Payer(payer) => {
+                        let payer = pubkey(payer);
+                        ix.accounts[0] = AccountMeta::new(payer, true);
+                    }
+                    AtaEdit::Mint(m) => {
+                        mint = m.to_string();
+                        ix.accounts[3].pubkey = pubkey(m);
+                        ix.accounts[1].pubkey = ata(&owner, &mint, &program);
+                    }
+                    AtaEdit::TokenProgram(p) => {
+                        program = p.to_string();
+                        ix.accounts[5].pubkey = pubkey(p);
+                        ix.accounts[1].pubkey = ata(&owner, &mint, &program);
+                    }
+                    AtaEdit::Address { owner } => {
+                        ix.accounts[1].pubkey = ata(owner, &mint, &program);
+                    }
+                    AtaEdit::NonIdempotent => ix.data = Vec::new(),
+                }
+            }
+            Mutation::DropCreateAta { index } => {
+                d.instructions.remove(ata_at(*index)?);
+            }
+            Mutation::AddComputeBudget { data } => {
+                d.instructions.insert(
+                    0,
+                    Instruction {
+                        program_id: pubkey(keys::COMPUTE_BUDGET_PROGRAM),
+                        accounts: vec![],
+                        data: data.to_vec(),
+                    },
+                );
+            }
+            Mutation::SetComputeBudgetData { index, data } => {
+                let at = d
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ix)| ix.program_id == pubkey(keys::COMPUTE_BUDGET_PROGRAM))
+                    .map(|(i, _)| i)
+                    .nth(*index)
+                    .ok_or_else(|| format!("transaction has no ComputeBudget #{index}"))?;
+                d.instructions[at].data = data.to_vec();
+            }
+            Mutation::AddProgramInstruction { program, data } => {
+                let after = transfers
+                    .last()
+                    .map(|t| t + 1)
+                    .unwrap_or(d.instructions.len());
+                d.instructions.insert(
+                    after,
+                    Instruction {
+                        program_id: pubkey(program),
+                        accounts: vec![],
+                        data: data.to_vec(),
+                    },
+                );
+            }
+            Mutation::DuplicateMemo { memo } => {
+                let at = memo_at(*memo)?;
+                let copy = d.instructions[at].clone();
+                d.instructions.insert(at + 1, copy);
+            }
+            Mutation::ExtraSigner { memo, seed } => {
+                let at = memo_at(*memo)?;
+                d.instructions[at]
+                    .accounts
+                    .push(AccountMeta::new_readonly(keys::pubkey_of_seed(*seed), true));
+                let mut out = compile_v0(&d)?;
+                let mut seeds = signers.to_vec();
+                seeds.push(*seed);
+                sign_slots(&mut out, &seeds);
+                return Ok(out);
+            }
             Mutation::WrongNetwork { .. } | Mutation::ExpireChallenge | Mutation::DropSignature => {
                 unreachable!("handled above")
             }
@@ -313,6 +536,29 @@ impl Mutation {
         let mut out = compile_v0(&d)?;
         sign_slots(&mut out, signers);
         Ok(out)
+    }
+}
+
+/// `CreateIdempotent` for `owner`'s ATA of `mint` under `program`, with the
+/// address derived for `address_owner` (normally `owner`).
+fn create_ata(
+    payer: solana_pubkey::Pubkey,
+    owner: &str,
+    mint: &str,
+    program: &str,
+    address_owner: &str,
+) -> Instruction {
+    Instruction {
+        program_id: pubkey(ATA_PROGRAM),
+        accounts: vec![
+            AccountMeta::new(payer, true),
+            AccountMeta::new(ata(address_owner, mint, program), false),
+            AccountMeta::new_readonly(pubkey(owner), false),
+            AccountMeta::new_readonly(pubkey(mint), false),
+            AccountMeta::new_readonly(pubkey(SYSTEM_PROGRAM), false),
+            AccountMeta::new_readonly(pubkey(program), false),
+        ],
+        data: vec![1],
     }
 }
 

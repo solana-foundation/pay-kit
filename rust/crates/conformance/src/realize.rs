@@ -166,8 +166,12 @@ pub async fn realize(case: &Case) -> Result<Realized, String> {
 pub async fn materialize(case: &Case) -> Result<Value, String> {
     match &case.input {
         Input::Static(value) => Ok(value.clone()),
-        Input::ChargeTransaction { base, mutation } => {
-            let transaction = charge_build(base).await?;
+        Input::ChargeTransaction {
+            base,
+            mutation,
+            built_from,
+        } => {
+            let transaction = charge_build(built_from.as_ref().unwrap_or(base)).await?;
             let transaction = match mutation {
                 None => transaction,
                 Some(mutation) => {

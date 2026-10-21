@@ -46,6 +46,30 @@ ids = [
   "vector/session-voucher-window-at-boundary",
   "vector/session-voucher-window-one-above",
   "vector/session-voucher-window-one-below",
+  "vector/charge-verify-ata-for-arbitrary-owner-reject",
+  "vector/charge-verify-ata-for-top-level-recipient-reject",
+  "vector/charge-verify-ata-noncanonical-address-reject",
+  "vector/charge-verify-ata-not-idempotent-reject",
+  "vector/charge-verify-ata-payer-not-fee-payer-reject",
+  "vector/charge-verify-ata-required-missing-reject",
+  "vector/charge-verify-ata-wrong-mint-reject",
+  "vector/charge-verify-ata-wrong-token-program-reject",
+  "vector/charge-verify-compute-budget-heap-frame-reject",
+  "vector/charge-verify-external-id-over-memo-limit-reject",
+  "vector/charge-verify-fee-payer-not-server-key-reject",
+  "vector/charge-verify-sol-ata-creation-required-reject",
+  "vector/charge-verify-sol-split-transfer-missing-reject",
+  "vector/charge-verify-split-transfer-missing-reject",
+  "vector/charge-verify-splits-consume-amount-reject",
+  "vector/charge-verify-splits-exceed-amount-reject",
+  "vector/charge-verify-sponsored-ata-required-accept",
+  "vector/charge-verify-sponsored-ata-top-level-reject",
+  "vector/charge-verify-sponsored-ata-unmarked-split-reject",
+  "vector/charge-verify-sponsored-fee-payer-drain-reject",
+  "vector/charge-verify-sponsored-sol-fee-payer-source-reject",
+  "vector/charge-verify-too-many-splits-reject",
+  "vector/charge-verify-two-splits-accept",
+  "vector/charge-verify-unknown-program-reject",
 ]
 
 [[unsupported]]
@@ -71,4 +95,21 @@ ids = [
   "vector/x402-exact-verify-two-transfers-reject",
   "vector/x402-exact-verify-underpayment-reject",
   "vector/x402-exact-verify-zero-transfers-reject",
+  "vector/x402-exact-verify-compute-heap-frame-reject",
+  "vector/x402-exact-verify-duplicate-memo-reject",
+  "vector/x402-exact-verify-extra-compute-budget-reject",
+  "vector/x402-exact-verify-extra-required-signer-reject",
+  "vector/x402-exact-verify-fee-payer-sol-drain-reject",
+  "vector/x402-exact-verify-lighthouse-accept",
+  "vector/x402-exact-verify-unknown-program-reject",
 ]
+
+[[known_failing]]
+id = "vector/charge-build-sol-token-program-reject"
+reason = "the client builds a SOL charge whose challenge carries tokenProgram (swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:319)"
+tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
+
+[[known_failing]]
+id = "vector/charge-build-unknown-network-reject"
+reason = "the client builds for network \"testnet\"; the network guard is opt-in (swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:164)"
+tracking = "FINDINGS.md#charge-client-unknown-network"

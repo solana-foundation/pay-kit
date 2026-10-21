@@ -12,3 +12,13 @@ cross = true
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
+
+[[known_failing]]
+id = "vector/charge-build-sol-token-program-reject"
+reason = "the client builds a SOL charge whose challenge carries tokenProgram (rust/crates/kit/src/mpp/client/charge.rs:376); the case records the kit divergence"
+tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
+
+[[known_failing]]
+id = "vector/charge-build-fee-payer-without-key-reject"
+reason = "feePayer=true without feePayerKey falls back to a client-paid transaction (rust/crates/kit/src/mpp/client/charge.rs:333); the case records the kit divergence"
+tracking = "FINDINGS.md#charge-client-fee-payer-without-key"

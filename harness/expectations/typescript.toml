@@ -47,3 +47,33 @@ ids = [
 id = "vector/x402-exact-verify-overpayment-accept"
 reason = "the vendored upstream @x402/svm 2.26.0 facilitator enforces an exact amount on its static path (scheme_exact_svm.md §3.1), a stricter sponsor policy pay-kit inherits by default (RULINGS S5); the fix belongs upstream in the x402 fork"
 tracking = "FINDINGS.md#x402-overpayment-rejected"
+
+[[known_failing]]
+id = "vector/x402-exact-verify-extra-required-signer-reject"
+reason = "the vendored upstream @x402/svm static path accepts a third required signer (scheme_exact_svm.md §2.1.4); maxRequiredSignatures is unset in pay-kit (typescript/packages/pay-kit/src/config.ts:48)"
+tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
+
+[[known_failing]]
+id = "vector/charge-build-sol-token-program-reject"
+reason = "the client builds a SOL charge whose challenge carries tokenProgram (typescript/packages/mpp/src/client/Charge.ts:331)"
+tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
+
+[[known_failing]]
+id = "vector/charge-build-unknown-network-reject"
+reason = "the client builds for network \"testnet\" and falls back to the mainnet RPC (typescript/packages/mpp/src/client/Charge.ts:187)"
+tracking = "FINDINGS.md#charge-client-unknown-network"
+
+[[known_failing]]
+id = "vector/charge-build-too-many-splits-reject"
+reason = "the client builds nine splits; no length check (typescript/packages/mpp/src/client/Charge.ts:204)"
+tracking = "FINDINGS.md#ts-charge-client-split-cap"
+
+[[known_failing]]
+id = "vector/charge-build-amount-overflow-reject"
+reason = "amount 2^64 is refused only because the u64 codec throws; no u64 check at typescript/packages/mpp/src/client/Charge.ts:205"
+tracking = "FINDINGS.md#charge-client-amount-not-u64-validated"
+
+[[known_failing]]
+id = "vector/charge-verify-ata-not-idempotent-reject"
+reason = "an ATA Create with empty data throws a TypeError (typescript/packages/mpp/src/server/Charge.ts:689) instead of the policy rejection"
+tracking = "FINDINGS.md#ts-charge-ata-empty-data-crash"

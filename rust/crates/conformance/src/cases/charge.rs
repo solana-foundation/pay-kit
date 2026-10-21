@@ -18,7 +18,7 @@ use crate::keys::{
 };
 use crate::mutate::Mutation;
 
-const CHARGE: &str = "mpp-specs/specs/methods/solana/draft-solana-charge-00.md";
+pub(super) const CHARGE: &str = "mpp-specs/specs/methods/solana/draft-solana-charge-00.md";
 
 const DECIMALS_PRESENT: &str = "MPP-5348f3f797";
 const TOKEN_PROGRAM_FETCH: &str = "MPP-7743ae4e51";
@@ -26,11 +26,11 @@ const TOKEN_PROGRAM_REJECT: &str = "MPP-c189ef935e";
 const SOL_CONSTRUCTION: &str = "MPP-e02293d02d";
 const SPLIT_ATA_CLIENT_PAYS: &str = "MPP-197d674f50";
 const SPLIT_ATA_CONSTRUCTION: &str = "MPP-64da85f4f3";
-const ONLY_EXPECTED_INSTRUCTIONS: &str = "MPP-048617f9d7";
-const UNEXPECTED_REJECTED: &str = "MPP-1a2e7c737e";
-const SPL_LEG_MISSING: &str = "MPP-96ba338b1e";
-const SOL_LEG_MISSING: &str = "MPP-6e9ac6c31d";
-const REMAINDER_POSITIVE: &str = "MPP-b134044e08";
+pub(super) const ONLY_EXPECTED_INSTRUCTIONS: &str = "MPP-048617f9d7";
+pub(super) const UNEXPECTED_REJECTED: &str = "MPP-1a2e7c737e";
+pub(super) const SPL_LEG_MISSING: &str = "MPP-96ba338b1e";
+pub(super) const SOL_LEG_MISSING: &str = "MPP-6e9ac6c31d";
+pub(super) const REMAINDER_POSITIVE: &str = "MPP-b134044e08";
 const DUPLICATE_LEGS_SEPARATE: &str = "MPP-6ce505e77b";
 const SOL_ONE_INSTRUCTION_ONE_LEG: &str = "MPP-4a77950278";
 const SPL_ONE_INSTRUCTION_ONE_LEG: &str = "MPP-d90a2b66e5";
@@ -77,7 +77,7 @@ fn instructions_spec() -> SpecRef {
 
 /// An SPL charge request with `methodDetails` merged over the defaults
 /// (localnet, Token Program, decimals 6, the fixed blockhash).
-fn spl_request(amount: &str, details: Value) -> Value {
+pub(super) fn spl_request(amount: &str, details: Value) -> Value {
     let mut md = json!({
         "network": "localnet",
         "decimals": 6,
@@ -96,7 +96,7 @@ fn spl_request(amount: &str, details: Value) -> Value {
     json!({ "amount": amount, "currency": MINT, "recipient": CHARGE_RECIPIENT, "methodDetails": md })
 }
 
-fn sol_request(amount: &str, details: Value) -> Value {
+pub(super) fn sol_request(amount: &str, details: Value) -> Value {
     let mut md = json!({ "network": "localnet", "recentBlockhash": BLOCKHASH });
     if let Value::Object(details) = details {
         for (k, v) in details {
@@ -106,17 +106,17 @@ fn sol_request(amount: &str, details: Value) -> Value {
     json!({ "amount": amount, "currency": "sol", "recipient": CHARGE_RECIPIENT, "methodDetails": md })
 }
 
-fn input(request: Value) -> Value {
+pub(super) fn input(request: Value) -> Value {
     json!({ "signerSecretKey": client_secret(), "request": request })
 }
 
-fn input_with_mints(request: Value, entries: &[(&str, &str, u8)]) -> Value {
+pub(super) fn input_with_mints(request: Value, entries: &[(&str, &str, u8)]) -> Value {
     let mut input = input(request);
     input["rpcFixtures"] = json!({ "mints": mints(entries) });
     input
 }
 
-fn shape(transfers: bool, memo: bool, limit: bool, forbidden: &[&'static str]) -> Pin {
+pub(super) fn shape(transfers: bool, memo: bool, limit: bool, forbidden: &[&'static str]) -> Pin {
     Pin::TransactionShape {
         fee_payer: true,
         transfers,
@@ -127,7 +127,7 @@ fn shape(transfers: bool, memo: bool, limit: bool, forbidden: &[&'static str]) -
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_case(
+pub(super) fn build_case(
     id: &str,
     file: &'static str,
     bug: BugType,
@@ -158,7 +158,7 @@ fn build_case(
 /// optionally mutated. A mutated case's reject code comes from the operator
 /// table, never from the case.
 #[allow(clippy::too_many_arguments)]
-fn verify_case(
+pub(super) fn verify_case(
     id: &str,
     file: &'static str,
     bug: BugType,
@@ -193,13 +193,17 @@ fn verify_case(
         bug,
         spec,
         &description,
-        Input::ChargeTransaction { base, mutation },
+        Input::ChargeTransaction {
+            base,
+            mutation,
+            built_from: None,
+        },
         expect,
     )
     .requirements(reqs)
 }
 
-fn reject(code: RejectCode, reason: &str) -> Expect {
+pub(super) fn reject(code: RejectCode, reason: &str) -> Expect {
     Expect::Reject {
         code,
         reason: Some(reason.to_string()),
@@ -353,6 +357,7 @@ crate::registry! {
         Input::ChargeTransaction {
             base: input(spl_request("1000", json!({ "feePayer": true, "feePayerKey": CLIENT }))),
             mutation: None,
+            built_from: None,
         },
         reject(
             RejectCode::FeePayerNotAuthority,
