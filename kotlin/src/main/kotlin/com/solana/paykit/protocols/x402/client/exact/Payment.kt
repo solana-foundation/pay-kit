@@ -158,12 +158,15 @@ private fun selectFromBody(body: String, selection: ChallengeSelection): X402Acc
  */
 private fun selectFromJsonText(text: String, selection: ChallengeSelection): X402AcceptsEntry? =
     try {
-        val accepts = json.parseToJsonElement(text).jsonObject["accepts"]?.jsonArray
+        val challenge = json.parseToJsonElement(text).jsonObject
+        val accepts = challenge["accepts"]?.jsonArray
+        val resource = challenge["resource"]?.takeIf { it is JsonObject }
         if (accepts == null) {
             null
         } else {
             val entries = accepts.map { element ->
-                json.decodeFromJsonElement(X402AcceptsEntry.serializer(), element).copy(raw = element)
+                json.decodeFromJsonElement(X402AcceptsEntry.serializer(), element)
+                    .copy(raw = element, resource = resource)
             }
             selectRequirement(entries, selection)
         }
@@ -385,6 +388,7 @@ fun buildPaymentHeader(
         ?: json.encodeToJsonElement(X402AcceptsEntry.serializer(), envelope.accepted)
     val envelopeJson = buildJsonObject {
         put("x402Version", JsonPrimitive(envelope.x402Version))
+        requirement.resource?.let { put("resource", it) }
         put("accepted", acceptedJson)
         put("payload", json.encodeToJsonElement(X402PayloadField.serializer(), envelope.payload))
     }

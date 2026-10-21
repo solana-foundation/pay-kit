@@ -61,6 +61,11 @@ data class X402AcceptsEntry(
     // `null` for entries built in code (those re-serialize from the typed
     // fields). Excluded from (de)serialization; populated during parsing.
     @Transient val raw: JsonElement? = null,
+    // The challenge's `resource` (PaymentRequired.resource), echoed in the
+    // v2 envelope so the credential names the resource it pays for (servers
+    // that bind payments to their route require it). `null` for entries
+    // built in code. Excluded from (de)serialization; populated during parsing.
+    @Transient val resource: JsonElement? = null,
 )
 
 // RULINGS X1: each term is read from its x402 field only. ``amount`` falls

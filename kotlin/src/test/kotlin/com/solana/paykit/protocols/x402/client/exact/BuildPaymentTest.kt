@@ -80,6 +80,29 @@ class BuildPaymentTest {
     }
 
     @Test
+    fun echoesTheChallengeResource() {
+        // The credential names the resource it pays for, so a server that
+        // binds payments to its route can match it (x402 v2 PaymentPayload
+        // `resource`); an offer built in code carries none.
+        val body = """{"x402Version":2,"resource":{"url":"/protected","description":"report"},""" +
+            """"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"5000","asset":"SOL","payTo":"$devnetRecipient"}]}"""
+        val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(requirement)
+        val envelope = Json.parseToJsonElement(
+            Base64.getDecoder().decode(buildPaymentHeader(signer, requirement, fixedBlockhash)).decodeToString(),
+        ).jsonObject
+        val resource = envelope["resource"]!!.jsonObject
+        assertEquals("/protected", resource["url"]!!.jsonPrimitive.content)
+        assertEquals("report", resource["description"]!!.jsonPrimitive.content)
+
+        val inCode = Json.parseToJsonElement(
+            Base64.getDecoder().decode(buildPaymentHeader(signer, solOffer(), fixedBlockhash)).decodeToString(),
+        ).jsonObject
+        assertNull(inCode["resource"])
+    }
+
+    @Test
     fun echoesOfferedAcceptedVerbatim() {
         // A server may add fields the typed entry does not model. The client
         // must echo the offered `accepted` object verbatim so the rust
