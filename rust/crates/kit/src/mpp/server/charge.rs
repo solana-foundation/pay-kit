@@ -1436,6 +1436,20 @@ impl Mpp {
                         )));
                     }
                     Ok(false) => {}
+                    // The record is still pending: issuing the receipt here
+                    // would let a retry's confirm_pending grant a second one
+                    // once the store recovers. That retry is the one receipt.
+                    Err(e) if method_details.channel_charge.is_none() => {
+                        tracing::warn!(
+                            error = %e,
+                            challenge_id = %challenge_id,
+                            "failed to persist confirmed charge record"
+                        );
+                        return Err(VerificationError::settlement_in_progress(format!(
+                            "Transaction {signature_str} confirmed but its record could not be \
+                             stored; retry with the same credential, do not pay again: {e}"
+                        )));
+                    }
                     Err(e) => tracing::warn!(
                         error = %e,
                         challenge_id = %challenge_id,
@@ -9085,11 +9099,13 @@ mod tests {
     }
 
     /// A [`MemoryStore`] whose `put_if_absent` fails while `failing` is set
-    /// for keys starting with `prefix`.
+    /// for keys starting with `prefix` (and, with `only_state`, only for a
+    /// value whose `state` is that one).
     struct FlakyStore {
         inner: MemoryStore,
         prefix: &'static str,
         failing: std::sync::atomic::AtomicBool,
+        only_state: Option<&'static str>,
     }
 
     impl Store for FlakyStore {
@@ -9147,6 +9163,9 @@ mod tests {
         > {
             if key.starts_with(self.prefix)
                 && self.failing.load(std::sync::atomic::Ordering::SeqCst)
+                && self
+                    .only_state
+                    .is_none_or(|state| value["state"] == serde_json::json!(state))
             {
                 return Box::pin(async {
                     Err(crate::mpp::store::StoreError::Internal(
@@ -9307,6 +9326,7 @@ mod tests {
             inner: MemoryStore::new(),
             prefix: "solana:consumed-signature:",
             failing: std::sync::atomic::AtomicBool::new(true),
+            only_state: None,
         });
         let mpp = Mpp::new(Config {
             realm: Some("test-realm".to_string()),
@@ -9332,6 +9352,54 @@ mod tests {
         let receipt = mpp.verify(&credential, &expected).await.unwrap();
         assert_eq!(receipt.reference, signature.to_string());
         assert_eq!(sends.load(Ordering::SeqCst), 1);
+    }
+
+    // A charge that lands while its confirmed record cannot be written is
+    // still pending in the store. Answering with a receipt would let the
+    // retry's confirm_pending grant a second one: the retry is the receipt.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confirmation_the_store_cannot_record_issues_one_receipt() {
+        use std::sync::atomic::Ordering;
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rpc_url = stub_rpc_counting(
+            None,
+            Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            sends.clone(),
+            Arc::default(),
+        )
+        .await;
+        let store = Arc::new(FlakyStore {
+            inner: MemoryStore::new(),
+            prefix: "solana-charge:record:",
+            failing: std::sync::atomic::AtomicBool::new(true),
+            only_state: Some("confirmed"),
+        });
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (credential, expected, signature) = signed_pull_credential(&mpp, 12);
+        let err = mpp.verify(&credential, &expected).await.unwrap_err();
+        assert!(err.message.contains("could not be stored"), "{err:?}");
+
+        store.failing.store(false, Ordering::SeqCst);
+        let receipt = mpp.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, signature.to_string());
+        assert!(
+            mpp.verify(&credential, &expected).await.is_err(),
+            "a second receipt"
+        );
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "one broadcast");
     }
 
     // A client signature that does not verify is refused before anything is
