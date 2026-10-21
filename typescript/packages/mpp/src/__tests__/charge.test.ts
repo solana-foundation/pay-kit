@@ -2114,8 +2114,8 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
         ...store,
         async update(key, fn) {
             updates++;
-            // Updates: claim, legacy claim, legacy consume, ledger consume.
-            if (!fail || updates !== 4) return update(key, fn);
+            // Updates: claim, legacy claim, grant begin, legacy consume, ledger consume.
+            if (!fail || updates !== 5) return update(key, fn);
             if (committed) await update(key, fn);
             await Promise.resolve();
             throw new Error('atomic storage unavailable');
@@ -2127,11 +2127,81 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
     const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
-    expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'pending' });
+    expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'granting' });
     fail = false;
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow(
         committed ? 'already consumed' : 'already in progress',
     );
+});
+
+// The two keys of a grant cannot change atomically. A store failure after
+// the previous release's key was consumed but before the ledger key leaves a
+// confirmed payment without a receipt; the ledger record says a grant began,
+// so once its lease lapses the identical retry finishes it, exactly once.
+test('pull: a grant interrupted between its two keys is finished by the retry', async () => {
+    type AtomicStore = Store.Store & {
+        update<T>(
+            key: string,
+            fn: (current: unknown) => { op: 'noop'; result: T } | { op: 'set'; result: T; value: unknown },
+        ): Promise<T>;
+    };
+    const atomicStore = store as AtomicStore;
+    const update = atomicStore.update.bind(atomicStore);
+    let updates = 0;
+    let fail = true;
+    const failingStore: AtomicStore = {
+        ...store,
+        async update(key, fn) {
+            updates++;
+            // Updates: claim, legacy claim, grant begin, legacy consume, ledger consume.
+            if (fail && updates === 5) throw new Error('atomic storage unavailable');
+            return update(key, fn);
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
+    expect(await store.get(legacy)).toMatchObject({ state: 'confirmed' });
+    expect(await store.get(key)).toMatchObject({ state: 'granting' });
+
+    fail = false;
+    for (const lapsed of [key, legacy]) {
+        await store.put(lapsed, { ...((await store.get(lapsed)) as object), leaseUntil: 0 });
+    }
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+    expect(rpcMethods.filter(m => m === 'sendTransaction')).toHaveLength(1);
+});
+
+// Without that ownership record a confirmed legacy key is someone else's
+// grant (a replica on the previous release): it is never granted again.
+test('pull: a legacy key confirmed by another grant stays consumed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const successfulFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+        const response = await successfulFetch(url, init);
+        if (JSON.parse(init?.body as string).method === 'sendTransaction') throw new Error('send response lost');
+        return response;
+    };
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('send response lost');
+    globalThis.fetch = successfulFetch;
+    // A previous-release replica recovered the legacy record and served it.
+    const pending = (await store.get(legacy)) as object;
+    await store.put(legacy, { ...pending, leaseUntil: 0, state: 'confirmed' });
+    await store.put(key, { ...((await store.get(key)) as object), leaseUntil: 0 });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
 });
 
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {

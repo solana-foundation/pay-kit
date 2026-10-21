@@ -32,12 +32,14 @@ import {
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { checkNetworkBlockhash } from './network-check.js';
 import {
+    beginGrantReplayKey,
     claimConsumedSignature,
     claimReplayKey,
     consumedBeforeLedger,
     consumedSignatureKey,
     consumeReplayKey,
     inspectReplayKey,
+    isGrantingReplayKey,
     legacyConsumedSignatureKey,
 } from './replay.js';
 
@@ -910,7 +912,11 @@ async function verifyTransaction(
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
         const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
-        if (legacyClaim === 'conflict' || legacyClaim === 'retry') {
+        // A confirmed legacy key is this grant's own unfinished step when the
+        // ledger record says a grant began: the retry finishes it.
+        const ownUnfinishedGrant =
+            legacyClaim === 'retry' && (await isGrantingReplayKey(store, replayKey, replayBinding));
+        if (legacyClaim === 'conflict' || (legacyClaim === 'retry' && !ownUnfinishedGrant)) {
             throw new Error('Transaction signature already consumed');
         }
         if (legacyClaim === 'pending') {
@@ -947,13 +953,21 @@ async function verifyTransaction(
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
-    // One grant per payment across both releases: the previous release's key
-    // first (a replica on that release consumes it the same way), then the
-    // ledger key.
+    // One grant per payment across both releases. The ledger record is
+    // marked as granting first, so a failure between the two keys below leaves
+    // a state a retry can finish; then the previous release's key (a replica
+    // on that release consumes it the same way), then the ledger key, whose
+    // transition is the single winner.
+    if (!(await beginGrantReplayKey(store, replayKey, replayBinding))) {
+        throw new Error('Transaction signature already consumed');
+    }
     if (
-        !(await consumeReplayKey(store, legacyKey, replayBinding)) ||
-        !(await consumeReplayKey(store, replayKey, replayBinding))
+        !(await consumeReplayKey(store, legacyKey, replayBinding)) &&
+        (await inspectReplayKey(store, legacyKey, replayBinding)) !== 'retry'
     ) {
+        throw new Error('Transaction signature already consumed');
+    }
+    if (!(await consumeReplayKey(store, replayKey, replayBinding))) {
         throw new Error('Transaction signature already consumed');
     }
 

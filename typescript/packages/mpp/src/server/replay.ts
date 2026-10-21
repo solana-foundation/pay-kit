@@ -12,7 +12,13 @@ type AtomicStore = Store.Store & {
 type ReplayRecord = {
     binding: string;
     leaseUntil: number;
-    state: 'confirmed' | 'pending';
+    /**
+     * `granting`: the payment landed and its grant began, which takes the
+     * previous release's key and then this one. Only this release writes the
+     * ledger key, so a `granting` record proves a confirmed legacy key with
+     * the same binding was confirmed by this grant, and a retry may finish it.
+     */
+    state: 'confirmed' | 'granting' | 'pending';
 };
 
 export type ReplayClaim = 'conflict' | 'pending' | 'reserved' | 'retry';
@@ -29,7 +35,7 @@ function isReplayRecord(value: unknown): value is ReplayRecord {
     return (
         typeof record.binding === 'string' &&
         typeof record.leaseUntil === 'number' &&
-        (record.state === 'pending' || record.state === 'confirmed')
+        (record.state === 'pending' || record.state === 'granting' || record.state === 'confirmed')
     );
 }
 
@@ -50,25 +56,30 @@ export async function inspectReplayKey(store: Store.Store, key: string, binding:
  */
 export async function claimReplayKey(store: Store.Store, key: string, binding: string): Promise<ReplayClaim> {
     const now = Date.now();
-    const fresh: ReplayRecord = { binding, leaseUntil: now + PENDING_LEASE_MS, state: 'pending' };
     const classify = (current: unknown): ReplayClaim => {
         if (current === null) return 'reserved';
         if (!isReplayRecord(current) || current.binding !== binding) return 'conflict';
         if (current.state === 'confirmed') return 'retry';
         return current.leaseUntil <= now ? 'reserved' : 'pending';
     };
+    // Taking over an expired lease keeps a grant in progress marked as one.
+    const fresh = (current: unknown): ReplayRecord => ({
+        binding,
+        leaseUntil: now + PENDING_LEASE_MS,
+        state: isReplayRecord(current) && current.state === 'granting' ? 'granting' : 'pending',
+    });
     const atomicStore = store as AtomicStore;
     if (typeof atomicStore.update === 'function') {
         return await atomicStore.update(key, current => {
             const result = classify(current);
-            return result === 'reserved' ? { op: 'set', result, value: fresh } : { op: 'noop', result };
+            return result === 'reserved' ? { op: 'set', result, value: fresh(current) } : { op: 'noop', result };
         });
     }
 
     return await withKeyLock(key, async () => {
         const current = await store.get(key);
         const result = classify(current);
-        if (result === 'reserved') await store.put(key, fresh);
+        if (result === 'reserved') await store.put(key, fresh(current));
         return result;
     });
 }
@@ -80,7 +91,11 @@ export async function claimReplayKey(store: Store.Store, key: string, binding: s
  */
 export async function consumeReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
     const consume = (current: unknown) => {
-        if (!isReplayRecord(current) || current.binding !== binding || current.state !== 'pending') {
+        if (
+            !isReplayRecord(current) ||
+            current.binding !== binding ||
+            (current.state !== 'pending' && current.state !== 'granting')
+        ) {
             return { op: 'noop' as const, result: false };
         }
         return {
@@ -96,6 +111,37 @@ export async function consumeReplayKey(store: Store.Store, key: string, binding:
         if (change.op === 'set') await store.put(key, change.value);
         return change.result;
     });
+}
+
+/**
+ * Mark a reservation whose payment landed as being granted, before the grant
+ * takes any other key. `false` unless it is pending or already granting under
+ * `binding`.
+ */
+export async function beginGrantReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
+    const begin = (current: unknown) => {
+        if (
+            !isReplayRecord(current) ||
+            current.binding !== binding ||
+            (current.state !== 'pending' && current.state !== 'granting')
+        ) {
+            return { op: 'noop' as const, result: false };
+        }
+        return { op: 'set' as const, result: true, value: { ...current, state: 'granting' } satisfies ReplayRecord };
+    };
+    const atomicStore = store as AtomicStore;
+    if (typeof atomicStore.update === 'function') return await atomicStore.update(key, begin);
+    return await withKeyLock(key, async () => {
+        const change = begin(await store.get(key));
+        if (change.op === 'set') await store.put(key, change.value);
+        return change.result;
+    });
+}
+
+/** Whether `key` holds a grant in progress under `binding`. */
+export async function isGrantingReplayKey(store: Store.Store, key: string, binding: string): Promise<boolean> {
+    const current = await store.get(key);
+    return isReplayRecord(current) && current.binding === binding && current.state === 'granting';
 }
 
 /** Mark a challenge-bound subscription proof as fully verified and receipt-ready. */
