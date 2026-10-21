@@ -99,6 +99,25 @@ class TransactionTest < Minitest::Test
     assert_raises(::PayCore::Solana::Transaction::SigningError) { tx.sign_with(keypair) }
   end
 
+  # Only the named server signer's slot may stay empty; every other slot
+  # must verify, and the list must match the header's required signers.
+  def test_signatures_verify_exempts_only_the_server_slot
+    empty = "\x00".b * 64
+    keys = [pubkey(1), signer_pubkey(6), pubkey(2), PROGRAMS::SYSTEM_PROGRAM]
+    instructions = [compiled_instruction(3, [1, 2], u32(2) + u64(1000))]
+    wire = v0_transaction(account_keys: keys, instructions: instructions, signatures: [empty, empty], signer: {1 => 6})
+    transaction = ::PayCore::Solana::Transaction.from_bytes(wire)
+
+    assert transaction.signature_slots_match?
+    assert transaction.signatures_verify?(server_signer: pubkey(1))
+    refute transaction.signatures_verify?
+    refute transaction.signatures_verify?(server_signer: signer_pubkey(6))
+
+    truncated = ::PayCore::Solana::Transaction.from_bytes(compact_u16(1) + wire.byteslice(65, wire.bytesize - 65))
+    refute truncated.signature_slots_match?
+    refute truncated.signatures_verify?(server_signer: pubkey(1))
+  end
+
   def test_signs_when_fee_payer_is_required_signer
     keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
     tx = ::PayCore::Solana::Transaction.from_bytes(v0_transaction(

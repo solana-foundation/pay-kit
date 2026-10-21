@@ -58,9 +58,26 @@ module PayKit::Protocols::Mpp
         def verify_transaction_payload(transaction_base64, request)
           transaction = ::PayCore::Solana::Transaction.from_base64(transaction_base64)
           verify_transaction(transaction, request)
+          verify_client_signatures(transaction, request)
           VerificationResult.success(reference: "")
         rescue ArgumentError, Error => error
           VerificationResult.failure(error.message)
+        end
+
+        # Refuse a transaction whose signature list is not exactly one slot
+        # per required signer, or whose client signatures do not verify over
+        # its message (RULINGS SIG1). A signature that does not verify names
+        # some other transaction, so it must be refused before anything is
+        # claimed, co-signed or sent. The server's own fee-payer slot is the
+        # only one allowed to be empty: it signs it after this check.
+        def verify_client_signatures(transaction, request)
+          raise VerificationError, "Transaction signature slots do not match the required signers" unless transaction.signature_slots_match?
+
+          details = request.method_details || {}
+          server_signer = (details["feePayer"] == true) ? details["feePayerKey"] : nil
+          return if transaction.signatures_verify?(server_signer: server_signer)
+
+          raise VerificationError, "Transaction signature verification failed"
         end
 
         # Fail unless `signature` is a Solana base58 signature.

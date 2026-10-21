@@ -79,7 +79,19 @@ module RubyMppTestHelpers
   def v0_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil, signer: nil)
     sigs = signatures || ["\x00".b * 64]
     message = [0x80].pack("C") + message_body(account_keys, instructions, recent_blockhash, sigs.length) + compact_u16(0)
-    sigs = [fixture_signing_key(signer).sign(message)] + sigs.drop(1) if signer
+    sign_slots(sigs, message, signer)
+  end
+
+  # Sign `message` into the slots `signer` names (a byte signs slot 0, a
+  # `{slot => byte}` hash signs each listed slot) and return the wire.
+  def sign_slots(sigs, message, signer)
+    slots =
+      if signer.is_a?(Hash) then signer
+      elsif signer then {0 => signer}
+      else {}
+      end
+    sigs = sigs.dup
+    slots.each { |slot, byte| sigs[slot] = fixture_signing_key(byte).sign(message) }
     compact_u16(sigs.length) + sigs.join + message
   end
 
@@ -98,8 +110,7 @@ module RubyMppTestHelpers
   def legacy_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil, signer: nil)
     sigs = signatures || ["\x00".b * 64]
     message = message_body(account_keys, instructions, recent_blockhash, sigs.length)
-    sigs = [fixture_signing_key(signer).sign(message)] + sigs.drop(1) if signer
-    compact_u16(sigs.length) + sigs.join + message
+    sign_slots(sigs, message, signer)
   end
 
   def message_body(account_keys, instructions, recent_blockhash, required_signatures)

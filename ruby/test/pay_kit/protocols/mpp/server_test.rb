@@ -215,7 +215,7 @@ class TransactionVerifierTest < Minitest::Test
   end
 
   def test_verifies_sol_transfer_and_memo
-    payer = pubkey(1)
+    payer = signer_pubkey(1)
     recipient = pubkey(2)
     tx = tx_base64(
       account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::MEMO_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
@@ -224,7 +224,8 @@ class TransactionVerifierTest < Minitest::Test
         compiled_instruction(4, [], [2].pack("C") + u32(200_000)),
         compiled_instruction(2, [0, 1], u32(2) + u64(1000)),
         compiled_instruction(3, [], "order-1")
-      ]
+      ],
+      signer: 1
     )
     request = charge_request(external_id: "order-1")
 
@@ -234,7 +235,7 @@ class TransactionVerifierTest < Minitest::Test
   end
 
   def test_verifies_non_ascii_external_id_memo_bytes
-    payer = pubkey(1)
+    payer = signer_pubkey(1)
     recipient = pubkey(2)
     memo = "order-é"
     tx = tx_base64(
@@ -242,7 +243,8 @@ class TransactionVerifierTest < Minitest::Test
       instructions: [
         compiled_instruction(2, [0, 1], u32(2) + u64(1000)),
         compiled_instruction(3, [], memo.b)
-      ]
+      ],
+      signer: 1
     )
     request = charge_request(external_id: memo)
 
@@ -256,8 +258,8 @@ class TransactionVerifierTest < Minitest::Test
   # transaction that funds nothing.
   def test_sponsored_split_legs_must_share_one_funding_authority
     fee_payer = pubkey(1)
-    payer = pubkey(3)
-    other_payer = pubkey(4)
+    payer = signer_pubkey(3)
+    other_payer = signer_pubkey(4)
     split_recipient = pubkey(5)
     request = charge_request(method_details: {
       "network" => "localnet",
@@ -270,6 +272,8 @@ class TransactionVerifierTest < Minitest::Test
       Base64.strict_encode64(v0_transaction(
         account_keys: keys,
         signatures: Array.new(signers.length) { "\x00".b * 64 },
+        # The fee payer's slot stays empty: the server signs it after verifying.
+        signer: {1 => 3, 2 => 4}.select { |slot, _| slot < signers.length },
         instructions: [
           compiled_instruction(keys.index(PROGRAMS::SYSTEM_PROGRAM), [keys.index(payer), keys.index(pubkey(2))], u32(2) + u64(800)),
           compiled_instruction(keys.index(PROGRAMS::SYSTEM_PROGRAM), [keys.index(split_source), keys.index(split_recipient)], u32(2) + u64(200))
@@ -287,6 +291,52 @@ class TransactionVerifierTest < Minitest::Test
 
     result = @verifier.verify_transaction_payload(signed.call([fee_payer, payer], payer), request)
     assert result.ok?, result.reason
+  end
+
+  # RULINGS SIG1: the charge verification step itself refuses a transaction
+  # whose client signature does not verify over the message, before anything
+  # is claimed, co-signed or sent. Paired with the signed accept.
+  def test_verification_refuses_a_forged_client_signature
+    payer = signer_pubkey(6)
+    keys = [payer, pubkey(2), PROGRAMS::SYSTEM_PROGRAM]
+    instructions = [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    signed = v0_transaction(account_keys: keys, instructions: instructions, signer: 6)
+    assert @verifier.verify_transaction_payload(Base64.strict_encode64(signed), charge_request).ok?
+
+    forged = signed.byteslice(0, 1) + ("\x07".b * 64) + signed.byteslice(65, signed.bytesize - 65)
+    result = @verifier.verify_transaction_payload(Base64.strict_encode64(forged), charge_request)
+    refute result.ok?
+    assert_match(/signature verification failed/, result.reason)
+
+    unsigned = v0_transaction(account_keys: keys, instructions: instructions)
+    refute @verifier.verify_transaction_payload(Base64.strict_encode64(unsigned), charge_request).ok?
+  end
+
+  # Sponsored: the server's own fee-payer slot may be empty before it
+  # co-signs, but every other slot must verify, and the list must carry
+  # exactly one slot per required signer.
+  def test_sponsored_verification_checks_every_client_signature
+    fee_payer = pubkey(1)
+    payer = signer_pubkey(6)
+    request = charge_request(method_details: {"network" => "localnet", "feePayer" => true, "feePayerKey" => fee_payer})
+    keys = [fee_payer, payer, pubkey(2), PROGRAMS::SYSTEM_PROGRAM]
+    instructions = [compiled_instruction(3, [1, 2], u32(2) + u64(1000))]
+    empty = "\x00".b * 64
+    build = ->(signer) { v0_transaction(account_keys: keys, instructions: instructions, signatures: [empty, empty], signer: signer) }
+
+    accepted = @verifier.verify_transaction_payload(Base64.strict_encode64(build.call({1 => 6})), request)
+    assert accepted.ok?, accepted.reason
+
+    forged = @verifier.verify_transaction_payload(Base64.strict_encode64(build.call({1 => 7})), request)
+    refute forged.ok?
+    assert_match(/signature verification failed/, forged.reason)
+
+    # Header still requires two signers; the wire carries only one slot.
+    wire = build.call({1 => 6})
+    truncated = compact_u16(1) + wire.byteslice(65, 64) + wire.byteslice(129, wire.bytesize - 129)
+    result = @verifier.verify_transaction_payload(Base64.strict_encode64(truncated), request)
+    refute result.ok?
+    assert_match(/signature slots do not match/, result.reason)
   end
 
   def test_rejects_unexpected_program
@@ -419,14 +469,15 @@ class TransactionVerifierTest < Minitest::Test
   end
 
   def test_verifies_spl_transfer_checked
-    owner = pubkey(1)
+    owner = signer_pubkey(1)
     recipient = pubkey(2)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     dest_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM],
-      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
+      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))],
+      signer: 1
     )
     request = charge_request(currency: mint, recipient: recipient, method_details: {"network" => "localnet", "decimals" => 6, "tokenProgram" => PROGRAMS::TOKEN_PROGRAM})
 
@@ -436,7 +487,7 @@ class TransactionVerifierTest < Minitest::Test
   end
 
   def test_verifies_spl_split_with_idempotent_ata_creation
-    owner = pubkey(1)
+    owner = signer_pubkey(1)
     recipient = pubkey(2)
     split_owner = pubkey(3)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
@@ -449,7 +500,8 @@ class TransactionVerifierTest < Minitest::Test
         compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(750) + [6].pack("C")),
         compiled_instruction(5, [0, 7, 6, 2, 8, 4], "\x01".b),
         compiled_instruction(4, [1, 2, 7, 0], [12].pack("C") + u64(250) + [6].pack("C"))
-      ]
+      ],
+      signer: 1
     )
     request = charge_request(
       amount: "1000",
@@ -688,14 +740,15 @@ class TransactionVerifierTest < Minitest::Test
   # Audit #25 regression: the tight cap MUST NOT apply when the client pays
   # its own gas (no server fee payer). A price between the two caps passes.
   def test_client_paid_compute_unit_price_keeps_general_cap
-    payer = pubkey(1)
+    payer = signer_pubkey(1)
     recipient = pubkey(2)
     tx = tx_base64(
       account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
       instructions: [
         compiled_instruction(3, [], [3].pack("C") + u64(1_000_000)),
         compiled_instruction(2, [0, 1], u32(2) + u64(1000))
-      ]
+      ],
+      signer: 1
     )
 
     result = @verifier.verify_transaction_payload(tx, charge_request)
@@ -760,8 +813,8 @@ class TransactionVerifierTest < Minitest::Test
 
   private
 
-  def tx_base64(account_keys:, instructions:)
-    Base64.strict_encode64(v0_transaction(account_keys: account_keys, instructions: instructions))
+  def tx_base64(account_keys:, instructions:, signer: nil)
+    Base64.strict_encode64(v0_transaction(account_keys: account_keys, instructions: instructions, signer: signer))
   end
 end
 
@@ -1170,7 +1223,8 @@ class ChargeHandlerTest < Minitest::Test
 
   def transaction_response
     transaction = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     {"meta" => {"err" => nil}, "transaction" => [transaction, "base64"]}

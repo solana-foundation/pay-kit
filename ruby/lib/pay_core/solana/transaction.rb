@@ -70,14 +70,26 @@ module PayCore
         signatures[index] = keypair.sign(message.raw)
       end
 
-      # Whether every required signature verifies against the message for its
-      # signer. An empty or missing slot does not.
-      def signatures_verify?
+      # Whether the signature list has exactly one slot per required signer
+      # (`header.num_required_signatures`), no more and no fewer.
+      def signature_slots_match?
         required = message.header[:required_signatures]
-        return false if required.zero? || signatures.length != required || message.account_keys.length < required
+        !required.zero? && signatures.length == required && message.account_keys.length >= required
+      end
+
+      # Whether every required signature verifies against the message for its
+      # signer. An empty or missing slot does not. `server_signer` names the
+      # server's own key (the fee payer it co-signs as): its slot is skipped,
+      # since before co-signing it is still empty. Every other slot must
+      # verify. The one check both charge verification and settlement run.
+      def signatures_verify?(server_signer: nil)
+        return false unless signature_slots_match?
 
         signatures.each_with_index.all? do |signature, index|
-          key = ::Ed25519::VerifyKey.new(Base58.decode(message.account_keys[index]))
+          signer = message.account_keys[index]
+          next true if server_signer && signer == server_signer
+
+          key = ::Ed25519::VerifyKey.new(Base58.decode(signer))
           key.verify(signature, message.raw)
         rescue ::Ed25519::VerifyError, ArgumentError
           false
