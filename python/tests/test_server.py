@@ -951,7 +951,7 @@ class TestL8SettlementOrdering:
         def __init__(self, ordering: list[str], confirm_value):
             self._ordering = ordering
             self._confirm_value = confirm_value
-            self.tx = {
+            self.tx: dict[str, object] | None = {
                 "meta": {"err": None},
                 "version": 0,
                 "transaction": {
@@ -1312,7 +1312,8 @@ class TestAmbiguousBroadcast:
         with pytest.raises(PaymentError) as exc:
             await _verify(handler, credential, challenge)
         assert exc.value.code == "settlement-in-progress"
-        assert (await store.get(consumed_signature_key(signature)))["state"] == "pending"
+        record = await store.get(consumed_signature_key(signature))
+        assert record is not None and record["state"] == "pending"
 
 
 class _UnconfirmedRPC(_PendingRPC):
@@ -1343,7 +1344,8 @@ class TestMissingStatusNeverFails:
             with pytest.raises(PaymentError) as exc:
                 await _verify(handler, credential, challenge)
             assert exc.value.code == "settlement-in-progress"
-            assert (await store.get(consumed_signature_key(signature)))["state"] == "pending"
+            record = await store.get(consumed_signature_key(signature))
+            assert record is not None and record["state"] == "pending"
 
         # When the status does surface, the same retry is granted.
         rpc.status = {"err": None, "confirmationStatus": "finalized"}

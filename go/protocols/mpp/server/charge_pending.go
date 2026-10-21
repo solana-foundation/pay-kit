@@ -41,7 +41,7 @@ func settlementInProgress(signature string, cause error) *core.Error {
 func (m *Mpp) markPending(ctx context.Context, signature, challengeID string, cause error) error {
 	ctx = context.WithoutCancel(ctx)
 	if err := m.store.Put(ctx, pendingChargePrefix+signature, pendingCharge{ChallengeID: challengeID}); err != nil {
-		return settlementInProgress(signature, fmt.Errorf("%w (recording the pending charge failed: %v)", cause, err))
+		return settlementInProgress(signature, fmt.Errorf("%w (recording the pending charge failed: %w)", cause, err))
 	}
 	return settlementInProgress(signature, cause)
 }
