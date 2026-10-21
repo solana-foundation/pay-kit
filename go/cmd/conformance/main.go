@@ -128,7 +128,7 @@ type VectorInput struct {
 	SessionWire          json.RawMessage       `json:"sessionWire"`
 
 	// x402-exact inputs.
-	X402Offer *X402Offer `json:"x402Offer"`
+	X402Offer json.RawMessage `json:"x402Offer"`
 	// X402Version is the x402Version the build path should produce:
 	// 1 builds the legacy top-level scheme/network envelope, 2 the
 	// accepted-echo envelope, and 0 (absent) exercises the default

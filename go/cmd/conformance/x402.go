@@ -27,17 +27,6 @@ import (
 //               dispatch, envelope binding, payment-identifier gate and the
 //               structural exact-SVM transaction checks. No broadcast.
 
-// X402Offer mirrors schema.ts X402Offer.
-type X402Offer struct {
-	Scheme            string                 `json:"scheme"`
-	Network           string                 `json:"network"`
-	Amount            string                 `json:"amount"`
-	Asset             string                 `json:"asset"`
-	PayTo             string                 `json:"payTo"`
-	MaxTimeoutSeconds *int                   `json:"maxTimeoutSeconds"`
-	Extra             map[string]interface{} `json:"extra"`
-}
-
 // X402EnvelopeShape mirrors schema.ts X402EnvelopeShape: the decoded
 // semantic shape of an x402 `exact` envelope the conformance oracle
 // asserts against.
@@ -92,16 +81,13 @@ func runX402(vector Vector) RunnerResult {
 	}
 }
 
-// offerToAcceptsEntry parses the vector offer with the production
-// AcceptsEntry parser, exactly as the client parses a PAYMENT-REQUIRED
-// offer (raw bytes retained for the verbatim v2 `accepted` echo).
-func offerToAcceptsEntry(offer *X402Offer) (*x402.AcceptsEntry, error) {
-	raw, err := json.Marshal(offer)
-	if err != nil {
-		return nil, fmt.Errorf("x402: marshal offer: %w", err)
-	}
+// offerToAcceptsEntry hands the vector offer, byte for byte, to the
+// production AcceptsEntry parser so the credential echoes it exactly as the
+// real client would (raw bytes retained for the verbatim v2 `accepted` echo,
+// network normalized, unknown keys kept).
+func offerToAcceptsEntry(offer json.RawMessage) (*x402.AcceptsEntry, error) {
 	var entry x402.AcceptsEntry
-	if err := json.Unmarshal(raw, &entry); err != nil {
+	if err := json.Unmarshal(offer, &entry); err != nil {
 		return nil, fmt.Errorf("x402: parse offer: %w", err)
 	}
 	return &entry, nil
@@ -132,7 +118,7 @@ func advertisedExtensions(in VectorInput) (json.RawMessage, error) {
 // client and returns the decoded envelope shape plus the header itself.
 func buildX402Envelope(vector Vector) (*X402EnvelopeShape, string, error) {
 	in := vector.Input
-	if in.X402Offer == nil {
+	if len(in.X402Offer) == 0 || string(in.X402Offer) == "null" {
 		return nil, "", fmt.Errorf("x402 build vector is missing input.x402Offer")
 	}
 	signer, err := newLocalSigner(in.SignerSecretKey)
