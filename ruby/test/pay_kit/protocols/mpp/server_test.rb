@@ -860,9 +860,10 @@ class ChargeHandlerTest < Minitest::Test
     assert_equal 402, response.status
     assert_match(/Simulation failed/, response.body["message"])
 
+    # No status inside the window is not proof it failed: still pending.
     response = handler_with(FakeRpc.new(statuses: [nil]), attempts: 1).handle(credential.to_authorization_header, request)
-    assert_equal 402, response.status
-    assert_match(/Timed out waiting/, response.body["message"])
+    assert_equal 409, response.status
+    assert_match(/Timed out waiting/, response.body["detail"])
 
     response = handler_with(FakeRpc.new(statuses: [{"err" => "boom", "confirmationStatus" => "confirmed"}]), attempts: 1).handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
@@ -890,9 +891,10 @@ class ChargeHandlerTest < Minitest::Test
     store = PayKit::Protocols::Mpp::MemoryStore.new
     lost = ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: Solana RPC request timed out (Net::ReadTimeout)")
     response = handler_with(FailingSendRpc.new(send_error: lost), store: store).handle(authorization, request)
-    assert_equal 402, response.status
-    assert_match(/Settlement in progress/, response.body["message"])
-    assert_match(local_signature, response.body["message"])
+    assert_equal 409, response.status
+    assert_equal "1", response.headers["retry-after"]
+    assert_equal ::PayCore::ErrorCodes::CODE_SETTLEMENT_IN_PROGRESS, response.body["code"]
+    assert_match(local_signature, response.body["detail"])
     refute store.put_if_absent(key, true), "an ambiguous send must keep the signature claimed"
 
     store = PayKit::Protocols::Mpp::MemoryStore.new
@@ -901,6 +903,63 @@ class ChargeHandlerTest < Minitest::Test
     assert_equal 402, response.status
     assert_match(/simulation failed/, response.body["message"])
     assert store.put_if_absent(key, true), "a preflight rejection proves non-delivery and leaves the signature unclaimed"
+  end
+
+  # A lost broadcast response leaves a recoverable pending charge: the
+  # identical retry reconciles it from the chain (never re-broadcasting) and
+  # is granted once, even after its challenge expired; another challenge
+  # cannot claim it, and an expired credential never starts a payment.
+  def test_pending_charge_reconciles_on_retry_and_after_expiry
+    request = charge_request
+    wire = v0_transaction(
+      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    encoded = Base64.strict_encode64(wire)
+    local_signature = ::PayCore::Solana::Transaction.from_base64(encoded).primary_signature
+    credential_for = lambda do |transaction, expires: (Time.now.utc + 300).iso8601|
+      PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+        challenge: handler_challenges.create_challenge(request, expires: expires).to_echo,
+        payload: {"transaction" => transaction}
+      ).to_authorization_header
+    end
+    authorization = credential_for.call(encoded)
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    lost = ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: Solana RPC request timed out (Net::ReadTimeout)")
+    assert_equal 409, handler_with(FailingSendRpc.new(send_error: lost), store: store).handle(authorization, request).status
+
+    # Not visible yet: still pending, nothing re-broadcast.
+    unseen = FakeRpc.new(statuses: [nil])
+    assert_equal 409, handler_with(unseen, store: store).handle(authorization, request).status
+    assert_empty unseen.sent_transactions
+
+    # Another challenge presenting the same transaction is a replay.
+    other = credential_for.call(encoded, expires: (Time.now.utc + 600).iso8601)
+    response = handler_with(FakeRpc.new, store: store).handle(other, request)
+    assert_equal 402, response.status
+    assert_match(/already consumed/, response.body["message"])
+
+    # Expired and landed: the same credential is granted once, never re-sent.
+    later = Time.now.utc + 3600
+    landed = FakeRpc.new
+    response = handler_with(landed, store: store).handle(authorization, request, now: later)
+    assert_equal 200, response.status
+    assert_equal local_signature, response.signature
+    assert_empty landed.sent_transactions
+    response = handler_with(FakeRpc.new, store: store).handle(authorization, request, now: later)
+    assert_equal 402, response.status
+
+    # An expired credential with no pending charge never starts a payment.
+    fresh = Base64.strict_encode64(v0_transaction(
+      account_keys: [pubkey(2), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))],
+      signatures: ["\x07".b * 64]
+    ))
+    rpc = FakeRpc.new
+    response = handler_with(rpc, store: store).handle(credential_for.call(fresh), request, now: later)
+    assert_equal 402, response.status
+    assert_equal ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED, response.body["code"]
+    assert_empty rpc.sent_transactions
   end
 
   # TOCTOU replay regression (push mode, type="signature"). A single signature

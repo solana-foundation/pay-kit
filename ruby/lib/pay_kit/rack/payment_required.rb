@@ -84,7 +84,8 @@ module PayKit
         def render_invalid(error)
           payload = {error: error.code.to_s, message: error.detail}
           payload[:spec_code] = error.spec_code if error.spec_code
-          [402, {"content-type" => "application/json", "cache-control" => "no-store"}, [JSON.generate(payload)]]
+          headers = {"content-type" => "application/json", "cache-control" => "no-store"}.merge(error.response_headers)
+          [error.http_status, headers, [JSON.generate(payload)]]
         end
 
         # Rack 3 requires response header names to be lowercase. The

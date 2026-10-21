@@ -41,6 +41,12 @@ module PayCore
       @store.put_if_absent(self.class.key(signature), true)
     end
 
+    # Whether `signature` is already claimed, through any protocol or under a
+    # pre-ledger key. Read only.
+    def claimed?(signature)
+      consumed_before_ledger?(signature) || @store.key?(self.class.key(signature))
+    end
+
     private
 
     # Whether `signature` was claimed under a pre-ledger MPP or x402 key, by a

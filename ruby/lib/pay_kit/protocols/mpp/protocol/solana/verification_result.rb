@@ -7,8 +7,9 @@ module PayKit::Protocols::Mpp
       class VerificationResult
         attr_reader :reference, :reason, :code, :credential, :challenge
 
-        def initialize(ok:, reference: nil, reason: nil, code: nil, credential: nil, challenge: nil)
+        def initialize(ok:, reference: nil, reason: nil, code: nil, credential: nil, challenge: nil, expired: false)
           @ok = ok
+          @expired = expired
           @reference = reference
           @reason = reason
           @code = code
@@ -19,6 +20,20 @@ module PayKit::Protocols::Mpp
         # Return true when verification succeeded.
         def ok?
           @ok
+        end
+
+        # True for an authentic credential whose challenge expired. It never
+        # authorizes a new payment; the caller may only reconcile a charge that
+        # challenge already left pending.
+        def expired?
+          @expired
+        end
+
+        # A failed result for an authentic credential whose challenge expired,
+        # every other check having passed. Carries the credential and challenge.
+        def self.expired(credential:, challenge:)
+          new(ok: false, reason: "challenge expired", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED,
+            credential: credential, challenge: challenge, expired: true)
         end
 
         # Create a successful verification result.
