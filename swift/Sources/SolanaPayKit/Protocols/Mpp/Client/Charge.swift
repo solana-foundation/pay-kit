@@ -217,7 +217,18 @@ public enum Charge {
             guard let key = methodDetails.feePayerKey else {
                 throw PayKitError.invalidTransaction("feePayer=true requires feePayerKey in methodDetails")
             }
-            feePayerPubkey = try Pubkey(base58: key)
+            let sponsor = try Pubkey(base58: key)
+            // draft-solana-charge-00 fee sponsorship: "The client's account is
+            // the transfer authority but NOT the fee payer." A sponsor naming the
+            // signer would have the signer fund fees and split ATA rent while
+            // looking sponsored.
+            guard sponsor != signerPubkey else {
+                throw PayKitError.invalidTransaction(
+                    "Fee payer cannot authorize the payment: feePayerKey names the signer; "
+                        + "a sponsored charge needs a separate server fee payer"
+                )
+            }
+            feePayerPubkey = sponsor
         } else {
             feePayerPubkey = nil
         }

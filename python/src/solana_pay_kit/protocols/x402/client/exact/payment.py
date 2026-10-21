@@ -430,6 +430,19 @@ async def _resolve_mint(rpc: Any, asset: str, extra: Mapping[str, object]) -> tu
     return mint.token_program, mint.decimals
 
 
+def x402_exact_pay_to(requirement: X402AcceptsEntry) -> str:
+    """The wallet an x402 ``exact`` offer pays, exactly as :func:`build_payment` reads it.
+
+    Permission checks must approve this value rather than re-reading the offer,
+    so the approved destination is the one the transaction transfers to.
+    """
+    req = cast("dict[str, object]", requirement)
+    pay_to = _str_field(req, "payTo")
+    if pay_to is None:
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `payTo`")
+    return pay_to
+
+
 async def build_payment(
     signer: TransactionSigner,
     rpc: Any,
@@ -483,12 +496,14 @@ async def build_payment(
     # a field a server adds (``currency``, ``recipient``, ``feePayerKey``, a
     # top-level ``tokenProgram``...) never overrides ``asset`` / ``payTo`` /
     # ``extra.feePayer``, because the server verifies against those.
+    # ``network`` is a required PaymentRequirements field: an offer without
+    # it is refused, never signed for a network the client would guess.
+    if _str_field(req, "network") is None:
+        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `network`")
     asset = _str_field(req, "asset")
     if asset is None:
         raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `asset`")
-    pay_to = _str_field(req, "payTo")
-    if pay_to is None:
-        raise InvalidChallengeError("solana_pay_kit: x402 offer is missing `payTo`")
+    pay_to = x402_exact_pay_to(requirement)
 
     amount_raw = req.get("amount")
     if amount_raw is None:

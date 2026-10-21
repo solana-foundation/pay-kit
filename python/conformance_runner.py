@@ -636,6 +636,8 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
     (r"splits consume the entire amount", "splits-exceed-amount"),
     (r"too many splits", "too-many-splits"),
     (r"no matching (spl )?(token )?transfer", "no-matching-transfer"),
+    (r"share one funding authority", "mixed-funding-authority"),
+    (r"unexpected signer", "unexpected-signer"),
     (r"unexpected .* (instruction|transfer)", "unexpected-instruction"),
     (r"amount .* (mismatch|does not match)", "amount-mismatch"),
     # x402-exact reject categories. ``unsupported x402 version`` must be

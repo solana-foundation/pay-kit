@@ -567,8 +567,16 @@ async fn charge_verify(input: &Value) -> Result<Observed, String> {
 
 async fn x402_build(input: &Value) -> Result<Observed, String> {
     let offer = input.get("x402Offer").ok_or("input.x402Offer missing")?;
-    let requirements: PaymentRequirements = serde_json::from_value(offer.clone())
-        .map_err(|e| format!("invalid payload: x402Offer: {e}"))?;
+    // An offer the client cannot read is a refused challenge, not a setup
+    // failure: the client must not sign for it.
+    let requirements: PaymentRequirements = match serde_json::from_value(offer.clone()) {
+        Ok(requirements) => requirements,
+        Err(e) => {
+            return Ok(Observed::reject(format!(
+                "invalid challenge: x402Offer: {e}"
+            )))
+        }
+    };
     let signer = signer_from(input, "signerSecretKey")?;
     let (rpc, _log) = fixture_rpc::rpc_client(&Fixtures::from_input(input)?);
     let max_version = signer_max_version(input)?;

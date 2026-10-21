@@ -145,6 +145,8 @@ type challengeEnvelope struct {
 	// advertised on the challenge (rust PaymentRequiredEnvelope.extensions).
 	// The client echoes it into the outbound credential. nil when absent.
 	Extensions json.RawMessage `json:"extensions"`
+	// Resource is the challenge's `resource`, echoed into the credential.
+	Resource json.RawMessage `json:"resource"`
 }
 
 // ParseChallenge parses an x402 challenge and selects one offer per the
@@ -222,6 +224,7 @@ func selectFromJSON(raw []byte, sel ChallengeSelection) (*x402.AcceptsEntry, int
 	if entry == nil {
 		return nil, 0, nil
 	}
+	entry.SetChallengeResource(env.Resource)
 	version := env.X402Version
 	if version == 0 {
 		version = x402Version
@@ -382,6 +385,7 @@ func BuildPaymentHeaderWithExtensions(
 		// matching the rust spine; only the v1 producer sets them.
 		Payload:    x402.CredentialPayload{Transaction: txBase64},
 		Accepted:   entry,
+		Resource:   entry.ChallengeResource(),
 		Extensions: extensions,
 	}
 	raw, err := json.Marshal(credential)

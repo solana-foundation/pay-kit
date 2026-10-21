@@ -40,6 +40,10 @@ Code set (matches Python and the cross-SDK fault matrix at audit v2):
   signature_consumed          the replay store has already recorded
                               this signature for the configured key
                               prefix
+  settlement_in_progress      the transaction may have been broadcast
+                              but its outcome is not yet known; the
+                              charge stays pending and an identical
+                              retry reconciles it (do not pay again)
 ]]
 
 local M = {}
@@ -51,6 +55,7 @@ M.CHALLENGE_EXPIRED = 'challenge_expired'
 M.PAYMENT_INVALID = 'payment_invalid'
 M.WRONG_NETWORK = 'wrong_network'
 M.SIGNATURE_CONSUMED = 'signature_consumed'
+M.SETTLEMENT_IN_PROGRESS = 'settlement_in_progress'
 
 -- Set of canonical codes; used by the response builder to assert that no
 -- failure path falls through with a missing or unrecognized code. The lookup
@@ -63,6 +68,7 @@ M.ALL = {
   [M.PAYMENT_INVALID] = true,
   [M.WRONG_NETWORK] = true,
   [M.SIGNATURE_CONSUMED] = true,
+  [M.SETTLEMENT_IN_PROGRESS] = true,
 }
 
 --- Raise a structured error with the given canonical code and message.

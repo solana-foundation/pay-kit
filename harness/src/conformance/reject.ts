@@ -85,9 +85,16 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // Client refusing a challenge that violates the method spec (RULINGS C2,
   // C3). Checked first: these messages also contain generic words.
   [/decimals is required|failed to determine token program/i, "invalid-challenge"],
+  // @solana/pay-kit's client refusing an offer's terms (an unknown network).
+  [/invalid_challenge_terms|unsupported solana network/i, "invalid-challenge"],
+  // Sponsors bound the priority fee as limit x price (RULINGS S6).
+  [/priority fee .* exceeds the sponsored maximum/i, "compute-price-over-cap"],
   [/compute unit price .* exceeds maximum/i, "compute-price-over-cap"],
   [/compute unit limit .* exceeds maximum/i, "compute-limit-over-cap"],
   [/fee payer cannot authorize/i, "fee-payer-not-authority"],
+  // Fee-sponsored charges: one funding authority, no other signers.
+  [/share one funding authority/i, "mixed-funding-authority"],
+  [/unexpected signer/i, "unexpected-signer"],
   [/fee payer .* (funding source|funds source)/i, "fee-payer-is-funds-source"],
   [/splits consume the entire amount/i, "splits-exceed-amount"],
   [/too many splits/i, "too-many-splits"],

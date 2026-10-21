@@ -29,6 +29,15 @@ module PayCore
       # Raised on HTTP failure, transport error, or non-nil JSON-RPC error.
       class RpcError < StandardError; end
 
+      # `sendTransaction` failed its preflight simulation. The one send
+      # failure that proves the node did not forward the transaction; every
+      # other send error leaves the outcome unknown.
+      class PreflightRejection < RpcError; end
+
+      # JSON-RPC error code for a sendTransaction preflight failure
+      # (`SendTransactionPreflightFailure`).
+      PREFLIGHT_FAILURE_CODE = -32002
+
       def initialize(
         url,
         open_timeout: DEFAULT_OPEN_TIMEOUT_SECONDS,
@@ -49,7 +58,12 @@ module PayCore
         raise rpc_error_class, "#{method} HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
 
         body = JSON.parse(response.body)
-        raise rpc_error_class, "#{method}: #{body["error"]["message"]}" if body["error"]
+        if (error = body["error"])
+          message = "#{method}: #{error["message"]}"
+          raise PreflightRejection, message if method == "sendTransaction" && error["code"] == PREFLIGHT_FAILURE_CODE
+
+          raise rpc_error_class, message
+        end
 
         body["result"]
       rescue Timeout::Error => error

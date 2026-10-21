@@ -26,4 +26,9 @@ final class MemoryStore implements Store
         $this->values[$key] = $value;
         return true;
     }
+
+    public function has(string $key): bool
+    {
+        return array_key_exists($key, $this->values);
+    }
 }

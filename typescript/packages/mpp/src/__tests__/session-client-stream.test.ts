@@ -74,15 +74,17 @@ describe('MeteredSseSession usage validation', () => {
         });
     });
 
-    test('usage observed before any directive is accepted, matching the Rust state machine', async () => {
+    test('usage observed before any directive is refused, so it can never escape the reservation', async () => {
         const { metered, session } = await makeStreamSession();
-        metered.acceptEvent({
-            data: JSON.stringify({ amount: '7', deliveryId: 'early' }),
-            event: 'mpp.usage',
-        });
-        expect(metered.usage).toEqual({ amount: '7', deliveryId: 'early' });
+        expect(() =>
+            metered.acceptEvent({
+                data: JSON.stringify({ amount: '7', deliveryId: 'reserved' }),
+                event: 'mpp.usage',
+            }),
+        ).toThrow('mpp.usage arrived before the mpp.metering event');
+        expect(metered.usage).toBeUndefined();
 
         metered.acceptEvent(meteringEvent(session.channelId, 'reserved', '100'));
-        await expect(metered.ack()).resolves.toMatchObject({ amount: '7', deliveryId: 'reserved' });
+        await expect(metered.ack()).resolves.toMatchObject({ amount: '100', deliveryId: 'reserved' });
     });
 });

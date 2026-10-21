@@ -15,7 +15,7 @@ amount-parsing entry point.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from solana_keychain import SolanaSigner
@@ -822,6 +822,21 @@ class MeteringDirective:
             return _parse_base_units(self.amount)
         except ValueError as exc:
             raise ValueError(f"invalid metering amount: {self.amount}") from exc
+
+    def settle(self, usage: MeteringUsage) -> MeteringDirective:
+        """Return the directive to commit once the stream reports its final ``usage``.
+
+        The usage must name this delivery and stay within the reserved amount;
+        the result is what a client signs a voucher for, so an endpoint can never
+        raise the charge past the reservation by reporting more usage.
+        """
+        if usage.delivery_id != self.delivery_id:
+            raise ValueError(f"usage delivery {usage.delivery_id} does not match directive {self.delivery_id}")
+        reserved = self.amount_base_units()
+        used = usage.amount_base_units()
+        if used > reserved:
+            raise ValueError(f"mpp.usage amount {used} exceeds the reserved metering amount {reserved}")
+        return replace(self, amount=str(used))
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

@@ -132,7 +132,7 @@ const KIT_SETTLEMENT_CODE: &str = "the Rust server reports an unusable settlemen
 const KIT_TX_VERSION_CODE: &str = "the Rust server reports an unadvertised message version as invalid_batch_settlement_svm_setup_transaction (tx_policy.rs check_envelope wraps core::tx::check_envelope); x402-txv1 requires unsupported_transaction_version";
 const KIT_OPEN_GRACE_CODE: &str = "the Rust server rejects the two-memo open at the memo scan with setup_transaction before decoding grace_period (KIT_TWO_MEMOS)";
 const KIT_V1_LOADED_LIMIT: &str = "the Rust server requires a version-1 loadedAccountsDataSizeLimit of exactly 67108864 (core/tx/budget.rs DeclaredBudget::of), refusing any smaller present value";
-const KIT_NO_ONCHAIN_REBIND: &str = "the Rust server refreshes a stale snapshot for status, deposit and close only (server/batch_settlement.rs reconcile_channel); the immutable bindings (discriminator, payee, distribution hash) are checked only after a deposit confirms, so a steady-state voucher against a mis-bound channel account is served";
+const KIT_NO_ONCHAIN_REBIND: &str = "the Rust server's refreshed-snapshot binding check (server/batch_settlement.rs) compares payer, payee, rent payer, authorizer, mint, grace period, open slot and distribution hash but not the account discriminator, so a steady-state voucher against a ClosedChannel account is served";
 const KIT_FRACTIONAL_DELAY: &str = "the Rust kit types extra.withdrawDelay as u32, so a fractional value fails requirement deserialization (a malformed challenge) instead of the range check";
 const KIT_SERVER_BINDING: &str = "the Rust server rejects the open at the memo scan (setup_transaction, KIT_TWO_MEMOS) and never inspects the binding memo's key";
 
@@ -1418,19 +1418,19 @@ crate::registry! {
         "The onchain channel's payee is not extra.feePayer (the sponsor does not hold the lifecycle seat this scheme requires).",
         voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { payee: fx::stranger(), ..Default::default() }),
         rej(RejectCode::ChannelState),
-    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).build();
     batch_verify_voucher_onchain_distribution_reject => voucher_case(
         "batch-verify-voucher-onchain-distribution-reject", bindings_spec(), BugType::AuthBypass,
         "The onchain distribution hash commits 100% to another receiver: settled funds would not reach payTo.",
         voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { distribution_to: keys::X402_OTHER_PAY_TO.to_string(), ..Default::default() }),
         rej(RejectCode::ChannelState),
-    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).build();
     batch_verify_voucher_onchain_empty_distribution_reject => voucher_case(
         "batch-verify-voucher-onchain-empty-distribution-reject", bindings_spec(), BugType::AuthBypass,
         "The onchain distribution hash is all zeros: no distribution to payTo is committed.",
         voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { empty_distribution: true, ..Default::default() }),
         rej(RejectCode::ChannelState),
-    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    ).requirements(&[EVERY_PAID_REQUEST, NO_DIVERSION]).build();
     batch_verify_voucher_payer_is_fee_payer_reject => voucher_case(
         "batch-verify-voucher-payer-is-fee-payer-reject", fee_payer_spec(), BugType::AuthBypass,
         "channelConfig.payer is extra.feePayer.",

@@ -7,6 +7,7 @@ namespace PayKit\Tests\Middleware;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\PayKit;
 use PayKit\Config;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
@@ -53,6 +54,47 @@ final class RequirePaymentTest extends TestCase
                     ->withBody($this->f->createStream('{"ok":true}'));
             }
         };
+    }
+
+    // The default MPP and x402 adapters claim payments in one store, so a
+    // signature settled through either protocol is consumed for both.
+    public function testDefaultAdaptersShareOneReplayStore(): void
+    {
+        $client = new PayKit(new Config(
+            network: Network::SolanaDevnet,
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
+            preflight: false,
+            accept: [Protocol::Mpp, Protocol::X402],
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
+        ));
+        $mw = new RequirePayment($client, new Gate(amount: Price::usd('0.01')));
+        $store = function (object $owner, string $property): object {
+            $adapter = (new \ReflectionProperty($owner, $property))->getValue($owner);
+            self::assertIsObject($adapter);
+            $class = new \ReflectionClass($adapter);
+            $field = $class->hasProperty('replayStore') ? 'replayStore' : 'consumedSignatures';
+            $value = $class->getProperty($field)->getValue($adapter);
+            self::assertIsObject($value);
+            return $value;
+        };
+        $mppStore = $store($mw, 'mpp');
+        $x402Ledger = $store($mw, 'x402');
+        $x402Store = (new \ReflectionProperty($x402Ledger, 'store'))->getValue($x402Ledger);
+        self::assertSame($mppStore, $x402Store);
+    }
+
+    // A payment that may already be on chain is answered with a retryable
+    // 409, never a fresh challenge the client could pay a second time.
+    public function testSettlementInProgressIsAnsweredWith409WithoutAChallenge(): void
+    {
+        $mw = new RequirePayment($this->client, new Gate(amount: Price::usd('0.01')));
+        $build = new \ReflectionMethod($mw, 'build409');
+        $response = $build->invoke($mw, new SettlementInProgressException('pay_kit: retry the same credential'));
+        self::assertInstanceOf(ResponseInterface::class, $response);
+        self::assertSame(409, $response->getStatusCode());
+        self::assertSame('1', $response->getHeaderLine('retry-after'));
+        self::assertSame('', $response->getHeaderLine('www-authenticate'));
+        self::assertStringContainsString('settlement-in-progress', (string) $response->getBody());
     }
 
     public function testEmits402WhenNoCredentialPresent(): void

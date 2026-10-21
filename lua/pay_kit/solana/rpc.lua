@@ -57,8 +57,11 @@ function M.new(config)
   return setmetatable(instance, Rpc)
 end
 
-local function rpc_error(message)
-  error({ code = 'rpc-error', message = message })
+-- `rpc_code` / `data` carry the JSON-RPC error object so callers can tell a
+-- definitive rejection (e.g. a sendTransaction preflight failure) from an
+-- outcome-unknown one.
+local function rpc_error(message, rpc_code, data)
+  error({ code = 'rpc-error', message = message, rpc_code = rpc_code, data = data })
 end
 
 local function transport_error(message)
@@ -113,12 +116,14 @@ function Rpc:call(method, params)
 
   if parsed.error ~= nil then
     local message = 'unknown error'
-    if type(parsed.error) == 'table' and parsed.error.message then
-      message = tostring(parsed.error.message)
+    local rpc_code, data
+    if type(parsed.error) == 'table' then
+      if parsed.error.message then message = tostring(parsed.error.message) end
+      rpc_code, data = parsed.error.code, parsed.error.data
     elseif type(parsed.error) == 'string' then
       message = parsed.error
     end
-    rpc_error(method .. ': ' .. message)
+    rpc_error(method .. ': ' .. message, rpc_code, data)
   end
 
   return parsed.result

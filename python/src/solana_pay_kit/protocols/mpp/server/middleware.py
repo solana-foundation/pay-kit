@@ -6,7 +6,12 @@ import functools
 from collections.abc import Callable
 from typing import Any
 
-from solana_pay_kit._paycore.errors import PaymentError, payment_required_response
+from solana_pay_kit._paycore.errors import (
+    PaymentError,
+    canonical_code,
+    payment_required_response,
+    settlement_in_progress_response,
+)
 from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
 from solana_pay_kit.protocols.mpp.server.charge import Mpp
 
@@ -59,6 +64,11 @@ def pay(mpp_handler: Mpp, amount: str, **options: Any) -> Callable:
                     verification_error = err
                 except Exception as err:  # noqa: BLE001 (catch-all for framework parse errors)
                     verification_error = PaymentError(str(err), code="payment_invalid")
+
+            # A payment that may already be broadcast is never re-challenged:
+            # the client retries the same credential instead of paying twice.
+            if verification_error is not None and canonical_code(verification_error.code) == "settlement_in_progress":
+                return settlement_in_progress_response(str(verification_error) or "Settlement in progress")
 
             # Issue (or re-issue) a 402 with a canonical L6 code in the body.
             www_auth = format_www_authenticate(challenge)

@@ -707,6 +707,34 @@ func (d MeteringDirective) AmountBaseUnits() (uint64, error) {
 	return value, nil
 }
 
+// Settle returns the directive to commit once the stream reports its final
+// usage.
+//
+// The usage must name this delivery and stay within the reserved amount; the
+// result is what a client signs a voucher for, so an endpoint can never raise
+// the charge past the reservation by reporting more usage.
+func (d MeteringDirective) Settle(usage MeteringUsage) (MeteringDirective, error) {
+	if usage.DeliveryID != d.DeliveryID {
+		return MeteringDirective{}, fmt.Errorf(
+			"usage delivery %s does not match directive %s", usage.DeliveryID, d.DeliveryID)
+	}
+	reserved, err := d.AmountBaseUnits()
+	if err != nil {
+		return MeteringDirective{}, err
+	}
+	used, err := usage.AmountBaseUnits()
+	if err != nil {
+		return MeteringDirective{}, err
+	}
+	if used > reserved {
+		return MeteringDirective{}, fmt.Errorf(
+			"mpp.usage amount %d exceeds the reserved metering amount %d", used, reserved)
+	}
+	settled := d
+	settled.Amount = strconv.FormatUint(used, 10)
+	return settled, nil
+}
+
 // MeteringUsage is the final usage reported by a streaming response.
 //
 // The amount MUST be less than or equal to the amount reserved by the original

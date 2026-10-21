@@ -1,6 +1,6 @@
 import { DEFAULT_RPC_URLS } from '@solana/mpp';
 import type { PendingSettlementStore } from '@x402/core/facilitator';
-import type { Store } from 'mppx';
+import { Store } from 'mppx';
 
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
 import { type Stablecoin, STABLECOINS } from './price.js';
@@ -91,7 +91,11 @@ export type ConfigureParams = {
     readonly operator?: OperatorParams;
     /** Run boot-time safety checks. */
     readonly preflight?: boolean;
-    /** Replay-protection store. Use a persistent backend in production. */
+    /**
+     * Replay-protection store, shared by every protocol adapter so one payment
+     * authorizes one request whichever protocol presents it. Defaults to an
+     * in-memory store; use a persistent, shared backend in production.
+     */
     readonly replayStore?: Store.Store;
     /** Defaults to the public RPC endpoint for the network. */
     readonly rpcUrl?: string;
@@ -112,7 +116,7 @@ export type PayKitConfig = {
     readonly network: Network;
     readonly operator: Operator;
     readonly preflight: boolean;
-    readonly replayStore: Store.Store | undefined;
+    readonly replayStore: Store.Store;
     readonly rpcUrl: string;
     readonly stablecoins: readonly Stablecoin[];
     readonly x402: X402Options;
@@ -213,7 +217,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         network,
         operator: Object.freeze(operator),
         preflight: params.preflight ?? true,
-        replayStore: params.replayStore,
+        replayStore: params.replayStore ?? Store.memory(),
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
         stablecoins: Object.freeze([...stablecoins]),
         x402: Object.freeze({

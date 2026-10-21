@@ -637,8 +637,10 @@ def _http_exception(exc: PayKitError) -> HTTPException:
         code = getattr(exc, "code", None)
         detail = {"error": code or "payment_error", "message": str(exc)}
 
+    rendered: dict[str, str] = dict(cast("dict[str, str]", headers)) if isinstance(headers, dict) else {}
+    rendered.update(exc.response_headers)
     return HTTPException(
         status_code=status,
         detail=detail,
-        headers=cast("dict[str, str]", headers) if isinstance(headers, dict) else None,
+        headers=rendered or None,
     )

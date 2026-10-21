@@ -5,6 +5,7 @@ require "json"
 require "net/http"
 require "uri"
 
+require "pay_core/consumed_signatures"
 require "pay_core/solana/mints"
 require "pay_core/solana/caip2"
 require "pay_core/solana/rpc"
@@ -28,7 +29,8 @@ module PayKit::Protocols::X402
     # - Apply the facilitator signature and broadcast.
     # - Enforce L8 settlement order:
     #     broadcast -> confirm (getSignatureStatuses) -> put_if_absent
-    #   keyed on `x402-svm-exact:consumed:<base58_signature>`.
+    #   keyed on `solana:consumed-signature:<base58_signature>`, the ledger
+    #   shared with MPP charge (`PayCore::ConsumedSignatures`).
     # - Emit canonical `PAYMENT-RESPONSE` on success.
     class Exact
       # Aliases for readability inside the class body.
@@ -61,12 +63,12 @@ module PayKit::Protocols::X402
       DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
       CONFIRMED_STATUSES = ["confirmed", "finalized"].freeze
 
-      # Replay store for confirmed Solana signatures. Keys are scheme-
-      # namespaced ("x402-svm-exact:consumed:<base58_signature>") so the
-      # keyspace cannot bleed into MPP's `solana-charge:consumed:<sig>`
-      # namespace. Entries are TTL-pruned so memory stays bounded;
-      # Solana's own per-signature uniqueness inside the blockhash
-      # window is the durable replay primitive.
+      # In-memory replay store for confirmed Solana signatures, for a
+      # standalone x402 server. Entries are TTL-pruned so memory stays
+      # bounded; Solana's own per-signature uniqueness inside the blockhash
+      # window is the durable replay primitive. A gate that also serves MPP
+      # must pass the MPP replay store as `settlement_cache` instead, so both
+      # protocols claim one `PayCore::ConsumedSignatures` ledger.
       class SettlementCache
         DEFAULT_TTL_SECONDS = 120
 
@@ -76,13 +78,21 @@ module PayKit::Protocols::X402
           @mutex = Mutex.new
         end
 
-        def put_if_absent(key, now: Time.now)
+        def put_if_absent(key, _value = true, now: Time.now)
           @mutex.synchronize do
             prune(now)
             return false if @entries.key?(key)
 
             @entries[key] = now
             true
+          end
+        end
+
+        # Read-only presence check; never records `key`.
+        def key?(key, now: Time.now)
+          @mutex.synchronize do
+            prune(now)
+            @entries.key?(key)
           end
         end
 
@@ -375,7 +385,7 @@ module PayKit::Protocols::X402
         end
 
         def signature_consumed_key(signature)
-          "x402-svm-exact:consumed:#{signature}"
+          ::PayCore::ConsumedSignatures.key(signature)
         end
 
         # Resolve which offered requirement an inbound credential settles
@@ -478,7 +488,7 @@ module PayKit::Protocols::X402
         #   (4) apply facilitator signature
         #   (5) broadcast
         #   (6) confirm via getSignatureStatuses poll
-        #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #   (7) claim the signature in the ledger shared with MPP
         #
         # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
         # at `rust/crates/x402/src/bin/harness_server.rs:316-324`.
@@ -515,7 +525,7 @@ module PayKit::Protocols::X402
           signature = config.transaction_sender.call(config, signed_transaction)
           config.signature_confirmer.call(config, signature)
 
-          unless config.settlement_cache.put_if_absent(signature_consumed_key(signature))
+          unless ::PayCore::ConsumedSignatures.new(config.settlement_cache).claim(signature)
             raise ::PayKit::Protocols::X402::Error::SignatureConsumed::TOKEN
           end
 

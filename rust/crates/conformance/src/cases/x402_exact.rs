@@ -11,8 +11,8 @@ use crate::case::{
     Suite, X402HeaderSpec, X402Payment, X402Route,
 };
 use crate::keys::{
-    BLOCKHASH, DEVNET_CAIP2, MAINNET_CAIP2, MAINNET_USDC, MINT, OTHER_MINT, TOKEN_PROGRAM,
-    X402_OFFER_FEE_PAYER, X402_OTHER_PAY_TO, X402_PAY_TO,
+    BLOCKHASH, DEVNET_CAIP2, MAINNET_CAIP2, MAINNET_USDC, MINT, OTHER_MINT, TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM, X402_OFFER_FEE_PAYER, X402_OTHER_PAY_TO, X402_PAY_TO,
 };
 use crate::mutate::Mutation;
 
@@ -256,6 +256,48 @@ crate::registry! {
         build_input(Some(2), offer(DEVNET_CAIP2, "1000", MINT, 300), MINT, json!({})),
         V2_SHAPE.to_vec(),
     );
+    x402_exact_v2_build_ignores_non_spec_fields => build_case(
+        "x402-exact-v2-build-ignores-non-spec-fields",
+        "x402-build.json",
+        spec(V2, "5.1.2 Field Descriptions (PaymentRequired)", "| `payTo`             | `string` | Required | Recipient wallet address or role constant (e.g., \"merchant\")"),
+        &[DESTINATION, PROOF_IN_PAYLOAD],
+        "The devnet USDC offer of x402-exact-v2-build plus fields a server adds beside the x402 ones, each disagreeing with its x402 field: `recipient` (another wallet), `currency` (another mint), `maxAmountRequired`, and top-level `tokenProgram` (Token-2022), `decimals` (9) and `feePayerKey`. The client reads only the x402 fields (RULINGS X1), so it builds the same payment as x402-exact-v2-build: the transfer pays payTo in asset, and the fee payer is extra.feePayer.",
+        build_input(
+            Some(2),
+            {
+                let mut offer = offer(DEVNET_CAIP2, "1000", MINT, 300);
+                offer["recipient"] = json!(X402_OTHER_PAY_TO);
+                offer["currency"] = json!(OTHER_MINT);
+                offer["maxAmountRequired"] = json!("999999");
+                offer["tokenProgram"] = json!(TOKEN_2022_PROGRAM);
+                offer["decimals"] = json!(9);
+                offer["feePayerKey"] = json!(X402_OTHER_PAY_TO);
+                offer
+            },
+            MINT,
+            json!({}),
+        ),
+        V2_SHAPE.to_vec(),
+    );
+    x402_exact_v2_build_missing_network_reject => CaseBuilder::new(
+        "x402-exact-v2-build-missing-network-reject",
+        "x402-build.json",
+        Suite::X402Exact,
+        Intent::X402Exact,
+        Mode::BuildTransaction,
+        Role::Client,
+        BugType::Defaults,
+        spec(V2, "5.1.2 Field Descriptions (PaymentRequired)", "| network | string | Required | Blockchain network identifier in CAIP-2 format (e.g., \"eip155:84532\") |"),
+        "The devnet USDC offer of x402-exact-v2-build without its required `network`: the client refuses it instead of signing for a network it guessed (a default to mainnet would sign a payment valid on a cluster nobody approved).",
+        Input::Static({
+            let mut offer = offer(DEVNET_CAIP2, "1000", MINT, 300);
+            offer.as_object_mut().unwrap().remove("network");
+            build_input(Some(2), offer, MINT, json!({}))
+        }),
+        reject(RejectCode::InvalidChallenge, "the offer names no network"),
+    )
+    .requirements(&[PROOF_IN_PAYLOAD])
+    .build();
     x402_exact_v1_build_devnet => build_case(
         "x402-exact-v1-build-devnet",
         "x402-v1-build.json",

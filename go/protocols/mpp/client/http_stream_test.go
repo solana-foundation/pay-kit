@@ -256,25 +256,34 @@ func TestMeteredSseReportsMissingMeteringAndUsageMismatch(t *testing.T) {
 	}
 }
 
-func TestMeteredSseUsageBeforeDirectiveAccepted(t *testing.T) {
-	// A usage event may arrive before the directive; it is accepted and the
-	// amount applies to whichever directive follows.
+func TestMeteredSseRefusesUsageBeforeDirectiveOrAboveReservation(t *testing.T) {
 	consumer, _ := newConsumer(t, false)
 	stream := consumer.MeteredSse()
-	if _, err := stream.AcceptEvent(sseEvt("mpp.usage", `{"deliveryId":"stream-1","amount":"7"}`)); err != nil {
-		t.Fatalf("usage-before-directive rejected: %v", err)
+	_, err := stream.AcceptEvent(sseEvt("mpp.usage", `{"deliveryId":"stream-1","amount":"7"}`))
+	if err == nil || !strings.Contains(err.Error(), "before the mpp.metering") {
+		t.Fatalf("error = %v, want usage-before-directive rejection", err)
 	}
+
 	meteringDirective := directive(consumer.Session().ChannelIDString(), "1000")
 	meteringDirective.DeliveryID = "stream-1"
 	if _, err := stream.AcceptEvent(sseEvt("mpp.metering", mustJSON(t, meteringDirective))); err != nil {
 		t.Fatalf("metering accept: %v", err)
 	}
+	_, err = stream.AcceptEvent(sseEvt("mpp.usage", `{"deliveryId":"stream-1","amount":"1001"}`))
+	if err == nil || !strings.Contains(err.Error(), "exceeds the reserved") {
+		t.Fatalf("error = %v, want over-reservation rejection", err)
+	}
+
+	// Usage equal to the reservation is still accepted and committed.
+	if _, err := stream.AcceptEvent(sseEvt("mpp.usage", `{"deliveryId":"stream-1","amount":"1000"}`)); err != nil {
+		t.Fatalf("usage accept: %v", err)
+	}
 	receipt, err := stream.Ack(context.Background())
 	if err != nil {
 		t.Fatalf("Ack: %v", err)
 	}
-	if receipt.Amount != "7" {
-		t.Fatalf("receipt amount = %s, want early usage 7", receipt.Amount)
+	if receipt.Amount != "1000" || consumer.Session().Cumulative() != 1000 {
+		t.Fatalf("receipt = %+v cumulative = %d, want 1000", receipt, consumer.Session().Cumulative())
 	}
 }
 

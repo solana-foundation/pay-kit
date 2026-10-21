@@ -5,10 +5,7 @@ local ata = require('pay_kit.solana.ata')
 
 local M = {}
 
--- Replay-store key prefix; must match the prefix used by init.lua's
--- _finalize_verification so the inner L8 consume and the outer
--- sanity-check guard hit the same namespace.
-local CONSUMED_PREFIX_HOLDER = 'solana-charge:consumed:'
+local consumed_signatures = require('pay_kit.consumed_signatures')
 
 local TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 local TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
@@ -574,11 +571,10 @@ function M.verify_transaction(context, hooks)
   -- bytes, leak through the not-yet-marked store, and double-pay.
   -- Consuming the signature before await closes that window: a retry
   -- after timeout hits the already-consumed marker and short-circuits.
-  local replay_key = CONSUMED_PREFIX_HOLDER .. signature
+  local replay_key = consumed_signatures.key(signature)
   local stored = false
   if context.store ~= nil and type(context.store.put_if_absent) == 'function' then
-    local inserted = context.store:put_if_absent(replay_key, true)
-    if not inserted then
+    if not consumed_signatures.new(context.store):claim(signature) then
       error('payment already consumed')
     end
     stored = true

@@ -101,7 +101,7 @@ local function match_sol_transfer(tx, recipient, amount, fee_payer, matched)
             verifier_error('fee payer cannot fund the SOL payment transfer')
           end
           matched[index] = true
-          return
+          return source
         end
       end
     end
@@ -141,7 +141,7 @@ local function match_spl_transfer(tx, recipient, mint, token_program, amount, de
               local expected_ata = ata.derive(recipient, mint, token_program)
               if destination_ata == expected_ata then
                 matched[index] = true
-                return
+                return authority
               end
             end
           end
@@ -282,6 +282,27 @@ local function validate_allowlist(tx, matched, expected_mint, expected_token_pro
   end
 end
 
+-- Every required signer must be the fee payer or the one authority that
+-- funds every matched payment transfer. Any other signer authorizes nothing
+-- and only adds a signature fee, which a sponsor would pay; letting each leg
+-- of a split name its own authority would let a payer multiply those fees.
+-- `authorities` lists the funding authority of each matched leg.
+local function verify_required_signers(tx, authorities)
+  local funding_authority
+  for i = 1, #authorities do
+    if funding_authority and funding_authority ~= authorities[i] then
+      verifier_error('Payment transfers must share one funding authority')
+    end
+    funding_authority = authorities[i]
+  end
+  local keys = tx.message.account_keys
+  for i = 2, tx.message.header.required_signatures do
+    if keys[i] ~= funding_authority then
+      verifier_error('Unexpected signer in payment transaction')
+    end
+  end
+end
+
 --- Verify a parsed transaction against a charge request. Raises on
 --- mismatch; returns silently on success.
 function M.verify_transaction(tx, request)
@@ -311,10 +332,12 @@ function M.verify_transaction(tx, request)
         verifier_error('ataCreationRequired requires an SPL token charge')
       end
     end
-    match_sol_transfer(tx, request.recipient, primary, fee_payer, matched)
+    local authorities = { match_sol_transfer(tx, request.recipient, primary, fee_payer, matched) }
     for i = 1, #splits do
-      match_sol_transfer(tx, splits[i].recipient, amount_from(splits[i].amount, 'split.amount'), fee_payer, matched)
+      authorities[#authorities + 1] = match_sol_transfer(tx, splits[i].recipient,
+        amount_from(splits[i].amount, 'split.amount'), fee_payer, matched)
     end
+    verify_required_signers(tx, authorities)
     verify_memos(tx, request, splits, matched)
     validate_allowlist(tx, matched, nil, nil, fee_payer, splits)
   else
@@ -332,12 +355,15 @@ function M.verify_transaction(tx, request)
         verifier_error('ataCreationRequired requires currency to be an SPL token mint address')
       end
     end
-    match_spl_transfer(tx, request.recipient, mint, token_program, primary, method_details.decimals, fee_payer, matched)
+    local authorities = {
+      match_spl_transfer(tx, request.recipient, mint, token_program, primary, method_details.decimals, fee_payer, matched),
+    }
     for i = 1, #splits do
-      match_spl_transfer(tx, splits[i].recipient, mint, token_program,
+      authorities[#authorities + 1] = match_spl_transfer(tx, splits[i].recipient, mint, token_program,
         amount_from(splits[i].amount, 'split.amount'),
         method_details.decimals, fee_payer, matched)
     end
+    verify_required_signers(tx, authorities)
     verify_memos(tx, request, splits, matched)
     validate_allowlist(tx, matched, mint, token_program, fee_payer, splits)
   end

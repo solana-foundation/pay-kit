@@ -10,7 +10,8 @@ class HandlerPathsTest < Minitest::Test
     rpc = FakeRpc.new(signature: valid_signature)
     handler = handler_with(rpc)
     transaction = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
@@ -30,7 +31,8 @@ class HandlerPathsTest < Minitest::Test
     rpc = FakeRpc.new(simulation_error: {"InstructionError" => [0, "Custom"]})
     handler = handler_with(rpc)
     transaction = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(challenge: challenges.create_challenge(request).to_echo, payload: {"transaction" => transaction})
@@ -48,7 +50,8 @@ class HandlerPathsTest < Minitest::Test
     rpc = FakeRpc.new(signature: valid_signature)
     handler = handler_with(rpc)
     transaction = Base64.strict_encode64(legacy_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(challenge: challenges.create_challenge(request).to_echo, payload: {"transaction" => transaction})

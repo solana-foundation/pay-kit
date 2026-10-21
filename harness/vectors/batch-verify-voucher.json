@@ -2348,7 +2348,7 @@
     },
     "intent": "x402-batch-settlement",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-a6efa8062a",
       "X402-46d0a12f84"
@@ -2507,7 +2507,7 @@
     },
     "intent": "x402-batch-settlement",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-a6efa8062a",
       "X402-f265c321e3"
@@ -2666,7 +2666,7 @@
     },
     "intent": "x402-batch-settlement",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-a6efa8062a",
       "X402-f265c321e3"

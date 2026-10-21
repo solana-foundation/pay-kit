@@ -281,7 +281,13 @@ export type RejectCode =
   | "settlement-simulation"
   | "channel-state"
   | "refund-transaction"
-  | "duplicate-settlement";
+  | "duplicate-settlement"
+  // charge verify, fee-sponsored: the payment legs are funded by more than
+  // one authority, so the sponsor pays a signature fee for each.
+  | "mixed-funding-authority"
+  // charge verify, fee-sponsored: a required signer that is neither the fee
+  // payer nor the payment's funding authority.
+  | "unexpected-signer";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

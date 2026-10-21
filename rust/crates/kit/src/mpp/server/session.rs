@@ -23,7 +23,6 @@
 //! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
-use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
@@ -916,6 +915,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .as_ref()
             .map(|signer| signer.pubkey())
             .unwrap_or(payer);
+        reject_sponsor_as_payer(&self.config, &payer)?;
         let params = payment_channels::OpenChannelParams {
             payer,
             rent_payer,
@@ -1567,20 +1567,28 @@ impl<S: ChannelStore> SessionServer<S> {
     ///
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
-        self.verify_voucher_with_guard(payload, |_| Ok(())).await
+        self.verify_voucher_priced(payload, self.config.amount, true, |_| Ok(()))
+            .await
     }
 
-    /// Verify a voucher and check a host lease/capacity precondition inside
-    /// the atomic watermark-and-service-debit mutation.
+    /// Verify a voucher authorizing one request, checking a host
+    /// lease/capacity precondition inside the atomic watermark-and-service-debit
+    /// mutation.
     ///
     /// The guard sees the current record on every committing mutation. It must
     /// be nonblocking and free of side effects; retries must recheck the lease.
+    ///
+    /// A successful return always charged the request: an exact replay of the
+    /// highest voucher is rejected rather than returned as a no-charge
+    /// acceptance, so a caller that forwards the request on `Ok` (for example
+    /// across replicas sharing the store) can never serve it twice for one
+    /// payment.
     pub async fn verify_voucher_with_guard(
         &self,
         payload: &VoucherPayload,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
-        self.verify_voucher_priced(payload, self.config.amount, true, guard)
+        self.verify_voucher_priced(payload, self.config.amount, false, guard)
             .await
     }
 
@@ -2384,13 +2392,13 @@ impl<S: ChannelStore> SessionServer<S> {
                     if state.close_requested_at.is_some() {
                         return Err(StoreError::Internal("Close already requested".to_string()));
                     }
-                    // Unexpired reservations were (or are being) delivered and
+                    // Reservations that were (or may have been) delivered
                     // can't be committed once close is pending, so the final
-                    // voucher must pay for them.
+                    // voucher must pay for them; see `owed_at_close`.
                     let live_pending = state
                         .pending_deliveries
                         .iter()
-                        .filter(|delivery| delivery.expires_at > now as i64)
+                        .filter(|delivery| delivery.owed_at_close(now as i64))
                         .try_fold(0u64, |total, delivery| total.checked_add(delivery.amount))
                         .ok_or_else(|| {
                             StoreError::Internal("pending delivery total overflow".to_string())
@@ -2527,7 +2535,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             })?;
                         state
                             .pending_deliveries
-                            .retain(|delivery| delivery.expires_at <= now as i64);
+                            .retain(|delivery| !delivery.owed_at_close(now as i64));
                     }
 
                     // The client's final voucher is the sealed amount.
@@ -2629,6 +2637,22 @@ fn confirmed_rpc_client(rpc_url: &str) -> solana_rpc_client::rpc_client::RpcClie
         rpc_url.to_string(),
         solana_commitment_config::CommitmentConfig::confirmed(),
     )
+}
+
+/// A sponsored server co-signs as fee payer and rent payer. If the channel
+/// payer were the same key, that one signature would also authorize the
+/// deposit out of the sponsor's own token account, so the roles must differ.
+fn reject_sponsor_as_payer(config: &SessionConfig, payer: &Pubkey) -> Result<()> {
+    if config
+        .fee_payer_signer
+        .as_ref()
+        .is_some_and(|signer| signer.pubkey() == *payer)
+    {
+        return Err(Error::Other(
+            "payment-channel payer must differ from the sponsored fee payer".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "server")]
@@ -2947,6 +2971,7 @@ async fn verify_submit_and_fetch_topup(
         .parse::<u64>()
         .map_err(|_| Error::Other("invalid additionalAmount".to_string()))?;
     let payer = parse_pubkey_field(&state.payer, "payer")?;
+    reject_sponsor_as_payer(config, &payer)?;
     let channel = parse_pubkey_field(&payload.channel_id, "channelId")?;
     let mint = expected_payment_channel_mint(config)?;
     let token_program = match config.token_program {
@@ -3216,31 +3241,8 @@ fn verify_client_transaction_signatures(
     tx: &solana_transaction::versioned::VersionedTransaction,
     server_fee_payer: Option<Pubkey>,
 ) -> Result<()> {
-    let required = usize::from(tx.message.header().num_required_signatures);
-    let keys = tx.message.static_account_keys();
-    if tx.signatures.len() != required || keys.len() < required {
-        return Err(Error::Other(
-            "session transaction signature slots do not match its required signers".into(),
-        ));
-    }
-    let message = tx.message.serialize();
-    for (index, (signature, key)) in tx.signatures.iter().zip(keys).take(required).enumerate() {
-        if server_fee_payer == Some(*key) {
-            if index != 0 || *signature != Signature::default() {
-                return Err(Error::Other(
-                    "session fee-payer signature slot must be empty before server co-signing"
-                        .into(),
-                ));
-            }
-            continue;
-        }
-        if !signature.verify(key.as_ref(), &message) {
-            return Err(Error::Other(format!(
-                "invalid client transaction signature for required signer {key}"
-            )));
-        }
-    }
-    Ok(())
+    crate::core::tx::require_presigned(tx, server_fee_payer.as_ref())
+        .map_err(|error| Error::Other(format!("session transaction: {error}")))
 }
 
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
@@ -3344,6 +3346,7 @@ mod tests {
     use crate::mpp::protocol::solana::{mints, programs};
     use crate::mpp::store::MemoryChannelStore;
     use solana_keychain::MemorySigner;
+    use solana_signature::Signature;
     use std::str::FromStr;
 
     fn key(seed: u8) -> ed25519_dalek::SigningKey {
@@ -4076,6 +4079,95 @@ mod tests {
             .to_string()
             .contains("invalid client transaction signature"));
         rpc.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_rejects_payer_aliasing_the_fee_payer() {
+        let sponsor = shared_signer(8);
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        let server = SessionServer::new(cfg, MemoryChannelStore::new());
+
+        // Seed 8 is the sponsor: the open would draw the deposit from the
+        // sponsor's token account under the sponsor's co-signature alone.
+        let (aliased, _) = signed_open(&server, 8).await;
+        assert_eq!(aliased.payer, sponsor.pubkey().to_string());
+        let error = server.payment_channel_open_params(&aliased).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must differ from the sponsored fee payer"),
+            "{error}"
+        );
+        assert!(server.payment_channel_open_instruction(&aliased).is_err());
+
+        let (distinct, _) = signed_open(&server, 6).await;
+        let params = server.payment_channel_open_params(&distinct).unwrap();
+        assert_eq!(params.rent_payer, sponsor.pubkey());
+        assert_ne!(params.payer, params.rent_payer);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_topup_rejects_stored_payer_aliasing_the_fee_payer() {
+        let (mut server, _session, channel_id) = client_server().await;
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        server.config.rpc_url = Some("http://127.0.0.1:1".into());
+        let sponsor_key = sponsor.pubkey().to_string();
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state.unwrap();
+                    state.payer = sponsor_key.clone();
+                    state.rent_payer = sponsor_key;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction: String::new(),
+        };
+        let error = server
+            .process_topup_with_outcome(&payload)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must differ from the sponsored fee payer"),
+            "{error}"
+        );
+
+        // Positive control: a distinct stored payer passes the role check and
+        // fails later, on the (empty) transaction itself.
+        let payer = signer(5).pubkey().to_string();
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state.unwrap();
+                    state.payer = payer;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let error = server
+            .process_topup_with_outcome(&payload)
+            .await
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("sponsored fee payer"),
+            "{error}"
+        );
     }
 
     /// Re-sign `open` as a sponsored V0 transaction carrying `instructions`.
@@ -5043,13 +5135,23 @@ mod tests {
             })
             .await
             .is_err());
-        assert!(
-            server
-                .verify_voucher_with_guard(&payload, |_| Ok(()))
-                .await
-                .unwrap()
-                .replay
-        );
+        // An exact replay authorizes nothing: it is refused, not returned as a
+        // no-charge success a delegating host would forward.
+        let error = server
+            .verify_voucher_with_guard(&payload, |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already accepted"), "{error}");
+        let state = server
+            .store
+            .inner
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((state.cumulative, state.spent_amount), (100, 25));
+        // The unguarded verifier still reports the replay idempotently.
+        assert!(server.verify_voucher(&payload).await.unwrap().replay);
     }
 
     #[cfg(feature = "server")]
@@ -6201,11 +6303,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_reservation_does_not_block_close() {
+    async fn expired_metered_delivery_is_still_owed_at_close() {
         let (server, session, channel_id) = client_server().await;
         let mut request = DeliveryRequest::new(channel_id.clone(), 100);
         request.expires_at = Some(1);
         server.begin_delivery(request).await.unwrap();
+
+        // The directive was handed out, so the response may have been sent:
+        // an expired commit window does not let the close drop the charge.
+        let error = server
+            .process_close(&close_with(session.prepare_increment(1).await.unwrap()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("uncommitted"), "{error}");
+        assert!(stored(&server, &channel_id)
+            .await
+            .close_requested_at
+            .is_none());
+
+        let seal = server
+            .process_close(&close_with(session.prepare_increment(100).await.unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(seal.settled, 100);
+        let state = stored(&server, &channel_id).await;
+        assert!(state.pending_deliveries.is_empty());
+        assert_eq!(state.spent_amount, 100);
+    }
+
+    #[tokio::test]
+    async fn released_expired_delivery_does_not_block_close() {
+        let (server, session, channel_id) = client_server().await;
+        let mut request = DeliveryRequest::new(channel_id.clone(), 100);
+        request.expires_at = Some(1);
+        let directive = server.begin_delivery(request).await.unwrap();
+        // The host knows the handler failed before sending anything.
+        server
+            .record_delivery_usage(&channel_id, &directive.delivery_id, 0)
+            .await
+            .unwrap();
         let seal = server
             .process_close(&close_with(session.prepare_increment(1).await.unwrap()))
             .await

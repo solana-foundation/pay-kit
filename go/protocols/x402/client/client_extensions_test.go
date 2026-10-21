@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
@@ -132,4 +133,50 @@ func TestBuildPaymentHeaderWithExtensions(t *testing.T) {
 			t.Fatal("expected error for malformed extensions")
 		}
 	})
+}
+
+// The credential names the resource it pays for: the challenge's `resource`
+// is echoed verbatim, and an entry built in code carries none.
+func TestBuildPaymentHeaderEchoesTheChallengeResource(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	offered := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	offer, err := json.Marshal(offered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := []byte(`{"x402Version":2,"resource":{"url":"/protected","description":"report"},"accepts":[` + string(offer) + `]}`)
+	parsed, ext, ok := ParseChallengeWithExtensions(http.Header{}, challenge, ChallengeSelection{Network: mainnetCAIP2})
+	if !ok {
+		t.Fatal("challenge did not parse")
+	}
+	header, err := BuildPaymentHeaderWithExtensions(context.Background(), signer, testutil.NewFakeRPC(), parsed, ext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := credentialResource(t, header); got["url"] != "/protected" || got["description"] != "report" {
+		t.Fatalf("credential resource = %v, want the challenge's", got)
+	}
+
+	inCode, err := BuildPaymentHeaderWithExtensions(context.Background(), signer, testutil.NewFakeRPC(), &offered, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := credentialResource(t, inCode); got != nil {
+		t.Fatalf("entry built in code echoed resource %v", got)
+	}
+}
+
+func credentialResource(t *testing.T, header string) map[string]any {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var credential struct {
+		Resource map[string]any `json:"resource"`
+	}
+	if err := json.Unmarshal(raw, &credential); err != nil {
+		t.Fatal(err)
+	}
+	return credential.Resource
 }

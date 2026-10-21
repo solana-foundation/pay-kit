@@ -141,3 +141,30 @@ func TestRequireStaticGate(t *testing.T) {
 func okHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 }
+
+// A credential whose payment is still settling is answered with 409 and no
+// challenge, so the client retries it instead of paying a fresh one; any
+// other verification failure keeps the 402 re-challenge.
+func TestRequireFuncSettlementInProgressIsNotRechallenged(t *testing.T) {
+	gate := func(*http.Request) (Gate, error) { return Gate{Amount: MustParseUSD("0.10")}, nil }
+
+	c := newTestClient(&fakeAdapter{protocol: MPP, err: &PaymentError{Code: CodeSettlementInProgress, Err: errors.New("pending")}})
+	rec := httptest.NewRecorder()
+	c.RequireFunc(gate)(okHandler()).ServeHTTP(rec, paidRequest())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d want 409", rec.Code)
+	}
+	if rec.Header().Get("x-fake") != "" {
+		t.Error("settlement-in-progress response must not carry a challenge")
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After")
+	}
+
+	c = newTestClient(&fakeAdapter{protocol: MPP, err: &PaymentError{Code: "invalid_proof", Err: errors.New("bad")}})
+	rec = httptest.NewRecorder()
+	c.RequireFunc(gate)(okHandler()).ServeHTTP(rec, paidRequest())
+	if rec.Code != http.StatusPaymentRequired || rec.Header().Get("x-fake") == "" {
+		t.Fatalf("invalid proof: got %d challenge=%q, want 402 with a challenge", rec.Code, rec.Header().Get("x-fake"))
+	}
+}

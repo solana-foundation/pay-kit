@@ -19,7 +19,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
 import { caip2, readPaymentIdentifier, toNetwork, verifyX402ExactCredential } from "@solana/pay-kit";
-import { createPayKitClient } from "@solana/pay-kit/client";
+import { createPayKitClient, PermissionDeniedError } from "@solana/pay-kit/client";
 import { charge as chargeMethod, session as sessionMethod } from "@solana/mpp";
 import {
   buildChargeTransaction,
@@ -217,7 +217,14 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       rpcUrl: rpcUrlOf(vector),
       signer,
     });
-    const response = await client.fetch(`http://127.0.0.1:${port}/resource`);
+    const response = await client.fetch(`http://127.0.0.1:${port}/resource`).catch((error: unknown) => {
+      // A refused offer: report why each one was refused, not just that it was.
+      if (error instanceof PermissionDeniedError) {
+        const reasons = error.rejections.map((r) => `${r.code}: ${r.message}`).join("; ");
+        throw new Error(`${error.message}: ${reasons}`);
+      }
+      throw error;
+    });
     if (captured === undefined) {
       if ((input.x402Version ?? 2) === 1) {
         return { error: X402_V1_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };

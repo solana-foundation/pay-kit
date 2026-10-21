@@ -1,36 +1,53 @@
 name: Build pkc
 description: >-
-  Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) with a
-  shared cargo cache and put it on PATH. `features: interop` links surfpool for
-  `pkc run --tier interop` (and builds the Rust harness bins in the same
-  target directory, so they share the cached dependencies).
+  Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) and
+  put it on PATH. `features: interop` links surfpool for `pkc run --tier
+  interop`; `adapters: true` also builds the Rust interop adapters
+  (paykit-harness-bins) in the same invocation, so solana-pay-kit and every
+  shared dependency compile once and pkc's own adapter build finds them fresh.
 
 inputs:
   features:
     description: Cargo features for pkc (`interop` for the interop tier).
     required: false
     default: ""
+  adapters:
+    description: >-
+      Also build the Rust interop adapters (paykit-harness-bins) with pkc, for
+      jobs that run `pkc run --tier interop`. Requires `features: interop`.
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
     - uses: dtolnay/rust-toolchain@stable
-    # One cache per (OS, feature set), shared by every job that builds pkc.
-    # rust/Cargo.lock is not committed, so rust-cache keys on the manifests
-    # and rotates the cache when they change (a fixed actions/cache key
-    # never updates once written).
-    - uses: Swatinem/rust-cache@v2
-      with:
-        workspaces: rust
-        shared-key: pkc-${{ inputs.features || 'offline' }}
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+    # No target-directory cache. Restoring one (~1 GB compressed, several GB
+    # on disk) and then compiling and linking the debug binaries on top
+    # exhausted the runner disk's burst throughput: every process blocked on
+    # I/O, the runner froze without uploading its log, and the job was
+    # cancelled at its timeout (go, rust and lua interop, from 2026-10-21).
+    # A clean build is a few minutes slower and never throttles.
     - name: Build pkc
       shell: bash
       working-directory: rust
       env:
         FEATURES: ${{ inputs.features }}
+        ADAPTERS: ${{ inputs.adapters }}
       run: |
-        if [ -n "$FEATURES" ]; then
+        # No debug info: the binaries are a fraction of the size, so a build
+        # writes far less. Exported so every later cargo call in the job
+        # (pkc's own adapter build) sees the same profile and reuses this one.
+        echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
+        export CARGO_PROFILE_DEV_DEBUG=0
+        if [ "$ADAPTERS" = true ]; then
+          # pkc and the Rust interop adapters in one build, with the package
+          # and feature selection pkc's own adapter build uses
+          # (interop::adapters::rust_adapter_build), so the interop step
+          # finds every target fresh and compiles nothing.
+          cargo build -q -p paykit-conformance --bin pkc --features paykit-conformance/interop \
+            -p paykit-harness-bins --bins
+        elif [ -n "$FEATURES" ]; then
           cargo build -q -p paykit-conformance --bin pkc --features "$FEATURES"
         else
           cargo build -q -p paykit-conformance --bin pkc

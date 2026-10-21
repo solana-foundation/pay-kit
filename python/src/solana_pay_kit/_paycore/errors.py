@@ -16,6 +16,10 @@ across Ruby, PHP, Lua, Rust):
   than the one the server is configured for.
 * ``signature_consumed``: the on-chain signature has already been used to
   settle a previous charge.
+* ``settlement_in_progress``: the credential's payment may already be
+  broadcast and is not yet resolved. It is retryable with the same
+  credential and is never answered with a fresh challenge (a client that
+  paid one would pay twice); see :func:`settlement_in_progress_response`.
 
 The :class:`PaymentError.code` field carries the legacy or canonical code.
 Use :func:`canonical_code` to map a legacy kebab-case code to the L6
@@ -32,6 +36,7 @@ CODE_CHALLENGE_EXPIRED = "challenge_expired"
 CODE_PAYMENT_INVALID = "payment_invalid"
 CODE_WRONG_NETWORK = "wrong_network"
 CODE_SIGNATURE_CONSUMED = "signature_consumed"
+CODE_SETTLEMENT_IN_PROGRESS = "settlement_in_progress"
 
 CANONICAL_CODES = frozenset(
     {
@@ -42,6 +47,7 @@ CANONICAL_CODES = frozenset(
         CODE_PAYMENT_INVALID,
         CODE_WRONG_NETWORK,
         CODE_SIGNATURE_CONSUMED,
+        CODE_SETTLEMENT_IN_PROGRESS,
     }
 )
 
@@ -74,6 +80,9 @@ _LEGACY_TO_CANONICAL = {
     "missing-transaction": CODE_PAYMENT_INVALID,
     "transaction-failed": CODE_PAYMENT_INVALID,
     "transaction-not-found": CODE_PAYMENT_INVALID,
+    # Retryable: the charge is pending; the same credential reconciles it.
+    # Kept distinct so no boundary turns it into a rejection and re-challenges.
+    "settlement-in-progress": CODE_SETTLEMENT_IN_PROGRESS,
     "no-transfer": CODE_PAYMENT_INVALID,
     # Compute-budget allowlist failures and splits-count cap. Mirrors the
     # Rust / PHP / Ruby pre-broadcast guards: the wire body still surfaces
@@ -185,3 +194,27 @@ def payment_required_response(
         "message": message,
     }
     return {"status_code": 402, "headers": headers, "body": body}
+
+
+def settlement_in_progress_response(message: str) -> dict:
+    """Build the response for a payment that may already be broadcast.
+
+    A ``409`` with ``Retry-After: 1`` and ``Cache-Control: no-store`` and no
+    ``WWW-Authenticate`` challenge: a client handed a fresh challenge could pay
+    it while the original transaction lands, and pay twice. The client retries
+    the same credential instead. Mirrors the Rust and Go gates.
+    """
+    headers: dict[str, str] = {
+        "content-type": "application/problem+json",
+        "cache-control": "no-store",
+        "retry-after": "1",
+    }
+    body = {
+        "type": f"https://paymentauth.org/problems/{CODE_SETTLEMENT_IN_PROGRESS}",
+        "title": "Settlement Already In Progress",
+        "status": 409,
+        "code": CODE_SETTLEMENT_IN_PROGRESS,
+        "error": CODE_SETTLEMENT_IN_PROGRESS,
+        "message": message,
+    }
+    return {"status_code": 409, "headers": headers, "body": body}

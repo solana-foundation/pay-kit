@@ -3,6 +3,7 @@
 require "base64"
 require "digest"
 
+require "pay_core/consumed_signatures"
 require "pay_core/error_codes"
 require "pay_core/solana/base58"
 require "pay_core/solana/transaction"
@@ -190,6 +191,7 @@ module PayKit::Protocols::Mpp
           @challenges = challenges
           @rpc = rpc
           @replay_store = replay_store
+          @consumed_signatures = ::PayCore::ConsumedSignatures.new(replay_store)
           @fee_payer = fee_payer
           @network = network
           @settlement_header = settlement_header
@@ -203,23 +205,32 @@ module PayKit::Protocols::Mpp
           fee_payer&.public_key&.to_s
         end
 
-        # Process one HTTP request and return a response object.
+        # Process one HTTP request and return a response object: a Challenge
+        # (402), a SettlementPending (409, retry the same credential) or a
+        # Settlement (200).
         #
-        # The settlement order is: broadcast (pull) or fetch (push), then
-        # consume_signature, then await_confirmation (pull only). The consume
-        # call sits between broadcast and confirmation polling on purpose so
-        # that a confirmation timeout or server crash after the transaction has
-        # already landed on chain cannot be replayed against the same
-        # credential. See PR #85 Greptile P1 and audit gap G05.
-        def handle(authorization, request)
+        # Pull mode claims the transaction's locally derived signature once it
+        # may have left the server, and records it as pending under this
+        # challenge. A lost broadcast response or a confirmation timeout then
+        # answers SettlementPending and keeps the claim, so the client is
+        # never handed a fresh challenge it could pay a second time; a retry
+        # of the same credential (even after its challenge expired) reconciles
+        # the signature against the chain, never re-broadcasting it, and is
+        # granted once. Only a preflight rejection leaves it unclaimed.
+        def handle(authorization, request, now: Time.now.utc)
           return @challenges.payment_required_response(request) if authorization.nil? || authorization.empty?
 
-          result = @challenges.verify_authorization_header(authorization, verifier: @verifier, expected_request: request)
-          return @challenges.payment_required_response(request, reason: result.reason, code: result.code) unless result.ok?
-
-          signature = settle_payload(result.credential, request)
-          consume_signature(signature)
-          await_settlement(result.credential, signature)
+          result = @challenges.verify_authorization_header(authorization, verifier: @verifier, expected_request: request, now: now)
+          signature = if result.ok?
+            settle_payload(result.credential, request)
+          elsif result.expired?
+            # An expired challenge never starts a payment; it may only finish
+            # the one it already left pending.
+            reconcile_expired(result.credential) ||
+              (return @challenges.payment_required_response(request, reason: result.reason, code: result.code))
+          else
+            return @challenges.payment_required_response(request, reason: result.reason, code: result.code)
+          end
           receipt = @challenges.create_receipt_header(challenge: result.challenge, reference: signature, external_id: request.external_id)
           ::PayKit::Protocols::Mpp::Settlement.new(
             signature: signature,
@@ -229,16 +240,32 @@ module PayKit::Protocols::Mpp
               settlement_header => signature
             }
           )
+        rescue SettlementInProgress => pending
+          ::PayKit::Protocols::Mpp::SettlementPending.new(pending.message)
         rescue ArgumentError, ::PayKit::Protocols::Mpp::Error, ::PayCore::Solana::Rpc::RpcError, ::PayCore::Solana::Transaction::SigningError => error
           code = error.respond_to?(:code) ? error.code : nil
           @challenges.payment_required_response(request, reason: error.message, code: code)
         end
 
+        # The payment may already be broadcast and is not resolved yet.
+        class SettlementInProgress < StandardError; end
+
+        # Prefix of the record binding a claimed, possibly broadcast signature
+        # to the challenge that broadcast it: only that challenge reconciles it.
+        # Namespaced to this SDK: another SDK's pending record under a
+        # look-alike key must never be reconciled (and granted) here.
+        PENDING_PREFIX = "pay-kit:ruby:charge-pending:"
+        # Single-winner token for the one response a payment grants.
+        GRANTED_PREFIX = "solana-charge:granted:"
+        # A claimed signature refused for good (preflight, or already processed
+        # elsewhere): the store cannot release it, so no retry reconciles it.
+        REFUSED_PREFIX = "pay-kit:ruby:charge-refused:"
+
         private
 
         def settle_payload(credential, request)
           transaction = credential.payload["transaction"]
-          return settle_pull(transaction) if transaction.is_a?(String) && !transaction.empty?
+          return settle_pull(transaction, credential.challenge.id) if transaction.is_a?(String) && !transaction.empty?
 
           signature = credential.payload["signature"]
           raise ::PayKit::Protocols::Mpp::VerificationError, "missing transaction or signature payload" unless signature.is_a?(String) && !signature.empty?
@@ -247,27 +274,132 @@ module PayKit::Protocols::Mpp
           verification = @verifier.verify_transaction_payload(transaction_base64, request)
           raise ::PayKit::Protocols::Mpp::VerificationError, verification.reason unless verification.ok?
 
+          consume_signature(signature)
           signature
         end
 
-        def settle_pull(transaction_base64)
+        # The transaction as this server broadcasts it (co-signed when it pays
+        # the fee) and its locally derived signature.
+        def signed_transaction(transaction_base64)
           transaction = ::PayCore::Solana::Transaction.from_base64(transaction_base64)
-          check_network_blockhash(transaction.message.recent_blockhash)
           transaction.sign_with(fee_payer) if fee_payer
-          signed_base64 = transaction.to_base64
+          [transaction, transaction.to_base64, transaction.primary_signature]
+        end
+
+        def settle_pull(transaction_base64, challenge_id)
+          transaction, signed_base64, local_signature = signed_transaction(transaction_base64)
+          check_network_blockhash(transaction.message.recent_blockhash)
+          # Every signature must verify before the signature is claimed or the
+          # transaction sent. A forged one would otherwise name the charge: the
+          # node refuses it without a preflight result, it is kept as possibly
+          # sent, and a retry would reconcile on the status of whatever landed
+          # transaction owns that signature.
+          raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction signature verification failed" unless transaction.signatures_verify?
+          # Already claimed: a retry of a pending charge (reconcile it from the
+          # chain, never broadcast again) or a replay.
+          return reconcile(local_signature, challenge_id) if @consumed_signatures.claimed?(local_signature)
+
           simulation = simulate_transaction_with_retry(signed_base64)
           raise ::PayKit::Protocols::Mpp::VerificationError, "Simulation failed: #{simulation["err"].inspect}" unless simulation["err"].nil?
 
-          @rpc.send_raw_transaction(signed_base64)
+          # Claim the signature and bind it to this challenge before anything
+          # is sent, so a payment that may land always has the record its
+          # retry reconciles. Bound only after an ambiguous send, a store
+          # failure would leave a claim with nothing to reconcile, and every
+          # retry would refuse a payment that may have landed. A failure here
+          # sends nothing.
+          return reconcile(local_signature, challenge_id) unless claim_pending(local_signature, challenge_id)
+
+          # Only a preflight rejection proves the node did not forward the
+          # transaction. The store cannot release the claim, so the refusal
+          # is recorded and the charge fails. Any other send error (a lost
+          # response, a 5xx from a proxy that already forwarded it) leaves the
+          # outcome unknown: the charge is reported as still settling.
+          begin
+            @rpc.send_raw_transaction(signed_base64)
+          rescue ::PayCore::Solana::Rpc::RpcError => error
+            if error.message.match?(/already (been )?processed/i)
+              # It landed, yet this store held no claim on it: it was settled
+              # somewhere this store cannot see. A replay.
+              mark_refused(local_signature)
+              raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED)
+            end
+            if error.is_a?(::PayCore::Solana::Rpc::PreflightRejection)
+              mark_refused(local_signature)
+              raise
+            end
+
+            raise SettlementInProgress,
+              "Settlement of transaction #{local_signature} is in progress: broadcast outcome unknown " \
+              "(#{error.message}); retry the same credential, do not pay again"
+          end
+
+          await_confirmation(local_signature)
+          grant(local_signature)
         end
 
-        # await_confirmation only runs on the pull path; push mode already
-        # fetched a confirmed transaction in settle_payload.
-        def await_settlement(credential, signature)
-          transaction = credential.payload["transaction"]
-          return unless transaction.is_a?(String) && !transaction.empty?
+        def mark_refused(signature)
+          @replay_store.put_if_absent("#{REFUSED_PREFIX}#{signature}", true)
+        end
 
-          await_confirmation(signature)
+        # Claim `signature` and record it as pending under this challenge.
+        # False when a concurrent presentation claimed it first: that one owns
+        # it, and this one only reconciles (or is refused as a replay).
+        def claim_pending(signature, challenge_id)
+          return false unless @consumed_signatures.claim(signature)
+
+          @replay_store.put_if_absent(pending_key(signature, challenge_id), true)
+          true
+        end
+
+        def pending_key(signature, challenge_id)
+          "#{PENDING_PREFIX}#{signature}:#{challenge_id}"
+        end
+
+        # Resolve a claimed signature from its on-chain status. Only the
+        # challenge that left it pending may; anything else is a replay. Only
+        # an explicit outcome resolves it: a missing status is never proof the
+        # transaction did not execute, so it stays in progress.
+        def reconcile(signature, challenge_id)
+          unless @replay_store.key?(pending_key(signature, challenge_id))
+            raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED)
+          end
+          raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction #{signature} was refused and cannot settle" if @replay_store.key?("#{REFUSED_PREFIX}#{signature}")
+
+          status = @rpc.signature_statuses([signature]).first
+          if status.is_a?(Hash)
+            raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction #{signature} failed: #{status["err"].inspect}" unless status["err"].nil?
+            return grant(signature) if ["confirmed", "finalized"].include?(status["confirmationStatus"])
+          end
+          raise SettlementInProgress,
+            "Transaction #{signature} is not confirmed yet; retry the same credential, do not pay again"
+        rescue ::PayCore::Solana::Rpc::RpcError => error
+          raise SettlementInProgress,
+            "Transaction #{signature} status unavailable (#{error.message}); retry the same credential, do not pay again"
+        end
+
+        # The pending charge an expired credential's challenge left behind,
+        # reconciled from the chain; nil when that challenge has none.
+        def reconcile_expired(credential)
+          transaction = credential&.payload&.fetch("transaction", nil)
+          return nil unless transaction.is_a?(String) && !transaction.empty?
+
+          _, _, signature = begin
+            signed_transaction(transaction)
+          rescue ArgumentError, ::PayKit::Protocols::Mpp::Error, ::PayCore::Solana::Transaction::SigningError
+            return nil
+          end
+          return nil unless @replay_store.key?(pending_key(signature, credential.challenge.id))
+
+          reconcile(signature, credential.challenge.id)
+        end
+
+        # One response per payment: only the first confirmation of a
+        # signature, on any path, is granted.
+        def grant(signature)
+          return signature if @replay_store.put_if_absent("#{GRANTED_PREFIX}#{signature}", true)
+
+          raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED)
         end
 
         def fetch_settled_transaction(signature)
@@ -289,16 +421,24 @@ module PayKit::Protocols::Mpp
           raise ::PayKit::Protocols::Mpp::VerificationError, "Timed out fetching transaction #{signature}"
         end
 
+        # A status that never surfaces is not proof the transaction did not
+        # execute (the node may lag or lack its history): the charge stays
+        # pending for the same credential to reconcile.
         def await_confirmation(signature)
           @confirmation_attempts.times do
-            status = @rpc.signature_statuses([signature]).first
+            status = begin
+              @rpc.signature_statuses([signature]).first
+            rescue ::PayCore::Solana::Rpc::RpcError
+              nil
+            end
             if status.is_a?(Hash)
               raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction #{signature} failed: #{status["err"].inspect}" unless status["err"].nil?
               return if ["confirmed", "finalized"].include?(status["confirmationStatus"])
             end
             sleep @confirmation_delay
           end
-          raise ::PayKit::Protocols::Mpp::VerificationError, "Timed out waiting for transaction #{signature}"
+          raise SettlementInProgress,
+            "Timed out waiting for transaction #{signature}; it may still land, retry the same credential, do not pay again"
         end
 
         def simulate_transaction_with_retry(transaction_base64)
@@ -312,9 +452,11 @@ module PayKit::Protocols::Mpp
           last
         end
 
+        # Claimed in the ledger shared with x402 exact, so a payment settled
+        # through either protocol cannot authorize a second request through
+        # the other.
         def consume_signature(signature)
-          key = "solana-charge:consumed:#{signature}"
-          inserted = @replay_store.put_if_absent(key, true)
+          inserted = @consumed_signatures.claim(signature)
           raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED) unless inserted
         end
 

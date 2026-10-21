@@ -54,6 +54,31 @@ test('buildChargeTransaction rejects feePayer=true without feePayerKey', async (
     ).rejects.toThrow(/feePayer.*feePayerKey/);
 });
 
+test('buildChargeTransaction refuses a sponsored charge whose feePayerKey is the signer', async () => {
+    const signer = await newSigner();
+    for (const splits of [undefined, [{ amount: '100', ataCreationRequired: true, recipient: FEE_PAYER_KEY }]]) {
+        const request = (feePayerKey: string) => ({
+            amount: '1000',
+            currency: USDC_MINT,
+            recipient: RECIPIENT,
+            methodDetails: {
+                decimals: 6,
+                feePayer: true,
+                feePayerKey,
+                network: 'devnet',
+                recentBlockhash: BLOCKHASH,
+                splits,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+        });
+        await expect(buildChargeTransaction({ signer, request: request(signer.address) })).rejects.toThrow(
+            /feePayerKey names the signer/,
+        );
+        const sponsor = (await newSigner()).address;
+        await expect(buildChargeTransaction({ signer, request: request(sponsor) })).resolves.toBeTruthy();
+    }
+});
+
 test('buildChargeTransaction rejects splits consuming the entire amount', async () => {
     const signer = await newSigner();
     await expect(

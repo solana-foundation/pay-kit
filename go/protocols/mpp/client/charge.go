@@ -88,6 +88,14 @@ func BuildChargeTransaction(
 	if options.Broadcast && methodDetails.FeePayer != nil && *methodDetails.FeePayer {
 		return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidConfig, `type="signature" cannot be used with fee sponsorship`)
 	}
+	// The payer of fees and of any split ATA rent: the server sponsor when
+	// the challenge names one, else the signer.
+	payer := signer.PublicKey()
+	if useServerFeePayer {
+		if payer, err = serverFeePayer(methodDetails.FeePayerKey, signer.PublicKey()); err != nil {
+			return paycore.CredentialPayload{}, err
+		}
+	}
 
 	if isNativeSOL(currency) {
 		ix, err := solanatx.BuildSOLTransfer(signer.PublicKey(), recipientKey, primaryAmount)
@@ -160,13 +168,6 @@ func BuildChargeTransaction(
 		if err != nil {
 			return paycore.CredentialPayload{}, err
 		}
-		payer := signer.PublicKey()
-		if useServerFeePayer {
-			payer, err = solana.PublicKeyFromBase58(methodDetails.FeePayerKey)
-			if err != nil {
-				return paycore.CredentialPayload{}, err
-			}
-		}
 		addTransfer := func(owner solana.PublicKey, amount uint64, createTokenAccount bool) error {
 			destATA, err := solanatx.FindAssociatedTokenAddressWithProgram(owner, mint, tokenProgram)
 			if err != nil {
@@ -226,15 +227,7 @@ func BuildChargeTransaction(
 	if err != nil {
 		return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "fetch recent blockhash", err)
 	}
-	payer := signer.PublicKey()
-	txOpts := []solana.TransactionOption{}
-	if useServerFeePayer {
-		payer, err = solana.PublicKeyFromBase58(methodDetails.FeePayerKey)
-		if err != nil {
-			return paycore.CredentialPayload{}, err
-		}
-	}
-	txOpts = append(txOpts, solana.TransactionPayer(payer))
+	txOpts := []solana.TransactionOption{solana.TransactionPayer(payer)}
 	tx, err := solanatx.NewV0Transaction(instructions, blockhash, txOpts...)
 	if err != nil {
 		return paycore.CredentialPayload{}, err
@@ -349,4 +342,20 @@ func parseAmount(value string) (uint64, error) {
 
 func isNativeSOL(currency string) bool {
 	return strings.EqualFold(currency, "sol")
+}
+
+// serverFeePayer parses a sponsored challenge's feePayerKey. draft-solana-
+// charge-00 fee sponsorship: "The client's account is the transfer authority
+// but NOT the fee payer", so a key naming the signer is refused rather than
+// letting the signer fund fees and split ATA rent while looking sponsored.
+func serverFeePayer(feePayerKey string, signerKey solana.PublicKey) (solana.PublicKey, error) {
+	key, err := solana.PublicKeyFromBase58(feePayerKey)
+	if err != nil {
+		return solana.PublicKey{}, core.WrapError(core.ErrCodeInvalidConfig, "invalid feePayerKey", err)
+	}
+	if key.Equals(signerKey) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidConfig,
+			"fee payer cannot authorize the payment: feePayerKey names the signer; a sponsored charge needs a separate server fee payer")
+	}
+	return key, nil
 }

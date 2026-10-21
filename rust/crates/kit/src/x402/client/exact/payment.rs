@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::TransactionSigner;
 use solana_pubkey::Pubkey;
@@ -83,13 +82,15 @@ pub async fn build_payment(
     instructions.push(memo_instruction(requirements)?);
 
     // Build and sign.
-    let blockhash = if let Some(bh) = &requirements.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
-    } else {
-        rpc.get_latest_blockhash()
-            .await
-            .map_err(|e| Error::Rpc(e.to_string()))?
-    };
+    let blockhash = crate::core::blockhash::resolve_challenge_blockhash(
+        rpc,
+        requirements.recent_blockhash.as_deref(),
+    )
+    .await
+    .map_err(|e| match e {
+        crate::core::blockhash::ChallengeBlockhashError::Invalid(message) => Error::Other(message),
+        crate::core::blockhash::ChallengeBlockhashError::Rpc(message) => Error::Rpc(message),
+    })?;
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let version =
@@ -596,6 +597,7 @@ mod tests {
         X402_VERSION_FIELD,
     };
     use async_trait::async_trait;
+    use solana_hash::Hash;
     use solana_keychain::{SignerError, SolanaSigner};
     use solana_message::VersionedMessage;
     use solana_signature::Signature;
@@ -862,11 +864,11 @@ mod tests {
             "accepts": [{
                 "scheme": EXACT_SCHEME,
                 "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-                "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
                 "amount": "10000",
-                "currency": "USDC",
+                "asset": "USDC",
                 "resource": "/api/v1/data",
-                "decimals": 6
+                "extra": { "decimals": 6 }
             }]
         });
 
@@ -998,9 +1000,9 @@ mod tests {
             "accepts": [{
                 "scheme": EXACT_SCHEME,
                 "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-                "recipient": "from-header",
+                "payTo": "from-header",
                 "amount": "100",
-                "currency": "SOL",
+                "asset": "SOL",
                 "resource": "/test"
             }]
         });
@@ -1063,12 +1065,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_payment_refuses_a_challenged_blockhash_its_cluster_does_not_know() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let requirements = test_requirements("SOL");
+        assert!(requirements.recent_blockhash.is_some());
+
+        let error = build_payment(
+            &signer,
+            &crate::core::blockhash::mock_blockhash_rpc(false),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("not a live blockhash"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn build_payment_for_sol_uses_recipient_and_memo() {
         let signer = MockSigner {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("SOL");
 
         let payload = build_payment(&signer, &rpc, &requirements, None)
@@ -1097,7 +1122,7 @@ mod tests {
             fail_sign: false,
         };
         let sponsor = Pubkey::new_unique();
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("SOL");
         requirements.fee_payer = Some(true);
         requirements.fee_payer_key = Some(sponsor.to_string());
@@ -1129,7 +1154,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("USDC");
 
         let payload = build_payment(&signer, &rpc, &requirements, None)
@@ -1151,7 +1176,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("USDC");
         requirements.extra = Some(serde_json::json!({ "memo": "order_12345" }));
 
@@ -1174,7 +1199,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("USDC");
 
         let first = build_payment(&signer, &rpc, &requirements, None)
@@ -1211,7 +1236,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("SOL");
 
         let header = build_payment_header(&signer, &rpc, &requirements, None, None)
@@ -1233,7 +1258,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("SOL");
         requirements.amount = "abc".to_string();
 
@@ -1248,7 +1273,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("SOL");
         requirements.recipient = "not-a-pubkey".to_string();
 
@@ -1263,7 +1288,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("SOL");
         requirements.fee_payer = Some(true);
         requirements.fee_payer_key = Some("not-a-pubkey".to_string());
@@ -1279,7 +1304,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("SOL");
         requirements.recent_blockhash = Some("bad-blockhash".to_string());
 
@@ -1294,7 +1319,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut requirements = test_requirements("USDC");
         requirements.extra = Some(serde_json::json!({
             "memo": "x".repeat(MAX_MEMO_BYTES + 1)
@@ -1312,7 +1337,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: true,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("SOL");
 
         assert!(build_payment(&signer, &rpc, &requirements, None)
@@ -1367,7 +1392,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         for scheme in ["upto", "batch-settlement", "EXACT", ""] {
             let mut requirements = test_requirements("USDC");
             requirements.accepted = Some(serde_json::json!({ "scheme": scheme }));
@@ -1399,7 +1424,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         for (network, cluster) in [
             ("solana:custom-cluster-id", None),
             ("solana:custom-cluster-id", Some("mainnet-beta")),
@@ -1439,7 +1464,7 @@ mod tests {
             pubkey: Pubkey::new_unique(),
             fail_sign: false,
         };
-        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let requirements = test_requirements("USDC");
         let inbound = serde_json::json!({
             "payment-identifier": { "info": { "required": true } }
@@ -1492,10 +1517,16 @@ mod tests {
         });
         RpcClient::new_mock_with_mocks(
             "succeeds".to_string(),
-            [(
-                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
-                account,
-            )]
+            [
+                (
+                    solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                    account,
+                ),
+                (
+                    solana_rpc_client_api::request::RpcRequest::IsBlockhashValid,
+                    serde_json::json!({ "context": { "slot": 1 }, "value": true }),
+                ),
+            ]
             .into_iter()
             .collect(),
         )
@@ -1530,7 +1561,8 @@ mod tests {
         requirements.decimals = Some(2);
         let unreachable = RpcClient::new("http://127.0.0.1:1".to_string());
         assert_eq!(payment_decimals(&unreachable, &requirements).unwrap(), 2);
-        let payload = build_payment(&signer, &unreachable, &requirements, None)
+        let blockhash_only = crate::core::blockhash::mock_blockhash_rpc(true);
+        let payload = build_payment(&signer, &blockhash_only, &requirements, None)
             .await
             .unwrap();
         assert_eq!(transfer_decimals(payload), 2);

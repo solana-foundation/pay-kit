@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -31,6 +32,32 @@ func markAuthorizationBoundResponse(header http.Header) {
 func ReceiptFromContext(ctx context.Context) (core.Receipt, bool) {
 	r, ok := ctx.Value(receiptContextKey).(core.Receipt)
 	return r, ok
+}
+
+// IsSettlementInProgress reports whether err says the credential's payment
+// may already be broadcast and is not yet resolved.
+func IsSettlementInProgress(err error) bool {
+	var sdkErr *core.Error
+	return errors.As(err, &sdkErr) && sdkErr.Code == core.ErrCodeSettlementInProgress
+}
+
+// WriteSettlementInProgress answers a credential whose payment is still
+// settling with 409 and no challenge: a client handed a fresh challenge
+// could pay it while the original transaction lands and pay twice. The
+// client retries the same credential instead.
+func WriteSettlementInProgress(w http.ResponseWriter, err error) {
+	body, _ := json.Marshal(map[string]any{
+		"type":   "tag:paymentauth.org,2024:settlement-in-progress",
+		"title":  "Settlement Already In Progress",
+		"status": http.StatusConflict,
+		"detail": err.Error(),
+		"code":   string(core.ErrCodeSettlementInProgress),
+	})
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusConflict)
+	_, _ = w.Write(body)
 }
 
 // ChargeFunc returns the charge amount and options for a given request.
@@ -90,6 +117,10 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 							markAuthorizationBoundResponse(w.Header())
 							ctx := context.WithValue(r.Context(), receiptContextKey, receipt)
 							next.ServeHTTP(w, r.WithContext(ctx))
+							return
+						}
+						if IsSettlementInProgress(verifyErr) {
+							WriteSettlementInProgress(w, verifyErr)
 							return
 						}
 						verificationErr = verifyErr

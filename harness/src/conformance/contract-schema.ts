@@ -72,6 +72,8 @@ const rejectCodeSchema = {
     "channel-state",
     "refund-transaction",
     "duplicate-settlement",
+    "mixed-funding-authority",
+    "unexpected-signer",
   ],
 } as const;
 

@@ -441,10 +441,12 @@ pub enum RejectCode {
     ChannelState,
     RefundTransaction,
     DuplicateSettlement,
+    MixedFundingAuthority,
+    UnexpectedSigner,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 57] = [
+    pub const ALL: [RejectCode; 59] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -502,6 +504,8 @@ impl RejectCode {
         RejectCode::ChannelState,
         RejectCode::RefundTransaction,
         RejectCode::DuplicateSettlement,
+        RejectCode::MixedFundingAuthority,
+        RejectCode::UnexpectedSigner,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -563,6 +567,8 @@ impl RejectCode {
             RejectCode::ChannelState => "channel-state",
             RejectCode::RefundTransaction => "refund-transaction",
             RejectCode::DuplicateSettlement => "duplicate-settlement",
+            RejectCode::MixedFundingAuthority => "mixed-funding-authority",
+            RejectCode::UnexpectedSigner => "unexpected-signer",
         }
     }
 }

@@ -956,7 +956,7 @@ class X402ServerExactTest < Minitest::Test
   def test_settlement_rejects_duplicate_signature_after_confirmation
     # Two settlements that confirm to the *same* on-chain signature must
     # collapse to one. The replay store is keyed on the confirmed signature
-    # (`x402-svm-exact:consumed:<base58_signature>`), so the second attempt
+    # (`solana:consumed-signature:<base58_signature>`), so the second attempt
     # observes the already-consumed signature and surfaces the canonical
     # `signature_consumed` reject.
     state = build_state(sender: ->(_state, _transaction) { "shared-signature" })
@@ -979,9 +979,13 @@ class X402ServerExactTest < Minitest::Test
         @order = order
       end
 
-      def put_if_absent(key, **kwargs)
+      def put_if_absent(key, value)
         @order << [:put_if_absent, key]
-        @inner.put_if_absent(key, **kwargs)
+        @inner.put_if_absent(key, value)
+      end
+
+      def key?(key)
+        @inner.key?(key)
       end
 
       def duplicate?(key, **kwargs)
@@ -1003,10 +1007,13 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "sig-ordering",
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
 
+    # The claim takes the previous release's keys first, then the ledger key.
     assert_equal [
       [:broadcast],
       [:confirm, "sig-ordering"],
-      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"]
+      [:put_if_absent, "solana-charge:consumed:sig-ordering"],
+      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"],
+      [:put_if_absent, "solana:consumed-signature:sig-ordering"]
     ], order
   end
 
@@ -1056,12 +1063,32 @@ class X402ServerExactTest < Minitest::Test
     # the replay store. The retry is allowed to broadcast again, and Solana's
     # own per-signature uniqueness inside the blockhash window prevents a
     # double-pay if the original eventually confirms.
-    refute cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig")
+    refute cache.duplicate?("solana:consumed-signature:unconfirmed-sig")
   end
 
-  def test_settlement_consumed_key_namespace_is_scheme_scoped
-    assert_equal "x402-svm-exact:consumed:abc123",
+  # The replay key is protocol-independent: MPP charge claims the same key,
+  # so a signature MPP settled on a shared store is refused here.
+  def test_settlement_rejects_signature_already_consumed_by_mpp
+    assert_equal "solana:consumed-signature:abc123",
       PayKit::Protocols::X402::Server::Exact.signature_consumed_key("abc123")
+
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    mpp = PayKit::Protocols::Mpp::Server::Charge::Handler.new(
+      challenges: PayKit::Protocols::Mpp::Protocol::Core::ChallengeStore.new(secret_key: "s" * 32, realm: "api"),
+      rpc: nil,
+      replay_store: store
+    )
+    mpp.send(:consume_signature, "mpp-settled")
+
+    state = build_state(sender: ->(_state, _transaction) { "mpp-settled" }, settlement_cache: store)
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    assert_equal "signature_consumed", error.message
+
+    state = build_state(sender: ->(_state, _transaction) { "fresh-signature" }, settlement_cache: store)
+    assert_equal "fresh-signature",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
   end
 
   def test_settlement_rejects_missing_source_token_account_before_sending

@@ -41,7 +41,12 @@ const (
 	// omitted tokenProgram whose mint lookup failed or returned an
 	// unexpected owner).
 	ErrCodeInvalidChallenge ErrorCode = "invalid-challenge"
-	ErrCodeOther            ErrorCode = "other"
+	// ErrCodeSettlementInProgress: the transaction may have been
+	// broadcast but its outcome is not known yet. The charge stays
+	// pending under its signature; retry the same credential, never pay
+	// a fresh challenge.
+	ErrCodeSettlementInProgress ErrorCode = "settlement-in-progress"
+	ErrCodeOther                ErrorCode = "other"
 )
 
 // Error is the common error type returned by the SDK. It aliases the

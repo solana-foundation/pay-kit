@@ -18,6 +18,7 @@ honours_clock = false
 [[unsupported]]
 reason = "php is server-only: build-transaction is not supported (no client build path)"
 ids = [
+  "vector/charge-build-sponsor-is-signer-reject",
   "vector/charge-sol-native-build",
   "vector/charge-spl-missing-decimals-reject",
   "vector/charge-spl-token-program-from-mint-owner",
@@ -41,6 +42,8 @@ ids = [
 [[unsupported]]
 reason = "php is server-only: x402 build-transaction is not supported (no client envelope builder)"
 ids = [
+  "vector/x402-exact-v2-build-ignores-non-spec-fields",
+  "vector/x402-exact-v2-build-missing-network-reject",
   "vector/x402-exact-v1-build-devnet",
   "vector/x402-exact-v1-build-mainnet-network-name",
   "vector/x402-exact-v2-build",
@@ -245,3 +248,7 @@ ids = [
 ]
 reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-php"
+[[known_failing]]
+id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
+reason = "the x402 exact verifier caps the unit price alone (php/src/Protocols/X402/Exact/Verifier.php:184), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
+tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"

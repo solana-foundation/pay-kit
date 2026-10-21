@@ -23,10 +23,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -187,3 +190,89 @@ class FileReplayStore:
             await self._flush_off_loop(next_data)
             self._data = next_data
             return True
+
+
+def consumed_signature_key(signature: str) -> str:
+    """Store key of the protocol-independent consumed-signature ledger.
+
+    MPP charge and x402 ``exact`` both reserve a settled Solana signature under
+    this one key, so one on-chain payment authorizes one request whichever
+    protocol presents it. The key matches the Rust SDK's, so deployments that
+    share a store across SDKs share the ledger too. A signature commits to a
+    cluster-specific blockhash, so scoping by network would add nothing.
+    """
+    return f"solana:consumed-signature:{signature}"
+
+
+#: Keys under which MPP charge and x402 ``exact`` claimed signatures before
+#: they shared the ledger. Every claim also takes them, so that during a
+#: rolling upgrade a replica still running the previous release (which claims
+#: and checks only its own legacy key) sees a payment this release accepted,
+#: and the other way round.
+_LEGACY_CONSUMED_PREFIXES = ("solana-charge:consumed:", "x402-svm-exact:consumed:")
+
+
+async def consumed_before_ledger(store: Store, signature: str) -> bool:
+    """Whether ``signature`` is held under a legacy MPP or x402 key only.
+
+    Such a record was written by a replica running a previous release, or by
+    this one before it upgraded; this release's own claims hold the ledger key
+    too, so they are not reported. Read only and fail closed: the signature
+    stays consumed, it is never migrated or claimed again.
+    """
+    if await store.get(consumed_signature_key(signature)) is not None:
+        return False
+    for prefix in _LEGACY_CONSUMED_PREFIXES:
+        if await store.get(prefix + signature) is not None:
+            return True
+    return False
+
+
+class ConsumedSignatures:
+    """Protocol-independent ledger of signatures that authorized a response.
+
+    A transaction settled through MPP cannot be presented again as an x402
+    proof on a gate sharing the store, and vice versa.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self._store = store
+
+    async def claim(self, signature: str, value: Any = True) -> bool:
+        """Atomically claim ``signature``; ``False`` means any protocol or release already did.
+
+        The legacy keys come first, each taken with ``put_if_absent``, so a
+        replica on the previous release, which claims its own legacy key the
+        same way, contends on the very same key: at most one of them wins, with
+        no window between a check and a write. A signature already held under
+        any of them stays consumed and is never migrated. When the claim fails
+        the keys this call took are given back, since the caller then neither
+        sends nor serves anything for the signature.
+        """
+        taken: list[str] = []
+        try:
+            for prefix in _LEGACY_CONSUMED_PREFIXES:
+                if not await self._store.put_if_absent(prefix + signature, True):
+                    await self._give_back(taken)
+                    return False
+                taken.append(prefix + signature)
+            if await self._store.put_if_absent(consumed_signature_key(signature), value):
+                return True
+        except BaseException:
+            await self._give_back(taken)
+            raise
+        await self._give_back(taken)
+        return False
+
+    async def _give_back(self, keys: list[str]) -> None:
+        for key in keys:
+            try:
+                await self._store.delete(key)
+            except Exception:  # noqa: BLE001 - a key left behind only fails closed
+                logger.warning("failed to give back a legacy signature claim %s", key, exc_info=True)
+
+    async def release(self, signature: str) -> None:
+        """Release a claim on a transaction that provably never landed, with its legacy keys."""
+        await self._store.delete(consumed_signature_key(signature))
+        for prefix in _LEGACY_CONSUMED_PREFIXES:
+            await self._store.delete(prefix + signature)

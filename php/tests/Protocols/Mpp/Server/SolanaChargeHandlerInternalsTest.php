@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests\Protocols\Mpp\Server;
 
 use InvalidArgumentException;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\Tests\PayCore\Rpc\FakeRpcGateway;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
@@ -83,7 +84,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
     {
         $rpc = new FakeRpcGateway(statuses: [null]);
         $h = $this->handlerWith($rpc, confirmationAttempts: 2);
-        $this->expectException(RuntimeException::class);
+        $this->expectException(SettlementInProgressException::class);
         $this->expectExceptionMessage('Timed out');
         $this->invoke($h, 'awaitConfirmation', 'sig-timeout');
     }
@@ -94,7 +95,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
         $h = $this->handlerWith($rpc);
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('invalid transaction payload');
-        $this->invoke($h, 'settle', '');
+        $this->invoke($h, 'settle', '', 'challenge-id');
     }
 
     public function testSettleRejectsInvalidBase64(): void
@@ -102,7 +103,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
         $rpc = new FakeRpcGateway();
         $h = $this->handlerWith($rpc);
         $this->expectException(InvalidArgumentException::class);
-        $this->invoke($h, 'settle', '!!!not-base64!!!');
+        $this->invoke($h, 'settle', '!!!not-base64!!!', 'challenge-id');
     }
 
     public function testConsumeSignatureRejectsReplay(): void

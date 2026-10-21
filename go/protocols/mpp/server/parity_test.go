@@ -242,7 +242,7 @@ func TestPushModeVerifyBeforeConsumeLeavesMarkerOnFailure(t *testing.T) {
 
 	// The marker must NOT have been consumed: PutIfAbsent inserts, proving
 	// the key was absent after the failed verify.
-	inserted, err := handler.store.PutIfAbsent(context.Background(), consumedPrefix+sig, true)
+	inserted, err := handler.consumed().Claim(context.Background(), sig)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

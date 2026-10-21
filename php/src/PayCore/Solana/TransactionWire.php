@@ -73,6 +73,12 @@ final class TransactionWire
         return array_values($this->transaction->message->staticAccountKeys);
     }
 
+    /** Number of required signers: the first accounts of the key table. */
+    public function numRequiredSignatures(): int
+    {
+        return $this->transaction->message->numRequiredSignatures;
+    }
+
     /**
      * Top-level instructions in message order, in the v0 compiled shape for
      * both encodings.
@@ -124,6 +130,15 @@ final class TransactionWire
     public function partialSign(Keypair ...$signers): void
     {
         $this->transaction->partialSign(...$signers);
+    }
+
+    /**
+     * Whether every signature slot holds a signature that verifies against
+     * the message for its required signer. An empty slot does not.
+     */
+    public function verifySignatures(): bool
+    {
+        return $this->transaction->verifySignatures();
     }
 
     /** Serialize in the original framing (legacy or v0). */

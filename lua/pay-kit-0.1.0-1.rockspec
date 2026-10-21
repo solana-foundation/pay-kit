@@ -61,6 +61,7 @@ build = {
     ['pay_kit.signer.demo']              = 'pay_kit/signer/demo.lua',
     ['pay_kit.signer.local']             = 'pay_kit/signer/local.lua',
     ['pay_kit.store']                    = 'pay_kit/store.lua',
+    ['pay_kit.consumed_signatures']      = 'pay_kit/consumed_signatures.lua',
 
     -- Solana primitives
     ['pay_kit.solana.ata']               = 'pay_kit/solana/ata.lua',

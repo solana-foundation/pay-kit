@@ -184,3 +184,42 @@ class TestPayDecorator:
         assert "credential" in seen
         assert "receipt" in seen
         assert seen["receipt"].is_success()  # type: ignore[attr-defined]
+
+
+class TestSettlementInProgress:
+    @pytest.mark.asyncio
+    async def test_unresolved_settlement_is_a_retry_not_a_challenge(self, mpp_handler, monkeypatch):
+        from solana_pay_kit._paycore.errors import PaymentError
+
+        async def pending(credential, expected):
+            raise PaymentError("transaction pending; retry", code="settlement-in-progress", retryable=True)
+
+        @pay(mpp_handler, "10000")
+        async def handler(request, credential, receipt):
+            return {"ok": True}
+
+        challenge = mpp_handler.charge("10000")
+
+        class FakeRequest:
+            headers = {
+                "authorization": format_authorization(
+                    PaymentCredential(challenge=challenge.to_echo(), payload={"type": "signature", "signature": "x"})
+                )
+            }
+            url = "http://localhost/test"
+
+        monkeypatch.setattr(mpp_handler, "verify_credential_with_expected", pending)
+        result = await handler(FakeRequest())  # pyright: ignore[reportCallIssue]
+        assert result["status_code"] == 409
+        assert result["headers"]["retry-after"] == "1"
+        assert "www-authenticate" not in result["headers"]
+        assert "challenge" not in result
+
+        # Positive control: a rejection is re-challenged.
+        async def rejected(credential, expected):
+            raise PaymentError("transaction failed", code="transaction-failed")
+
+        monkeypatch.setattr(mpp_handler, "verify_credential_with_expected", rejected)
+        result = await handler(FakeRequest())  # pyright: ignore[reportCallIssue]
+        assert result["status_code"] == 402
+        assert "www-authenticate" in result["headers"]

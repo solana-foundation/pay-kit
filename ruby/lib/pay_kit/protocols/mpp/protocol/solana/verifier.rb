@@ -107,6 +107,7 @@ module PayKit::Protocols::Mpp
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: mint, expected_token_program: token_program, fee_payer: fee_payer, splits: splits)
           end
+          verify_required_signers(transaction, matched)
         end
 
         private
@@ -188,6 +189,39 @@ module PayKit::Protocols::Mpp
           return if found
 
           raise VerificationError, "No matching SPL transferChecked of #{amount} to #{recipient}"
+        end
+
+        # Every required signer must be the fee payer or the one authority
+        # that funds every matched payment transfer. Any other signer
+        # authorizes nothing and only adds a signature fee, which a sponsor
+        # would pay; letting each leg of a split name its own authority would
+        # let a payer multiply those fees. Mirrors the Rust spine
+        # `verify_required_signers`.
+        def verify_required_signers(transaction, matched)
+          funding_authority = nil
+          transaction.message.instructions.each_with_index do |ix, index|
+            next unless matched[index]
+
+            authority_position =
+              case program_id(transaction, ix)
+              when ::PayCore::Solana::Mints::SYSTEM_PROGRAM then 0
+              when ::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM then 3
+              end
+            next if authority_position.nil?
+
+            authority = account_key(transaction, ix.accounts[authority_position], "authority")
+            if funding_authority && funding_authority != authority
+              raise VerificationError, "Payment transfers must share one funding authority"
+            end
+            funding_authority = authority
+          end
+
+          account_keys = transaction.message.account_keys
+          allowed = [account_keys.first, funding_authority].compact
+          signers = account_keys.first(transaction.message.header.fetch(:required_signatures))
+          return if signers.all? { |signer| allowed.include?(signer) }
+
+          raise VerificationError, "Unexpected signer in payment transaction"
         end
 
         def verify_memos(transaction, request, splits, matched)

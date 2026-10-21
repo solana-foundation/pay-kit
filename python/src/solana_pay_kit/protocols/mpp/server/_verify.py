@@ -356,6 +356,19 @@ def _validate_instruction_allowlist(
     # Details), so each one admits its own Memo instruction.
     remaining_transfers: list[tuple[str, int]] = list(expected_transfers)
     remaining_memos: Counter[str] = Counter(memo for _label, memo in _expected_memos(request, details))
+    # Every payment leg must be funded by one authority. A sponsor pays a
+    # signature fee per required signer, so letting each leg of a split name
+    # its own authority would let a payer multiply the fees the sponsor pays.
+    funding_authority: str | None = None
+
+    def _record_funding_authority(authority: str) -> None:
+        nonlocal funding_authority
+        if funding_authority is not None and funding_authority != authority:
+            raise PaymentError(
+                "payment transfers must share one funding authority",
+                code="invalid-payload",
+            )
+        funding_authority = authority
 
     for instruction in message_instructions:
         try:
@@ -443,6 +456,7 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             remaining_transfers.pop(match_idx)
+            _record_funding_authority(source)
             continue
 
         if program_id in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
@@ -523,6 +537,7 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             remaining_transfers.pop(match_idx)
+            _record_funding_authority(authority)
             continue
 
         if program_id == ASSOCIATED_TOKEN_PROGRAM:
@@ -553,6 +568,17 @@ def _validate_instruction_allowlist(
                 f"missing required ATA creation instruction for split recipient {owner}",
                 code="invalid-payload",
             )
+
+    # Every required signer must be the fee payer or the one funding
+    # authority. Any other signer authorizes nothing and only adds a
+    # signature fee, which a sponsor would pay.
+    allowed_signers = {fee_payer_account, funding_authority}
+    num_required = int(message.header.num_required_signatures)
+    if any(signer not in allowed_signers for signer in account_keys[:num_required]):
+        raise PaymentError(
+            "unexpected signer in payment transaction",
+            code="invalid-payload",
+        )
 
 
 def _verify_local_transaction_intent(

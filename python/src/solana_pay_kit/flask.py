@@ -235,6 +235,8 @@ def _abort_pay_kit_error(exc: PayKitError) -> NoReturn:
     if isinstance(code, str):
         body["code"] = code
     response = make_response(flask.jsonify(body), status)
+    for header, value in exc.response_headers.items():
+        response.headers[header] = value
     abort(response)
 
 

@@ -306,11 +306,8 @@ tracking = "FINDINGS.md#batch-v1-loaded-limit-pinned"
 [[known_failing]]
 ids = [
   "vector/batch-verify-voucher-onchain-closed-account-reject",
-  "vector/batch-verify-voucher-onchain-distribution-reject",
-  "vector/batch-verify-voucher-onchain-empty-distribution-reject",
-  "vector/batch-verify-voucher-onchain-payee-reject",
 ]
-reason = "a stale snapshot is refreshed for status, deposit and close only; the channel account's discriminator, payee and distribution hash are not re-checked, so a voucher against a mis-bound account is served (\"A missing or stale snapshot MUST fall through to facilitator verification\")"
+reason = "a refreshed stale snapshot re-checks the channel's payee, mint, authorizer, grace period, open slot and distribution hash but not its discriminator, so a voucher against a ClosedChannel account is served (\"Confirm the channel exists, is `Open`\")"
 tracking = "FINDINGS.md#batch-voucher-onchain-bindings"
 
 [[known_failing]]

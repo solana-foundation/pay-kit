@@ -63,7 +63,13 @@ assigns that case to the Python adapter only) or reject the header with
 **X1. `PaymentRequirements` has exactly the spec's fields.** `scheme`,
 `network`, `amount`, `asset`, `payTo`, `maxTimeoutSeconds`, `extra`. There is
 no `protocol` field; clients MUST NOT require one. Servers MAY add fields, and
-clients ignore what they do not understand.
+clients ignore what they do not understand. That covers the legacy aliases some
+servers still send beside the x402 fields (`recipient`, `currency`, top-level
+`decimals`, `tokenProgram`, `recentBlockhash`, `feePayerKey`): a client reads
+each term from its x402 field only and never lets an alias replace it, so the
+signed transfer pays what the echoed `accepted` names. Only `amount` and
+`maxTimeoutSeconds` fall back to the v1 names a legacy credential uses. Vector:
+`x402-exact-v2-build-ignores-non-spec-fields`.
 
 **X2. `amount` is atomic units.** “Required payment amount in atomic token
 units”. A server MUST NOT put a decimal or human price on the wire. A server
@@ -105,6 +111,20 @@ include”, uses the v1 field name, and is superseded by the network binding's
 normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
 as an explicit stricter policy; default verifiers MUST accept it.
 
+**S6. A sponsor bounds the priority fee as limit times price.**
+scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
+enforcing maximum compute unit limits and maximum compute unit (priority fee)
+price”. Capping each field alone still lets the largest limit pair with the
+largest price, so the fee the sponsor pays is bounded as their product. The
+pay-kit sponsors cap it at 2,000 lamports; a 200,000 unit limit at 5,000,000
+micro-lamports per unit (each within its own cap, a 1,000,000 lamport fee) is
+refused as `compute-price-over-cap`. Vector:
+`x402-exact-verify-priority-fee-over-cap-reject`. A version-1 header
+`priorityFee` is the same product, so the cap applies to it unchanged; the
+txv1 per-unit cap (5 lamports per unit) still holds below it, and
+`x402-verify-v1-priority-fee-{at,over}-cap-*` pin that boundary at a 300 unit
+limit, where it binds before the total does.
+
 ## x402 upto on SVM
 
 **U1. `openSlot` and `recentSlot` are numbers on the wire; verifiers accept the
@@ -134,6 +154,7 @@ on-chain rebind (steps 9 and 10) need a validator and are interop scenarios.
 Open-slot freshness against the challenged slot is program-enforced (“The open
 instruction still enforces the program's slot window.”), so no vector requires
 a verifier to pre-check it.
+
 ## MPP subscription (Solana)
 
 Pinned as the submodule `external/mpp-specs-solana` at `5c4a528`
@@ -169,6 +190,7 @@ the activation transaction settles at or after that timestamp.” Vectors pin
 cancellation (`delegation.expires_at_ts`) equal to `now` has taken effect:
 “a non-zero timestamp only blocks renewal once the current time is at or
 after that timestamp.”
+
 ## x402 batch-settlement on SVM
 
 Pinned `scheme_batch_settlement_svm.md` (x402 @03b3919b); transaction-version
@@ -199,6 +221,7 @@ requirements is `accepted-mismatch` and a non-v2 envelope `unsupported-version`
 (untrusted server-mode operator, `extra.operator` in client mode, a malformed
 requirement) is `invalid-challenge`; wire objects that do not parse are
 `invalid-payload`.
+
 ## Transaction versions (SIMD-0385)
 
 Pinned drafts: `external/mpp-specs-txv1` (solana-foundation/mpp-specs

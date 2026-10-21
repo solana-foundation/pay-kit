@@ -134,6 +134,8 @@ REJECT_PATTERNS = [
   [/splits consume the entire amount|split amounts exceed/i, "splits-exceed-amount"],
   [/too many splits/i, "too-many-splits"],
   [/no matching (spl )?(transfer|transferchecked|sol transfer)|no_transfer_instruction|recipient_mismatch|mint_mismatch/i, "no-matching-transfer"],
+  [/share one funding authority/i, "mixed-funding-authority"],
+  [/unexpected signer/i, "unexpected-signer"],
   [/amount_mismatch|amount .* (mismatch|does not match)/i, "amount-mismatch"],
   [/unexpected .* (instruction|transfer)|unknown_(fourth|fifth|sixth|optional)_instruction/i, "unexpected-instruction"]
 ].freeze

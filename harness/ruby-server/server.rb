@@ -274,6 +274,8 @@ serve_mpp = proc do |conn, req|
   when ::PayKit::Protocols::Mpp::Challenge
     headers = {"content-type" => "application/json", "www-authenticate" => result.www_authenticate}
     write_response(conn, 402, headers, result.body)
+  when ::PayKit::Protocols::Mpp::SettlementPending
+    write_response(conn, result.status, result.headers, result.body)
   else
     write_response(conn, 500, {"content-type" => "application/json"}, {error: "unexpected MPP result: #{result.class}"})
   end

@@ -29,6 +29,7 @@ export {
     type VoucherVerifyResult,
 } from './session/voucher.js';
 export { buildAndSignWireTransaction } from './session/wire-tx.js';
+export { claimConsumedSignature, consumedSignatureKey } from './replay.js';
 export { subscription } from './Subscription.js';
 export { assertReportedTransactionVersion, MISSING_TRANSACTION_VERSION_ERROR } from '../utils/transactions.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'

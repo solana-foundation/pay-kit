@@ -145,6 +145,44 @@ describe('MeteredSseSession', () => {
         });
     });
 
+    test('refuses usage above the reservation or before any directive', async () => {
+        const { metered, session, transport } = await makeStreamSession();
+
+        expect(() =>
+            metered.acceptEvent({
+                data: JSON.stringify({ amount: '1', deliveryId: 'reserved' }),
+                event: 'mpp.usage',
+            }),
+        ).toThrow('before the mpp.metering');
+
+        metered.acceptEvent({
+            data: JSON.stringify({
+                amount: '1000',
+                currency: 'USDC',
+                deliveryId: 'reserved',
+                expiresAt: DEFAULT_SESSION_EXPIRES_AT,
+                sequence: 1,
+                sessionId: session.channelId,
+            }),
+            event: 'mpp.metering',
+        });
+        expect(() =>
+            metered.acceptEvent({
+                data: JSON.stringify({ amount: '1001', deliveryId: 'reserved' }),
+                event: 'mpp.usage',
+            }),
+        ).toThrow('exceeds the reserved metering amount 1000');
+        expect(transport.commits).toHaveLength(0);
+
+        // Usage equal to the reservation is still accepted and committed.
+        metered.acceptEvent({
+            data: JSON.stringify({ amount: '1000', deliveryId: 'reserved' }),
+            event: 'mpp.usage',
+        });
+        await expect(metered.ack()).resolves.toMatchObject({ amount: '1000', cumulative: '1000' });
+        expect(session.cumulative).toBe(1000n);
+    });
+
     test('falls back to reserved amount and requires a directive', async () => {
         const { metered, session } = await makeStreamSession();
 

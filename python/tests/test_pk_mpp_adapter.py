@@ -357,3 +357,37 @@ def test_adapter_resolves_secret_from_resolver_when_unconfigured(monkeypatch, tm
     )
     adapter = MppAdapter(cfg)
     assert adapter._secret == "adapter-env-secret"
+
+
+@pytest.mark.asyncio
+async def test_settlement_in_progress_keeps_its_retry_signal(monkeypatch):
+    """An unresolved settlement surfaces as SettlementInProgressError (409, no
+    challenge), never as a plain invalid proof the client would re-pay."""
+    from solana_pay_kit._paycore.errors import PaymentError
+    from solana_pay_kit.errors import SettlementInProgressError
+    from solana_pay_kit.protocols.mpp.server.charge import Mpp
+
+    cfg = _cfg()
+    adapter = MppAdapter(cfg)
+    gate = _gate(cfg, name="report", amount="0.10")
+    auth = _credential_for(adapter, gate)
+
+    async def pending(self, credential, expected):
+        raise PaymentError("transaction is pending; retry", code="settlement-in-progress", retryable=True)
+
+    monkeypatch.setattr(Mpp, "verify_credential_with_expected", pending)
+    with pytest.raises(SettlementInProgressError) as exc:
+        await adapter.verify_and_settle(gate, {"headers": {"authorization": auth}})
+    assert exc.value.code == "settlement_in_progress"
+    assert exc.value.http_status == 409
+    assert exc.value.response_headers["Retry-After"] == "1"
+
+    # Positive control: a rejection stays a plain invalid proof.
+    async def rejected(self, credential, expected):
+        raise PaymentError("transaction failed", code="transaction-failed")
+
+    monkeypatch.setattr(Mpp, "verify_credential_with_expected", rejected)
+    with pytest.raises(InvalidProofError) as exc2:
+        await adapter.verify_and_settle(gate, {"headers": {"authorization": auth}})
+    assert not isinstance(exc2.value, SettlementInProgressError)
+    assert exc2.value.code == "payment_invalid"

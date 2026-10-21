@@ -533,6 +533,14 @@ local function classify_reject(message)
   if has(m, 'fee payer cannot authorize') then
     return 'fee-payer-not-authority'
   end
+  -- SOLA1-349: payment legs funded by more than one authority, or a required
+  -- signer that is neither the fee payer nor that authority.
+  if has(m, 'share one funding authority') then
+    return 'mixed-funding-authority'
+  end
+  if has(m, 'unexpected signer') then
+    return 'unexpected-signer'
+  end
   if has(m, 'splits consume the entire amount')
     or has(m, 'split amounts exceed total amount') then
     return 'splits-exceed-amount'

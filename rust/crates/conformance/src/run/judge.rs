@@ -419,6 +419,7 @@ pub fn x402_verify_input(build_input: &Value, header: &str) -> Result<Value, Str
     let s = |k: &str| offer.get(k).and_then(Value::as_str).unwrap_or_default();
     let network = cluster_for_caip2(s("network"))
         .ok_or_else(|| format!("unknown offer network {}", s("network")))?;
+    let header = accepted_as_offered(header)?;
     let mut input = json!({
         "x402PaymentHeader": header,
         "x402ServerNetwork": network,
@@ -455,6 +456,39 @@ pub fn x402_verify_input(build_input: &Value, header: &str) -> Result<Value, Str
         input["x402ServerRequiresPaymentIdentifier"] = json!(true);
     }
     Ok(input)
+}
+
+/// The `PaymentRequirements` fields of x402 v2 (RULINGS X1).
+const X402_REQUIREMENT_FIELDS: [&str; 7] = [
+    "scheme",
+    "network",
+    "amount",
+    "asset",
+    "payTo",
+    "maxTimeoutSeconds",
+    "extra",
+];
+
+/// The header with its echoed `accepted` reduced to the x402 fields. An offer
+/// may carry fields a server adds beside them, which the client echoes; the
+/// verifying server offers only the x402 fields, so they are dropped before
+/// its structural match. The transaction is untouched.
+fn accepted_as_offered(header: &str) -> Result<String, String> {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let bytes = engine
+        .decode(header)
+        .map_err(|e| format!("payment header base64: {e}"))?;
+    let mut envelope: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("payment header JSON: {e}"))?;
+    let Some(accepted) = envelope.get_mut("accepted").and_then(Value::as_object_mut) else {
+        return Ok(header.to_string());
+    };
+    let before = accepted.len();
+    accepted.retain(|key, _| X402_REQUIREMENT_FIELDS.contains(&key.as_str()));
+    if accepted.len() == before {
+        return Ok(header.to_string());
+    }
+    Ok(engine.encode(serde_json::to_vec(&envelope).map_err(|e| e.to_string())?))
 }
 
 /// The verify-mode vector a build output turns into (also what `--cross`

@@ -138,6 +138,8 @@ export class MeteredSseSession<Transport extends CommitTransport = CommitTranspo
     readonly #consumer: SessionConsumer<Transport>;
     #directive: MeteringDirective | undefined;
     #done = false;
+    /** `#directive` settled against the stream's usage; never above the reservation. */
+    #settled: MeteringDirective | undefined;
     #usage: MeteringUsage | undefined;
 
     constructor(consumer: SessionConsumer<Transport>) {
@@ -166,18 +168,18 @@ export class MeteredSseSession<Transport extends CommitTransport = CommitTranspo
         const parsed = parseMeteredSseEvent(event, parseMessage);
         switch (parsed.type) {
             case 'metering':
+                // Usage settles the directive it was reported against; a new
+                // reservation starts over.
                 this.#directive = parsed.directive;
+                this.#settled = undefined;
+                this.#usage = undefined;
                 break;
-            case 'usage':
-                // Mirror the Rust stream state machine: usage events may only
-                // refine the live directive's amount, never re-target deliveries.
-                if (this.#directive && parsed.usage.deliveryId !== this.#directive.deliveryId) {
-                    throw new Error(
-                        `usage delivery ${parsed.usage.deliveryId} does not match directive ${this.#directive.deliveryId}`,
-                    );
-                }
+            case 'usage': {
+                if (!this.#directive) throw new Error('mpp.usage arrived before the mpp.metering event');
+                this.#settled = settleMeteringDirective(this.#directive, parsed.usage);
                 this.#usage = parsed.usage;
                 break;
+            }
             case 'done':
                 this.#done = true;
                 break;
@@ -190,14 +192,34 @@ export class MeteredSseSession<Transport extends CommitTransport = CommitTranspo
      */
     async ack(): Promise<CommitReceipt> {
         if (!this.#directive) throw new Error('stream missing metering directive');
-        const directive = this.#usage
-            ? {
-                  ...this.#directive,
-                  amount: this.#usage.amount,
-              }
-            : this.#directive;
-        return await this.#consumer.commitDirective(directive);
+        return await this.#consumer.commitDirective(this.#settled ?? this.#directive);
     }
+}
+
+/**
+ * The directive to commit once a stream reports its final usage.
+ *
+ * The usage must name the directive's delivery and stay within the reserved
+ * amount: the result is what the client signs a voucher for, so an endpoint can
+ * never raise the charge past the reservation by reporting more usage.
+ */
+export function settleMeteringDirective(directive: MeteringDirective, usage: MeteringUsage): MeteringDirective {
+    if (usage.deliveryId !== directive.deliveryId) {
+        throw new Error(`usage delivery ${usage.deliveryId} does not match directive ${directive.deliveryId}`);
+    }
+    const reserved = parseBaseUnits(directive.amount, 'metering');
+    const used = parseBaseUnits(usage.amount, 'usage');
+    if (used > reserved) {
+        throw new Error(`mpp.usage amount ${used} exceeds the reserved metering amount ${reserved}`);
+    }
+    return { ...directive, amount: used.toString() };
+}
+
+function parseBaseUnits(amount: unknown, label: string): bigint {
+    if (typeof amount !== 'string' || !/^\d+$/.test(amount)) {
+        throw new Error(`invalid ${label} amount: ${String(amount)}`);
+    }
+    return BigInt(amount);
 }
 
 /**

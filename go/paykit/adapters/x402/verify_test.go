@@ -9,14 +9,17 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -287,6 +290,7 @@ type fakeRPC struct {
 	sendErr    error
 	confirm    rpc.ConfirmationStatusType
 	confirmErr *struct{ msg string } // non-nil => on-chain tx error
+	nullStatus bool                  // no status recorded for the signature
 	sends      int
 }
 
@@ -299,6 +303,9 @@ func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, _ string, _ 
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if f.nullStatus {
+		return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}, nil
+	}
 	st := &rpc.SignatureStatusesResult{ConfirmationStatus: f.confirm}
 	if f.confirmErr != nil {
 		st.Err = f.confirmErr.msg
@@ -405,19 +412,83 @@ func TestVerifyAndSettleConfirmationError(t *testing.T) {
 	}
 }
 
-func TestVerifyAndSettleSendFailureRollsBackReplay(t *testing.T) {
-	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
-	a, gate, sig := settleFixture(t, fake)
-	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err == nil {
-		t.Fatal("expected send_failed")
+func settleCode(err error) string {
+	var perr *paykit.PaymentError
+	if errorsAs(err, &perr) {
+		return perr.Code
 	}
-	// Replay reservation must have been rolled back: a retry with a
-	// working RPC then succeeds rather than tripping signature_consumed.
+	return ""
+}
+
+// Only a preflight rejection proves the node was never handed the
+// transaction, so only it releases the claim for a retry.
+func TestVerifyAndSettlePreflightRejectionReleasesTheClaim(t *testing.T) {
+	fake := &fakeRPC{sendErr: &jsonrpc.RPCError{Code: -32002, Message: "Transaction simulation failed"}}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "send_failed" {
+		t.Fatalf("expected send_failed, got %v", err)
+	}
 	fake.sendErr = nil
 	fake.sig = solana.MustSignatureFromBase58(sampleSig)
 	fake.confirm = rpc.ConfirmationStatusConfirmed
 	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
-		t.Fatalf("retry after rollback should succeed, got %v", err)
+		t.Fatalf("retry after a preflight rejection should settle, got %v", err)
+	}
+	if fake.sends != 2 {
+		t.Fatalf("the released transaction is broadcast again: sends=%d", fake.sends)
+	}
+}
+
+// Any other send error leaves the outcome unknown: the claim is kept, the
+// payer is told to retry the same payment, and the retry is reconciled from
+// the chain (never re-broadcast) and granted once.
+func TestVerifyAndSettleAmbiguousSendKeepsTheClaimUntilReconciled(t *testing.T) {
+	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	// Still no status: still in progress, not a failure.
+	fake.sendErr = nil
+	fake.nullStatus = true
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("a missing status keeps it in progress, got %v", err)
+	}
+	fake.nullStatus = false
+	fake.confirm = rpc.ConfirmationStatusConfirmed
+	pmt, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	if err != nil {
+		t.Fatalf("the landed payment reconciles, got %v", err)
+	}
+	if pmt.Transaction != settledSignature(t, a, sig) {
+		t.Fatalf("reconciled transaction %s", pmt.Transaction)
+	}
+	if fake.sends != 1 {
+		t.Fatalf("a pending settlement is never re-broadcast: sends=%d", fake.sends)
+	}
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "signature_consumed" {
+		t.Fatalf("granted once, got %v", err)
+	}
+}
+
+// A confirmation poll that ends with no status is not proof the transaction
+// never landed.
+func TestVerifyAndSettleConfirmationTimeoutKeepsTheClaim(t *testing.T) {
+	attempts, delay := confirmAttempts, confirmDelay
+	confirmAttempts, confirmDelay = 2, time.Millisecond
+	t.Cleanup(func() { confirmAttempts, confirmDelay = attempts, delay })
+	fake := &fakeRPC{sig: solana.MustSignatureFromBase58(sampleSig), nullStatus: true}
+	a, gate, sig := settleFixture(t, fake)
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	fake.nullStatus = false
+	fake.confirm = rpc.ConfirmationStatusFinalized
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
+		t.Fatalf("the landed payment reconciles, got %v", err)
+	}
+	if fake.sends != 1 {
+		t.Fatalf("sends=%d", fake.sends)
 	}
 }
 
@@ -437,23 +508,99 @@ func TestVerifyAndSettleReplayRejected(t *testing.T) {
 	}
 }
 
-func TestTransactionReplayKeySkipsSponsoredFeePayerSlot(t *testing.T) {
-	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
-	tx := &solana.Transaction{Signatures: []solana.Signature{{}, clientSig}}
-	key, err := transactionReplayKey(tx)
-	if err != nil {
-		t.Fatalf("transactionReplayKey: %v", err)
+// A payment settled through MPP on a gate sharing the store must not be
+// accepted again as an x402 proof: both protocols claim the co-signed
+// transaction's signature in one ledger.
+func TestVerifyAndSettleRejectsSignatureConsumedByMPP(t *testing.T) {
+	fake := &fakeRPC{sig: solana.MustSignatureFromBase58(sampleSig), confirm: rpc.ConfirmationStatusFinalized}
+	a, gate, sig := settleFixture(t, fake)
+	store := core.NewMemoryStore()
+	a.cfg.MPP.Store = store
+	ledger := paycore.NewConsumedSignatures(store)
+
+	key := settledSignature(t, a, sig)
+	if claimed, err := ledger.Claim(context.Background(), key); err != nil || !claimed {
+		t.Fatalf("MPP-side claim: claimed=%v err=%v", claimed, err)
 	}
-	if key != sampleClientSig {
-		t.Fatalf("replay key = %s, want %s", key, sampleClientSig)
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	var perr *paykit.PaymentError
+	if !errorsAs(err, &perr) || perr.Code != "signature_consumed" {
+		t.Fatalf("expected signature_consumed, got %v", err)
+	}
+
+	// Positive control: on a fresh shared store x402 settles, and its claim
+	// is visible to MPP through the same ledger.
+	a, gate, sig = settleFixture(t, fake)
+	store = core.NewMemoryStore()
+	a.cfg.MPP.Store = store
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	claimed, err := paycore.NewConsumedSignatures(store).Claim(context.Background(), settledSignature(t, a, sig))
+	if err != nil || claimed {
+		t.Fatalf("x402 settlement must claim the shared ledger: claimed=%v err=%v", claimed, err)
 	}
 }
 
-func TestTransactionReplayKeyRejectsUnsignedTransaction(t *testing.T) {
-	tx := &solana.Transaction{Signatures: []solana.Signature{{}}}
-	_, err := transactionReplayKey(tx)
-	if err == nil {
-		t.Fatal("expected unsigned transaction to be rejected")
+// settledSignature is the signature the adapter claims for sig: the first
+// signature of the co-signed wire transaction.
+func settledSignature(t *testing.T, a *Adapter, sig string) string {
+	t.Helper()
+	credJSON, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cred proto.Credential
+	if err := json.Unmarshal(credJSON, &cred); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(cred.Payload.Transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := solanatx.DecodeTransaction(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := a.cosign(context.Background(), tx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := transactionReplayKey(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestTransactionReplayKeyIsTheCosignedFeePayerSignature(t *testing.T) {
+	feePayerSig := solana.MustSignatureFromBase58(sampleSig)
+	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
+	tx := &solana.Transaction{
+		Message:    solana.Message{AccountKeys: solana.PublicKeySlice{solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()}},
+		Signatures: []solana.Signature{feePayerSig, clientSig},
+	}
+	tx.Message.Header.NumRequiredSignatures = 2
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := transactionReplayKey(wire)
+	if err != nil {
+		t.Fatalf("transactionReplayKey: %v", err)
+	}
+	if key != sampleSig {
+		t.Fatalf("replay key = %s, want %s", key, sampleSig)
+	}
+
+	// Not yet co-signed: no on-chain identity to claim.
+	tx.Signatures[0] = solana.Signature{}
+	wire, err = tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transactionReplayKey(wire); err == nil {
+		t.Fatal("expected a transaction without its fee payer signature to be rejected")
 	}
 }
 
@@ -690,4 +837,41 @@ func TestAwaitConfirmationHonorsContextCancellation(t *testing.T) {
 func acceptedFor(a *Adapter, gate *paykit.Gate) *proto.AcceptsEntry {
 	route := a.routeAccepts(gate)
 	return &route
+}
+
+// failingPendingStore refuses writes of pending-settlement records.
+type failingPendingStore struct {
+	core.Store
+	fail bool
+}
+
+func (s *failingPendingStore) PutIfAbsent(ctx context.Context, key string, value any) (bool, error) {
+	if s.fail && strings.HasPrefix(key, pendingSettlementPrefix) {
+		return false, errors.New("injected store outage")
+	}
+	return s.Store.PutIfAbsent(ctx, key, value)
+}
+
+// The pending record a retry reconciles is written with the claim, before
+// anything is sent: written after, a store failure would strand a payment
+// that may have landed (claimed, with no record to reconcile).
+func TestVerifyAndSettleRecordsPendingBeforeSending(t *testing.T) {
+	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
+	a, gate, sig := settleFixture(t, fake)
+	store := &failingPendingStore{Store: core.NewMemoryStore(), fail: true}
+	a.cfg.MPP.Store = store
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "store_error" {
+		t.Fatalf("expected store_error, got %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("a transaction without a recovery record was sent: sends=%d", fake.sends)
+	}
+	// Nothing was sent, so the claim was given back.
+	store.fail = false
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	if _, found, _ := store.Get(context.Background(), pendingSettlementPrefix+settledSignature(t, a, sig)); !found {
+		t.Fatal("an ambiguous send must leave a pending record")
+	}
 }

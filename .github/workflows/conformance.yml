@@ -249,6 +249,7 @@ jobs:
       - uses: ./.github/actions/setup-pkc
         with:
           features: interop
+          adapters: true
       - name: Offline vectors (pkc)
         if: matrix.vector
         run: pkc run --sdk ${{ matrix.sdk }} --tier offline --require

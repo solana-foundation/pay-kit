@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "base64"
+require "ed25519"
 
 require_relative "base58"
 require_relative "public_key"
@@ -67,6 +68,20 @@ module PayCore
         raise signing_error_class, "fee payer is not a required signer" if index >= signatures.length
 
         signatures[index] = keypair.sign(message.raw)
+      end
+
+      # Whether every required signature verifies against the message for its
+      # signer. An empty or missing slot does not.
+      def signatures_verify?
+        required = message.header[:required_signatures]
+        return false if required.zero? || signatures.length != required || message.account_keys.length < required
+
+        signatures.each_with_index.all? do |signature, index|
+          key = ::Ed25519::VerifyKey.new(Base58.decode(message.account_keys[index]))
+          key.verify(signature, message.raw)
+        rescue ::Ed25519::VerifyError, ArgumentError
+          false
+        end
       end
 
       # Return the primary signature as base58.

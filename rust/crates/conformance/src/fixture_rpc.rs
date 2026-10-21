@@ -5,7 +5,7 @@
 //! The filler runs the kit's real builders and verifiers against the same
 //! chain state every SDK runner sees: the vector's `input.rpcFixtures`
 //! (blockhash, mints in the 82-byte SPL layout, raw program accounts), rent,
-//! slot. Any other method
+//! slot, and whether a blockhash is the fixture's latest. Any other method
 //! is refused with an error that names it, so a builder reaching for the
 //! network on the offline path fails loudly instead of silently succeeding.
 //! Every call is recorded.
@@ -38,13 +38,14 @@ const DEFAULT_SLOT: u64 = 100;
 const MINT_SIZE: usize = 82;
 
 /// The JSON-RPC methods the fixture serves. Anything else is refused.
-pub const SERVED_METHODS: [&str; 6] = [
+pub const SERVED_METHODS: [&str; 7] = [
     "getLatestBlockhash",
     "getAccountInfo",
     "getMultipleAccounts",
     "getMinimumBalanceForRentExemption",
     "getSlot",
     "getHealth",
+    "isBlockhashValid",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +282,15 @@ pub fn handle(fixtures: &Fixtures, method: &str, params: &Value) -> Result<Value
         }
         "getSlot" => Ok(json!(slot)),
         "getHealth" => Ok(json!("ok")),
+        // The fixture's chain knows one blockhash: its latest.
+        "isBlockhashValid" => {
+            let latest = fixtures
+                .recent_blockhash
+                .as_deref()
+                .unwrap_or(DEFAULT_BLOCKHASH);
+            let asked = params.first().and_then(Value::as_str).unwrap_or_default();
+            Ok(json!({ "context": context, "value": asked == latest }))
+        }
         other => Err(refusal(other)),
     }
 }

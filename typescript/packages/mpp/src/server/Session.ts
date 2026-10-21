@@ -583,6 +583,12 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     }
     const rentPayer = args.feePayer ? args.feePayerSigner?.address : payload.payer;
     if (!rentPayer) throw new Error('unable to determine channel rent payer');
+    // The sponsor co-signs as fee payer and rent payer; if it were also the
+    // channel payer, that one signature would authorize the deposit out of the
+    // sponsor's own token account. Mirrors `reject_sponsor_as_payer` in Rust.
+    if (args.feePayer && payload.payer === rentPayer) {
+        throw new Error('payment-channel payer must differ from the sponsored fee payer');
+    }
     const expected = {
         authorizedSigner: payload.authorizedSigner,
         channelProgram: args.programId.toString(),
@@ -1017,6 +1023,15 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             if (current.settledSignature === undefined) return current;
             throw new Error('Close already requested');
         }
+
+        // Uncommitted reservations are not billed. Here they come only from
+        // `POST /__402/session/deliveries`, which checks no credential and has
+        // no release: a reservation proves neither that the payer asked for
+        // it nor that anything was delivered, so billing it would let anyone
+        // who knows the channel id charge the payer (or block its close).
+        // Rust bills `PendingDelivery::owed_at_close` because there the host
+        // itself creates reservations for responses it sends; TypeScript has
+        // no such host-created reservation yet.
 
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "pay_core/error_codes"
+
 module PayKit
   class Error < StandardError; end
 
@@ -49,6 +51,29 @@ module PayKit
 
     def http_status
       402
+    end
+
+    # Extra response headers the middleware sets.
+    def response_headers
+      {}
+    end
+  end
+
+  # The proof's payment may already be broadcast and is not resolved yet.
+  # Rendered as a retryable 409 with no challenge: a client handed a fresh
+  # challenge could pay it while the original lands, and pay twice. The
+  # client retries the same credential.
+  class SettlementInProgress < InvalidProof
+    def initialize(detail = nil)
+      super(:settlement_in_progress, detail, spec_code: ::PayCore::ErrorCodes::CODE_SETTLEMENT_IN_PROGRESS)
+    end
+
+    def http_status
+      409
+    end
+
+    def response_headers
+      {"retry-after" => "1"}
     end
   end
 

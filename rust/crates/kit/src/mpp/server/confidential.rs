@@ -16,8 +16,8 @@ use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{programs, MethodDetails};
 
 use super::charge::{
-    check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, ComputeBudgetOp, Mpp,
-    SettleFailure, VerificationError, COMPUTE_BUDGET_PROGRAM,
+    check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, BroadcastFence,
+    ComputeBudgetOp, Mpp, SettleFailure, VerificationError, COMPUTE_BUDGET_PROGRAM,
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
 };
 
@@ -121,9 +121,10 @@ impl Mpp {
         transactions: &[String],
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        fence: &mut BroadcastFence,
     ) -> Result<String, SettleFailure> {
         match self
-            .settle_confidential_bundle(transactions, request, method_details)
+            .settle_confidential_bundle(transactions, request, method_details, fence)
             .await?
         {
             BundleSettlement::Confirmed(signature) => Ok(signature),
@@ -139,6 +140,7 @@ impl Mpp {
         transactions: &[String],
         request: &ChargeRequest,
         method_details: &MethodDetails,
+        fence: &mut BroadcastFence,
     ) -> Result<BundleSettlement, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use spl_associated_token_account::get_associated_token_address_with_program_id;
@@ -188,7 +190,12 @@ impl Mpp {
                 "Confidential settlement requires a fee-payer signer (the gateway pays bundle fees)",
             )
         })?;
-        let gateway_pubkey = fee_payer_signer.pubkey();
+        // Recheck the challenge's sponsorship policy right before the gateway
+        // commits to funding anything.
+        let gateway_pubkey = self
+            .confidential_sponsor(method_details)
+            .map_err(VerificationError::credential_mismatch)?;
+        debug_assert_eq!(gateway_pubkey, fee_payer_signer.pubkey());
 
         // Amount enforcement, before the gateway signs or pays for anything:
         //   * recipient_signer SET (the gateway controls the payee) ⇒ decrypt
@@ -278,6 +285,12 @@ impl Mpp {
                 &self.accepted_versions,
             )
             .map_err(|e| VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}")))?;
+            // Every client and ephemeral signature must already verify: the
+            // bundle lands one transaction at a time, so a bad signature found
+            // at broadcast would leave the gateway paying for earlier setup.
+            crate::core::tx::require_presigned(&tx, Some(&gateway_pubkey)).map_err(|e| {
+                VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
+            })?;
             if transfers > 0 {
                 transfer_tx = Some(idx);
             }
@@ -381,21 +394,38 @@ impl Mpp {
                 )));
             }
 
-            let signature = crate::core::rpc::send_transaction(
+            let is_final = idx + 1 == bundle_len;
+            let local_signature = super::charge::final_signature(tx)?;
+            if is_final {
+                // Claim before sending, as pull settlement does, so the
+                // transfer is recorded whatever happens after it leaves.
+                fence.begin(self, &local_signature).await?;
+            }
+            let signature = match crate::core::rpc::send_transaction(
                 &self.rpc,
                 &*tx,
                 crate::core::rpc::preflight_config(&self.rpc),
-            )
-            .map_err(|e| {
-                VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
-            })?;
+            ) {
+                Ok(signature) => signature,
+                Err(e) => {
+                    let error = VerificationError::network_error(format!(
+                        "Bundle tx {idx} broadcast failed: {e}"
+                    ));
+                    // Only a preflight rejection proves the transfer was not
+                    // forwarded; any other error leaves it to reconcile.
+                    if is_final {
+                        if !super::charge::is_preflight_rejection(&e) {
+                            return Ok(BundleSettlement::Unconfirmed {
+                                signature: local_signature,
+                                error,
+                            });
+                        }
+                        fence.abandon(self).await;
+                    }
+                    return Err(error);
+                }
+            };
             let signature_str = signature.to_string();
-            let is_final = idx + 1 == bundle_len;
-            if is_final {
-                // Reserve before polling, as pull settlement does, so an
-                // unconfirmed transfer can be reconciled but never re-sent.
-                self.consume_signature(&signature_str).await?;
-            }
 
             // Confirm at `confirmed` before moving on: later txs in the bundle
             // (and the final balance read) depend on earlier ones landing.
@@ -1549,6 +1579,41 @@ pub(crate) mod tests {
 
     const SENDER_BALANCE: u64 = 10_000_000;
 
+    /// Secret keys of the client and ephemeral signers the fixtures mint, so
+    /// [`sign_clients`] can fill their slots the way a real client would.
+    static CLIENT_KEYS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<Pubkey, ed25519_dalek::SigningKey>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    /// A fresh signer key, registered for [`sign_clients`].
+    pub(crate) fn client_key() -> Pubkey {
+        let key = ed25519_dalek::SigningKey::from_bytes(&Pubkey::new_unique().to_bytes());
+        let pubkey = Pubkey::from(key.verifying_key().to_bytes());
+        CLIENT_KEYS.lock().unwrap().insert(pubkey, key);
+        pubkey
+    }
+
+    /// Sign every required slot whose key came from [`client_key`], leaving
+    /// the gateway's fee-payer slot empty for the server to co-sign.
+    pub(crate) fn sign_clients(tx: &mut VersionedTransaction) {
+        use ed25519_dalek::Signer;
+        let message = tx.message.serialize();
+        let required = usize::from(tx.message.header().num_required_signatures);
+        let keys = CLIENT_KEYS.lock().unwrap();
+        for (slot, key) in tx
+            .message
+            .static_account_keys()
+            .iter()
+            .take(required)
+            .enumerate()
+        {
+            if let Some(secret) = keys.get(key) {
+                tx.signatures[slot] =
+                    solana_signature::Signature::from(secret.sign(&message).to_bytes());
+            }
+        }
+    }
+
     /// One version-1 transaction moving `amount` confidentially to
     /// `recipient_ata`, with every proof verified inline. `fee` selects the
     /// fee-bearing `TransferWithFee` variant (basis points, maximum fee).
@@ -1564,7 +1629,7 @@ pub(crate) mod tests {
         let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
         let sender_elgamal = ElGamalKeypair::new_rand();
         let sender_ae = AeKey::new_rand();
-        let sender = Pubkey::new_unique();
+        let sender = client_key();
         let sender_ata = Pubkey::new_unique();
         let available = sender_elgamal.pubkey().encrypt(SENDER_BALANCE);
         let decryptable = sender_ae.encrypt(SENDER_BALANCE);
@@ -1620,14 +1685,16 @@ pub(crate) mod tests {
                 .unwrap()
             }
         };
-        crate::core::tx::build_unsigned(
+        let mut tx = crate::core::tx::build_unsigned(
             TxVersion::V1,
             gateway,
             &ixs,
             solana_hash::Hash::new_unique(),
             Some(&ComputeBudget::new(700_000, 0)),
         )
-        .unwrap()
+        .unwrap();
+        sign_clients(&mut tx);
+        tx
     }
 
     fn signer(seed: u8) -> Arc<solana_keychain::MemorySigner> {
@@ -1700,6 +1767,8 @@ pub(crate) mod tests {
             method_details: MethodDetails {
                 token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
                 confidential: Some(true),
+                fee_payer: Some(true),
+                fee_payer_key: Some(gateway.to_string()),
                 ..Default::default()
             },
         }
@@ -1944,6 +2013,7 @@ pub(crate) mod tests {
                 &encode_bundle(&[tx]),
                 &request(1_000, &server.mint, server.mpp.recipient()),
                 &server.method_details,
+                &mut server.mpp.test_fence().await,
             )
             .await
             .unwrap_err();
@@ -1966,6 +2036,7 @@ pub(crate) mod tests {
                 &encode_bundle(&[tx]),
                 &request(amount, &server.mint, server.mpp.recipient()),
                 &server.method_details,
+                &mut server.mpp.test_fence().await,
             )
             .await
             .unwrap_err()
@@ -2116,7 +2187,7 @@ pub(crate) mod tests {
 
     pub(crate) fn layout_pieces(gateway: &Pubkey, recipient_ata: &Pubkey) -> LayoutPieces {
         use solana_instruction::{AccountMeta, Instruction};
-        let record = Pubkey::new_unique();
+        let record = client_key();
         let record_program = spl_record::id();
         LayoutPieces {
             create: solana_system_interface::instruction::create_account(
@@ -2159,14 +2230,16 @@ pub(crate) mod tests {
         gateway: &Pubkey,
         ixs: &[solana_instruction::Instruction],
     ) -> VersionedTransaction {
-        crate::core::tx::build_unsigned(
+        let mut tx = crate::core::tx::build_unsigned(
             TxVersion::V0,
             gateway,
             ixs,
             solana_hash::Hash::new_unique(),
             None,
         )
-        .unwrap()
+        .unwrap();
+        sign_clients(&mut tx);
+        tx
     }
 
     #[test]
@@ -2212,6 +2285,7 @@ pub(crate) mod tests {
                         &bundle,
                         &request(1_000, &server.mint, server.mpp.recipient()),
                         &server.method_details,
+                        &mut server.mpp.test_fence().await,
                     )
                     .await
                     .unwrap_err()
@@ -2234,6 +2308,54 @@ pub(crate) mod tests {
             v0_tx(&server.gateway, &[p.transfer, p.close]),
         ];
         let message = settle(builder_layout).await;
+        assert!(message.contains("Simulation RPC error"), "{message}");
+    }
+
+    // Bundle transactions land one at a time, so every client signature in
+    // the bundle must verify before the gateway co-signs or pays for any.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bundle_signatures_are_verified_before_any_cosigning() {
+        let mut server = confidential_server(false, None, true).await;
+        server.mpp.accepted_versions = vec![TxVersion::V0];
+        let p = layout_pieces(&server.gateway, &server.recipient_ata);
+        let bundle = vec![
+            v0_tx(&server.gateway, &[p.create, p.initialize]),
+            v0_tx(&server.gateway, &[p.transfer, p.close]),
+        ];
+        let settle = |txs: Vec<VersionedTransaction>| {
+            let bundle = encode_bundle(&txs);
+            let server = &server;
+            async move {
+                server
+                    .mpp
+                    .settle_confidential_bundle(
+                        &bundle,
+                        &request(1_000, &server.mint, server.mpp.recipient()),
+                        &server.method_details,
+                        &mut server.mpp.test_fence().await,
+                    )
+                    .await
+                    .unwrap_err()
+                    .message
+            }
+        };
+
+        // The ephemeral record signature on the setup transaction is corrupt.
+        let mut corrupt = bundle.clone();
+        corrupt[0].signatures[1] = solana_signature::Signature::from([1; 64]);
+        let message = settle(corrupt).await;
+        assert!(
+            message.contains("Bundle tx 0: invalid client transaction signature"),
+            "{message}"
+        );
+
+        // A pre-filled gateway slot is not the server's signature to trust.
+        let mut prefilled = bundle.clone();
+        prefilled[1].signatures[0] = solana_signature::Signature::from([2; 64]);
+        let message = settle(prefilled).await;
+        assert!(message.contains("must be empty"), "{message}");
+
+        let message = settle(bundle).await;
         assert!(message.contains("Simulation RPC error"), "{message}");
     }
 

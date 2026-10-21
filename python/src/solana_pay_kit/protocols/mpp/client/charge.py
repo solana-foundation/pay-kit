@@ -109,6 +109,13 @@ async def build_credential_header(
     return format_authorization(credential)
 
 
+#: Refusal for a sponsored challenge whose ``feePayerKey`` is the signer itself.
+SIGNER_AS_FEE_PAYER = (
+    "fee payer cannot authorize the payment: feePayerKey names the signer; "
+    "a sponsored charge needs a separate server fee payer"
+)
+
+
 async def build_charge_transaction(
     signer: TransactionSigner,
     rpc_client: Any,
@@ -168,6 +175,11 @@ async def build_charge_transaction(
     # signs only its own signature slot and the server cosigns slot 0.
     use_fee_payer = details.fee_payer and bool(details.fee_payer_key)
     fee_payer_key = Pubkey.from_string(details.fee_payer_key) if use_fee_payer else None
+    # draft-solana-charge-00 fee sponsorship: "The client's account is the
+    # transfer authority but NOT the fee payer." A sponsor naming the signer
+    # would have the signer fund fees and split ATA rent while looking sponsored.
+    if fee_payer_key is not None and fee_payer_key == signer.pubkey:
+        raise ValueError(SIGNER_AS_FEE_PAYER)
 
     instructions = []
     memo_program = Pubkey.from_string(MEMO_PROGRAM)

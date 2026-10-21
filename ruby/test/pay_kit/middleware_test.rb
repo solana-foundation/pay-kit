@@ -175,6 +175,21 @@ class PayKitMiddlewareTest < Minitest::Test
       "render_invalid must include Cache-Control: no-store"
   end
 
+  # A payment that may already be broadcast is a retryable 409 with no
+  # challenge, never a 402 the client would answer by paying again.
+  def test_render_invalid_renders_settlement_in_progress_as_a_retry
+    status, headers, body = PayKit::Rack::PaymentRequired.render_invalid(PayKit::SettlementInProgress.new("pending"))
+    assert_equal 409, status
+    assert_equal "1", headers["retry-after"]
+    assert_equal "no-store", headers["cache-control"]
+    refute headers.key?("www-authenticate")
+    assert_equal "settlement_in_progress", JSON.parse(body.first)["spec_code"]
+
+    status, headers, = PayKit::Rack::PaymentRequired.render_invalid(PayKit::InvalidProof.new(:bad_proof, "test error"))
+    assert_equal 402, status
+    refute headers.key?("retry-after")
+  end
+
   private
 
   def build_app

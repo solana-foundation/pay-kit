@@ -467,6 +467,32 @@ impl MeteringDirective {
             crate::mpp::error::Error::Other(format!("invalid metering amount: {}", self.amount))
         })
     }
+
+    /// The directive to commit once the stream reports its final `usage`.
+    ///
+    /// The usage must name this delivery and stay within the reserved amount;
+    /// the result is what a client signs a voucher for, so an endpoint can
+    /// never raise the charge past the reservation by reporting more usage.
+    pub fn settle(&self, usage: &MeteringUsage) -> crate::mpp::error::Result<Self> {
+        use crate::mpp::error::Error;
+        if usage.delivery_id != self.delivery_id {
+            return Err(Error::Other(format!(
+                "usage delivery {} does not match directive {}",
+                usage.delivery_id, self.delivery_id
+            )));
+        }
+        let reserved = self.amount_base_units()?;
+        let used = usage.amount_base_units()?;
+        if used > reserved {
+            return Err(Error::Other(format!(
+                "mpp.usage amount {used} exceeds the reserved metering amount {reserved}"
+            )));
+        }
+        Ok(Self {
+            amount: used.to_string(),
+            ..self.clone()
+        })
+    }
 }
 
 /// Final usage reported by a streaming response.

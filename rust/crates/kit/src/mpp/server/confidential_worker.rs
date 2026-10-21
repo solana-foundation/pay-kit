@@ -296,6 +296,8 @@ mod tests {
 
     fn credential(bundle: &str) -> (PaymentCredential, ChargeRequest) {
         let recipient = solana_pubkey::Pubkey::new_unique().to_string();
+        let gateway = gateway();
+        let gateway_key = gateway.pubkey().to_string();
         let mpp = Mpp::new(MppConfig {
             recipient: recipient.clone(),
             currency: "PYUSD".into(),
@@ -304,6 +306,8 @@ mod tests {
             rpc_url: Some("http://127.0.0.1:1".into()),
             challenge_binding_secret: Some(SECRET.into()),
             realm: Some(REALM.into()),
+            fee_payer: true,
+            fee_payer_signer: Some(gateway),
             store: Some(std::sync::Arc::new(crate::mpp::store::MemoryStore::new())),
             ..Default::default()
         })
@@ -317,6 +321,8 @@ mod tests {
                     "network": "mainnet",
                     "decimals": 6,
                     "confidential": true,
+                    "feePayer": true,
+                    "feePayerKey": gateway_key,
                 })),
                 ..Default::default()
             })

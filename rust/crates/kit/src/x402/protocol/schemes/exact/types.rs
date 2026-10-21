@@ -366,8 +366,10 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("payment requirement must be an object"))?;
 
-        let raw_network =
-            string_field(object, "network").unwrap_or_else(|| SOLANA_NETWORK.to_string());
+        // Never default the ledger: an offer that omits `network` would
+        // otherwise be signed as a mainnet payment nobody named.
+        let raw_network = string_field(object, "network")
+            .ok_or_else(|| serde::de::Error::custom("payment requirement is missing network"))?;
         let network = normalize_network_identifier(&raw_network);
         let cluster = string_field(object, "cluster").or_else(|| {
             cluster_for_caip2_network(&network).map(|cluster| {
@@ -382,24 +384,22 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
         let extra = object.get("extra").cloned();
         let extra_object = extra.as_ref().and_then(|value| value.as_object());
 
-        let recipient = string_field(object, "recipient")
-            .or_else(|| string_field(object, "payTo"))
-            .unwrap_or_default();
+        // RULINGS X1: each term is read from its x402 field only. `amount`
+        // falls back to the v1 `maxAmountRequired` a legacy offer uses; fields
+        // a server adds beside them (`recipient`, `currency`, top-level
+        // `decimals`, `tokenProgram`, `recentBlockhash`, `feePayerKey`) are
+        // ignored, so the signed transfer pays what the echoed `accepted` names.
+        let recipient = string_field(object, "payTo").unwrap_or_default();
         let amount = string_field(object, "amount")
             .or_else(|| string_field(object, "maxAmountRequired"))
             .unwrap_or_default();
-        let currency = string_field(object, "currency")
-            .or_else(|| string_field(object, "asset"))
-            .unwrap_or_else(|| "SOL".to_string());
+        let currency = string_field(object, "asset").unwrap_or_else(|| "SOL".to_string());
 
-        let decimals = u8_field(object, "decimals")
-            .or_else(|| extra_object.and_then(|extra| u8_field(extra, "decimals")));
-        let token_program = string_field(object, "tokenProgram")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "tokenProgram")));
-        let recent_blockhash = string_field(object, "recentBlockhash")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "recentBlockhash")));
-        let fee_payer_key = string_field(object, "feePayerKey")
-            .or_else(|| extra_object.and_then(|extra| string_field(extra, "feePayer")));
+        let decimals = extra_object.and_then(|extra| u8_field(extra, "decimals"));
+        let token_program = extra_object.and_then(|extra| string_field(extra, "tokenProgram"));
+        let recent_blockhash =
+            extra_object.and_then(|extra| string_field(extra, "recentBlockhash"));
+        let fee_payer_key = extra_object.and_then(|extra| string_field(extra, "feePayer"));
         let fee_payer =
             bool_field(object, "feePayer").or_else(|| fee_payer_key.as_ref().map(|_| true));
         let transaction_versions = extra_object
@@ -411,7 +411,7 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             })
             .transpose()?;
         let max_age =
-            u64_field(object, "maxAge").or_else(|| u64_field(object, "maxTimeoutSeconds"));
+            u64_field(object, "maxTimeoutSeconds").or_else(|| u64_field(object, "maxAge"));
 
         // Keep the wire object for canonical v2 offers, and for any offer that
         // declares another scheme so it is never re-serialized as `exact`.
@@ -1323,5 +1323,96 @@ mod tests {
             assert_eq!(requirement.amount, "1000");
             assert_eq!(requirement.to_accepted_value()["scheme"], EXACT_SCHEME);
         }
+    }
+
+    fn v2_offer() -> serde_json::Value {
+        serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "1000",
+            "asset": mints::USDC_MAINNET,
+            "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+                "decimals": 6,
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "recentBlockhash": "11111111111111111111111111111111",
+                "feePayer": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+            }
+        })
+    }
+
+    #[test]
+    fn disagreeing_legacy_aliases_never_replace_x402_fields() {
+        let other = "11111111111111111111111111111112";
+        for (key, value) in [
+            ("recipient", serde_json::json!(other)),
+            ("currency", serde_json::json!("USDT")),
+            ("maxAmountRequired", serde_json::json!("999999")),
+            (
+                "tokenProgram",
+                serde_json::json!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
+            ),
+            ("recentBlockhash", serde_json::json!(other)),
+            ("feePayerKey", serde_json::json!(other)),
+            ("decimals", serde_json::json!(9)),
+            ("maxAge", serde_json::json!(60)),
+        ] {
+            let mut offer = v2_offer();
+            offer[key] = value;
+            let requirement: PaymentRequirements = serde_json::from_value(offer).unwrap();
+            let canonical = v2_offer();
+            assert_eq!(requirement.recipient, canonical["payTo"], "{key}");
+            assert_eq!(requirement.currency, canonical["asset"], "{key}");
+            assert_eq!(requirement.amount, "1000", "{key}");
+            assert_eq!(requirement.max_age, Some(300), "{key}");
+            assert_eq!(requirement.decimals, Some(6), "{key}");
+            assert_eq!(
+                requirement.token_program.as_deref(),
+                canonical["extra"]["tokenProgram"].as_str(),
+                "{key}"
+            );
+            assert_eq!(
+                requirement.recent_blockhash.as_deref(),
+                canonical["extra"]["recentBlockhash"].as_str(),
+                "{key}"
+            );
+            assert_eq!(
+                requirement.fee_payer_key.as_deref(),
+                canonical["extra"]["feePayer"].as_str(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_only_terms_are_not_read() {
+        let requirement: PaymentRequirements = serde_json::from_value(serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "1000",
+            "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "currency": mints::USDC_MAINNET,
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "feePayerKey": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        }))
+        .unwrap();
+        assert_eq!(requirement.recipient, "");
+        assert_eq!(requirement.currency, "SOL");
+        assert_eq!(requirement.decimals, None);
+        assert_eq!(requirement.token_program, None);
+        assert_eq!(requirement.fee_payer_key, None);
+    }
+
+    #[test]
+    fn offer_without_network_is_rejected_instead_of_defaulting_to_mainnet() {
+        let mut offer = v2_offer();
+        offer.as_object_mut().unwrap().remove("network");
+        let error = serde_json::from_value::<PaymentRequirements>(offer).unwrap_err();
+        assert!(error.to_string().contains("missing network"), "{error}");
+
+        let requirement: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
+        assert_eq!(requirement.network, SOLANA_MAINNET);
     }
 }

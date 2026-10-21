@@ -224,6 +224,28 @@ first and report `unknown_fourth_instruction`
 `python/src/solana_pay_kit/protocols/x402/exact/verify.py:154` before `:169`).
 The verdict is right; the reason hides the fund-safety violation, and a
 smart-wallet path that relaxes the layout would have to catch it again.
+## x402-priority-fee-product-uncapped
+
+**Case:** `vector/x402-exact-verify-priority-fee-over-cap-reject`
+**SDKs:** go, lua, php, python, ruby, typescript
+
+scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
+enforcing maximum compute unit limits and maximum compute unit (priority fee)
+price”. The vector pairs the static layout's 200,000 unit limit with a
+5,000,000 micro-lamport unit price: each is within its own cap, and the
+sponsor pays a 1,000,000 lamport priority fee. Rust bounds the product at
+2,000 lamports (`core::tx::check_priority_fee`, SOLA1-340, RULINGS S6); every
+other x402 verifier caps the unit price alone:
+
+- Go `go/protocols/x402/verify.go:21`
+- Python `python/src/solana_pay_kit/protocols/x402/exact/verify.py:57`
+- PHP `php/src/Protocols/X402/Exact/Verifier.php:184`
+- Lua `lua/pay_kit/protocols/x402/exact/verify.lua:109`
+- Ruby `ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/verify.rb:147`
+- TypeScript: the vendored upstream `@x402/svm` static path
+  (`typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246`).
+  SOLA1-340 bounded the product in the TypeScript MPP charge only.
+
 ## Interop findings (`pkc run --tier interop`, 2026-10-20)
 
 Recorded by the first run of the interop tier with every adapter paired
@@ -988,17 +1010,18 @@ sponsor tighten only the caps it names.
 
 ## batch-voucher-onchain-bindings
 
-**Cases:** `batch-verify-voucher-onchain-{closed-account,payee,distribution,empty-distribution}-reject` (rust)
+**Cases:** `batch-verify-voucher-onchain-closed-account-reject` (rust)
 
 Phase 3 step 3 requires the channel to exist, be `Open`, and match
 `payee == extra.feePayer`, the authorized signer, the grace period, the open
 slot “and a distribution to `payTo` matching section 4.1”; a server MAY rely on
 its mirrored snapshot only while it is fresh, and “A missing or stale snapshot
 MUST fall through to facilitator verification”. The Rust server refreshes a
-stale snapshot in `reconcile_channel` for status, deposit, settled and close
-only; `check_channel_bindings` runs only after a deposit confirms. An account
-with the `ClosedChannel` discriminator, a foreign payee, or a distribution
-hash that does not pay `payTo` therefore serves a steady-state voucher.
+stale snapshot and re-checks the payer, payee, rent payer, authorizer, mint,
+grace period, open slot and distribution hash, so a foreign payee or a
+distribution that does not pay `payTo` is refused. It does not read the
+account discriminator: an account carrying `ClosedChannel` still serves a
+steady-state voucher.
 
 ### TypeScript: vendored upstream `@x402/svm` 2.26.0
 

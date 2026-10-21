@@ -611,3 +611,7 @@ ids = [
 [[unsupported]]
 reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
 pattern = "vector/session-open-*"
+[[known_failing]]
+id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
+reason = "the x402 exact verifier caps the unit price alone (typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
+tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"
