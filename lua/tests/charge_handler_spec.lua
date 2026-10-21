@@ -568,7 +568,7 @@ t.test('settle_push happy path: fetch → verify → consume', function()
       t.assert_equal(tx, 'on-chain-b64')
     end,
     rpc = fake_rpc({
-      getTransaction = { { result = { meta = { err = nil }, transaction = { 'on-chain-b64', 'base64' } } } },
+      getTransaction = { { result = { meta = { err = nil }, transaction = { 'on-chain-b64', 'base64' }, blockTime = os.time() } } },
     }),
   })
   local sig = handler:settle_push('sig-push', {})
@@ -590,7 +590,7 @@ t.test('settle_push retries until transaction is observed', function()
       getTransaction = {
         { result = nil },
         { result = nil },
-        { result = { meta = { err = nil }, transaction = { 'tx-b64', 'base64' } } },
+        { result = { meta = { err = nil }, transaction = { 'tx-b64', 'base64' }, blockTime = os.time() } },
       },
     }),
   })
@@ -612,7 +612,7 @@ t.test('settle_push treats json.null transaction result as "not yet observed"', 
       getTransaction = {
         { result = json.null },
         { result = json.null },
-        { result = { meta = { err = nil }, transaction = { 'tx-b64', 'base64' } } },
+        { result = { meta = { err = nil }, transaction = { 'tx-b64', 'base64' }, blockTime = os.time() } },
       },
     }),
   })
@@ -665,7 +665,7 @@ t.test('settle_push surfaces verifier rejection after fetch', function()
     replay_store = replay,
     transaction_verifier = function() error({ code = 'verification-error', message = 'wrong recipient' }) end,
     rpc = fake_rpc({
-      getTransaction = { { result = { meta = { err = nil }, transaction = { 'tx', 'base64' } } } },
+      getTransaction = { { result = { meta = { err = nil }, transaction = { 'tx', 'base64' }, blockTime = os.time() } } },
     }),
   })
   t.assert_error(function() handler:settle_push('sig', {}) end, 'wrong recipient')
@@ -680,7 +680,7 @@ t.test('settle_push rejects already-consumed signature', function()
   local handler = new_handler({
     replay_store = replay,
     rpc = fake_rpc({
-      getTransaction = { { result = { meta = { err = nil }, transaction = { 'tx', 'base64' } } } },
+      getTransaction = { { result = { meta = { err = nil }, transaction = { 'tx', 'base64' }, blockTime = os.time() } } },
     }),
   })
   t.assert_error(function() handler:settle_push('sig-dupe', {}) end, 'already consumed')
@@ -1030,4 +1030,28 @@ t.test('the pending record is written before anything is sent', function()
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
   local _, pending = inner:get('pay-kit:lua:charge-pending:sig-recorded')
   t.assert_true(pending, 'an ambiguous send leaves a pending record')
+end)
+
+-- A durable claim is kept for a bounded retention, so push mode only accepts
+-- a landed payment well inside it: once its claim expired, an older payment
+-- could otherwise be presented again under a fresh challenge.
+t.test('settle_push refuses a payment older than the claim retention', function()
+  local json = require('pay_kit.util.json')
+  local store_mod = require('pay_kit.store')
+  for _, case in ipairs({
+    { block_time = os.time() - store_mod.DURABLE_RETENTION_SECONDS, err = 'too old' },
+    { block_time = json.null, err = 'no block time' },
+  }) do
+    local replay = store.memory()
+    local handler = new_handler({
+      replay_store = replay,
+      accept_push_mode = true,
+      rpc = fake_rpc({
+        getTransaction = { { result = { meta = { err = nil }, transaction = { 'old-b64', 'base64' }, blockTime = case.block_time } } },
+      }),
+    })
+    t.assert_error(function() handler:settle_push('sig-old', {}) end, case.err)
+    local _, claimed = replay:get('solana:consumed-signature:sig-old')
+    t.assert_true(not claimed, 'an old payment is refused before it is claimed')
+  end
 end)

@@ -69,6 +69,9 @@ local SEND_PREFLIGHT_FAILURE = -32002
 local PENDING_PREFIX = 'pay-kit:lua:charge-pending:'
 -- Single-winner token for the one request a reconciled transaction grants.
 local RECONCILED_PREFIX = 'solana-charge:reconciled:'
+-- Oldest landed transaction push mode accepts: an hour inside the durable
+-- claim retention, so a claim never expires while its payment is acceptable.
+local MAX_PUSH_AGE_SECONDS = require('pay_kit.store').DURABLE_RETENTION_SECONDS - 3600
 -- The ledger shared with x402 `exact`, so a payment settled through either
 -- protocol cannot authorize a second request through the other.
 local CONSUMED_PREFIX = consumed_signatures.PREFIX
@@ -457,7 +460,17 @@ function Handler:settle_push(signature, request)
     verifier_error('missing or empty signature payload')
   end
 
-  local transaction_base64 = self:fetch_settled_transaction(signature)
+  local transaction_base64, block_time = self:fetch_settled_transaction(signature)
+  -- A durable claim is kept for `pay_kit.store.DURABLE_RETENTION_SECONDS`.
+  -- A landed transaction older than that could be presented again once its
+  -- claim expired, so push mode accepts only payments well inside it; the
+  -- claim made below then outlives every presentation it can see.
+  if type(block_time) ~= 'number' then
+    verifier_error('Transaction ' .. signature .. ' has no block time; its age cannot be checked')
+  end
+  if os.time() - block_time > MAX_PUSH_AGE_SECONDS then
+    verifier_error('Transaction ' .. signature .. ' is too old to present as a payment')
+  end
   local ok, verify_err = pcall(self.transaction_verifier, transaction_base64, request)
   if not ok then
     local message = type(verify_err) == 'table' and verify_err.message or tostring(verify_err)
@@ -598,7 +611,9 @@ function Handler:fetch_settled_transaction(signature)
       end
       local wire = response.transaction
       if type(wire) == 'table' and type(wire[1]) == 'string' and wire[1] ~= '' then
-        return wire[1]
+        local block_time = response.blockTime
+        if block_time == json.null then block_time = nil end
+        return wire[1], block_time
       end
       verifier_error('getTransaction response is missing base64 transaction')
     end
