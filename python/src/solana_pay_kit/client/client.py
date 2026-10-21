@@ -98,11 +98,12 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                         max_amount_base_units=authorized.max_amount_atomic,
                         expected_network=challenge_network,
                     )
-                    return await self._retry(request, "authorization", header)
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
                 except Exception:  # noqa: BLE001 - an unusable MPP offer may fall back to x402
                     logger.warning("failed to build MPP payment credential", exc_info=True)
+                else:
+                    return await self._retry(request, "authorization", header)
 
         if "x402" in self._protocols:
             body = response.text if response.content else None
@@ -126,11 +127,12 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
                         recent_blockhash_provider=self._recent_blockhash_provider,
                     )
                     name = X402_LEGACY_PAYMENT_HEADER if legacy else PAYMENT_SIGNATURE_HEADER
-                    return await self._retry(request, name, header)
                 except PermissionDeniedError as exc:
                     rejections.extend(exc.rejections)
                 except Exception:  # noqa: BLE001 - preserve the original 402 on build failure
                     logger.warning("failed to build x402 payment credential", exc_info=True)
+                else:
+                    return await self._retry(request, name, header)
 
         if rejections:
             raise PermissionDeniedError(tuple(rejections))

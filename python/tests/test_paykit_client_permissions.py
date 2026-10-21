@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -310,3 +311,231 @@ async def test_unsupported_x402_network_is_not_signed(monkeypatch: pytest.Monkey
     assert response.status_code == 402
     build.assert_not_called()
     assert len(inner.requests) == 1
+
+
+class FailingRetryTransport(httpx.AsyncBaseTransport):
+    """Return a 402 first, then fail the paid retry at the transport layer."""
+
+    def __init__(self, challenge: httpx.Response, error: BaseException) -> None:
+        self.challenge = challenge
+        self.error = error
+        self.requests: list[httpx.Request] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return self.challenge
+        raise self.error
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _usdc_x402_payment_required() -> str:
+    mint = resolve_stablecoin_mint("USDC", "mainnet")
+    assert mint is not None
+    envelope = {
+        "x402Version": 2,
+        "resource": {"type": "http", "url": "https://api.example/paid"},
+        "accepts": [
+            {
+                "protocol": "x402",
+                "scheme": "exact",
+                "network": SOLANA_MAINNET_CAIP2,
+                "asset": mint,
+                "amount": "1000",
+                "payTo": UNKNOWN_MINT,
+                "maxTimeoutSeconds": 60,
+                "extra": {"feePayer": UNKNOWN_MINT},
+            }
+        ],
+    }
+    return base64.b64encode(json.dumps(envelope).encode()).decode()
+
+
+def _usdc_mpp_challenge(amount: str) -> PaymentChallenge:
+    return PaymentChallenge.with_secret_key(
+        secret_key="secret",
+        realm="api",
+        method="solana",
+        intent="charge",
+        request=encode_json(
+            {
+                "amount": amount,
+                "currency": "USDC",
+                "recipient": UNKNOWN_MINT,
+                "methodDetails": {"network": "mainnet"},
+            }
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ReadTimeout("paid response lost"), httpx.ReadError("connection closed"), RuntimeError("transport failed")],
+)
+@pytest.mark.parametrize("protocols", [("mpp",), ("mpp", "x402")])
+async def test_paid_mpp_retry_transport_error_propagates_without_x402_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    protocols: tuple[str, ...],
+) -> None:
+    challenge = httpx.Response(
+        402,
+        headers={
+            "www-authenticate": format_www_authenticate(_usdc_mpp_challenge("1000")),
+            "payment-required": _usdc_x402_payment_required(),
+        },
+    )
+    inner = FailingRetryTransport(challenge, error)
+    x402_build = AsyncMock(return_value="x402 credential")
+
+    async def mpp_credential(**_kwargs: object) -> str:
+        return "Payment credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", mpp_credential)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=protocols,
+        base_transport=inner,
+    )
+
+    with pytest.raises(type(error)) as raised:
+        await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert raised.value is error
+    assert len(inner.requests) == 2
+    assert inner.requests[1].headers["authorization"] == "Payment credential"
+    x402_build.assert_not_called()
+
+
+@pytest.mark.parametrize("include_denied_mpp", [False, True])
+async def test_paid_x402_retry_transport_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+    include_denied_mpp: bool,
+) -> None:
+    # An earlier MPP denial must not replace the x402 retry's transport error.
+    headers = {"payment-required": _usdc_x402_payment_required()}
+    if include_denied_mpp:
+        headers["www-authenticate"] = format_www_authenticate(_usdc_mpp_challenge("1000001"))
+    challenge = httpx.Response(402, headers=headers)
+    error = httpx.ConnectError("paid request failed")
+    inner = FailingRetryTransport(challenge, error)
+
+    async def x402_credential(*_args: object, **_kwargs: object) -> str:
+        return "x402 credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_credential)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("mpp", "x402"),
+        base_transport=inner,
+    )
+
+    with pytest.raises(httpx.ConnectError) as raised:
+        await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert raised.value is error
+    assert len(inner.requests) == 2
+    assert inner.requests[1].headers["payment-signature"] == "x402 credential"
+
+
+@pytest.mark.parametrize("protocol", ["mpp", "x402"])
+@pytest.mark.parametrize("status_code", [402, 500])
+async def test_paid_retry_http_response_is_returned_without_another_payment(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    status_code: int,
+) -> None:
+    headers = {"payment-required": _usdc_x402_payment_required()}
+    if protocol == "mpp":
+        headers["www-authenticate"] = format_www_authenticate(_usdc_mpp_challenge("1000"))
+    paid_response = httpx.Response(status_code)
+    inner = MockTransport([httpx.Response(402, headers=headers), paid_response])
+    mpp_build = AsyncMock(return_value="Payment credential")
+    x402_build = AsyncMock(return_value="x402 credential")
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", mpp_build)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("mpp", "x402"),
+        base_transport=inner,
+    )
+
+    result = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert result is paid_response
+    assert len(inner.requests) == 2
+    if protocol == "mpp":
+        mpp_build.assert_awaited_once()
+        x402_build.assert_not_called()
+    else:
+        mpp_build.assert_not_called()
+        x402_build.assert_awaited_once()
+
+
+@pytest.mark.parametrize("protocol", ["mpp", "x402"])
+async def test_paid_retry_cancellation_propagates_without_another_payment(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    headers = {"payment-required": _usdc_x402_payment_required()}
+    if protocol == "mpp":
+        headers["www-authenticate"] = format_www_authenticate(_usdc_mpp_challenge("1000"))
+    error = asyncio.CancelledError()
+    inner = FailingRetryTransport(httpx.Response(402, headers=headers), error)
+    mpp_build = AsyncMock(return_value="Payment credential")
+    x402_build = AsyncMock(return_value="x402 credential")
+    monkeypatch.setattr("solana_pay_kit.client.client.build_credential_header", mpp_build)
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", x402_build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("mpp", "x402"),
+        base_transport=inner,
+    )
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert raised.value is error
+    assert len(inner.requests) == 2
+    if protocol == "mpp":
+        mpp_build.assert_awaited_once()
+        x402_build.assert_not_called()
+    else:
+        mpp_build.assert_not_called()
+        x402_build.assert_awaited_once()
+
+
+async def test_x402_credential_build_failure_preserves_original_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    challenge = httpx.Response(402, headers={"payment-required": _usdc_x402_payment_required()})
+    inner = MockTransport([challenge])
+    build = AsyncMock(side_effect=ValueError("expired blockhash"))
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header", build)
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("x402",),
+        base_transport=inner,
+    )
+
+    result = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+
+    assert result is challenge
+    assert len(inner.requests) == 1
+    build.assert_awaited_once()
