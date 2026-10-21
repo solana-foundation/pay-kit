@@ -1557,10 +1557,20 @@ class TestOneFundingAuthority:
         )
         return request, details
 
-    def _unsigned_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
+    def _unsigned_tx(self, instructions: list[Instruction], fee_payer: Keypair, *clients: Keypair) -> str:
+        """The client's wire before the cosign: ``clients`` sign their slots,
+        the sponsor's fee-payer slot (and any other) stays a placeholder."""
+        from solders.message import to_bytes_versioned
+
         message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH))
         signers = message.header.num_required_signatures
-        tx = VersionedTransaction.populate(message, [Signature.default()] * signers)
+        by_key = {client.pubkey(): client for client in clients}
+        signed = to_bytes_versioned(message)
+        signatures = [
+            by_key[key].sign_message(signed) if key in by_key else Signature.default()
+            for key in message.account_keys[:signers]
+        ]
+        tx = VersionedTransaction.populate(message, signatures)
         return base64.b64encode(bytes(tx)).decode("ascii")
 
     def _sol(self, source: Pubkey, destination: str, lamports: int) -> Instruction:
@@ -1600,6 +1610,7 @@ class TestOneFundingAuthority:
                 self._sol(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
             ],
             fee_payer,
+            payer,
         )
         _verify_local_transaction_intent(one, request, details)
 
@@ -1622,6 +1633,7 @@ class TestOneFundingAuthority:
                 self._spl(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
             ],
             fee_payer,
+            payer,
         )
         _verify_local_transaction_intent(one, request, details)
 
@@ -1634,6 +1646,111 @@ class TestOneFundingAuthority:
         tx = self._unsigned_tx([primary, padded], fee_payer)
         with pytest.raises(PaymentError, match="unexpected signer"):
             _verify_local_transaction_intent(tx, request, details)
+
+
+class TestVerifyRefusesUnauthorizedSignatures:
+    """RULINGS SIG1: charge verification itself refuses a transaction whose
+    client signature does not verify, or whose signature list is short of
+    the required signers, before anything claims, co-signs or sends it. Only
+    the server's own fee-payer slot may still be empty before the cosign."""
+
+    AMOUNT = 1_000_000
+
+    def _payment(self, authority: Pubkey) -> Instruction:
+        data = bytes([12]) + self.AMOUNT.to_bytes(8, "little") + bytes([6])
+        return Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(Pubkey.from_string(_derive_ata(TEST_RECIPIENT, USDC_DEVNET)), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def _request(self, fee_payer: Keypair | None = None) -> tuple[ChargeRequest, MethodDetails]:
+        request = ChargeRequest(amount=str(self.AMOUNT), currency=USDC_DEVNET, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            decimals=6,
+            fee_payer=fee_payer is not None,
+            fee_payer_key=str(fee_payer.pubkey()) if fee_payer is not None else "",
+        )
+        return request, details
+
+    @staticmethod
+    def _b64(tx: VersionedTransaction) -> str:
+        return base64.b64encode(bytes(tx)).decode("ascii")
+
+    def _self_paid(self) -> VersionedTransaction:
+        payer = Keypair()
+        message = MessageV0.try_compile(
+            payer.pubkey(), [self._payment(payer.pubkey())], [], Hash.from_string(TEST_BLOCKHASH)
+        )
+        return VersionedTransaction(message, [payer])
+
+    def _sponsored(self, fee_payer: Keypair) -> VersionedTransaction:
+        payer = Keypair()
+        message = MessageV0.try_compile(
+            fee_payer.pubkey(), [self._payment(payer.pubkey())], [], Hash.from_string(TEST_BLOCKHASH)
+        )
+        assert message.header.num_required_signatures == 2
+        from solders.message import to_bytes_versioned
+
+        client = payer.sign_message(to_bytes_versioned(message))
+        return VersionedTransaction.populate(message, [Signature.default(), client])
+
+    def test_signed_self_paid_payment_is_accepted(self):
+        request, details = self._request()
+        _verify_local_transaction_intent(self._b64(self._self_paid()), request, details)
+
+    def test_forged_client_signature_is_rejected(self):
+        tx = self._self_paid()
+        forged = VersionedTransaction.populate(tx.message, [Signature(bytes([7]) * 64)])
+        request, details = self._request()
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(self._b64(forged), request, details)
+        assert exc.value.code == "invalid-payload"
+
+    def test_sponsored_payment_with_empty_fee_payer_slot_is_accepted(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        _verify_local_transaction_intent(
+            self._b64(tx), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+        )
+
+    def test_sponsored_forged_client_signature_is_rejected(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        forged = VersionedTransaction.populate(tx.message, [Signature.default(), Signature(bytes([7]) * 64)])
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(
+                self._b64(forged), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+            )
+        assert exc.value.code == "invalid-payload"
+
+    def test_sponsored_truncated_signature_list_is_rejected(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        truncated = VersionedTransaction.populate(tx.message, [Signature.default()])
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(
+                self._b64(truncated), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+            )
+        assert exc.value.code == "invalid-payload"
+
+    def test_only_the_server_fee_payer_slot_may_be_empty(self):
+        """An unsponsored charge has no server slot: an empty payer slot is
+        an unsigned transaction."""
+        tx = self._self_paid()
+        unsigned = VersionedTransaction.populate(tx.message, [Signature.default()])
+        request, details = self._request()
+        with pytest.raises(PaymentError, match="signature verification failed"):
+            _verify_local_transaction_intent(self._b64(unsigned), request, details)
 
 
 class TestCoSignSplitBounds:

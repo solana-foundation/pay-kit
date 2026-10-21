@@ -44,11 +44,7 @@ from solana_pay_kit._paycore.solana import (
     validate_splits,
 )
 from solana_pay_kit._paycore.store import ConsumedSignatures, Store, consumed_signature_key
-from solana_pay_kit._paycore.transaction import (
-    SignatureCheckError,
-    require_reported_version,
-    verify_required_signatures,
-)
+from solana_pay_kit._paycore.transaction import require_reported_version
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
@@ -77,6 +73,7 @@ from solana_pay_kit.protocols.mpp.server._verify import (
     _validate_ata_create_idempotent,
     _validate_instruction_allowlist,
     _verify_local_transaction_intent,
+    _verify_signatures,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,31 +109,6 @@ __all__ = [
     "_verify_parsed_sol_transfers",
     "_verify_parsed_spl_transfers",
 ]
-
-
-def _verify_signatures(raw_tx: bytes) -> None:
-    """Refuse a transaction unless every required signer's signature verifies.
-
-    The co-signed wire must carry exactly ``num_required_signatures``
-    signatures, each valid: a landed multi-signer transaction truncated to
-    its first signature would otherwise pass a slot-by-slot check.
-
-    Runs before the signature is claimed or the transaction is sent. A forged
-    signature would otherwise name the charge: the node refuses it without a
-    preflight result, the charge is kept as possibly sent, and a retry would
-    reconcile on the status of whatever landed transaction owns that
-    signature.
-    """
-    from solders.transaction import VersionedTransaction
-
-    try:
-        transaction = VersionedTransaction.from_bytes(raw_tx)
-    except Exception as exc:  # noqa: BLE001
-        raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
-    try:
-        verify_required_signatures(transaction)
-    except SignatureCheckError as exc:
-        raise PaymentError(f"transaction signature verification failed: {exc}", code="invalid-payload") from exc
 
 
 def _local_signature(raw_tx: bytes) -> str:
