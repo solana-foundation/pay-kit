@@ -266,7 +266,15 @@ jobs:
         if: matrix.interop
         env:
           PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.program.outputs.program-so }}
-        run: pkc run --tier interop --shard ${{ matrix.sdk }} --require
+        timeout-minutes: 15
+        run: |
+          # Diagnostic: dump the process tree while a run is still going.
+          ( for t in 240 480 720; do sleep 240; echo "::group::interop still running after $((t / 60)) min"; ps -eo pid,ppid,etime,stat,wchan:20,args --forest | grep -v ' \[' ; echo "::endgroup::"; done ) &
+          watchdog=$!
+          pkc run --tier interop --shard ${{ matrix.sdk }} --require
+          status=$?
+          kill "$watchdog" 2>/dev/null || true
+          exit $status
       - uses: actions/upload-artifact@v7
         if: always()
         with:
