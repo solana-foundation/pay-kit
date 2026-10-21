@@ -6,6 +6,7 @@ namespace PayKit\Protocols\X402;
 
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
+use PayKit\Exception\TransactionFailedException;
 use PayKit\Gate;
 use PayKit\Payment;
 use PayKit\Protocol;
@@ -17,9 +18,9 @@ use PayKit\Store\ConsumedSignatures;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
 use Psr\Http\Message\ServerRequestInterface;
-use RuntimeException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
+use PayKit\PayCore\Solana\SignatureConfirmation;
 use PayKit\PayCore\Solana\TransactionWire;
 use Throwable;
 
@@ -404,9 +405,19 @@ final class Adapter
         // finalized, throwing on on-chain failure or timeout so callers
         // never receive a success header for an unsettled transaction.
         // Closes main-audit finding 3 (PHP x402 confirm-before-success).
+        // Only a reported execution error rejects the payment. A status that
+        // cannot be read or is not confirmed in time leaves it pending
+        // (SettlementInProgressException, a retryable 409): the transaction
+        // may already have landed, so a fresh challenge would let the client
+        // pay twice.
         try {
-            $this->awaitConfirmation($sig);
-        } catch (Throwable $e) {
+            SignatureConfirmation::await(
+                $this->rpc(),
+                $sig,
+                $this->confirmationAttempts,
+                $this->confirmationDelayMicros,
+            );
+        } catch (TransactionFailedException $e) {
             throw new InvalidProofException(
                 'pay_kit: invalid proof: settlement not confirmed: ' . $e->getMessage(),
             );
@@ -463,33 +474,6 @@ final class Adapter
         if (!$this->consumedSignatures->authorize($signature)) {
             throw new InvalidProofException('pay_kit: signature_consumed');
         }
-    }
-
-    /**
-     * Poll `getSignatureStatuses` through the PayCore {@see RpcGateway}
-     * until the broadcast transaction is confirmed or finalized. Throws on
-     * on-chain failure (`err`) or when the confirmation budget is exhausted.
-     */
-    private function awaitConfirmation(string $signature): void
-    {
-        $rpc = $this->rpc();
-        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
-            $statuses = $rpc->getSignatureStatuses([$signature]);
-            $status = $statuses[0] ?? null;
-            if (is_array($status)) {
-                if (($status['err'] ?? null) !== null) {
-                    throw new RuntimeException(
-                        "Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR),
-                    );
-                }
-                $confirmationStatus = $status['confirmationStatus'] ?? null;
-                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
-                    return;
-                }
-            }
-            usleep($this->confirmationDelayMicros);
-        }
-        throw new RuntimeException("Timed out waiting for transaction $signature");
     }
 
     private function caip2(): string

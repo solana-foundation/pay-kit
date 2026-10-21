@@ -121,3 +121,13 @@ final class SettlementInProgressException extends RuntimeException implements Pa
         return 409;
     }
 }
+
+/**
+ * Thrown when the chain reports that a broadcast transaction executed and
+ * failed. The one confirmation outcome that rejects the payment: a status
+ * that cannot be read, or is not confirmed yet, is
+ * {@see SettlementInProgressException} instead.
+ */
+final class TransactionFailedException extends RuntimeException implements PayKitException
+{
+}

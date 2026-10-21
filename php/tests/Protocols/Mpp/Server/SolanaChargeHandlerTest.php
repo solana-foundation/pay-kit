@@ -922,6 +922,59 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('already consumed', $result->body['detail']);
     }
 
+    // A status read that fails after the broadcast (an RPC outage) proves
+    // nothing about the transaction, which may already have landed: the
+    // charge stays pending instead of answering a fresh challenge, on the
+    // first attempt and on the retry that reconciles it. Only a reported
+    // on-chain failure rejects it.
+    public function testStatusReadOutageNeverFailsThePendingCharge(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $handler = fn (FakeRpcGateway $rpc) => $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            confirmationAttempts: 2,
+            rpcGateway: $rpc,
+        );
+        $outage = new RpcException('HTTP 503 from RPC', 503, -32099);
+
+        $sent = new FakeRpcGateway(signature: $signature, statuses: [$outage]);
+        $pending = $handler($sent)->handle($authorization, $request);
+        self::assertInstanceOf(SettlementPending::class, $pending);
+        self::assertCount(1, $sent->sentTransactions);
+
+        // The retry reconciles from the chain: still unreadable, still pending.
+        $retry = new FakeRpcGateway(signature: $signature, statuses: [$outage]);
+        self::assertInstanceOf(SettlementPending::class, $handler($retry)->handle($authorization, $request));
+        self::assertSame([], $retry->sentTransactions);
+
+        // Once the status reads as confirmed, the same credential is granted.
+        $settled = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request);
+        self::assertInstanceOf(ChargeSettlement::class, $settled);
+        self::assertSame($signature, $settled->signature);
+
+        // A reported on-chain failure is still definitive.
+        $failed = $this->minimalV0TransactionBase64();
+        $result = $handler(new FakeRpcGateway(
+            signature: $this->signatureOf($failed),
+            statuses: [$outage, ['err' => ['InstructionError' => [0, 'Custom']], 'confirmationStatus' => 'confirmed']],
+        ))->handle((new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $failed],
+        ))->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertStringContainsString('failed', $result->body['detail']);
+    }
+
     // A missing signature status is not proof the transaction never landed
     // (the node may lag or lack history), so an unconfirmed charge stays
     // pending instead of answering a fresh challenge; only an explicit

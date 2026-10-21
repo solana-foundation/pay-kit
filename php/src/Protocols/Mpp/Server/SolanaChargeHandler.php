@@ -10,6 +10,7 @@ use RuntimeException;
 use Throwable;
 use PayKit\Exception\SettlementInProgressException;
 use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\PayCore\Solana\SignatureConfirmation;
 use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\Mpp\Core\Credential;
@@ -444,16 +445,8 @@ final class SolanaChargeHandler
         if ($this->replayStore->has(self::REFUSED_PREFIX . $signature)) {
             throw new RuntimeException("Transaction $signature was refused and cannot settle");
         }
-        $statuses = $this->rpc->getSignatureStatuses([$signature], true);
-        $status = $statuses[0] ?? null;
-        if (is_array($status)) {
-            if (($status['err'] ?? null) !== null) {
-                throw new RuntimeException("Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR));
-            }
-            $confirmationStatus = $status['confirmationStatus'] ?? null;
-            if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
-                return $this->authorize($signature);
-            }
+        if (SignatureConfirmation::isConfirmed($this->rpc, $signature, searchTransactionHistory: true)) {
+            return $this->authorize($signature);
         }
         throw new SettlementInProgressException(
             "Transaction $signature is not confirmed yet; retry the same credential",
@@ -522,27 +515,10 @@ final class SolanaChargeHandler
 
     private function awaitConfirmation(string $signature): void
     {
-        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
-            $statuses = $this->rpc->getSignatureStatuses([$signature]);
-            $status = $statuses[0] ?? null;
-            if (is_array($status)) {
-                if (($status['err'] ?? null) !== null) {
-                    throw new RuntimeException("Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR));
-                }
-                $confirmationStatus = $status['confirmationStatus'] ?? null;
-                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
-                    return;
-                }
-            }
-            usleep($this->confirmationDelayMicros);
-        }
-        // A missing or unconfirmed status is never proof of non-execution:
-        // the node may lag or lack history for a transaction that commits in
-        // time. The charge stays pending and the retry reconciles it; failing
-        // here would release the client to pay a replacement.
-        throw new SettlementInProgressException(
-            "Timed out waiting for transaction $signature; retry the same credential",
-        );
+        // Only a reported execution error fails the charge; an unreadable
+        // or unconfirmed status keeps it pending so the retry reconciles it
+        // instead of a fresh challenge releasing the client to pay again.
+        SignatureConfirmation::await($this->rpc, $signature, $this->confirmationAttempts, $this->confirmationDelayMicros);
     }
 
     /**
