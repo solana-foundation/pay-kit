@@ -590,11 +590,11 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     scheme::check_voucher(&voucher, &config, &channel_id)
         .map_err(|e| fail(format!("voucher: {e}")))?;
     if operation == "deposit" {
-        judge_open(payload, &requirements, &config, &channel_id)?;
+        judge_open(payload, c, &requirements, &config, &channel_id)?;
         return Ok(());
     }
     if operation == "refund" {
-        return Ok(());
+        return judge_refund(payload, &requirements, &config, &channel_id);
     }
     // Voucher and top-up: the Rust server accepts the build on the chain
     // state the vector pins.
@@ -620,6 +620,7 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
 /// memo, a version the challenge advertises.
 fn judge_open(
     payload: &Value,
+    client: &Value,
     requirements: &BatchRequirements,
     config: &BatchChannelConfig,
     channel_id: &Pubkey,
@@ -670,6 +671,61 @@ fn judge_open(
         }
     }
     let open = open.ok_or_else(|| fail("no payment-channels open instruction"))?;
+    // Only the open, its ComputeBudget prefix, memos and Lighthouse
+    // assertions may ride along (spec §4.2 setup transaction suffix).
+    let lighthouse = pc::parse_pubkey(fx::LIGHTHOUSE).map_err(|e| fail(e.to_string()))?;
+    let allowed = [
+        program,
+        pc::memo_program_id(),
+        pc::compute_budget_program_id(),
+        lighthouse,
+    ];
+    let mut opens = 0;
+    for ix in tx.message.instructions() {
+        let program_id = keys[ix.program_id_index as usize];
+        if !allowed.contains(&program_id) {
+            return Err(fail(format!(
+                "the open transaction invokes {program_id}, outside the setup allowlist"
+            )));
+        }
+        opens += usize::from(program_id == program);
+    }
+    if opens != 1 {
+        return Err(fail(format!(
+            "the open transaction must carry exactly one payment-channels instruction, found {opens}"
+        )));
+    }
+    // The open arguments fully decode (no trailing bytes), derive the
+    // channel PDA, and fund exactly the deposit the payload declares and
+    // the caller asked for.
+    let args = pc::decode_open_for_channel(&tx.message, channel_id, &program)
+        .ok_or_else(|| fail("the open arguments do not decode or do not derive the channel"))?;
+    let declared = u64_field(&payload["deposit"], "amount").map_err(fail)?;
+    if args.deposit != declared {
+        return Err(fail_at(
+            "open.deposit",
+            Some(&json!(declared.to_string())),
+            Some(&json!(args.deposit.to_string())),
+            "the open must fund payload.deposit.amount",
+        ));
+    }
+    if client.get("depositAmount").is_some() {
+        let requested = u64_field(client, "depositAmount").map_err(fail)?;
+        if declared != requested {
+            return Err(fail_at(
+                "payload.deposit.amount",
+                Some(&json!(requested.to_string())),
+                Some(&json!(declared.to_string())),
+                "the deposit must be the amount the caller asked for",
+            ));
+        }
+    }
+    if args.grace_period != requirements.extra.withdraw_delay {
+        return Err(fail(format!(
+            "open grace period {} is not extra.withdrawDelay {}",
+            args.grace_period, requirements.extra.withdraw_delay
+        )));
+    }
     let at = |i: usize| open.accounts.get(i).map(|&k| keys[k as usize]);
     if at(0) != Some(payer) || at(1) != Some(fee_payer) || at(2) != Some(fee_payer) {
         return Err(fail(
@@ -706,6 +762,53 @@ fn judge_open(
         }
     }
     Ok(())
+}
+
+/// A client-mode refund (spec §4.3): the voucher at the charged cumulative
+/// (checked by the caller), no `amount`, and an optional request_close the
+/// sponsor's policy accepts.
+fn judge_refund(
+    payload: &Value,
+    requirements: &BatchRequirements,
+    config: &BatchChannelConfig,
+    channel_id: &Pubkey,
+) -> Result<(), Failure> {
+    if payload.get("amount").is_some() {
+        return Err(fail_at(
+            "payload.amount",
+            None,
+            Some(&payload["amount"]),
+            "a refund payload MUST NOT contain an amount",
+        ));
+    }
+    let Some(transaction) = payload.get("transaction") else {
+        return Ok(());
+    };
+    let transaction = transaction
+        .as_str()
+        .ok_or_else(|| fail("payload.transaction must be a base64 string"))?;
+    let program_id = pc::default_program_id();
+    let fee_payer =
+        pc::parse_pubkey(&requirements.extra.fee_payer).map_err(|e| fail(e.to_string()))?;
+    let token_program =
+        pc::parse_pubkey(&requirements.extra.token_program).map_err(|e| fail(e.to_string()))?;
+    let receiver = pc::parse_pubkey(&requirements.pay_to).map_err(|e| fail(e.to_string()))?;
+    let accepted = solana_pay_kit::core::tx::accepted_versions(
+        requirements.extra.transaction_versions.as_deref(),
+    );
+    let expectations = scheme::TransactionExpectations {
+        program_id: &program_id,
+        fee_payer: &fee_payer,
+        accepted_versions: accepted,
+        config,
+        channel_id,
+        token_program: &token_program,
+        receiver: &receiver,
+        memo: requirements.extra.memo.as_deref(),
+    };
+    scheme::validate_request_close_transaction(transaction, &expectations)
+        .map(|_| ())
+        .map_err(|e| fail(format!("refund request_close: {e}")))
 }
 
 // ── fixtures ───────────────────────────────────────────────────────────────
@@ -1199,5 +1302,115 @@ pub mod fx {
             .with_compute_unit_limit(200_000)
             .with_priority_fee(200)
             .with_loaded_accounts_data_size_limit(64 * 1024 * 1024)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::case::Intent;
+    use crate::run::vectors;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn vector(id: &str) -> Vector {
+        vectors::load(&crate::repo_root().join("harness/vectors"))
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap()
+    }
+
+    /// The kit's own build of `id`, decoded, edited by `edit`, re-encoded.
+    fn edited_build(rt: &tokio::runtime::Runtime, v: &Vector, edit: impl Fn(&mut Value)) -> String {
+        let header = match rt.block_on(super::super::run(
+            Intent::X402BatchSettlement,
+            Mode::BuildTransaction,
+            v.input(),
+        )) {
+            Observed::Accept(output) => output.header.unwrap(),
+            other => panic!("{}: {}", v.id, other.summary()),
+        };
+        let engine = base64::engine::general_purpose::STANDARD;
+        let mut envelope: Value = serde_json::from_slice(&engine.decode(header).unwrap()).unwrap();
+        edit(&mut envelope);
+        engine.encode(serde_json::to_vec(&envelope).unwrap())
+    }
+
+    // The kit's deposit build is a known failure (FINDINGS.md
+    // #batch-open-binding-memo: no binding memo), which the judge reports
+    // last; an inflated declared deposit must fail first, on the deposit.
+    #[test]
+    fn a_declared_deposit_the_open_does_not_fund_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-deposit-open");
+        let honest = edited_build(&rt, &v, |_| {});
+        let kit = rt.block_on(judge_build(&v, &honest)).unwrap_err();
+        assert!(kit.message.contains("rcvauth"), "{}", kit.message);
+        let inflated = edited_build(&rt, &v, |e| {
+            let declared = u64_field(&e["payload"]["deposit"], "amount").unwrap();
+            e["payload"]["deposit"]["amount"] = json!((declared + 1).to_string());
+        });
+        let failure = rt.block_on(judge_build(&v, &inflated)).unwrap_err();
+        assert!(
+            failure.message.contains("payload.deposit.amount"),
+            "{}",
+            failure.message
+        );
+    }
+
+    /// A spec-shaped client refund (§4.3): channelConfig plus the voucher at
+    /// the charged cumulative. The kit's own refund is the superseded shape
+    /// (FINDINGS.md#batch-refund-superseded-shape), so it is built here.
+    fn spec_refund(rt: &tokio::runtime::Runtime, v: &Vector, extra: &[(&str, Value)]) -> String {
+        let c = &v.input()["batchClient"];
+        let config: BatchChannelConfig =
+            serde_json::from_value(c["channel"]["channelConfig"].clone()).unwrap();
+        let requirements: BatchRequirements =
+            serde_json::from_value(c["requirements"].clone()).unwrap();
+        let channel_id = client::channel_id_for(&config, &requirements).unwrap();
+        let charged = u64_field(&c["channel"], "chargedCumulativeAmount").unwrap();
+        let payer = signer(c, "secretKey").unwrap();
+        let voucher = rt
+            .block_on(client::sign_voucher(&payer, &channel_id, charged))
+            .unwrap();
+        let mut payload = json!({
+            "type": "refund",
+            "channelConfig": c["channel"]["channelConfig"],
+            "voucher": voucher,
+        });
+        for (k, val) in extra {
+            payload[*k] = val.clone();
+        }
+        let envelope = json!({
+            "x402Version": 2,
+            "accepted": c["requirements"],
+            "payload": payload,
+        });
+        base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&envelope).unwrap())
+    }
+
+    #[test]
+    fn a_refund_carrying_an_amount_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-refund");
+        rt.block_on(judge_build(&v, &spec_refund(&rt, &v, &[])))
+            .unwrap_or_else(|f| panic!("spec refund: {}", f.message));
+        let with_amount = spec_refund(&rt, &v, &[("amount", json!("1"))]);
+        let failure = rt.block_on(judge_build(&v, &with_amount)).unwrap_err();
+        assert!(failure.message.contains("amount"), "{}", failure.message);
+        let bad_tx = spec_refund(&rt, &v, &[("transaction", json!("AQID"))]);
+        let failure = rt.block_on(judge_build(&v, &bad_tx)).unwrap_err();
+        assert!(
+            failure.message.contains("request_close"),
+            "{}",
+            failure.message
+        );
     }
 }
