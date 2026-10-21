@@ -791,6 +791,9 @@ mod tests {
             v.mode == "build-transaction"
                 && v.expect_outcome() == "accept"
                 && build_artifact(v, &json!({})).is_err()
+                // An authored build pins spec behaviour the kit may diverge
+                // from; its divergence is asserted by the registry instead.
+                && v.raw.get("provenance").and_then(Value::as_str) != Some("authored")
         }) {
             let intent = Intent::parse(&v.intent).expect("known intent");
             let output = match rt.block_on(realize::run(intent, Mode::BuildTransaction, v.input()))

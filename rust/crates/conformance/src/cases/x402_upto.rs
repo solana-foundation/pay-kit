@@ -21,8 +21,8 @@ use crate::case::{
 use crate::keys::{self, MINT, MINT_2022, OTHER_MINT, TOKEN_2022_PROGRAM, X402_PAY_TO};
 use crate::realize::upto::{
     client, compute_budget, fixtures_json, key, lighthouse_ix, memo_ix, route_memo, stranger,
-    unit_limit_ix, unit_price_ix, Form, PayerSignature, Route, Tamper, VerifySpec, NONCE_MEMO,
-    NOW, RECEIVER_AUTHORIZER_SEED, SLOT,
+    unit_limit_ix, unit_price_ix, Form, PayerSignature, Route, Tamper, VerifySpec, NONCE_MEMO, NOW,
+    RECEIVER_AUTHORIZER_SEED, SLOT,
 };
 
 const SVM: &str = "x402/specs/schemes/upto/scheme_upto_svm.md";
@@ -104,11 +104,19 @@ fn s_payload() -> SpecRef {
 }
 
 fn s_encode() -> SpecRef {
-    spec(SVM, "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)", "The open instruction MUST encode:")
+    spec(
+        SVM,
+        "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)",
+        "The open instruction MUST encode:",
+    )
 }
 
 fn s_in_order() -> SpecRef {
-    spec(SVM, "Phase 3 - Deposit settle (before resource execution)", "The server/facilitator MUST, in order:")
+    spec(
+        SVM,
+        "Phase 3 - Deposit settle (before resource execution)",
+        "The server/facilitator MUST, in order:",
+    )
 }
 
 fn s_time() -> SpecRef {
@@ -212,7 +220,10 @@ fn v1_route() -> Route {
 }
 
 fn input_of(spec: &VerifySpec) -> Input {
-    Input::Static(spec.input().unwrap_or_else(|e| panic!("upto vector input: {e}")))
+    Input::Static(
+        spec.input()
+            .unwrap_or_else(|e| panic!("upto vector input: {e}")),
+    )
 }
 
 const VERIFY_NOTE: &str = " Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).";
@@ -380,7 +391,14 @@ fn build_case(
     builder.build()
 }
 
-fn wire_case(id: &str, spec: SpecRef, reqs: &[&str], description: &str, input: Value, expect: Expect) -> Case {
+fn wire_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    input: Value,
+    expect: Expect,
+) -> Case {
     CaseBuilder::new(
         id,
         WIRE_FILE,
@@ -890,7 +908,7 @@ crate::registry! {
         BugType::AuthBypass,
         base(),
         Tamper::ClientPaysFees,
-        RejectCode::UnexpectedInstruction,
+        RejectCode::InvalidPayload,
         None,
     );
     x402_upto_verify_extra_signer_reject => reject(
@@ -1762,8 +1780,13 @@ fn header_without_open(spec: &VerifySpec) -> String {
     use base64::Engine;
     let input = spec.input().unwrap();
     let header = input["x402PaymentHeader"].as_str().unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD.decode(header).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(header)
+        .unwrap();
     let mut envelope: Value = serde_json::from_slice(&bytes).unwrap();
-    envelope["payload"].as_object_mut().unwrap().remove("openTransaction");
+    envelope["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("openTransaction");
     base64::engine::general_purpose::STANDARD.encode(envelope.to_string())
 }

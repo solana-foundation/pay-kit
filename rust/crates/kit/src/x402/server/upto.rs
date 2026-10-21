@@ -574,12 +574,7 @@ impl X402Upto {
 
         let requirements = match_offered_requirement(offered, &envelope.accepted)?.clone();
 
-        verify_upto_payload(
-            payload,
-            &requirements,
-            &self.receiver_authorizer(),
-            now,
-        )?;
+        verify_upto_payload(payload, &requirements, &self.receiver_authorizer(), now)?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
         // PaymentRequirements), not at the envelope level.
         let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());

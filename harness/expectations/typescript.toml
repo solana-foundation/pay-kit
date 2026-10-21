@@ -3,7 +3,7 @@ language = "typescript"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session"]
+vector = ["charge", "x402-exact", "session", "x402-upto"]
 protocol = true
 flow = true
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -107,3 +107,58 @@ ids = [
 ]
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
 tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[unsupported]]
+reason = "@solana/pay-kit and the vendored @x402/svm expose no distribution-hash or channel-PDA helper (both are internal to the payment-channels module)"
+ids = [
+  "vector/x402-upto-distribution-hash-golden",
+  "vector/x402-upto-channel-pda-golden",
+]
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-channel-already-open-reject",
+]
+reason = "the vendored facilitator's read-only verify omits the channel-exists check (it runs only in settle, which broadcasts)"
+tracking = "FINDINGS.md#upto-channel-exists-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-open-slot-number-accept",
+]
+reason = "isUptoSvmPayload requires openSlot to be a string; the pinned spec types it as a number"
+tracking = "FINDINGS.md#upto-slot-wire-type"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-open-trailing-byte-reject",
+]
+reason = "verifyOpenTransaction decodes the open args with a decoder that ignores trailing bytes"
+tracking = "FINDINGS.md#ts-upto-open-trailing-bytes"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-v0-oversize-reject",
+]
+reason = "verifyOpenTransaction never bounds the serialized size of the open transaction"
+tracking = "FINDINGS.md#ts-upto-open-size-unbounded"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-build-v1-when-advertised",
+  "vector/x402-upto-build-no-common-version-reject",
+  "vector/x402-upto-verify-v1-accept",
+  "vector/x402-upto-verify-v1-unadvertised-reject",
+  "vector/x402-upto-verify-v1-unadvertised-before-layout-reject",
+  "vector/x402-upto-verify-v1-compute-budget-instruction-reject",
+  "vector/x402-upto-verify-v1-limit-over-cap-reject",
+  "vector/x402-upto-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-upto-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-upto-verify-v1-missing-limit-reject",
+  "vector/x402-upto-verify-v1-missing-loaded-limit-reject",
+  "vector/x402-upto-verify-v1-small-loaded-limit-accept",
+  "vector/x402-upto-verify-v1-large-accept",
+  "vector/x402-upto-verify-v1-oversize-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates transaction-version negotiation (x402-foundation/x402 PR 3710): the client ignores extra.transactionVersions and the facilitator cannot decode a version-1 message"
+tracking = "FINDINGS.md#ts-upto-no-transaction-versions"

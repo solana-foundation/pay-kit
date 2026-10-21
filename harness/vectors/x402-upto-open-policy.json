@@ -1246,10 +1246,10 @@
   },
   {
     "bugType": "auth-bypass",
-    "description": "the client is the transaction fee payer: rejected as unexpected-instruction. Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).",
+    "description": "the client is the transaction fee payer: rejected as invalid-payload. Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "unexpected-instruction"
+      "rejectCode": "invalid-payload"
     },
     "id": "x402-upto-verify-client-fee-payer-reject",
     "input": {

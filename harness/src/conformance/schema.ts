@@ -388,6 +388,51 @@ export type VectorInput = {
   // verifier MUST require exactly one Memo instruction carrying it
   // (scheme_exact_svm §3.1), and the route's accepted object carries it.
   x402ServerMemo?: string;
+
+  // The pinned clock (Unix seconds) of a time-dependent vector; a testee
+  // that honours clocks drives the SDK at it.
+  nowSeconds?: number;
+
+  // ── x402-upto inputs (scheme_upto_svm.md) ────────────────────────────
+  // build: x402Offer is an upto PaymentRequirements whose extra carries the
+  // recentBlockhash / recentSlot hints (no live RPC). The remaining build
+  // keys are caller parameters for SDKs whose builder takes them; an SDK
+  // that derives them itself (the TS client: expiresAt = now +
+  // maxTimeoutSeconds, a random salt) ignores them, and the judge accepts
+  // any value the Rust verifier accepts.
+  x402UptoExpiresAt?: number;
+  x402UptoRequestNonce?: string;
+  // build: the highest message version the client's signer signs (0 or 1).
+  x402ClientMaxTransactionVersion?: number;
+  // verify: the route (with the x402-exact x402Server* keys above, amount in
+  // base units = the authorized maximum). The receiver authorizer is the
+  // channel's authorized signer (servers that sign vouchers configure its
+  // secret); withdraw delay and timeout are advertised in the requirement.
+  x402ServerReceiverAuthorizer?: string;
+  x402ServerReceiverAuthorizerSecretKey?: number[];
+  x402ServerTokenProgram?: string;
+  x402ServerWithdrawDelay?: number;
+  x402ServerMaxTimeoutSeconds?: number;
+  // verify: the facilitator's maxChannelLifetimeSecs.
+  x402ServerMaxChannelLifetimeSeconds?: number;
+  // verify: the route's declared extra.memo (x402ServerMemo) is the memo of
+  // this canonical request identity; SDKs that derive the memo from the
+  // route (Rust `X402Upto::route_memo`) take the route.
+  x402ServerRoute?: string;
+  // verify: the message versions the facilitator accepts (absent = [0]).
+  x402ServerTransactionVersions?: number[];
+  // canonical-bytes: the 50-byte voucher message, the distribution hash and
+  // the channel PDA (32 bytes each), as exactBytes.bytes.
+  x402UptoVoucher?: { channelId: string; cumulativeAmount: string; expiresAt?: number };
+  x402UptoDistribution?: { recipients: Array<{ recipient: string; bps: number }> };
+  x402UptoChannelPda?: {
+    payer: string;
+    payee: string;
+    mint: string;
+    authorizedSigner: string;
+    salt: string;
+    openSlot: string;
+  };
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a

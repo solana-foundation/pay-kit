@@ -567,9 +567,8 @@ impl VerifySpec {
             "accepted": self.accepted,
             "payload": payload,
         });
-        let header = base64::engine::general_purpose::STANDARD.encode(
-            serde_json::to_string(&envelope).map_err(|e| e.to_string())?,
-        );
+        let header = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_string(&envelope).map_err(|e| e.to_string())?);
         let mut input = self.route.server_input();
         input.insert("x402PaymentHeader".into(), json!(header));
         if self.channel_exists {
@@ -696,7 +695,7 @@ impl Tamper {
             Tamper::PayloadKey(..) => return None,
             Tamper::PayloadValue("authorizedSigner", _) => ReceiverAuthorizerMismatch,
             Tamper::PayloadValue("maxAmount" | "deposit", v)
-                if !v.as_str().is_some_and(|s| s.parse::<u64>().is_ok()) =>
+                if v.as_str().is_none_or(|s| s.parse::<u64>().is_err()) =>
             {
                 InvalidPayload
             }
@@ -727,8 +726,8 @@ impl Tamper {
             | Tamper::DropOpen
             | Tamper::DuplicateOpen
             | Tamper::FeePayerAsProgram
-            | Tamper::ExtraSigner
-            | Tamper::ClientPaysFees => UnexpectedInstruction,
+            | Tamper::ExtraSigner => UnexpectedInstruction,
+            Tamper::ClientPaysFees => InvalidPayload,
             Tamper::Prefix(_) | Tamper::Suffix(_) => return None,
             Tamper::FeePayerInSuffix(_) => FeePayerNotAuthority,
             Tamper::Signature(_) => InvalidPayload,
@@ -748,8 +747,7 @@ impl Tamper {
             Tamper::Accepted(k, v) => format!("accepted.{k} set to {v}"),
             Tamper::OpenAccount(slot, k) => format!("open account #{slot} set to {k}"),
             Tamper::ChannelNotDerived => {
-                "open channel account (and its token account) set to the PDA of another salt"
-                    .into()
+                "open channel account (and its token account) set to the PDA of another salt".into()
             }
             Tamper::OpenDeposit(d) => format!("open deposit argument set to {d}"),
             Tamper::OpenGracePeriod(g) => format!("open grace_period argument set to {g}"),
@@ -765,13 +763,19 @@ impl Tamper {
             Tamper::OpenWritableMint => "the mint account made writable".into(),
             Tamper::OpenDiscriminator(d) => format!("open discriminator set to {d}"),
             Tamper::OpenProgram(p) => format!("open invoked on program {p}"),
-            Tamper::Prefix(p) => format!("ComputeBudget prefix replaced ({} instructions)", p.len()),
+            Tamper::Prefix(p) => {
+                format!("ComputeBudget prefix replaced ({} instructions)", p.len())
+            }
             Tamper::Suffix(s) => format!("suffix replaced ({} instructions)", s.len()),
-            Tamper::BeforeOpen(ix) => format!("instruction of {} inserted before open", ix.program_id),
+            Tamper::BeforeOpen(ix) => {
+                format!("instruction of {} inserted before open", ix.program_id)
+            }
             Tamper::DropOpen => "open instruction removed".into(),
             Tamper::DuplicateOpen => "a second open in the suffix".into(),
             Tamper::FeePayerInSuffix(at) => format!("fee payer listed in suffix instruction #{at}"),
-            Tamper::FeePayerAsProgram => "a suffix instruction invokes the fee payer as its program".into(),
+            Tamper::FeePayerAsProgram => {
+                "a suffix instruction invokes the fee payer as its program".into()
+            }
             Tamper::ExtraSigner => "a third key added as a required signer".into(),
             Tamper::ClientPaysFees => "the client is the transaction fee payer".into(),
             Tamper::Signature(s) => format!("payer signature {s:?}"),
@@ -844,7 +848,9 @@ impl Tamper {
             Tamper::OpenTruncated => {
                 spec.tx.open.data.pop();
             }
-            Tamper::OpenExtraAccount => spec.tx.open
+            Tamper::OpenExtraAccount => spec
+                .tx
+                .open
                 .accounts
                 .push(AccountMeta::new_readonly(stranger(), false)),
             Tamper::OpenMissingAccount => {
@@ -908,72 +914,73 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
     use RejectCode::*;
     let m = message.to_ascii_lowercase();
     let has = |n: &str| m.contains(n);
-    Some(if has("is not accepted; accepted versions") || has("signer signs up to version") {
-        UnsupportedVersion
-    } else if has("compute unit price") && (has("exceed") || has("maximum")) {
-        ComputePriceOverCap
-    } else if has("compute unit limit") && (has("exceed") || has("maximum")) {
-        ComputeLimitOverCap
-    } else if has("must not reference the fee payer") {
-        FeePayerNotAuthority
-    } else if has("fee payer must be the advertised fee payer") {
-        // The sponsor is not the transaction fee payer: the required-signer
-        // set is not { payload.from, extra.feePayer }.
-        UnexpectedInstruction
-    } else if has("loaded accounts data size") || has("must set computeunitlimit") {
-        InvalidPayload
-    } else if has("computebudget")
-        || has("setcomputeunit")
-        || has("compute unit limit must be positive")
-        || has("no payment-channels instruction")
-        || has("targets an unexpected program")
-        || has("is not a payment-channels")
-        || has("instructions after")
-        || has("lighthouse instructions")
-        || has("must be lighthouse or memo")
-    {
-        UnexpectedInstruction
-    } else if has("memo") {
-        InvalidPayload
-    } else if has("open transaction channel mismatch") || has("open channel pda") {
-        ChannelIdMismatch
-    } else if has("open transaction")
-        || has("open salt")
-        || has("open slot")
-        || has("open withdraw delay")
-        || has("open deposit")
-        || has("open distribution")
-        || has("open instruction")
-    {
-        OpenBindingMismatch
-    } else if has("amount mismatch") {
-        AmountMismatch
-    } else if has("channel deposit") && has("authorized maximum") {
-        DepositNotCeiling
-    } else if has("not yet active") {
-        NotYetActive
-    } else if has("authorization expired") {
-        VoucherExpired
-    } else if has("advertised receiver authorizer") {
-        ReceiverAuthorizerMismatch
-    } else if has("network mismatch")
-        || has("does not match any offered")
-        || has("invalid payload type")
-    {
-        AcceptedMismatch
-    } else if has("address lookup tables")
-        || has("byte limit")
-        || has("exceeds")
-        || has("invalid")
-        || has("requires opentransaction")
-        || has("decode")
-    {
-        InvalidPayload
-    } else if has("withdrawdelay") || has("missing field") {
-        InvalidChallenge
-    } else {
-        return None;
-    })
+    Some(
+        if has("is not accepted; accepted versions") || has("signer signs up to version") {
+            UnsupportedVersion
+        } else if has("compute unit price") && (has("exceed") || has("maximum")) {
+            ComputePriceOverCap
+        } else if has("compute unit limit") && (has("exceed") || has("maximum")) {
+            ComputeLimitOverCap
+        } else if has("must not reference the fee payer") {
+            FeePayerNotAuthority
+        } else if has("fee payer must be the advertised fee payer")
+            || has("loaded accounts data size")
+            || has("must set computeunitlimit")
+        {
+            InvalidPayload
+        } else if has("computebudget")
+            || has("setcomputeunit")
+            || has("compute unit limit must be positive")
+            || has("no payment-channels instruction")
+            || has("targets an unexpected program")
+            || has("is not a payment-channels")
+            || has("instructions after")
+            || has("lighthouse instructions")
+            || has("must be lighthouse or memo")
+        {
+            UnexpectedInstruction
+        } else if has("memo") {
+            InvalidPayload
+        } else if has("open transaction channel mismatch") || has("open channel pda") {
+            ChannelIdMismatch
+        } else if has("open transaction")
+            || has("open salt")
+            || has("open slot")
+            || has("open withdraw delay")
+            || has("open deposit")
+            || has("open distribution")
+            || has("open instruction")
+        {
+            OpenBindingMismatch
+        } else if has("amount mismatch") {
+            AmountMismatch
+        } else if has("channel deposit") && has("authorized maximum") {
+            DepositNotCeiling
+        } else if has("not yet active") {
+            NotYetActive
+        } else if has("authorization expired") {
+            VoucherExpired
+        } else if has("advertised receiver authorizer") {
+            ReceiverAuthorizerMismatch
+        } else if has("network mismatch")
+            || has("does not match any offered")
+            || has("invalid payload type")
+        {
+            AcceptedMismatch
+        } else if has("address lookup tables")
+            || has("byte limit")
+            || has("exceeds")
+            || has("invalid")
+            || has("requires opentransaction")
+            || has("decode")
+        {
+            InvalidPayload
+        } else if has("withdrawdelay") || has("missing field") {
+            InvalidChallenge
+        } else {
+            return None;
+        },
+    )
 }
 
 fn reject(message: String) -> Observed {
@@ -1022,11 +1029,11 @@ fn canonical(input: &Value) -> Result<Observed, String> {
         );
     };
     if let Some(v) = input.get("x402UptoVoucher") {
-        let channel = match Pubkey::from_str(v.get("channelId").and_then(Value::as_str).unwrap_or(""))
-        {
-            Ok(c) => c,
-            Err(e) => return Ok(reject(format!("invalid payload: channelId: {e}"))),
-        };
+        let channel =
+            match Pubkey::from_str(v.get("channelId").and_then(Value::as_str).unwrap_or("")) {
+                Ok(c) => c,
+                Err(e) => return Ok(reject(format!("invalid payload: channelId: {e}"))),
+            };
         let cumulative: u64 = match v.get("cumulativeAmount") {
             Some(Value::String(s)) => s.parse().map_err(|_| "invalid cumulativeAmount")?,
             Some(n) => n.as_u64().ok_or("invalid cumulativeAmount")?,
@@ -1170,8 +1177,7 @@ async fn build(input: &Value) -> Result<Observed, String> {
         ),
     };
     Ok(
-        match build_upto_header(&signer, &rpc, &requirements, expires_at, nonce, max_version)
-            .await
+        match build_upto_header(&signer, &rpc, &requirements, expires_at, nonce, max_version).await
         {
             Ok(header) => Observed::Accept(Output {
                 exact: Some(open_summary(&header, offer)?),
@@ -1199,10 +1205,19 @@ async fn build(input: &Value) -> Result<Observed, String> {
 fn server(input: &Value, rpc_url: &str) -> Result<X402Upto, String> {
     let fixtures = Fixtures::from_input(input)?;
     let currency = str_of(input, "x402ServerCurrency")?;
-    let decimals = fixtures.mints.get(currency).map(|m| m.decimals).unwrap_or(6);
+    let decimals = fixtures
+        .mints
+        .get(currency)
+        .map(|m| m.decimals)
+        .unwrap_or(6);
     let fee_payer = signer(input, "x402ServerFeePayerSecretKey")?;
     let receiver = signer(input, "x402ServerReceiverAuthorizerSecretKey")?;
-    let number = |k: &str| input.get(k).and_then(Value::as_u64).ok_or(format!("input.{k} missing"));
+    let number = |k: &str| {
+        input
+            .get(k)
+            .and_then(Value::as_u64)
+            .ok_or(format!("input.{k} missing"))
+    };
     let config = UptoConfig {
         payout: UptoPayout::Beneficiary {
             address: str_of(input, "x402ServerRecipient")?.to_string(),
@@ -1371,7 +1386,11 @@ fn open_of(envelope: &Value) -> Result<(Vec<AccountMeta>, Vec<u8>, VersionedTran
 /// distribution must match. Authored vectors encode spec behaviour the kit
 /// diverges from, so only their pinned summary is judged.
 pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure> {
-    let offer = vector.input().get("x402Offer").cloned().unwrap_or(Value::Null);
+    let offer = vector
+        .input()
+        .get("x402Offer")
+        .cloned()
+        .unwrap_or(Value::Null);
     let summary = open_summary(artifact, &offer).map_err(Failure::new)?;
     if let Some(Value::Object(pinned)) = vector.expect().get("exactBytes") {
         for (k, want) in pinned {
@@ -1431,7 +1450,13 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             ));
         }
     }
-    for key in ["from", "maxAmount", "deposit", "authorizedSigner", "openSlot"] {
+    for key in [
+        "from",
+        "maxAmount",
+        "deposit",
+        "authorizedSigner",
+        "openSlot",
+    ] {
         if got["payload"].get(key) != want["payload"].get(key) {
             problems.push(format!(
                 "payload.{key} {} (Rust: {})",
@@ -1494,9 +1519,14 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             ));
         }
     }
-    if got_tx.message.static_account_keys().first() != Some(&keys::pubkey(
-        offer.pointer("/extra/feePayer").and_then(Value::as_str).unwrap_or(keys::SYSTEM_PROGRAM),
-    )) {
+    if got_tx.message.static_account_keys().first()
+        != Some(&keys::pubkey(
+            offer
+                .pointer("/extra/feePayer")
+                .and_then(Value::as_str)
+                .unwrap_or(keys::SYSTEM_PROGRAM),
+        ))
+    {
         problems.push("the transaction fee payer is not extra.feePayer".into());
     }
     if problems.is_empty() {

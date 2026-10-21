@@ -328,6 +328,178 @@ deliveries. scheme_exact.md: “Such methods MUST deduplicate settlements
 atomically across every process serving `/settle`”, and “A consumed primitive
 MUST produce a settlement failure, never a success.” Security-relevant.
 
+Open findings from the x402 `upto` (SVM) vectors (`x402-upto-*.json`,
+2026-10-21). Rust is driven through
+`x402::server::upto::testkit::verify_open_pre_broadcast` (the pre-broadcast
+half of `X402Upto::verify_open_for_route`, co-signature included);
+TypeScript through the vendored `@x402/svm` 2.26.0 upto facilitator's
+read-only `verify` (pay-kit's `X402Upto.verifyOpen` calls `settle`, which
+broadcasts). Each Rust divergence is also recorded on its registry entry
+(`authored(Some(reason))`).
+
+## upto-client-settle-fields-accepted
+
+**Cases:** `vector/x402-upto-verify-client-voucher-reject`, `-client-voucher-empty-reject`, `-client-type-reject`
+**SDKs:** rust
+
+scheme_upto_svm.md Phase 3 step 0: “voucherSignature is claim-only and
+server-owned; presence on the client payload (including an empty string or
+undefined value) MUST fail with invalid_upto_svm_payload_unexpected_voucher”,
+and for `type` “presence on the client payload MUST fail with
+invalid_upto_svm_payload_type”. `UptoPayload`
+(`rust/crates/kit/src/x402/protocol/schemes/upto/types.rs`) models neither
+field and serde drops unknown keys, so `prepare_open`
+(`rust/crates/kit/src/x402/server/upto.rs:566`) accepts both.
+
+## upto-lifetime-unbounded
+
+**Cases:** `vector/x402-upto-verify-expires-beyond-timeout-reject`, `-timeout-over-lifetime-reject`, `-expires-over-lifetime-reject`
+**SDKs:** rust
+
+Phase 3 step 7: “Reject when maxTimeoutSeconds or remaining expiresAt - now
+exceeds the facilitator's maxChannelLifetimeSecs, or when expiresAt is later
+than now + maxTimeoutSeconds (plus clock skew).” `verify_upto_payload`
+(`rust/crates/kit/src/x402/protocol/schemes/upto/verify.rs:21`) checks only
+`validAfter <= now < expiresAt`, and `UptoConfig` has no lifetime ceiling. A
+client can authorize a channel whose voucher deadline is days out; abandon-close
+MUST NOT run before `expiresAt`, so the sponsor's rent stays locked.
+
+## upto-channel-exists-not-checked
+
+**Case:** `vector/x402-upto-verify-channel-already-open-reject`
+**SDKs:** rust, typescript
+
+Phase 3 step 4: “Confirm the channel account does not already exist. If it
+does, reject with invalid_upto_svm_channel_already_open.” (RULINGS U2.) Rust
+co-signs without reading the channel account (`prepare_open`); the vendored
+TS facilitator checks it only in `settle` (deposit), not in `verify`
+(`typescript/external/x402/typescript/packages/mechanisms/svm/src/upto/facilitator/scheme.ts:400`).
+
+## upto-payer-signature-not-verified
+
+**Cases:** `vector/x402-upto-verify-missing-payer-signature-reject`, `-invalid-payer-signature-reject`
+**SDKs:** rust
+
+“The payload.from signature MUST be present and valid before the facilitator
+signs.” Neither `prepare_open` nor `cosign_fee_payer` verifies the payer's
+slot, so the sponsor co-signs (and in production broadcasts, paying the fee)
+a transaction that cannot land.
+
+## upto-signer-set-not-checked
+
+**Case:** `vector/x402-upto-verify-extra-signer-reject`
+**SDKs:** rust
+
+“The complete required-signer set MUST equal the distinct addresses in {
+payload.from, extra.feePayer }.” The vector adds a third required signer on
+the Memo. `scan_channel_tx_layout`
+(`rust/crates/kit/src/core/payment_channel/v1.rs:986`) checks wrapper accounts
+only for the fee payer. Same class as `x402-extra-required-signer-accepted`.
+
+## upto-open-privileges-not-checked
+
+**Cases:** `vector/x402-upto-verify-writable-mint-reject`, `vector/x402-upto-verify-open-extra-account-reject`
+**SDKs:** rust
+
+“contain exactly the following 14 account positions in order, and contain no
+remaining accounts” and “No account outside the writable roles in the table
+(including an intentional equal-key union) may be writable.”
+`validate_open_instruction` (`rust/crates/kit/src/x402/server/upto.rs:1384`)
+compares the keys at positions 0 to 13 and ignores both writable flags and a
+fifteenth account.
+
+## upto-second-memo-refused
+
+**Case:** `vector/x402-upto-verify-two-memos-unbound-accept`
+**SDKs:** rust
+
+The suffix is “at most four instructions, each invoking either Lighthouse ...
+or SPL Memo”; exactly one Memo is required only “If extra.memo is present”.
+`scan_channel_tx_layout` refuses a second Memo under `MemoPolicy::Optional`
+(`rust/crates/kit/src/core/payment_channel/v1.rs:1107`). Stricter than the
+spec; a wallet that adds its own memo to an unbound open is refused.
+
+## upto-seed-fields-textual
+
+**Cases:** `vector/x402-upto-verify-nonce-not-decimal-reject`, `-open-slot-not-decimal-reject`
+**SDKs:** rust
+
+`nonce` is a “Unique decimal u64 salt”. Rust compares `payload.nonce` and
+`payload.openSlot` with the decoded open arguments as text and reports a
+binding mismatch (`open-binding-mismatch`) instead of a malformed payload
+(`invalid-payload`).
+
+## upto-slot-wire-type
+
+**Cases:** `vector/x402-upto-verify-open-slot-number-accept` (rust, typescript), `vector/x402-upto-build-recent-slot-number` (rust)
+**SDKs:** rust, typescript
+
+The pinned §4.2 table types `openSlot` as `number`, §4.1 types `recentSlot` as
+`number`, and both §4.1 examples carry `"recentSlot": 341000000`. Every SDK
+emits and requires decimal strings: Rust `UptoPayload.open_slot` and
+`UptoExtra.recent_slot` are `String`
+(`rust/crates/kit/src/x402/protocol/schemes/upto/types.rs:62`, `:168`), so the
+spec's own example challenge fails to parse and the Rust client cannot pay
+it; TS `isUptoSvmPayload` requires a string `openSlot`
+(`typescript/external/x402/typescript/packages/mechanisms/svm/src/types.ts:79`).
+See RULINGS U1; the fix is upstream spec text or parsers that accept both.
+
+## upto-client-memo-nonce-missing
+
+**Case:** `vector/x402-upto-build-memo-nonce`
+**SDKs:** rust
+
+“Clients MUST include a Memo instruction containing either the value of
+extra.memo (when present) or a random nonce (at least 16 bytes, hex-encoded
+for UTF-8 compliance).” `build_upto_payload`
+(`rust/crates/kit/src/x402/client/upto/payment.rs:103`) emits a Memo only when
+the challenge declares one, so two opens with identical parameters are
+byte-identical.
+
+## upto-v1-loaded-limit-strict
+
+**Case:** `vector/x402-upto-verify-v1-small-loaded-limit-accept`
+**SDKs:** rust (typescript fails it under `ts-upto-no-transaction-versions`)
+
+x402-txv1 scheme_upto_svm.md: “loadedAccountsDataSizeLimit MUST be present”.
+`check_v1_budget_caps` (`rust/crates/kit/src/core/tx/policy.rs:131`) requires
+it to equal 64 MiB and rejects a version-1 open that budgets less loaded data.
+
+## ts-upto-open-trailing-bytes
+
+**Case:** `vector/x402-upto-verify-open-trailing-byte-reject`
+**SDKs:** typescript
+
+“The facilitator MUST fully decode the canonical open instruction data, reject
+truncated data or trailing bytes”. `verifyOpenTransaction` decodes the args
+with `getOpenInstructionDataDecoder().decode`
+(`typescript/external/x402/typescript/packages/mechanisms/svm/src/payment-channels/open.ts:969`),
+which ignores bytes past the arguments. The fix belongs in the x402 fork.
+
+## ts-upto-open-size-unbounded
+
+**Case:** `vector/x402-upto-verify-v0-oversize-reject`
+**SDKs:** typescript
+
+x402-txv1 scheme_upto_svm.md: “A legacy or version-0 transaction MUST NOT
+exceed 1232 serialized bytes”. The vendored `verifyOpenTransaction` never
+measures the transaction, so an oversize open is accepted and only fails at
+broadcast.
+
+## ts-upto-no-transaction-versions
+
+**Cases:** every `x402-upto-txv1.json` vector that builds or verifies a version-1 open, plus `vector/x402-upto-build-no-common-version-reject`
+**SDKs:** typescript
+
+The vendored `@x402/svm` 2.26.0 (`typescript/external/x402` at 03b3919b)
+predates transaction-version negotiation, x402-foundation/x402 PR 3710 (branch
+`feat/svm-transaction-versions-upto`), which implements the x402-txv1 draft
+(PR 3473). Its client builds version 0 whatever `extra.transactionVersions`
+advertises, and its facilitator cannot decode a version-1 message (it throws
+reading the absent lookup-table list), so neither
+`unsupported_transaction_version` nor the version-1 budget rules are reachable.
+Resolved by bumping the vendored x402 packages once PR 3710 lands.
+
 ## Resolved on 2026-10-20
 
 Every finding recorded during the harness rework was fixed in the SDKs, with
@@ -358,3 +530,5 @@ regression tests, against [RULINGS.md](RULINGS.md):
   payment-identifier id.
 - The Kotlin conformance runner implements only the session voucher preimage
   vectors.
+- `@solana/pay-kit` exposes no upto distribution-hash or channel-PDA helper,
+  so those two wire goldens are unsupported for TypeScript.
