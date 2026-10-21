@@ -228,6 +228,24 @@ fn build_reject(id: &str, description: &str, spec: SpecRef, input: Value) -> Cas
     )
 }
 
+/// The chain an attacker-controlled program presents: the Plan and the
+/// subscriber's authority exist and are owned by that program, so only the
+/// client's program pin can refuse the challenge.
+fn untrusted_program_chain() -> Value {
+    let mut chain = fx::chain(&PlanSpec::default(), fx::FOREIGN_PROGRAM, TOKEN_PROGRAM);
+    let authority = solana_pay_kit::mpp::program::subscriptions::find_subscription_authority_pda(
+        &keys::pubkey(fx::SUBSCRIBER),
+        &keys::pubkey(fx::MINT),
+        &keys::pubkey(fx::FOREIGN_PROGRAM),
+    )
+    .0
+    .to_string();
+    let mut account = fx::authority_account(fx::SUBSCRIBER, fx::MINT, fx::INIT_ID);
+    account["owner"] = json!(fx::FOREIGN_PROGRAM);
+    chain["accounts"][authority] = account;
+    chain
+}
+
 fn plan_chain(plan: PlanSpec) -> Value {
     fx::chain(&plan, fx::PROGRAM, TOKEN_PROGRAM)
 }
@@ -957,7 +975,7 @@ crate::registry! {
         spec(SOL, "Definition", "Servers MUST pin its deployment address in methodDetails.subscriptionProgram, and clients MUST validate that address before signing."),
         build_input(
             kit_request(|r| r["methodDetails"]["subscriptionProgram"] = json!(fx::FOREIGN_PROGRAM)),
-            default_chain(),
+            untrusted_program_chain(),
         ),
     )
     .requirements(&[R_PROGRAM_PINNED])

@@ -386,6 +386,72 @@ export type VectorInput = {
   // verifier MUST require exactly one Memo instruction carrying it
   // (scheme_exact_svm §3.1), and the route's accepted object carries it.
   x402ServerMemo?: string;
+
+  // ── subscription inputs (rust/crates/conformance/src/realize/subscription.rs)
+  // Pinned clock (unix seconds) for every time-dependent subscription verdict.
+  nowSeconds?: number;
+  // canonical-bytes: the bearer-proof message the subscriber signs (JCS of
+  // {domain, payer, subscriptionChallengeId, subscriptionDelegation}).
+  subscriptionAuthenticationMessage?: {
+    challengeId: string;
+    payer: string;
+    subscriptionDelegation: string;
+  };
+  // canonical-bytes: a billing period mapped to period_hours, emitted as
+  // the JCS of {"periodHours": n}.
+  subscriptionPeriod?: { periodUnit: string; periodCount: string };
+  // canonical-bytes: the SubscriptionDelegation / SubscriptionAuthority PDA,
+  // emitted as the JCS of {"address": base58}.
+  subscriptionPda?: {
+    kind: "delegation" | "authority";
+    subscriber: string;
+    subscriptionProgram: string;
+    planAddress?: string;
+    mint?: string;
+  };
+  // canonical-bytes: subscribe / transfer_subscription instruction data.
+  subscriptionInstruction?: Record<string, unknown>;
+  // canonical-bytes: a request ("request") or credential payload
+  // ("activation", "access") through the SDK's wire types, re-encoded as JCS.
+  subscriptionWire?: { shape: "request" | "activation" | "access"; value: unknown };
+  // build-transaction: the challenge the client signs an activation for
+  // (request decoded); chain state (Plan, SubscriptionAuthority) comes from
+  // rpcFixtures.accounts.
+  subscriptionChallenge?: {
+    id: string;
+    realm: string;
+    method: string;
+    intent: string;
+    expires?: string;
+    request: Record<string, unknown>;
+  };
+  // verify-transaction: the server route.
+  subscriptionServer?: {
+    realm: string;
+    secretKey: string;
+    planAddress: string;
+    mint: string;
+    decimals: number;
+    tokenProgram: string;
+    puller: string;
+    recipient: string;
+    periodUnit: string;
+    periodCount: number;
+    amount: string;
+    network: string;
+    subscriptionProgram: string;
+    feePayerKey?: string;
+  };
+  // verify-transaction: the sponsor's key when the route pays fees.
+  subscriptionServerFeePayerSecretKey?: number[];
+  // verify-transaction: the activation credential, an Authorization header
+  // value ("Payment <base64url JCS credential>"), verified up to broadcast.
+  subscriptionAuthorization?: string;
+  // verify-transaction: check the on-chain delegation of `subscriber` at
+  // nowSeconds against the route.
+  subscriptionActive?: { subscriber: string; amount: string };
+  // verify-transaction: a bearer proof against a delegation address.
+  subscriptionProof?: { authentication: unknown; subscriptionDelegation: string };
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a

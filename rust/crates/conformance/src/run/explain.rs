@@ -382,7 +382,7 @@ impl Context {
             .into_iter()
             .map(|c| (c.id.to_string(), c))
             .collect();
-        let shas = ["mpp-specs/", "x402/"]
+        let shas = ["mpp-specs/", "x402/", "mpp-specs-solana/"]
             .iter()
             .filter_map(|d| pinned_sha(root, d).map(|s| (d.to_string(), s)))
             .collect();
