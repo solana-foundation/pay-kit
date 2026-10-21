@@ -13,6 +13,7 @@ import base64
 import json
 import struct
 
+import httpx
 import pytest
 from solana_keychain import MemorySigner, SignedTransaction
 from solders.hash import Hash
@@ -33,7 +34,9 @@ from solana_pay_kit import (
     Stablecoin,
     configure,
 )
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.rpc import _RpcError
 from solana_pay_kit._paycore.store import ConsumedSignatures, consumed_signature_key
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError, SettlementInProgressError
@@ -70,6 +73,7 @@ class _FakeRpc:
         self._fail = fail
         self._confirm_error = confirm_error
         self.confirm_calls = 0
+        self.confirm_history: list[bool] = []
         self.send_calls = 0
         self.aclose_calls = 0
 
@@ -86,8 +90,9 @@ class _FakeRpc:
         _Resp.value = _transaction_signature(bytes(_raw))
         return _Resp()
 
-    async def await_confirmation(self, _signature, *_a, **_k):
+    async def await_confirmation(self, _signature, *_a, search_transaction_history: bool = False, **_k):
         self.confirm_calls += 1
+        self.confirm_history.append(search_transaction_history)
         if self._confirm_error is not None:
             raise self._confirm_error
         return None
@@ -345,6 +350,61 @@ async def test_ambiguous_broadcast_failure_keeps_the_payment_pending(monkeypatch
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == signature
     assert recovered[0].send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_the_lease_reads_status_with_history(monkeypatch):
+    """A retry long after the broadcast reconciles a payment that may have
+    left the node's recent status cache: its confirmation read searches the
+    transaction history. The first confirmation, right after the send, does
+    not need to."""
+    store = MemoryStore()
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
+    first: list = []
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        confirm_error=PaymentError("timed out", code="transaction-not-found"),
+        monkeypatch=monkeypatch,
+        rpcs=first,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert first[0].confirm_history == [False]
+
+    now[0] += 21 * 60 + 1
+    recovered: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc()
+        recovered.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    await adapter.verify_and_settle(gate, _Req(header))
+    assert recovered[0].send_calls == 0
+    assert recovered[0].confirm_history == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        _RpcError("Node is unhealthy", code="payment_invalid"),
+        httpx.ConnectError("connection refused"),
+    ],
+)
+async def test_failed_status_read_after_the_send_keeps_the_payment_pending(monkeypatch, error):
+    """A node outage while confirming is never proof the payment did not land."""
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, confirm_error=error, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    record = await store.get(consumed_signature_key(signature))
+    assert isinstance(record, dict) and record["state"] == "pending"
 
 
 # -- confirmation gate (149-2 BLOCKER) ---------------------------------------

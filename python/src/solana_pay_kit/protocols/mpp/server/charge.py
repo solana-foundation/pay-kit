@@ -29,7 +29,13 @@ from solana_pay_kit._paycore.errors import (
     ReplayError,
 )
 from solana_pay_kit._paycore.network_check import check_network_blockhash
-from solana_pay_kit._paycore.rpc import PreflightRejectedError, _RpcError
+from solana_pay_kit._paycore.rpc import (
+    PreflightRejectedError,
+    SettlementState,
+    _RpcError,
+    proves_settlement_failed,
+    reconcile_settlement,
+)
 from solana_pay_kit._paycore.solana import (
     MIN_SECRET_KEY_BYTES,
     CredentialPayload,
@@ -719,12 +725,14 @@ class Mpp:
         # history for a transaction that committed in time, so the claim is
         # kept and the charge stays pending for the same credential to
         # reconcile; failing it would let the client pay a replacement.
+        # The same holds for a status read that fails (a JSON-RPC error, a
+        # node outage): only ``transaction-failed`` resolves the charge here.
         try:
             await self._rpc.await_confirmation(signature)
-        except PaymentError as exc:
-            if exc.code != "transaction-not-found":
+        except Exception as exc:  # noqa: BLE001 - see proves_settlement_failed
+            if proves_settlement_failed(exc):
                 raise
-            raise _settlement_in_progress(signature, "no confirmed status yet") from exc
+            raise _settlement_in_progress(signature, f"no confirmed status yet: {exc}") from exc
         return await self._grant_confirmed(credential, request, details, signature)
 
     async def _reconcile_pending(
@@ -750,19 +758,16 @@ class Mpp:
             and current.get("challengeId") == credential.challenge.id
         ):
             raise ReplayError()
-        statuses = await self._rpc.get_signature_statuses([signature])
-        status = statuses[0] if statuses else None
-        if isinstance(status, dict):
-            err = status.get("err")
-            if err is not None:
-                await self._store.put(
-                    consumed_signature_key(signature),
-                    {"state": "failed", "challengeId": credential.challenge.id},
-                )
-                raise PaymentError(f"transaction {signature} failed on-chain: {err}", code="transaction-failed")
-            if status.get("confirmationStatus") in {"confirmed", "finalized"}:
-                return await self._grant_confirmed(credential, request, details, signature)
-        raise _settlement_in_progress(signature, "transaction has not confirmed yet")
+        outcome = await reconcile_settlement(self._rpc, signature)
+        if outcome.state is SettlementState.FAILED:
+            await self._store.put(
+                consumed_signature_key(signature),
+                {"state": "failed", "challengeId": credential.challenge.id},
+            )
+            raise PaymentError(f"transaction {signature} failed on-chain: {outcome.detail}", code="transaction-failed")
+        if outcome.state is SettlementState.CONFIRMED:
+            return await self._grant_confirmed(credential, request, details, signature)
+        raise _settlement_in_progress(signature, f"transaction has not confirmed yet ({outcome.detail})")
 
     async def _grant_confirmed(
         self,
@@ -777,7 +782,12 @@ class Mpp:
         the same pending charge cannot each be granted the protected response.
         """
         assert self._rpc is not None
-        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=1)
+        try:
+            tx_resp = await self._rpc.get_transaction(
+                signature, encoding="jsonParsed", max_supported_transaction_version=1
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed fetch is no outcome
+            raise _settlement_in_progress(signature, f"confirmed transaction fetch failed: {exc}") from exc
         tx = _transaction_dict(tx_resp)
         if tx is None:
             # Confirmed, but this node cannot serve it yet: still pending.

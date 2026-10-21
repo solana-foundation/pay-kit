@@ -1194,6 +1194,10 @@ class _PendingRPC(TestL8SettlementOrdering._OrderingRPC):
         self.send_error = send_error
         self.status: dict | None = None
         self.sends = 0
+        self.status_error: Exception | None = None
+        self.confirm_error: Exception | None = None
+        self.fetch_error: Exception | None = None
+        self.status_history: list[bool] = []
 
     async def send_raw_transaction(self, raw: bytes):
         self.sends += 1
@@ -1201,8 +1205,21 @@ class _PendingRPC(TestL8SettlementOrdering._OrderingRPC):
             raise self.send_error
         return await super().send_raw_transaction(raw)
 
-    async def get_signature_statuses(self, _signatures):
+    async def get_signature_statuses(self, _signatures, *, search_transaction_history: bool = False):
+        self.status_history.append(search_transaction_history)
+        if self.status_error is not None:
+            raise self.status_error
         return [self.status]
+
+    async def await_confirmation(self, *args, **kwargs):
+        if self.confirm_error is not None:
+            raise self.confirm_error
+        return await super().await_confirmation(*args, **kwargs)
+
+    async def get_transaction(self, *args, **kwargs):
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return await super().get_transaction(*args, **kwargs)
 
 
 class TestAmbiguousBroadcast:
@@ -1267,6 +1284,73 @@ class TestAmbiguousBroadcast:
         assert rpc.sends == 1
         with pytest.raises(ReplayError):
             await _verify(handler, credential, challenge)
+
+    @pytest.mark.parametrize(
+        "error",
+        [_RpcError("Node is unhealthy", code="payment_invalid"), httpx.ConnectError("connection refused")],
+    )
+    async def test_failed_confirmation_read_after_the_send_is_pending(self, error):
+        """The payment was handed to the node; a status read that fails is
+        never proof it did not land, so the charge stays pending (not a fresh
+        402) and the same credential reconciles it once the node answers."""
+        rpc = _PendingRPC()
+        rpc.confirm_error = error
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        assert await store.get(consumed_signature_key(signature)) == {
+            "state": "pending",
+            "challengeId": credential.challenge.id,
+        }
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+        assert rpc.sends == 1
+
+    async def test_failed_status_read_while_reconciling_is_pending(self):
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        rpc.status_error = _RpcError("Node is behind", code="payment_invalid")
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.status_error = None
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        assert (await _verify(handler, credential, challenge)).reference == signature
+
+    async def test_failed_transaction_fetch_after_confirmation_is_pending(self):
+        rpc = _PendingRPC()
+        rpc.fetch_error = _RpcError("Node is unhealthy", code="payment_invalid")
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.fetch_error = None
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        assert (await _verify(handler, credential, challenge)).reference == signature
+        assert rpc.sends == 1
+
+    async def test_reconciling_reads_status_with_transaction_history(self):
+        """A retry may come after the payment left the node's recent status
+        cache; the reconciliation read searches the node's history."""
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        rpc.status = {"err": None, "confirmationStatus": "finalized"}
+        await _verify(handler, credential, challenge)
+        assert rpc.status_history == [True]
 
     async def test_pending_charge_reconciles_after_its_challenge_expires(self, monkeypatch):
         from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge

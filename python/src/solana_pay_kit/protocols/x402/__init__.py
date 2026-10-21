@@ -32,6 +32,7 @@ from solana_pay_kit._paycore.rpc import (
     PreflightRejectedError,
     SolanaRpc,
     _RpcError,  # pyright: ignore[reportPrivateUsage]
+    proves_settlement_failed,
 )
 from solana_pay_kit._paycore.store import (
     ConsumedSignatures,
@@ -223,6 +224,7 @@ class X402Adapter:
             )
 
         rpc: SolanaRpc | None = None
+        sent_here = False
         try:
             if should_broadcast:
                 ledger = ConsumedSignatures(self._store)
@@ -269,6 +271,7 @@ class X402Adapter:
                         raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
                     if not broadcast_signature:
                         raise _settlement_in_progress(signature, "empty broadcast result")
+                    sent_here = True
 
             # Await on-chain confirmation BEFORE returning success. Without this
             # the adapter returned a settlement header for a transaction that
@@ -281,7 +284,10 @@ class X402Adapter:
                 if rpc is None:
                     rpc = SolanaRpc(rpc_url)
                 try:
-                    await rpc.await_confirmation(signature)
+                    # A request that did not send it is reconciling a payment
+                    # an earlier one sent, which may have left the node's
+                    # recent status cache: search the history.
+                    await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
                     await self._store.put(
                         replay_key,
                         {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
@@ -291,7 +297,7 @@ class X402Adapter:
                     # atomically take over after expiry and determine whether
                     # the transaction landed, without permitting two concurrent
                     # requests to return successful fulfillment.
-                    if getattr(exc, "code", None) == "transaction-failed":
+                    if proves_settlement_failed(exc):
                         # It landed and failed: it moved nothing.
                         raise InvalidProofError(
                             f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
