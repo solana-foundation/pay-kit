@@ -258,6 +258,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 65 | 56 · 9k | — | 47 · 17u · 1k | 48 · 17u | 59 · 6k | 48 · 17u | 63 · 2k | 25 · 38u · 2k | 60 · 5k |
 | vector session | 17 | 8 · 9u | 3 · 14u | — | — | 17 | — | 17 | 3 · 14u | 17 |
+| vector x402-batch-settlement | 165 | — | — | — | — | — | — | 123 · 4u · 38k | — | 66 · 27u · 72k |
 | vector x402-exact | 36 | 35 · 1k | — | 25 · 9u · 2k | 25 · 9u · 2k | 34 · 2k | 26 · 9u · 1k | 36 | 9 · 27u | 27 · 7u · 2k |
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
