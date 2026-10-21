@@ -3648,6 +3648,10 @@ mod tests {
             confidential: Some(true),
             auditor_elgamal_pubkey: Some("auditor-key".to_string()),
             recent_blockhash: Some(ZERO_HASH.to_string()),
+            // Confidential charges are gateway-sponsored; with a sponsor the
+            // challenge is well formed and only the missing feature refuses it.
+            fee_payer: Some(true),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
             ..Default::default()
         };
         let err = build_charge_transaction_with_options(
