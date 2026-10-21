@@ -317,7 +317,9 @@ fn server_fee_payer(
 
 fn signer_as_fee_payer() -> Error {
     Error::InvalidConfig(
-        "feePayerKey names the signer; a sponsored charge needs a separate server fee payer".into(),
+        "Fee payer cannot authorize the payment: feePayerKey names the signer; a sponsored charge \
+         needs a separate server fee payer"
+            .into(),
     )
 }
 
