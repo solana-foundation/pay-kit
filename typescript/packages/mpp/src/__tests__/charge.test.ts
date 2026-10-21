@@ -1982,6 +1982,32 @@ test('pull: an uncertain settlement can recover once after its lease expires wit
     expect(rpcMethods).not.toContain('sendTransaction');
 });
 
+// A signature copied from any landed transaction must not name the charge:
+// the node refuses a forged one without a preflight result, it would stay
+// pending, and recovery would confirm the status of the transaction that owns
+// it. It is refused before anything is claimed or sent.
+test('pull: a forged client signature is refused before it is claimed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const signed = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const wire = Buffer.from(signed, 'base64');
+    wire.fill(7, 1, 65);
+    const forged = wire.toString('base64');
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(
+            method.verify({ credential: transactionCredential(forged, { amount: '1000000' }), request: {} as any }),
+        ).rejects.toThrow('signature verification failed');
+    }
+    expect(rpcMethods).not.toContain('sendTransaction');
+    expect(await store.get(consumedSignatureKey(transactionSignatureFromBase64(forged)))).toBeNull();
+
+    // Positive control: the transaction as really signed settles.
+    await expect(
+        method.verify({ credential: transactionCredential(signed, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+});
+
 test('pull: recovers an accepted send with a lost response exactly once without rebroadcast', async () => {
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);

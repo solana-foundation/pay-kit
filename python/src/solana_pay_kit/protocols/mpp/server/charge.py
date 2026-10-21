@@ -110,6 +110,25 @@ __all__ = [
 ]
 
 
+def _verify_signatures(raw_tx: bytes) -> None:
+    """Refuse a transaction any of whose signatures fails to verify.
+
+    Runs before the signature is claimed or the transaction is sent. A forged
+    signature would otherwise name the charge: the node refuses it without a
+    preflight result, the charge is kept as possibly sent, and a retry would
+    reconcile on the status of whatever landed transaction owns that
+    signature.
+    """
+    from solders.transaction import VersionedTransaction
+
+    try:
+        results = VersionedTransaction.from_bytes(raw_tx).verify_with_results()
+    except Exception as exc:  # noqa: BLE001
+        raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
+    if not results or not all(results):
+        raise PaymentError("transaction signature verification failed", code="invalid-payload")
+
+
 def _local_signature(raw_tx: bytes) -> str:
     """The fee-payer signature of a fully signed wire transaction.
 
@@ -676,6 +695,7 @@ class Mpp:
         # charge stays pending and a retry of the same credential reconciles
         # it by signature instead of the client paying a fresh challenge.
         raw_tx = base64.b64decode(signed_b64)
+        _verify_signatures(raw_tx)
         signature = _local_signature(raw_tx)
         ledger = ConsumedSignatures(self._store)
         pending = {"state": "pending", "challengeId": credential.challenge.id}

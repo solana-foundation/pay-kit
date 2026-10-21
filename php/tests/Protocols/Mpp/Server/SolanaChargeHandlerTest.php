@@ -708,6 +708,43 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('already consumed', $replayed->body['detail']);
     }
 
+    // A signature copied from any landed transaction must not name the
+    // charge: the node refuses a forged one without a preflight result, so it
+    // would be kept as possibly sent and reconciled on the status of the
+    // transaction that owns it. It is refused before anything is claimed or
+    // sent, for both wire framings.
+    public function testForgedClientSignatureIsRefusedBeforeItIsClaimed(): void
+    {
+        foreach ([$this->minimalV0TransactionBase64(), $this->minimalLegacyTransactionBase64()] as $signed) {
+            $store = new MemoryStore();
+            $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+            $request = $this->chargeRequest();
+            $wire = (string) base64_decode($signed, true);
+            $forged = base64_encode(substr($wire, 0, 1) . str_repeat("\x07", 64) . substr($wire, 65));
+            $authorization = (new Credential(
+                challenge: $challenges->createChallenge($request)->toEcho(),
+                payload: ['type' => 'transaction', 'transaction' => $forged],
+            ))->toAuthorizationHeader();
+            $landed = new FakeRpcGateway(
+                signature: $this->signatureOf($forged),
+                sendError: new RpcException('JSON-RPC error: Transaction signature verification failure', 200, -32003),
+            );
+            $handler = $this->handler(
+                challenges: $challenges,
+                verifier: new AlwaysAcceptVerifier(),
+                replayStore: $store,
+                rpcGateway: $landed,
+            );
+            for ($attempt = 0; $attempt < 2; $attempt += 1) {
+                $result = $handler->handle($authorization, $request);
+                self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+                self::assertStringContainsString('signature verification failed', $result->body['detail']);
+            }
+            self::assertSame([], $landed->sentTransactions);
+            self::assertFalse($store->has('solana:consumed-signature:' . $this->signatureOf($forged)));
+        }
+    }
+
     // A broadcast whose response was lost stays pending. A retry after the
     // challenge expired must still reconcile it (the payment may have
     // landed), without ever broadcasting it again; an expired credential with

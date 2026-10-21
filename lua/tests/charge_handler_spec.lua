@@ -70,6 +70,9 @@ local function new_handler(opts)
     pull_transaction_signer = opts.pull_transaction_signer,
     pull_blockhash_extractor = opts.pull_blockhash_extractor,
     pull_signature_extractor = opts.pull_signature_extractor or function() return rpc.peek_send() end,
+    -- These payloads are opaque stand-ins, not signed wire transactions; the
+    -- default Ed25519 verifier is covered by its own test.
+    pull_signature_verifier = opts.pull_signature_verifier or function() end,
     confirmation_attempts = opts.confirmation_attempts or 2,
     confirmation_delay_seconds = 0,
     simulation_max_attempts = opts.simulation_max_attempts or 2,
@@ -892,4 +895,45 @@ t.test('a claim is visible to MPP replicas on the previous release', function()
     t.assert_true(not ledger:claim('sig-held'))
     t.assert_true(not shared:get('solana-charge:consumed:sig-held'))
   end
+end)
+
+-- A signature copied from any landed transaction must not name the charge:
+-- the node refuses a forged one without a preflight result, so it would be
+-- kept as possibly sent and reconciled on the status of the transaction that
+-- owns it. The default verifier refuses it before anything is claimed or sent.
+t.test('a forged client signature is refused before it is claimed', function()
+  local ed25519 = require('pay_kit.util.ed25519')
+  local base64 = require('pay_kit.util.base64_std')
+  local secret = ed25519.generate()
+  if not secret then return end -- no luasodium: the backend cannot mint keys here
+  local public = ed25519.derive_public(secret)
+  -- Legacy message: header (1 signer), one account key, blockhash, no instructions.
+  local message = string.char(1, 0, 0) .. string.char(1) .. public .. string.rep('\9', 32) .. string.char(0)
+  local function wire(signature)
+    return base64.encode(string.char(1) .. signature .. message)
+  end
+  local signed = wire(assert(ed25519.sign(secret, message)))
+  local forged = wire(string.rep('\7', 64))
+
+  local replay = store.memory()
+  local rpc = fake_rpc({
+    simulateTransaction = { { result = { err = nil } } },
+    sendTransaction = { { result = 'sent' } },
+    getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
+  })
+  local handler = charge_handler.new({
+    rpc = rpc, network = 'localnet', replay_store = replay,
+    transaction_verifier = function() end,
+    sleep = function() end,
+  })
+  for _ = 1, 2 do
+    local err = raised(function() handler:settle_pull(forged, {}) end)
+    t.assert_true(tostring(err.message):find('signature verification failed', 1, true) ~= nil, tostring(err.message))
+  end
+  t.assert_equal(#rpc.calls, 0)
+
+  -- Positive control: the same transaction, really signed, passes the check
+  -- and reaches simulation.
+  pcall(function() handler:settle_pull(signed, {}) end)
+  t.assert_equal(rpc.calls[1] and rpc.calls[1].method, 'simulateTransaction')
 end)

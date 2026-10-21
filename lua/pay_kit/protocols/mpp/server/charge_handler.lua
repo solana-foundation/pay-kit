@@ -136,6 +136,14 @@ end
 --     simulation_max_attempts          default 3
 --     simulation_retry_delay_seconds   default 0.4
 --     sleep                            function(seconds); defaults to a busy-loop
+-- Every required signature must verify against the message. A forged one
+-- would otherwise name the charge: the node refuses it without a preflight
+-- result, it is kept as possibly sent, and a retry would reconcile on the
+-- status of whatever landed transaction owns that signature.
+local function default_signature_verifier(signed_base64)
+  require('pay_kit.protocols.x402.exact.verify').verify_client_signatures(signed_base64, {})
+end
+
 function M.new(config)
   if type(config) ~= 'table' then
     error('config table is required')
@@ -163,6 +171,10 @@ function M.new(config)
     pull_transaction_signer = config.pull_transaction_signer,
     pull_blockhash_extractor = config.pull_blockhash_extractor,
     pull_signature_extractor = config.pull_signature_extractor,
+    -- Verifies every signature on the signed transaction before its
+    -- signature is claimed or it is sent. Defaults to local Ed25519
+    -- verification; a replacement must be at least as strict.
+    pull_signature_verifier = config.pull_signature_verifier or default_signature_verifier,
     confirmation_attempts = config.confirmation_attempts or DEFAULT_CONFIRMATION_ATTEMPTS,
     confirmation_delay_seconds = config.confirmation_delay_seconds or DEFAULT_CONFIRMATION_DELAY_SECONDS,
     simulation_max_attempts = config.simulation_max_attempts or DEFAULT_SIMULATION_MAX_ATTEMPTS,
@@ -286,6 +298,10 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
   -- it before anything is sent. A transaction already claimed is either
   -- pending (reconcile it) or consumed.
   local signed_base64, local_signature = self:signed_transaction(transaction_base64)
+  local verified = pcall(self.pull_signature_verifier, signed_base64)
+  if not verified then
+    verifier_error('transaction signature verification failed')
+  end
   local ledger = consumed_signatures.new(self.replay_store)
   if not ledger:claim(local_signature) then
     local reconciled = self:reconcile_pending(local_signature)

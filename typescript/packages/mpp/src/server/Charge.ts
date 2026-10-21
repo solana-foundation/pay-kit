@@ -25,6 +25,7 @@ import {
 import * as Methods from '../Methods.js';
 import {
     assertReportedTransactionVersion,
+    assertTransactionSignaturesVerify,
     coSignBase64Transaction,
     transactionSignatureFromBase64,
 } from '../utils/transactions.js';
@@ -874,6 +875,12 @@ async function verifyTransaction(
         txToSend = await coSignBase64Transaction(signer, clientTxBase64);
     }
 
+    // Every signature must verify before the signature is claimed or the
+    // transaction sent. A forged one would otherwise name the charge: the node
+    // refuses it without a preflight result, it stays pending, and recovery
+    // would confirm the status of whatever landed transaction owns that
+    // signature.
+    await assertTransactionSignaturesVerify(txToSend);
     const signature = transactionSignatureFromBase64(txToSend);
     if (await consumedBeforeLedger(store, signature)) {
         throw new Error('Transaction signature already consumed');

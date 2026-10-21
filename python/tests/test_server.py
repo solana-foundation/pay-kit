@@ -1322,6 +1322,31 @@ class TestAmbiguousBroadcast:
         with pytest.raises(ChallengeExpiredError):
             await _verify(handler, replayed, other)
 
+    async def test_forged_client_signature_is_refused_before_it_is_claimed(self):
+        """A signature copied from any landed transaction must not name the
+        charge: it is refused before the claim, and nothing is sent."""
+        from solders.signature import Signature
+        from solders.transaction import VersionedTransaction as _Vtx
+
+        rpc = _PendingRPC(send_error=_RpcError("Transaction signature verification failure", code="payment_invalid"))
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        tx = _Vtx.from_bytes(base64.b64decode(credential.payload["transaction"]))
+        forged = Signature(bytes([7]) * 64)
+        tx = _Vtx.populate(tx.message, [forged])
+        credential = PaymentCredential(
+            challenge=credential.challenge,
+            payload={"type": "transaction", "transaction": base64.b64encode(bytes(tx)).decode()},
+        )
+        for _ in range(2):
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "invalid-payload"
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(str(forged))) is None
+
     async def test_already_processed_with_a_fresh_claim_is_a_replay(self):
         """The node already processed this exact transaction, but this store
         never claimed it (another worker's per-process store, or a restart):

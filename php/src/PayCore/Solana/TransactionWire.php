@@ -132,6 +132,15 @@ final class TransactionWire
         $this->transaction->partialSign(...$signers);
     }
 
+    /**
+     * Whether every signature slot holds a signature that verifies against
+     * the message for its required signer. An empty slot does not.
+     */
+    public function verifySignatures(): bool
+    {
+        return $this->transaction->verifySignatures();
+    }
+
     /** Serialize in the original framing (legacy or v0). */
     public function serialize(bool $verifySignatures = true): string
     {

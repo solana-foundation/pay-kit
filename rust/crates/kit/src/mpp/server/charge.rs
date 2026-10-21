@@ -1857,6 +1857,20 @@ impl Mpp {
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
 
+        // Every signature must verify against the exact message before its
+        // signature is claimed or the transaction is sent. A forged signature
+        // would otherwise name the charge: the node refuses it without a
+        // preflight result (sigverify), the charge is kept as possibly sent,
+        // and a retry would reconcile on the status of whatever landed
+        // transaction owns that signature. A refusal here sends nothing.
+        if method_details.channel_charge.is_none() {
+            tx.verify_and_hash_message().map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Transaction signature verification failed: {e}"
+                ))
+            })?;
+        }
+
         // Every signature is in place, so the transaction's identity is known
         // before it leaves this process. Record and claim it now: a store
         // failure here provably sent nothing, while one after the broadcast
@@ -8772,7 +8786,7 @@ mod tests {
             ..Default::default()
         };
         let expected = issued(Hash::new_unique());
-        let sender = Pubkey::new_unique();
+        let sender = seed_pubkey(9);
         let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
 
         for (signed_with, rejected) in [(Hash::new_unique(), true), (challenged, false)] {
@@ -8796,7 +8810,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            tx.signatures[0] = Signature::from([9u8; 64]);
+            sign_slot0(&mut tx, 9);
             let transaction = crate::core::tx::encode(&tx).unwrap();
             let cred = build_credential(
                 &mpp,
@@ -8815,11 +8829,12 @@ mod tests {
 
     // ── Ambiguous confirmation is pending, not failed ──
 
-    /// JSON-RPC stub: `sendTransaction` returns `signature`; `status`
+    /// JSON-RPC stub: `sendTransaction` returns `signature`, or the sent
+    /// transaction's own first signature when it is `None`; `status`
     /// selects the signature status (0 unknown, 1 landed ok, 2 landed failed)
     /// and `blockhash_valid` the blockhash validity.
     async fn stub_rpc(
-        signature: Signature,
+        signature: Option<Signature>,
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
     ) -> String {
@@ -8836,7 +8851,7 @@ mod tests {
     /// [`stub_rpc`] that also counts `sendTransaction` calls in `sends`, and
     /// answers them with the JSON-RPC error in `send_error` while it is set.
     async fn stub_rpc_counting(
-        signature: Signature,
+        signature: Option<Signature>,
         status: Arc<std::sync::atomic::AtomicU8>,
         blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
         sends: Arc<std::sync::atomic::AtomicUsize>,
@@ -8863,7 +8878,12 @@ mod tests {
                                     "jsonrpc": "2.0", "id": request["id"], "error": error,
                                 }));
                             }
-                            serde_json::json!(signature.to_string())
+                            let own = || {
+                                crate::core::tx::decode(request["params"][0].as_str().unwrap())
+                                    .unwrap()
+                                    .signatures[0]
+                            };
+                            serde_json::json!(signature.unwrap_or_else(own).to_string())
                         }
                         Some("isBlockhashValid") => serde_json::json!({
                             "context": context,
@@ -8915,10 +8935,9 @@ mod tests {
     async fn ambiguous_charge_expiring(
         expires: Option<&str>,
     ) -> (AmbiguousCharge, VerificationError) {
-        let signature = Signature::from([7u8; 64]);
         let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let blockhash_valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let rpc_url = stub_rpc(signature, status.clone(), blockhash_valid.clone()).await;
+        let rpc_url = stub_rpc(None, status.clone(), blockhash_valid.clone()).await;
         let store = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
             realm: Some("test-realm".to_string()),
@@ -8944,7 +8963,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let sender = Pubkey::new_unique();
+        let sender = seed_pubkey(7);
         let mut tx = crate::core::tx::build_unsigned_unchecked(
             TxVersion::V0,
             &sender,
@@ -8957,8 +8976,7 @@ mod tests {
             None,
         )
         .unwrap();
-        // The stub never checks signatures; it only has to be the one it echoes.
-        tx.signatures[0] = signature;
+        let signature = sign_slot0(&mut tx, 7);
         let payload = serde_json::json!({
             "type": "transaction",
             "transaction": crate::core::tx::encode(&tx).unwrap(),
@@ -9094,11 +9112,29 @@ mod tests {
         }
     }
 
-    /// A signed SOL pull credential for a fresh challenge on `mpp`.
+    /// The deterministic test signer for `seed`.
+    fn seed_key(seed: u8) -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn seed_pubkey(seed: u8) -> Pubkey {
+        Pubkey::from(seed_key(seed).verifying_key().to_bytes())
+    }
+
+    /// Sign slot 0 of `tx` with the `seed` signer, returning the signature.
+    fn sign_slot0(tx: &mut VersionedTransaction, seed: u8) -> Signature {
+        use ed25519_dalek::Signer as _;
+        let signature = Signature::from(seed_key(seed).sign(&tx.message.serialize()).to_bytes());
+        tx.signatures[0] = signature;
+        signature
+    }
+
+    /// A SOL pull credential for a fresh challenge on `mpp`, signed by the
+    /// `seed` signer, with its transaction's signature.
     fn signed_pull_credential(
         mpp: &Mpp,
-        signature: Signature,
-    ) -> (PaymentCredential, ChargeRequest) {
+        seed: u8,
+    ) -> (PaymentCredential, ChargeRequest, Signature) {
         let blockhash = Hash::new_unique();
         let expected = ChargeRequest {
             amount: "1000".into(),
@@ -9111,7 +9147,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let sender = Pubkey::new_unique();
+        let sender = seed_pubkey(seed);
         let mut tx = crate::core::tx::build_unsigned_unchecked(
             TxVersion::V0,
             &sender,
@@ -9124,12 +9160,16 @@ mod tests {
             None,
         )
         .unwrap();
-        tx.signatures[0] = signature;
+        let signature = sign_slot0(&mut tx, seed);
         let payload = serde_json::json!({
             "type": "transaction",
             "transaction": crate::core::tx::encode(&tx).unwrap(),
         });
-        (build_credential(mpp, &expected, payload), expected)
+        (
+            build_credential(mpp, &expected, payload),
+            expected,
+            signature,
+        )
     }
 
     // The signature is claimed before the broadcast, so a replay store that
@@ -9193,10 +9233,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn store_failure_while_claiming_the_signature_sends_nothing() {
         use std::sync::atomic::Ordering;
-        let signature = Signature::from([11u8; 64]);
         let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let rpc_url = stub_rpc_counting(
-            signature,
+            None,
             Arc::new(std::sync::atomic::AtomicU8::new(1)),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
             sends.clone(),
@@ -9221,17 +9260,73 @@ mod tests {
         })
         .unwrap();
 
-        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let (credential, expected, _) = signed_pull_credential(&mpp, 11);
         let err = mpp.verify(&credential, &expected).await.unwrap_err();
         assert!(err.message.contains("injected store outage"), "{err:?}");
         assert_eq!(sends.load(Ordering::SeqCst), 0, "nothing may be broadcast");
 
-        // Once the store recovers the same transaction settles exactly once.
+        // Once the store recovers the payer's next transaction settles once.
         store.failing.store(false, Ordering::SeqCst);
-        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let (credential, expected, signature) = signed_pull_credential(&mpp, 11);
         let receipt = mpp.verify(&credential, &expected).await.unwrap();
         assert_eq!(receipt.reference, signature.to_string());
         assert_eq!(sends.load(Ordering::SeqCst), 1);
+    }
+
+    // A client signature that does not verify is refused before anything is
+    // claimed or sent. Otherwise a forged slot-0 signature (copied from any
+    // landed transaction) is refused by the node without preflight data, the
+    // charge is kept as possibly sent, and the retry reconciles on the status
+    // of the transaction that really owns that signature: a receipt for no
+    // payment.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_forged_client_signature_is_refused_before_it_is_claimed() {
+        use std::sync::atomic::Ordering;
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rpc_url = stub_rpc_counting(
+            None,
+            // The forged signature's owner has landed.
+            Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            sends.clone(),
+            Arc::new(std::sync::Mutex::new(Some(serde_json::json!({
+                "code": -32003,
+                "message": "Transaction signature verification failure",
+            })))),
+        )
+        .await;
+        let mpp = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            store: Some(Arc::new(MemoryStore::new())),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (mut credential, expected, _) = signed_pull_credential(&mpp, 30);
+        let mut tx =
+            crate::core::tx::decode(credential.payload["transaction"].as_str().unwrap()).unwrap();
+        let forged = Signature::from([7u8; 64]);
+        tx.signatures[0] = forged;
+        credential.payload["transaction"] =
+            serde_json::json!(crate::core::tx::encode(&tx).unwrap());
+
+        for _ in 0..2 {
+            let err = mpp.verify(&credential, &expected).await.unwrap_err();
+            assert_ne!(err.code, Some("settlement-in-progress"), "{err:?}");
+            assert!(err.message.contains("signature verification"), "{err:?}");
+        }
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            0,
+            "a forged transaction is never sent"
+        );
+        mpp.consume_signature(&forged.to_string()).await.unwrap();
     }
 
     // The receipt names the transaction this server verified and sent, never
@@ -9242,7 +9337,7 @@ mod tests {
         use crate::mpp::store::ChargeRecordState;
         let reported = Signature::from([14u8; 64]);
         let rpc_url = stub_rpc(
-            reported,
+            Some(reported),
             Arc::new(std::sync::atomic::AtomicU8::new(1)),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
@@ -9261,8 +9356,7 @@ mod tests {
         })
         .unwrap();
 
-        let local = Signature::from([15u8; 64]);
-        let (credential, expected) = signed_pull_credential(&mpp, local);
+        let (credential, expected, local) = signed_pull_credential(&mpp, 15);
         let err = mpp.verify(&credential, &expected).await.unwrap_err();
         assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
         assert!(err.message.contains("different transaction"), "{err:?}");
@@ -9274,9 +9368,28 @@ mod tests {
         );
 
         // When the RPC reports the transaction it was sent, it settles.
-        let (credential, expected) = signed_pull_credential(&mpp, reported);
-        let receipt = mpp.verify(&credential, &expected).await.unwrap();
-        assert_eq!(receipt.reference, reported.to_string());
+        let honest = Mpp::new(Config {
+            realm: Some("test-realm".to_string()),
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(
+                stub_rpc(
+                    None,
+                    Arc::new(std::sync::atomic::AtomicU8::new(1)),
+                    Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                )
+                .await,
+            ),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let (credential, expected, signature) = signed_pull_credential(&honest, 16);
+        let receipt = honest.verify(&credential, &expected).await.unwrap();
+        assert_eq!(receipt.reference, signature.to_string());
     }
 
     // An owner whose lease was taken over before it began broadcasting is
@@ -9335,14 +9448,13 @@ mod tests {
     async fn ambiguous_send_error_is_pending_not_failed() {
         use crate::mpp::store::ChargeRecordState;
         use std::sync::atomic::Ordering;
-        let signature = Signature::from([12u8; 64]);
         let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let send_error = Arc::new(std::sync::Mutex::new(Some(serde_json::json!({
             "code": -32099,
             "message": "response lost after the node accepted the transaction",
         }))));
         let rpc_url = stub_rpc_counting(
-            signature,
+            None,
             status.clone(),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
             Arc::default(),
@@ -9363,7 +9475,7 @@ mod tests {
         })
         .unwrap();
 
-        let (credential, expected) = signed_pull_credential(&mpp, signature);
+        let (credential, expected, signature) = signed_pull_credential(&mpp, 12);
         let err = mpp.verify(&credential, &expected).await.unwrap_err();
         assert_eq!(err.code, Some("settlement-in-progress"), "{err:?}");
         let record = charge_record(&store, &credential.challenge.id).await;
@@ -9379,7 +9491,6 @@ mod tests {
 
         // A preflight rejection is definitive: failed, and the unsent
         // transaction's claim is released.
-        let rejected = Signature::from([13u8; 64]);
         *send_error.lock().unwrap() = Some(serde_json::json!({
             "code": -32002,
             "message": "Transaction simulation failed: Error processing Instruction 0",
@@ -9390,7 +9501,7 @@ mod tests {
                 "unitsConsumed": 0,
             },
         }));
-        let (credential, expected) = signed_pull_credential(&mpp, rejected);
+        let (credential, expected, rejected) = signed_pull_credential(&mpp, 13);
         let err = mpp.verify(&credential, &expected).await.unwrap_err();
         assert!(err.message.contains("Simulation failed"), "{err:?}");
         let record = charge_record(&store, &credential.challenge.id).await;

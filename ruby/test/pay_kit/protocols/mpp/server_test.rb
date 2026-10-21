@@ -748,7 +748,8 @@ class TransactionVerifierTest < Minitest::Test
   def test_accepts_legacy_transaction_payload
     request = charge_request
     tx = Base64.strict_encode64(legacy_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
 
@@ -798,7 +799,8 @@ class ChargeHandlerTest < Minitest::Test
   def test_settles_push_signature_by_fetching_transaction
     request = charge_request
     transaction = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     rpc = FakeRpc.new(transaction_response: {"meta" => {"err" => nil}, "transaction" => [transaction, "base64"]})
@@ -850,7 +852,8 @@ class ChargeHandlerTest < Minitest::Test
   def test_pull_mode_reports_simulation_and_confirmation_failures
     request = charge_request
     transaction = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     challenge = handler_challenges.create_challenge(request)
@@ -878,7 +881,8 @@ class ChargeHandlerTest < Minitest::Test
   def test_ambiguous_send_error_keeps_the_charge_pending
     request = charge_request
     wire = v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     )
     local_signature = ::PayCore::Solana::Transaction.from_base64(Base64.strict_encode64(wire)).primary_signature
@@ -905,6 +909,33 @@ class ChargeHandlerTest < Minitest::Test
     assert store.put_if_absent(key, true), "a preflight rejection proves non-delivery and leaves the signature unclaimed"
   end
 
+  # A signature copied from any landed transaction must not name the charge:
+  # the node refuses a forged one without a preflight result, so it would be
+  # kept as possibly sent and reconciled on the status of the transaction that
+  # owns it. It is refused before anything is claimed or sent.
+  def test_forged_client_signature_is_refused_before_it_is_claimed
+    request = charge_request
+    wire = v0_transaction(
+      signer: 3,
+      account_keys: [signer_pubkey(3), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    forged = wire.byteslice(0, 1) + ("\x07".b * 64) + wire.byteslice(65, wire.bytesize - 65)
+    authorization = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"transaction" => Base64.strict_encode64(forged)}
+    ).to_authorization_header
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    rpc = FailingSendRpc.new(send_error: ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: signature verification failure"))
+    2.times do
+      response = handler_with(rpc, store: store).handle(authorization, request)
+      assert_equal 402, response.status
+      assert_match(/signature verification failed/, response.body["message"])
+    end
+    assert_empty rpc.sent_transactions
+    refute store.key?(::PayCore::ConsumedSignatures.key(::PayCore::Solana::Base58.encode("\x07".b * 64)))
+  end
+
   # A lost broadcast response leaves a recoverable pending charge: the
   # identical retry reconciles it from the chain (never re-broadcasting) and
   # is granted once, even after its challenge expired; another challenge
@@ -912,7 +943,8 @@ class ChargeHandlerTest < Minitest::Test
   def test_pending_charge_reconciles_on_retry_and_after_expiry
     request = charge_request
     wire = v0_transaction(
-      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      signer: 1,
+      account_keys: [signer_pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     )
     encoded = Base64.strict_encode64(wire)
@@ -951,9 +983,9 @@ class ChargeHandlerTest < Minitest::Test
 
     # An expired credential with no pending charge never starts a payment.
     fresh = Base64.strict_encode64(v0_transaction(
-      account_keys: [pubkey(2), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
-      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))],
-      signatures: ["\x07".b * 64]
+      signer: 2,
+      account_keys: [signer_pubkey(2), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     rpc = FakeRpc.new
     response = handler_with(rpc, store: store).handle(credential_for.call(fresh), request, now: later)

@@ -284,6 +284,12 @@ module PayKit::Protocols::Mpp
         def settle_pull(transaction_base64, challenge_id)
           transaction, signed_base64, local_signature = signed_transaction(transaction_base64)
           check_network_blockhash(transaction.message.recent_blockhash)
+          # Every signature must verify before the signature is claimed or the
+          # transaction sent. A forged one would otherwise name the charge: the
+          # node refuses it without a preflight result, it is kept as possibly
+          # sent, and a retry would reconcile on the status of whatever landed
+          # transaction owns that signature.
+          raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction signature verification failed" unless transaction.signatures_verify?
           # Already claimed: a retry of a pending charge (reconcile it from the
           # chain, never broadcast again) or a replay.
           return reconcile(local_signature, challenge_id) if @consumed_signatures.claimed?(local_signature)

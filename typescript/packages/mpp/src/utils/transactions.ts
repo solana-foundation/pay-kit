@@ -1,11 +1,14 @@
 import {
+    type Address,
     type Base64EncodedWireTransaction,
     getBase64Codec,
     getBase64EncodedWireTransaction,
+    getPublicKeyFromAddress,
     getSignatureFromTransaction,
     getTransactionDecoder,
     type Signature,
     type TransactionPartialSigner,
+    verifySignature,
 } from '@solana/kit';
 
 /** Rejection text when `getTransaction` omits `version`; shared verbatim with the Rust kit. */
@@ -29,6 +32,24 @@ export function assertReportedTransactionVersion(version: unknown): void {
         throw new Error(
             `transaction version ${JSON.stringify(version)} is not accepted; accepted versions: ${ACCEPTED_TRANSACTION_VERSIONS.join(', ')}`,
         );
+    }
+}
+
+/**
+ * Throw unless every signature slot of a base64 wire transaction holds a
+ * signature that verifies against its message for that signer. An empty slot
+ * does not.
+ */
+export async function assertTransactionSignaturesVerify(transaction: string): Promise<void> {
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
+    const entries = Object.entries(decoded.signatures);
+    if (entries.length === 0) throw new Error('transaction signature verification failed');
+    for (const [address, signature] of entries) {
+        if (!signature) throw new Error('transaction signature verification failed');
+        const key = await getPublicKeyFromAddress(address as Address);
+        if (!(await verifySignature(key, signature, decoded.messageBytes))) {
+            throw new Error('transaction signature verification failed');
+        }
     }
 }
 

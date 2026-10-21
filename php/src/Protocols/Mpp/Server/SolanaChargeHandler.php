@@ -357,6 +357,14 @@ final class SolanaChargeHandler
         if ($this->feePayer !== null) {
             $tx->partialSign($this->feePayer);
         }
+        // Every signature must verify before the signature is claimed or the
+        // transaction sent. A forged one would otherwise name the charge: the
+        // node refuses it without a preflight result, the charge is kept as
+        // possibly sent, and a retry would reconcile on the status of
+        // whatever landed transaction owns that signature.
+        if (!$tx->verifySignatures()) {
+            throw new InvalidArgumentException('transaction signature verification failed');
+        }
         $signed = $tx->serialize();
         return [$signed, self::firstSignature($signed)];
     }
