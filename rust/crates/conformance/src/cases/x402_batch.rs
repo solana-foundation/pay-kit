@@ -1963,6 +1963,109 @@ mod tests {
         assert_eq!(channel.grace_period, fx::WITHDRAW_DELAY);
     }
 
+    // The open rejects pin the spec's suffix (seller memo plus binding
+    // memo), which the Rust server refuses at its one-memo scan
+    // (KIT_TWO_MEMOS) before the check each case names. With the one memo
+    // the kit admits, the kit must still refuse each open for that check, so
+    // the reference the vectors rely on exercises it.
+    #[test]
+    fn the_kit_refuses_each_open_reject_for_its_own_check() {
+        let single = || vec![fx::memo_ix(fx::MEMO)];
+        let at_slot = |slot: u64| {
+            with(
+                open_input(open_tx(honest_open(), single())),
+                "rpcFixtures",
+                with(
+                    fx::rpc_fixtures(None, Atas::Healthy, TOKEN_PROGRAM),
+                    "slot",
+                    json!(slot),
+                ),
+            )
+        };
+        let voucher_above = {
+            let tx = open_tx(honest_open(), single());
+            let mut i = open_input(tx.clone());
+            let payload = json!({ "type": "deposit", "channelConfig": cfg(), "voucher": honest_voucher(2_000), "deposit": { "amount": "10000", "transaction": tx } });
+            i["x402PaymentHeader"] = json!(fx::header(&requirements(), &payload));
+            i
+        };
+        let cases: Vec<(&str, Value, RejectCode, &str)> = vec![
+            (
+                "diverting distribution",
+                open_input(open_tx(
+                    fx::open_ix(&cfg(), 10_000, keys::X402_OTHER_PAY_TO),
+                    single(),
+                )),
+                RejectCode::SetupTransaction,
+                "open distribution must pay 100%",
+            ),
+            (
+                "deposit mismatch",
+                open_input(open_tx(fx::open_ix(&cfg(), 9_000, X402_PAY_TO), single())),
+                RejectCode::SetupTransaction,
+                "open deposit 9000",
+            ),
+            (
+                "grace period",
+                open_input(open_tx(
+                    fx::open_ix(
+                        &with(cfg(), "withdrawDelay", json!(7_200)),
+                        10_000,
+                        X402_PAY_TO,
+                    ),
+                    single(),
+                )),
+                RejectCode::WithdrawDelayMismatch,
+                "grace_period 7200",
+            ),
+            (
+                "stale slot",
+                at_slot(341_001_501),
+                RejectCode::SetupTransaction,
+                "outside the 1500-slot window",
+            ),
+            (
+                "future slot",
+                at_slot(340_999_999),
+                RejectCode::SetupTransaction,
+                "ahead of the current slot",
+            ),
+            (
+                "first voucher above amount",
+                voucher_above,
+                RejectCode::CumulativeAmountMismatch,
+                "first voucher must authorize exactly",
+            ),
+        ];
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let accept = rt.block_on(crate::realize::run(
+            Intent::X402BatchSettlement,
+            Mode::VerifyTransaction,
+            &open_input(open_tx(honest_open(), single())),
+        ));
+        assert!(
+            matches!(accept, crate::realize::Observed::Accept(_)),
+            "{}",
+            accept.summary()
+        );
+        for (name, input, code, check) in cases {
+            match rt.block_on(crate::realize::run(
+                Intent::X402BatchSettlement,
+                Mode::VerifyTransaction,
+                &input,
+            )) {
+                crate::realize::Observed::Reject {
+                    code: Some(got),
+                    message,
+                } => {
+                    assert_eq!(got, code, "{name}: {message}");
+                    assert!(message.contains(check), "{name}: {message}");
+                }
+                other => panic!("{name}: {}", other.summary()),
+            }
+        }
+    }
+
     #[test]
     fn heavy_lighthouse_crosses_only_the_v0_limit() {
         let mut ixs = vec![fx::top_up_ix(&cfg(), TOP_UP_AMOUNT_ADDED)];

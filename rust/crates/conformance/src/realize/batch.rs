@@ -27,6 +27,7 @@ use solana_pay_kit::core::payment_channels as pc;
 use solana_pay_kit::core::store::{ChannelStore, MemoryChannelStore};
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::SolanaSigner;
 use solana_pay_kit::x402::client::batch_settlement as client;
 use solana_pay_kit::x402::protocol::schemes::batch_settlement::{
     self as scheme, errors as codes, BatchChannelConfig, BatchPayload, BatchPaymentPayload,
@@ -562,6 +563,43 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     }
     let config: BatchChannelConfig = serde_json::from_value(payload["channelConfig"].clone())
         .map_err(|e| fail(format!("payload.channelConfig: {e}")))?;
+    // The config every operation is bound to (mint, receiver, receiver
+    // authorizer, withdraw delay, flow) is the one the requirements allow.
+    scheme::check_channel_config(&config, &requirements).map_err(|e| {
+        fail_at(
+            "payload.channelConfig",
+            None,
+            Some(&payload["channelConfig"]),
+            format!("channelConfig does not match the requirements: {e}"),
+        )
+    })?;
+    // The client holds one key: it is the payer and the voucher
+    // authorizer, and the channel opens at the slot the caller gave.
+    let client_key = signer(c, "secretKey").map_err(fail)?.pubkey().to_string();
+    for (field, got) in [
+        ("payer", &config.payer),
+        ("payerAuthorizer", &config.payer_authorizer),
+    ] {
+        if *got != client_key {
+            return Err(fail_at(
+                &format!("payload.channelConfig.{field}"),
+                Some(&json!(client_key)),
+                Some(&json!(got)),
+                "the channel must be bound to the client's own key",
+            ));
+        }
+    }
+    if c.get("openSlot")
+        .and_then(Value::as_u64)
+        .is_some_and(|slot| slot != config.open_slot)
+    {
+        return Err(fail_at(
+            "payload.channelConfig.openSlot",
+            Some(&c["openSlot"]),
+            Some(&json!(config.open_slot)),
+            "the channel must open at the slot the caller gave",
+        ));
+    }
     let channel_id =
         client::channel_id_for(&config, &requirements).map_err(|e| fail(e.to_string()))?;
     // Every client variant carries a voucher in client mode (refund: the
@@ -595,6 +633,20 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     }
     if operation == "refund" {
         return judge_refund(payload, &requirements, &config, &channel_id);
+    }
+    // A top-up funds what the caller asked for; the server below only ties
+    // the transaction to payload.deposit.amount.
+    if operation == "topUp" && c.get("depositAmount").is_some() {
+        let requested = u64_field(c, "depositAmount").map_err(fail)?;
+        let declared = u64_field(&payload["deposit"], "amount").map_err(fail)?;
+        if declared != requested {
+            return Err(fail_at(
+                "payload.deposit.amount",
+                Some(&json!(requested.to_string())),
+                Some(&json!(declared.to_string())),
+                "the top-up must be the amount the caller asked for",
+            ));
+        }
     }
     // Voucher and top-up: the Rust server accepts the build on the chain
     // state the vector pins.
@@ -818,15 +870,19 @@ fn judge_open(
     if let Some(authorizer) = &requirements.extra.receiver_authorizer {
         want_memos.push(fx::binding_memo(authorizer));
     }
-    for want in &want_memos {
-        if !memos.contains(want) {
-            return Err(fail_at(
-                "open.memos",
-                Some(&json!(want_memos)),
-                Some(&json!(memos)),
-                format!("the open must carry the memo {want:?}"),
-            ));
-        }
+    // Exactly the seller's memo and the binding memo, once each: a second
+    // memo (another binding, a stray nonce) is not part of the setup suffix.
+    let mut sorted_want = want_memos.clone();
+    sorted_want.sort();
+    let mut sorted_got = memos.clone();
+    sorted_got.sort();
+    if sorted_got != sorted_want {
+        return Err(fail_at(
+            "open.memos",
+            Some(&json!(want_memos)),
+            Some(&json!(memos)),
+            "the open must carry exactly the seller memo and the receiver binding memo",
+        ));
     }
     Ok(())
 }
@@ -1420,7 +1476,14 @@ mod tests {
         let v = vector("batch-build-deposit-open");
         let honest = edited_build(&rt, &v, |_| {});
         let kit = rt.block_on(judge_build(&v, &honest)).unwrap_err();
-        assert!(kit.message.contains("rcvauth"), "{}", kit.message);
+        assert_eq!(kit.path.as_deref(), Some("open.memos"), "{}", kit.message);
+        assert!(
+            kit.expected
+                .as_ref()
+                .is_some_and(|e| e.to_string().contains("rcvauth")),
+            "{:?}",
+            kit.expected
+        );
         let inflated = edited_build(&rt, &v, |e| {
             let declared = u64_field(&e["payload"]["deposit"], "amount").unwrap();
             e["payload"]["deposit"]["amount"] = json!((declared + 1).to_string());
@@ -1516,6 +1579,110 @@ mod tests {
         });
         let failure = rt.block_on(judge_build(&v, &broken)).unwrap_err();
         assert!(failure.message.contains("200"), "{}", failure.message);
+    }
+
+    /// `memos` appended to the kit's deposit open, re-signed by the payer.
+    fn with_memos(e: &mut Value, seed: [u8; 32], memos: &[String]) {
+        let tx = crate::tx::decode_b64(e["payload"]["deposit"]["transaction"].as_str().unwrap())
+            .unwrap();
+        let mut d = crate::tx::decompile(&tx.message).unwrap();
+        for memo in memos {
+            d.instructions.push(solana_instruction::Instruction {
+                program_id: pc::memo_program_id(),
+                accounts: vec![],
+                data: memo.as_bytes().to_vec(),
+            });
+        }
+        let mut out = crate::tx::recompile(&tx.message, &d).unwrap();
+        crate::tx::sign_slots(&mut out, &[seed]);
+        e["payload"]["deposit"]["transaction"] = json!(crate::tx::encode_b64(&out).unwrap());
+    }
+
+    fn client_seed(v: &Vector) -> [u8; 32] {
+        v.input()["batchClient"]["secretKey"].as_array().unwrap()[..32]
+            .iter()
+            .map(|b| b.as_u64().unwrap() as u8)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    // The deposit judge binds channelConfig to the requirements and the
+    // client's key, and takes exactly the seller and binding memos.
+    #[test]
+    fn a_deposit_off_its_requirements_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-deposit-open");
+        let seed = client_seed(&v);
+        let authorizer = v.input()["batchClient"]["requirements"]["extra"]["receiverAuthorizer"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let binding = fx::binding_memo(&authorizer);
+        let complete = edited_build(&rt, &v, |e| {
+            with_memos(e, seed, std::slice::from_ref(&binding))
+        });
+        rt.block_on(judge_build(&v, &complete)).unwrap();
+
+        let extra = edited_build(&rt, &v, |e| {
+            with_memos(e, seed, &[binding.clone(), "a second memo".into()])
+        });
+        let failure = rt.block_on(judge_build(&v, &extra)).unwrap_err();
+        assert_eq!(
+            failure.path.as_deref(),
+            Some("open.memos"),
+            "{}",
+            failure.message
+        );
+
+        for (field, value) in [
+            ("token", json!(crate::keys::OTHER_MINT)),
+            ("payerAuthorizer", json!(fx::stranger())),
+        ] {
+            let off = edited_build(&rt, &v, |e| {
+                with_memos(e, seed, std::slice::from_ref(&binding));
+                e["payload"]["channelConfig"][field] = value.clone();
+            });
+            let failure = rt.block_on(judge_build(&v, &off)).unwrap_err();
+            assert!(
+                failure
+                    .path
+                    .as_deref()
+                    .is_some_and(|p| p.starts_with("payload.channelConfig")),
+                "{field}: {:?} {}",
+                failure.path,
+                failure.message
+            );
+        }
+    }
+
+    // A self-consistent top-up of another amount used to pass: the server
+    // ties the transaction to payload.deposit.amount, not to the request.
+    #[test]
+    fn a_top_up_of_another_amount_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-top-up");
+        let honest = edited_build(&rt, &v, |_| {});
+        rt.block_on(judge_build(&v, &honest)).unwrap();
+        for amount in ["1", "600000"] {
+            let mut input = v.input().clone();
+            input["batchClient"]["depositAmount"] = json!(amount);
+            let other = match rt.block_on(super::super::run(
+                Intent::X402BatchSettlement,
+                Mode::BuildTransaction,
+                &input,
+            )) {
+                Observed::Accept(output) => output.header.unwrap(),
+                other => panic!("{amount}: {}", other.summary()),
+            };
+            let failure = rt.block_on(judge_build(&v, &other)).unwrap_err();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some("payload.deposit.amount"),
+                "{amount}: {}",
+                failure.message
+            );
+        }
     }
 
     /// A spec-shaped client refund (§4.3): channelConfig plus the voucher at

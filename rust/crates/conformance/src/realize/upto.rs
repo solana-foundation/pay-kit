@@ -1408,6 +1408,54 @@ fn open_of(envelope: &Value) -> Result<(Vec<AccountMeta>, Vec<u8>, VersionedTran
     Ok((accounts, ix.data.clone(), tx))
 }
 
+/// `header` with its declared memo replaced by [`route_memo`], in
+/// `accepted.extra.memo` and in the open transaction's memo instruction,
+/// whose signer slots are re-signed with the keys the harness holds.
+fn with_route_memo(header: &str) -> Result<String, String> {
+    let mut envelope = decode_header(header)?;
+    let declared = envelope
+        .pointer("/accepted/extra/memo")
+        .and_then(Value::as_str)
+        .ok_or("accepted.extra.memo missing")?
+        .to_string();
+    let tx = decode_b64(
+        envelope
+            .pointer("/payload/openTransaction")
+            .and_then(Value::as_str)
+            .ok_or("payload.openTransaction missing")?,
+    )?;
+    let mut d = crate::tx::decompile(&tx.message)?;
+    let memo_program = keys::pubkey(keys::MEMO_PROGRAM);
+    let mut replaced = 0;
+    for ix in &mut d.instructions {
+        if ix.program_id == memo_program && ix.data == declared.as_bytes() {
+            ix.data = route_memo().into_bytes();
+            replaced += 1;
+        }
+    }
+    if replaced != 1 {
+        return Err(format!(
+            "the open carries the declared memo {replaced} times, expected once"
+        ));
+    }
+    let mut out = crate::tx::recompile(&tx.message, &d)?;
+    let required = out.message.header().num_required_signatures as usize;
+    let seeds: Vec<[u8; 32]> = out
+        .message
+        .static_account_keys()
+        .iter()
+        .take(required)
+        .zip(&tx.signatures)
+        .filter(|(_, sig)| **sig != Signature::default())
+        .filter_map(|(key, _)| seed_of(&key.to_string()))
+        .collect();
+    sign_slots(&mut out, &seeds);
+    envelope["accepted"]["extra"]["memo"] = json!(route_memo());
+    envelope["payload"]["openTransaction"] = json!(encode_b64(&out)?);
+    let bytes = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// Judge an accepted SDK build of an `x402-upto` vector.
 ///
 /// Always: the open-transaction summary the vector pins
@@ -1449,13 +1497,22 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         .pointer("/extra/memo")
         .and_then(Value::as_str)
         .is_none_or(|memo| memo == route_memo());
-    let verified = if server_can_offer {
-        let header = kit_reference_header(artifact).map_err(Failure::new)?;
-        let input = verify_input_for_offer(vector.input(), &header).map_err(Failure::new)?;
-        verify(&input).await
+    // Otherwise the verifier still runs on everything but the memo (the
+    // summary pins that): the SDK's own open with the memo the kit can
+    // offer, re-signed with the harness keys, so the envelope, budget caps,
+    // expiry, slot window and instruction allowlist are judged too.
+    let header = if server_can_offer {
+        kit_reference_header(artifact)
     } else {
-        Ok(Observed::Accept(Output::default()))
-    };
+        kit_reference_header(artifact).and_then(|h| with_route_memo(&h))
+    }
+    .map_err(Failure::new)?;
+    let mut offered = vector.input().clone();
+    if !server_can_offer {
+        offered["x402Offer"]["extra"]["memo"] = json!(route_memo());
+    }
+    let input = verify_input_for_offer(&offered, &header).map_err(Failure::new)?;
+    let verified = verify(&input).await;
     match verified {
         Ok(Observed::Accept(_)) => {}
         Ok(other) => {
@@ -1664,5 +1721,42 @@ mod tests {
         let underfunded = edited_build(&rt, &v, |e| e["payload"]["deposit"] = json!("1"));
         let failure = rt.block_on(judge_build(&v, &underfunded)).unwrap_err();
         assert!(failure.path.is_some(), "{}", failure.message);
+    }
+
+    // A declared memo the kit's server cannot offer used to skip the
+    // verifier; the rest of the build is still judged by it.
+    #[test]
+    fn a_declared_memo_build_is_still_verified() {
+        let rt = runtime();
+        let v = vector("x402-upto-build-memo-max-length");
+        let honest = edited_build(&rt, &v, |_| {});
+        rt.block_on(judge_build(&v, &honest)).unwrap();
+
+        let drained = edited_build(&rt, &v, |e| {
+            let tx = decode_b64(e["payload"]["openTransaction"].as_str().unwrap()).unwrap();
+            let mut d = crate::tx::decompile(&tx.message).unwrap();
+            let mut data = 2u32.to_le_bytes().to_vec();
+            data.extend_from_slice(&1_000_000u64.to_le_bytes());
+            d.instructions.push(Instruction {
+                program_id: keys::pubkey(keys::SYSTEM_PROGRAM),
+                accounts: vec![
+                    AccountMeta::new(d.fee_payer, true),
+                    AccountMeta::new(Pubkey::new_unique(), false),
+                ],
+                data,
+            });
+            let mut out = crate::tx::recompile(&tx.message, &d).unwrap();
+            let seeds: Vec<[u8; 32]> = KNOWN_SEEDS.to_vec();
+            sign_slots(&mut out, &seeds);
+            out.signatures[0] = Signature::default();
+            e["payload"]["openTransaction"] = json!(encode_b64(&out).unwrap());
+        });
+        let failure = rt.block_on(judge_build(&v, &drained)).unwrap_err();
+        assert_eq!(
+            failure.path.as_deref(),
+            Some("verify"),
+            "{}",
+            failure.message
+        );
     }
 }
