@@ -46,7 +46,16 @@ export const conformanceVectorSchema = {
   required: ["id", "intent", "mode", "spec", "input", "expect"],
   properties: {
     id: { type: "string", pattern: "^[a-z][a-z0-9-]*[a-z0-9]$" },
-    intent: { enum: ["charge", "x402-exact", "session"] },
+    intent: {
+      enum: [
+        "charge",
+        "x402-exact",
+        "session",
+        "x402-upto",
+        "x402-batch-settlement",
+        "subscription",
+      ],
+    },
     mode: {
       enum: ["build-transaction", "verify-transaction", "canonical-bytes"],
     },

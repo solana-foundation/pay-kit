@@ -962,6 +962,7 @@ fn req_lint_cmd(root: &std::path::Path, args: &[String]) -> ExitCode {
         let repo = match repo.as_str() {
             "mpp" => SpecRepo::MppSpecs,
             "x402" => SpecRepo::X402,
+            "mpp-solana" => SpecRepo::MppSpecsSolana,
             _ => return usage(),
         };
         return match reqlint::list(root, repo) {

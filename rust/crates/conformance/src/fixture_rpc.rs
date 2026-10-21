@@ -4,7 +4,8 @@
 //!
 //! The filler runs the kit's real builders and verifiers against the same
 //! chain state every SDK runner sees: the vector's `input.rpcFixtures`
-//! (blockhash, mints in the 82-byte SPL layout), rent, slot. Any other method
+//! (blockhash, mints in the 82-byte SPL layout, raw program accounts), rent,
+//! slot. Any other method
 //! is refused with an error that names it, so a builder reaching for the
 //! network on the offline path fails loudly instead of silently succeeding.
 //! Every call is recorded.
@@ -52,6 +53,16 @@ pub struct FixtureMint {
     pub decimals: u8,
 }
 
+/// A raw account (`rpcFixtures.accounts.<address>`): program-owned state a
+/// verifier reads, e.g. a payment channel or a subscription plan. The data
+/// is the account's exact bytes, base64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureAccount {
+    pub owner: String,
+    pub data: Vec<u8>,
+    pub lamports: u64,
+}
+
 /// Chain state for one vector (`input.rpcFixtures`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fixtures {
@@ -59,6 +70,7 @@ pub struct Fixtures {
     pub last_valid_block_height: Option<u64>,
     pub slot: Option<u64>,
     pub mints: BTreeMap<String, FixtureMint>,
+    pub accounts: BTreeMap<String, FixtureAccount>,
 }
 
 impl Fixtures {
@@ -88,6 +100,41 @@ impl Fixtures {
                 );
             }
         }
+        let mut accounts = BTreeMap::new();
+        if let Some(map) = raw.get("accounts").and_then(Value::as_object) {
+            for (address, account) in map {
+                if mints.contains_key(address) {
+                    return Err(format!(
+                        "rpcFixtures: {address} is both a mint and a raw account"
+                    ));
+                }
+                let owner = account
+                    .get("owner")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("rpcFixtures.accounts.{address}.owner missing"))?;
+                let data = account
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("rpcFixtures.accounts.{address}.data missing"))
+                    .and_then(|d| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(d)
+                            .map_err(|e| format!("rpcFixtures.accounts.{address}.data: {e}"))
+                    })?;
+                let lamports = account
+                    .get("lamports")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| rent_exempt(data.len() as u64));
+                accounts.insert(
+                    address.clone(),
+                    FixtureAccount {
+                        owner: owner.to_string(),
+                        data,
+                        lamports,
+                    },
+                );
+            }
+        }
         let recent_blockhash = raw
             .get("recentBlockhash")
             .and_then(Value::as_str)
@@ -103,6 +150,7 @@ impl Fixtures {
             last_valid_block_height: raw.get("lastValidBlockHeight").and_then(Value::as_u64),
             slot: raw.get("slot").and_then(Value::as_u64),
             mints,
+            accounts,
         })
     }
 }
@@ -122,7 +170,28 @@ pub fn mint_account_data(decimals: u8) -> [u8; MINT_SIZE] {
     data
 }
 
+fn raw_account_value(account: &FixtureAccount, encoding: Option<&str>) -> Value {
+    let data = match encoding {
+        Some("base58") => json!([bs58::encode(&account.data).into_string(), "base58"]),
+        _ => json!([
+            base64::engine::general_purpose::STANDARD.encode(&account.data),
+            "base64"
+        ]),
+    };
+    json!({
+        "data": data,
+        "executable": false,
+        "lamports": account.lamports,
+        "owner": account.owner,
+        "rentEpoch": 0,
+        "space": account.data.len(),
+    })
+}
+
 fn account_value(fixtures: &Fixtures, address: &str, encoding: Option<&str>) -> Value {
+    if let Some(account) = fixtures.accounts.get(address) {
+        return raw_account_value(account, encoding);
+    }
     let Some(mint) = fixtures.mints.get(address) else {
         return Value::Null;
     };

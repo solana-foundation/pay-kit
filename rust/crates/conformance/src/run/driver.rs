@@ -193,9 +193,7 @@ pub fn run_case(testee: &mut Testee, vector: &Vector, rt: &tokio::runtime::Runti
             ))),
             Ok(()) => match judge::judge_expect(vector, result) {
                 Ok(Verdict::Pass)
-                    if vector.mode == "build-transaction"
-                        && result["outcome"] == "accept"
-                        && matches!(vector.intent.as_str(), "charge" | "x402-exact") =>
+                    if vector.mode == "build-transaction" && result["outcome"] == "accept" =>
                 {
                     match judge::build_artifact(vector, result) {
                         Err(f) => Err(f),

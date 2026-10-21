@@ -68,6 +68,13 @@ export type VectorRpcFixtures = {
   // (82-byte SPL mint layout). A mint absent here does not exist, so an SDK
   // that must look it up (tokenProgram omitted, x402 decimals) has to reject.
   mints?: Record<string, { owner: string; decimals: number }>;
+  // address -> raw program account (payment channel, subscription plan, ...)
+  // served verbatim; data is the account's exact bytes, base64. lamports
+  // defaults to the rent-exempt minimum for the data length.
+  accounts?: Record<string, { owner: string; data: string; lamports?: number }>;
+  // Slot served by getSlot and as every response's context.slot.
+  slot?: number;
+  lastValidBlockHeight?: number;
 };
 
 // The decoded semantic shape of an x402 `exact` envelope. This is the
@@ -375,7 +382,13 @@ export type VectorSpecRef = {
 
 export type ConformanceVector = {
   id: string;
-  intent: "charge" | "x402-exact" | "session";
+  intent:
+    | "charge"
+    | "x402-exact"
+    | "session"
+    | "x402-upto"
+    | "x402-batch-settlement"
+    | "subscription";
   mode: VectorMode;
   description?: string;
   // Required traceability (filled by `pkc fill`; never hand-edited).

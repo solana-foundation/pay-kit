@@ -3,6 +3,7 @@ commit = "782abaeb651164d78d8a87ca2646d28251968326"
 files = [
   "specs/core/*",
   "specs/intents/draft-payment-intent-charge-*",
+  "specs/intents/draft-payment-intent-subscription-*",
   "specs/methods/solana/draft-solana-charge-*",
   # Not in the original phase-1 scope list; added because the session vectors
   # need requirement ids to map to.

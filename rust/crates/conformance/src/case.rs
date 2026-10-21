@@ -96,16 +96,20 @@ pub enum SpecRepo {
     MppSpecs,
     /// `typescript/external/x402` (x402-foundation/x402).
     X402,
+    /// `external/mpp-specs-solana` (solana-foundation/mpp-specs): Solana
+    /// method drafts not yet merged upstream (the subscription method).
+    MppSpecsSolana,
 }
 
 impl SpecRepo {
-    pub const ALL: [SpecRepo; 2] = [SpecRepo::MppSpecs, SpecRepo::X402];
+    pub const ALL: [SpecRepo; 3] = [SpecRepo::MppSpecs, SpecRepo::X402, SpecRepo::MppSpecsSolana];
 
     /// Prefix of `SpecRef::doc` naming this repository.
     pub fn prefix(self) -> &'static str {
         match self {
             SpecRepo::MppSpecs => "mpp-specs",
             SpecRepo::X402 => "x402",
+            SpecRepo::MppSpecsSolana => "mpp-specs-solana",
         }
     }
 
@@ -114,13 +118,14 @@ impl SpecRepo {
         match self {
             SpecRepo::MppSpecs => "external/mpp-specs",
             SpecRepo::X402 => "typescript/external/x402",
+            SpecRepo::MppSpecsSolana => "external/mpp-specs-solana",
         }
     }
 
     /// Requirement-id prefix for sentences from this repository.
     pub fn req_prefix(self) -> &'static str {
         match self {
-            SpecRepo::MppSpecs => "MPP",
+            SpecRepo::MppSpecs | SpecRepo::MppSpecsSolana => "MPP",
             SpecRepo::X402 => "X402",
         }
     }
@@ -149,7 +154,9 @@ impl SpecRef {
                     .and_then(|rest| rest.strip_prefix('/'))
                     .map(|path| (*repo, path))
             })
-            .ok_or_else(|| format!("spec doc {doc:?} must start with mpp-specs/ or x402/"))?;
+            .ok_or_else(|| {
+                format!("spec doc {doc:?} must start with mpp-specs/, mpp-specs-solana/ or x402/")
+            })?;
         if !path.starts_with("specs/") || !path.ends_with(".md") || path.contains("..") {
             return Err(format!(
                 "spec doc {doc:?} must be a markdown file under specs/"
@@ -226,14 +233,34 @@ pub enum Intent {
     Charge,
     X402Exact,
     Session,
+    X402Upto,
+    X402BatchSettlement,
+    Subscription,
 }
 
 impl Intent {
+    pub const ALL: [Intent; 6] = [
+        Intent::Charge,
+        Intent::X402Exact,
+        Intent::Session,
+        Intent::X402Upto,
+        Intent::X402BatchSettlement,
+        Intent::Subscription,
+    ];
+
+    /// The intent a vector's `intent` string names.
+    pub fn parse(name: &str) -> Option<Intent> {
+        Intent::ALL.into_iter().find(|i| i.as_str() == name)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Intent::Charge => "charge",
             Intent::X402Exact => "x402-exact",
             Intent::Session => "session",
+            Intent::X402Upto => "x402-upto",
+            Intent::X402BatchSettlement => "x402-batch-settlement",
+            Intent::Subscription => "subscription",
         }
     }
 }

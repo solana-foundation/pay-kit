@@ -12,6 +12,9 @@
 // follow-up (see harness/vectors/README.md).
 
 import { createHmac } from "node:crypto";
+import { run as runBatch } from "./intents/x402-batch-settlement";
+import { run as runSubscription } from "./intents/subscription";
+import { run as runUpto } from "./intents/x402-upto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
@@ -386,6 +389,9 @@ async function runSessionVoucherVerify(vector: ConformanceVector): Promise<Runne
 }
 
 async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
+  if (vector.intent === "x402-upto") return runUpto(vector);
+  if (vector.intent === "x402-batch-settlement") return runBatch(vector);
+  if (vector.intent === "subscription") return runSubscription(vector);
   if (vector.intent === "x402-exact") {
     return runX402Vector(vector);
   }

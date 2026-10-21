@@ -308,7 +308,7 @@ pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
 /// Requirement id to text, from `harness/requirements/*.toml`.
 pub fn requirement_texts(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    for name in ["mpp", "x402"] {
+    for name in ["mpp", "x402", "mpp-solana"] {
         let Ok(raw) =
             std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
         else {

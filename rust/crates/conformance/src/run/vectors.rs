@@ -76,6 +76,7 @@ impl Vector {
         self.input()
             .pointer("/sessionVoucherVerify/nowSeconds")
             .is_some()
+            || self.input().get("nowSeconds").is_some()
     }
 
     /// The v1 vector a testee receives, with the fixture RPC URL injected.
@@ -145,7 +146,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
     if !obj["id"].as_str().is_some_and(check_id) {
         return Err("id must match ^[a-z][a-z0-9-]*[a-z0-9]$".into());
     }
-    if !one_of(&obj["intent"], &["charge", "x402-exact", "session"]) {
+    if !one_of(&obj["intent"], &super::expectations::VECTOR_INTENTS) {
         return Err("unknown intent".into());
     }
     if !one_of(

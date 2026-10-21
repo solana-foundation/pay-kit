@@ -1,0 +1,10 @@
+repo = "mpp-specs-solana"
+commit = "5c4a528ce113815a2fb0b79801bd62bb2471a0e8"
+files = [
+  "specs/methods/solana/draft-solana-subscription-*",
+]
+
+# Solana method drafts pinned from solana-foundation/mpp-specs
+# (feat/solana-subscriptions) until they merge into tempoxyz/mpp-specs.
+# Same id scheme as mpp.toml: id = "MPP-" + sha256(normalised text)[:10].
+# `required = true`: `pkc req-lint` fails if no case maps the id any more.

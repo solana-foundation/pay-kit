@@ -474,7 +474,10 @@ pub fn build_artifact(vector: &Vector, result: &Value) -> Result<Option<String>,
     let field = match vector.intent.as_str() {
         "charge" => "transaction",
         "x402-exact" => "x402PaymentHeader",
-        _ => return Ok(None),
+        other => match crate::realize::suite_build_artifact_field(other) {
+            Some(field) => field,
+            None => return Ok(None),
+        },
     };
     match result.get(field).and_then(Value::as_str) {
         Some(artifact) => Ok(Some(artifact.to_string())),
@@ -682,6 +685,11 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     let intent = match vector.intent.as_str() {
         "charge" => Intent::Charge,
         "x402-exact" => Intent::X402Exact,
+        "x402-upto" => return crate::realize::upto::judge_build(vector, artifact).await,
+        "x402-batch-settlement" => {
+            return crate::realize::batch::judge_build(vector, artifact).await
+        }
+        "subscription" => return crate::realize::subscription::judge_build(vector, artifact).await,
         _ => return Ok(()),
     };
     let verify_input = verify_input_for_build(vector, artifact).map_err(Failure::new)?;
@@ -780,13 +788,11 @@ mod tests {
         let all = vectors::load(&crate::repo_root().join("harness/vectors")).unwrap();
         let mut judged = 0;
         for v in all.iter().filter(|v| {
-            v.mode == "build-transaction" && v.expect_outcome() == "accept" && v.intent != "session"
+            v.mode == "build-transaction"
+                && v.expect_outcome() == "accept"
+                && build_artifact(v, &json!({})).is_err()
         }) {
-            let intent = if v.intent == "charge" {
-                Intent::Charge
-            } else {
-                Intent::X402Exact
-            };
+            let intent = Intent::parse(&v.intent).expect("known intent");
             let output = match rt.block_on(realize::run(intent, Mode::BuildTransaction, v.input()))
             {
                 Observed::Accept(o) => o,

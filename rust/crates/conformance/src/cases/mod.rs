@@ -12,8 +12,11 @@ pub mod canonical;
 pub mod charge;
 pub mod charge_policy;
 pub mod session;
+pub mod subscription;
+pub mod x402_batch;
 pub mod x402_exact;
 pub mod x402_policy;
+pub mod x402_upto;
 
 /// `registry! { name => case_expr; ... }`: one constructor fn per case, the
 /// module's `cases()`, and a positive-control `#[test]` per case that also
@@ -60,6 +63,9 @@ pub fn all() -> Vec<crate::case::Case> {
     out.extend(session::cases());
     out.extend(x402_exact::cases());
     out.extend(x402_policy::cases());
+    out.extend(x402_upto::cases());
+    out.extend(x402_batch::cases());
+    out.extend(subscription::cases());
     out
 }
 
@@ -103,7 +109,7 @@ mod tests {
     fn every_case_maps_a_known_requirement() {
         let root = crate::repo_root();
         let mut known = BTreeSet::new();
-        for name in ["mpp", "x402"] {
+        for name in ["mpp", "x402", "mpp-solana"] {
             let raw =
                 std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
                     .unwrap();

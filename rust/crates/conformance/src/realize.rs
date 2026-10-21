@@ -15,6 +15,10 @@
 //! Every registry case's `#[test]` calls [`realize_blocking`], so the same
 //! check is the positive control and the filler.
 
+pub mod batch;
+pub mod subscription;
+pub mod upto;
+
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -356,8 +360,24 @@ fn x402_header_input(id: &str, spec: &crate::case::X402HeaderSpec) -> Result<Val
 
 // ── kit drivers ────────────────────────────────────────────────────────────
 
+/// The result field an accepted build of a per-suite intent carries
+/// (`charge` and `x402-exact` are handled by the judge directly).
+pub fn suite_build_artifact_field(intent: &str) -> Option<&'static str> {
+    match intent {
+        "x402-upto" => Some(upto::BUILD_ARTIFACT),
+        "x402-batch-settlement" => Some(batch::BUILD_ARTIFACT),
+        "subscription" => Some(subscription::BUILD_ARTIFACT),
+        _ => None,
+    }
+}
+
 pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
     let result = match (intent, mode) {
+        // Per-suite modules own every mode, canonical bytes included (they
+        // fall back to `canonical_bytes` for the generic keys).
+        (Intent::X402Upto, mode) => upto::run(mode, input).await,
+        (Intent::X402BatchSettlement, mode) => batch::run(mode, input).await,
+        (Intent::Subscription, mode) => subscription::run(mode, input).await,
         (_, Mode::CanonicalBytes) => canonical_bytes(input),
         (Intent::Charge, Mode::BuildTransaction) => match charge_build(input).await {
             Ok(transaction) => Ok(Observed::Accept(Output {
@@ -715,7 +735,7 @@ fn canonical_json(value: &Value) -> Result<(String, String), String> {
     Ok((json, encoded.raw().to_string()))
 }
 
-fn canonical_bytes(input: &Value) -> Result<Observed, String> {
+pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
     let mut exact = Map::new();
     let set_bytes = |exact: &mut Map<String, Value>, bytes: &[u8]| {
         exact.insert("bytes".into(), json!(bytes));

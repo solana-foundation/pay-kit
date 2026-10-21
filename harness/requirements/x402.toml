@@ -5,6 +5,10 @@ files = [
   "specs/schemes/exact/scheme_exact.md",
   "specs/schemes/exact/scheme_exact_svm.md",
   "specs/extensions/payment_identifier.md",
+  "specs/schemes/upto/scheme_upto.md",
+  "specs/schemes/upto/scheme_upto_svm.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
 ]
 
 # Requirements the vectors cover. id = prefix + sha256(normalised text)[:10];

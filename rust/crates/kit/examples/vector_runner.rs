@@ -74,6 +74,13 @@ const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const ACCEPTED_TX_VERSIONS: &[TxVersion] = &[TxVersion::V0];
 
 /// Outcome of one vector, rendered as the RunnerResult JSON.
+#[path = "vector_runner/batch.rs"]
+mod batch;
+#[path = "vector_runner/subscription.rs"]
+mod subscription;
+#[path = "vector_runner/upto.rs"]
+mod upto;
+
 enum Outcome {
     Accept(Map<String, Value>),
     Reject(Rejection),
@@ -237,6 +244,9 @@ async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
     let input = vector.get("input").cloned().unwrap_or(Value::Null);
 
     match (intent, mode) {
+        ("x402-upto", mode) => upto::run(mode, &input).await,
+        ("x402-batch-settlement", mode) => batch::run(mode, &input).await,
+        ("subscription", mode) => subscription::run(mode, &input).await,
         ("x402-exact", "build-transaction") => x402_build(&input).await,
         ("x402-exact", "verify-transaction") => x402_verify(&input).await,
         ("session", "verify-transaction") => Ok(session_voucher_verify(&input).await?),
