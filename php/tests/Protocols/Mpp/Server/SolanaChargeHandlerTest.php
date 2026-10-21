@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
+use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\Credential;
@@ -705,6 +706,69 @@ final class SolanaChargeHandlerTest extends TestCase
         $replayed = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request);
         self::assertInstanceOf(PaymentRequiredResponse::class, $replayed);
         self::assertStringContainsString('already consumed', $replayed->body['detail']);
+    }
+
+    // A broadcast whose response was lost stays pending. A retry after the
+    // challenge expired must still reconcile it (the payment may have
+    // landed), without ever broadcasting it again; an expired credential with
+    // no pending charge of its own is refused as expired.
+    public function testPendingChargeReconcilesAfterItsChallengeExpires(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $later = new DateTimeImmutable('+1 hour');
+        $credentialFor = fn (string $transaction, string $at = '+5 minutes') => (new Credential(
+            challenge: $challenges->createChallenge($request, (new DateTimeImmutable($at))->format('Y-m-d\TH:i:s\Z'))->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $handler = fn (FakeRpcGateway $rpc) => $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            confirmationAttempts: 1,
+            rpcGateway: $rpc,
+        );
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = $credentialFor($transaction);
+
+        $lost = new RpcException('JSON-RPC error: response lost after the node accepted it', 200, -32099);
+        self::assertInstanceOf(
+            SettlementPending::class,
+            $handler(new FakeRpcGateway(signature: $signature, sendError: $lost))->handle($authorization, $request),
+        );
+
+        // Expired, still no status: in progress, not expired.
+        $unknown = new FakeRpcGateway(signature: $signature, statuses: [null]);
+        self::assertInstanceOf(SettlementPending::class, $handler($unknown)->handle($authorization, $request, $later));
+        // It landed: the same credential is granted once, never re-broadcast.
+        $landed = new FakeRpcGateway(signature: $signature);
+        $settled = $handler($landed)->handle($authorization, $request, $later);
+        self::assertInstanceOf(ChargeSettlement::class, $settled);
+        self::assertSame($signature, $settled->signature);
+        self::assertSame([], $unknown->sentTransactions);
+        self::assertSame([], $landed->sentTransactions);
+        $replayed = $handler(new FakeRpcGateway(signature: $signature))->handle($authorization, $request, $later);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $replayed);
+
+        // An expired credential never starts a payment.
+        $fresh = $this->minimalV0TransactionBase64();
+        $rpc = new FakeRpcGateway(signature: $this->signatureOf($fresh));
+        $expired = $handler($rpc)->handle($credentialFor($fresh), $request, $later);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $expired);
+        self::assertStringContainsString('expired', $expired->body['detail']);
+        self::assertSame([], $rpc->sentTransactions);
+
+        // Nor reconciles a pending charge another challenge left behind.
+        $other = $this->minimalV0TransactionBase64();
+        self::assertInstanceOf(
+            SettlementPending::class,
+            $handler(new FakeRpcGateway(signature: $this->signatureOf($other), sendError: $lost))->handle($credentialFor($other), $request),
+        );
+        $stolen = $handler(new FakeRpcGateway(signature: $this->signatureOf($other)))->handle($credentialFor($other, '+6 minutes'), $request, $later);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $stolen);
+        self::assertStringContainsString('expired', $stolen->body['detail']);
     }
 
     // A missing signature status is not proof the transaction never landed

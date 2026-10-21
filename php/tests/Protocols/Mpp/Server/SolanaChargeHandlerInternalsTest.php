@@ -95,7 +95,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
         $h = $this->handlerWith($rpc);
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('invalid transaction payload');
-        $this->invoke($h, 'settle', '');
+        $this->invoke($h, 'settle', '', 'challenge-id');
     }
 
     public function testSettleRejectsInvalidBase64(): void
@@ -103,7 +103,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
         $rpc = new FakeRpcGateway();
         $h = $this->handlerWith($rpc);
         $this->expectException(InvalidArgumentException::class);
-        $this->invoke($h, 'settle', '!!!not-base64!!!');
+        $this->invoke($h, 'settle', '!!!not-base64!!!', 'challenge-id');
     }
 
     public function testConsumeSignatureRejectsReplay(): void

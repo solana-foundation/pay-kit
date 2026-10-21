@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -156,5 +157,72 @@ func TestMiddlewareSettlementInProgressIsNotRechallenged(t *testing.T) {
 	}
 	if rr.Header().Get(core.WWWAuthenticateHeader) != "" {
 		t.Fatal("settlement-in-progress response must not carry a challenge")
+	}
+}
+
+// expireChallenges moves the clock past every challenge's expiry for the
+// rest of the test.
+func expireChallenges(t *testing.T) {
+	t.Helper()
+	saved := now
+	now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+	t.Cleanup(func() { now = saved })
+}
+
+// A broadcast whose response was lost stays pending; a retry after the
+// challenge expired must still reconcile it (the payment may have landed).
+func TestPendingChargeReconcilesAfterItsChallengeExpires(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	credential, tx := pullCredential(t, handler, rpcClient, cfg.Client)
+	signature := tx.Signatures[0]
+	rpcClient.SendErr = &jsonrpc.RPCError{Code: -32099, Message: "response lost"}
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeSettlementInProgress {
+		t.Fatalf("want settlement in progress, got %v", err)
+	}
+	rpcClient.SendErr = nil
+	expireChallenges(t)
+
+	// Expired but unresolved: still in progress, not expired.
+	rpcClient.Statuses[signature.String()] = nil
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeSettlementInProgress {
+		t.Fatalf("want settlement in progress after expiry, got %v", err)
+	}
+	// It landed: the same credential is granted once, never re-broadcast.
+	rpcClient.BySig[signature.String()] = tx
+	rpcClient.Statuses[signature.String()] = &rpc.SignatureStatusesResult{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
+	if err != nil {
+		t.Fatalf("expired pending charge did not reconcile: %v", err)
+	}
+	if receipt.Reference != signature.String() {
+		t.Fatalf("receipt reference = %s", receipt.Reference)
+	}
+	if len(rpcClient.Sent) != 0 {
+		t.Fatalf("reconciling re-broadcast the transaction: %d sends", len(rpcClient.Sent))
+	}
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
+		t.Fatal("an expired credential was granted twice")
+	}
+}
+
+// An expired credential never starts a payment, and cannot reconcile a
+// pending charge recorded under another challenge.
+func TestExpiredCredentialNeverStartsAPayment(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	credential, tx := pullCredential(t, handler, rpcClient, cfg.Client)
+	expireChallenges(t)
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeChallengeExpired {
+		t.Fatalf("want challenge expired, got %v", err)
+	}
+	if len(rpcClient.Sent) != 0 {
+		t.Fatalf("an expired credential was broadcast: %d sends", len(rpcClient.Sent))
+	}
+
+	signature := tx.Signatures[0].String()
+	_ = handler.markPending(context.Background(), signature, "another-challenge", errors.New("lost"))
+	rpcClient.BySig[signature] = tx
+	rpcClient.Statuses[signature] = &rpc.SignatureStatusesResult{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeChallengeExpired {
+		t.Fatalf("want challenge expired for another challenge's pending charge, got %v", err)
 	}
 }

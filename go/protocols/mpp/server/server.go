@@ -439,29 +439,25 @@ func (m *Mpp) VerifyCredentialWithExpected(
 	credential core.PaymentCredential,
 	expected intents.ChargeRequest,
 ) (core.Receipt, error) {
-	credRequest, _, payload, err := m.verifyChallengeAndDecode(credential)
+	credRequest, _, payload, expired, err := m.verifyChallengeAndDecode(credential)
 	if err != nil {
 		return core.Receipt{}, err
 	}
-	if credRequest.Amount != expected.Amount {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeAmountMismatch,
-			fmt.Sprintf("amount mismatch: credential has %s but endpoint expects %s",
-				credRequest.Amount, expected.Amount),
-		)
+	if expired != nil {
+		// An expired challenge never starts a payment. It may only finish
+		// one this same challenge already broadcast and left pending, so a
+		// retry after a lost response still reconciles.
+		if err := checkExpected(credRequest, expected); err != nil {
+			return core.Receipt{}, expired
+		}
+		expectedDetails, err := decodeMethodDetails(expected.MethodDetails)
+		if err != nil {
+			return core.Receipt{}, expired
+		}
+		return m.reconcileExpired(ctx, credential, expected, expectedDetails, payload, expired)
 	}
-	if credRequest.Currency != expected.Currency {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeChallengeRouteMismatch,
-			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
-				credRequest.Currency, expected.Currency),
-		)
-	}
-	if credRequest.Recipient != expected.Recipient {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeRecipientMismatch,
-			"recipient mismatch: credential was issued for a different recipient",
-		)
+	if err := checkExpected(credRequest, expected); err != nil {
+		return core.Receipt{}, err
 	}
 	expectedDetails, err := decodeMethodDetails(expected.MethodDetails)
 	if err != nil {
@@ -470,12 +466,85 @@ func (m *Mpp) VerifyCredentialWithExpected(
 	return m.verifyPayload(ctx, credential, expected, expectedDetails, payload)
 }
 
+// checkExpected binds the credential's charge to the route's expected one.
+func checkExpected(credRequest, expected intents.ChargeRequest) error {
+	if credRequest.Amount != expected.Amount {
+		return core.NewError(
+			core.ErrCodeAmountMismatch,
+			fmt.Sprintf("amount mismatch: credential has %s but endpoint expects %s",
+				credRequest.Amount, expected.Amount),
+		)
+	}
+	if credRequest.Currency != expected.Currency {
+		return core.NewError(
+			core.ErrCodeChallengeRouteMismatch,
+			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
+				credRequest.Currency, expected.Currency),
+		)
+	}
+	if credRequest.Recipient != expected.Recipient {
+		return core.NewError(
+			core.ErrCodeRecipientMismatch,
+			"recipient mismatch: credential was issued for a different recipient",
+		)
+	}
+	return nil
+}
+
+// reconcileExpired reconciles the pending charge an expired credential left
+// behind, or refuses it as expired. Only a pull credential whose transaction
+// (as this server co-signs it) is recorded pending under this same challenge
+// gets past here; it is then settled from the chain only, never broadcast.
+func (m *Mpp) reconcileExpired(
+	ctx context.Context,
+	credential core.PaymentCredential,
+	request intents.ChargeRequest,
+	details paycore.MethodDetails,
+	payload paycore.CredentialPayload,
+	expired error,
+) (core.Receipt, error) {
+	if payload.Type != "transaction" || payload.Transaction == "" {
+		return core.Receipt{}, expired
+	}
+	tx, err := decodeCredentialTransaction(payload.Transaction)
+	if err != nil {
+		return core.Receipt{}, expired
+	}
+	if m.feePayerSigner != nil {
+		if err := solanatx.SignTransaction(tx, m.feePayerSigner); err != nil {
+			return core.Receipt{}, expired
+		}
+	}
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+		return core.Receipt{}, expired
+	}
+	signature := tx.Signatures[0]
+	raw, ok, err := m.store.Get(ctx, pendingChargePrefix+signature.String())
+	if err != nil {
+		return core.Receipt{}, err
+	}
+	var record pendingCharge
+	if !ok || json.Unmarshal(raw, &record) != nil || record.ChallengeID != credential.Challenge.ID {
+		return core.Receipt{}, expired
+	}
+	return m.reconcilePending(ctx, credential, request, details, signature)
+}
+
+// now is the clock challenge expiry is judged against; tests move it.
+var now = time.Now
+
 // verifyChallengeAndDecode runs Tier-1 (HMAC + expiry) and Tier-2 (pinned-field
 // backstop) checks, then returns the credential-decoded request, method
 // details, and payload for downstream settlement.
+//
+// An expired challenge is not an error here: it comes back as the expiry
+// error in its own result, alongside everything else, so the caller can
+// reconcile a charge that challenge already left pending. The caller must
+// never start a payment for it. Any other failure on an expired challenge
+// reports the expiry, as it always has.
 func (m *Mpp) verifyChallengeAndDecode(
 	credential core.PaymentCredential,
-) (intents.ChargeRequest, paycore.MethodDetails, paycore.CredentialPayload, error) {
+) (request intents.ChargeRequest, details paycore.MethodDetails, payload paycore.CredentialPayload, expired error, err error) {
 	challenge := core.PaymentChallenge{
 		ID:      credential.Challenge.ID,
 		Realm:   credential.Challenge.Realm,
@@ -487,29 +556,32 @@ func (m *Mpp) verifyChallengeAndDecode(
 		Opaque:  credential.Challenge.Opaque,
 	}
 	if !challenge.Verify(m.secretKey) {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{},
+		return request, details, payload, nil,
 			core.NewError(core.ErrCodeChallengeMismatch, "challenge ID mismatch")
 	}
-	if challenge.IsExpired(time.Now()) {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{},
-			core.NewError(core.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
+	if challenge.IsExpired(now()) {
+		expired = core.NewError(core.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
 	}
-	var request intents.ChargeRequest
+	fail := func(err error) (intents.ChargeRequest, paycore.MethodDetails, paycore.CredentialPayload, error, error) {
+		if expired != nil {
+			err = expired
+		}
+		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, nil, err
+	}
 	if err := challenge.Request.Decode(&request); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
 	if err := m.verifyPinnedFields(credential, request); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	details, err := decodeMethodDetails(request.MethodDetails)
+	details, err = decodeMethodDetails(request.MethodDetails)
 	if err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	var payload paycore.CredentialPayload
 	if err := credential.PayloadAs(&payload); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	return request, details, payload, nil
+	return request, details, payload, expired, nil
 }
 
 // verifyPinnedFields is the Tier-2 backstop. After Tier-1 (HMAC) confirms the

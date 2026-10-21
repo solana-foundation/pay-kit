@@ -412,7 +412,25 @@ class Mpp:
         claims — so a credential built for a different route's request cannot
         succeed even if its other fields line up.
         """
-        cred_request, _details, payload = self._verify_challenge_and_decode(credential)
+        cred_request, _details, payload, expired = self._verify_challenge_and_decode(credential)
+        try:
+            expected, expected_details = self._bind_to_expected(cred_request, expected)
+        except PaymentError:
+            # An expired challenge reports its expiry first, as before.
+            if expired is not None:
+                raise expired from None
+            raise
+
+        if expired is not None:
+            # An expired challenge never starts a payment. It may only finish
+            # one this same challenge already broadcast and left pending.
+            return await self._reconcile_expired(credential, expected, expected_details, payload, expired)
+        return await self._verify_payload(credential, expected, expected_details, payload)
+
+    def _bind_to_expected(
+        self, cred_request: ChargeRequest, expected: ChargeRequest
+    ) -> tuple[ChargeRequest, MethodDetails]:
+        """Check the credential's charge against the route's, in wire form."""
         # Callers build `expected` from route configuration, which may name
         # the currency by symbol ("USDC") or as "SOL". The challenge carries
         # the wire form ("sol" or the mint), so compare and settle against
@@ -438,8 +456,40 @@ class Mpp:
         expected_details = MethodDetails()
         if expected.method_details:
             expected_details = MethodDetails.from_dict(expected.method_details)
+        return expected, expected_details
 
-        return await self._verify_payload(credential, expected, expected_details, payload)
+    async def _reconcile_expired(
+        self,
+        credential: PaymentCredential,
+        request: ChargeRequest,
+        details: MethodDetails,
+        payload: CredentialPayload,
+        expired: ChallengeExpiredError,
+    ) -> Receipt:
+        """Reconcile an expired credential's pending charge, or refuse it.
+
+        A broadcast whose response was lost stays pending under its signature,
+        bound to its challenge. A retry after the challenge expired must still
+        reconcile it (the payment may have landed), but an expired credential
+        with no pending charge of its own is refused as expired.
+        """
+        if payload.type != "transaction" or not payload.transaction or self._rpc is None:
+            raise expired
+        signed_b64 = payload.transaction
+        try:
+            if details.fee_payer and self._fee_payer_signer is not None:
+                signed_b64 = await _co_sign_with_fee_payer(payload.transaction, self._fee_payer_signer)
+            signature = _local_signature(base64.b64decode(signed_b64))
+        except Exception:  # noqa: BLE001 - an undecodable payload has no pending charge
+            raise expired from None
+        current = await self._store.get(consumed_signature_key(signature))
+        if not (
+            isinstance(current, dict)
+            and current.get("state") == "pending"
+            and current.get("challengeId") == credential.challenge.id
+        ):
+            raise expired
+        return await self._reconcile_pending(credential, request, details, signature)
 
     def _to_wire_request(self, request: ChargeRequest) -> ChargeRequest:
         """Return ``request`` with its currency in wire form ("sol" or a mint)."""
@@ -448,11 +498,14 @@ class Mpp:
 
     def _verify_challenge_and_decode(
         self, credential: PaymentCredential
-    ) -> tuple[ChargeRequest, MethodDetails, CredentialPayload]:
+    ) -> tuple[ChargeRequest, MethodDetails, CredentialPayload, ChallengeExpiredError | None]:
         """Run Tier-1 (HMAC + expiry) and Tier-2 (pinned-field) checks.
 
-        Returns the credential-decoded request, parsed method details, and the
-        credential payload for downstream settlement.
+        Returns the credential-decoded request, parsed method details, the
+        credential payload for downstream settlement, and the expiry error when
+        the challenge has expired. An expired challenge still passes every other
+        check here, so that the caller may reconcile a charge it already left
+        pending; it must never start a new one.
         """
         challenge = PaymentChallenge(
             id=credential.challenge.id,
@@ -468,22 +521,27 @@ class Mpp:
         if not challenge.verify(self._secret_key):
             raise ChallengeMismatchError()
 
-        if challenge.is_expired():
-            raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
+        expired = ChallengeExpiredError(f"challenge expired at {challenge.expires}") if challenge.is_expired() else None
 
-        request = ChargeRequest.from_dict(challenge.decode_request())
+        try:
+            request = ChargeRequest.from_dict(challenge.decode_request())
 
-        # Tier-2: pinned-field backstop. Even if the simple verify_credential
-        # path is used, fields that are fixed at Mpp construction time must
-        # match the credential.
-        self._verify_pinned_fields(credential, request)
+            # Tier-2: pinned-field backstop. Even if the simple verify_credential
+            # path is used, fields that are fixed at Mpp construction time must
+            # match the credential.
+            self._verify_pinned_fields(credential, request)
 
-        details = MethodDetails()
-        if request.method_details:
-            details = MethodDetails.from_dict(request.method_details)
+            details = MethodDetails()
+            if request.method_details:
+                details = MethodDetails.from_dict(request.method_details)
 
-        payload = CredentialPayload.from_dict(credential.payload)
-        return request, details, payload
+            payload = CredentialPayload.from_dict(credential.payload)
+        except Exception:
+            # An expired challenge reports its expiry first, as before.
+            if expired is not None:
+                raise expired from None
+            raise
+        return request, details, payload, expired
 
     def _verify_pinned_fields(self, credential: PaymentCredential, request: ChargeRequest) -> None:
         # L6 lock: pinned-field mismatches are route mismatches, NOT HMAC

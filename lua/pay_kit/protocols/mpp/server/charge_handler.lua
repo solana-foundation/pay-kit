@@ -207,8 +207,13 @@ end
 
 -- Keep the claimed signature and record the charge as pending: the
 -- transaction may land, so the client must not be released to pay again.
-local function settlement_pending(self, signature, detail)
+local function settlement_pending(self, signature, detail, challenge_id)
   self.replay_store:put_if_absent(PENDING_PREFIX .. signature, true)
+  if type(challenge_id) == 'string' and challenge_id ~= '' then
+    -- Binds the pending charge to the challenge that broadcast it, so that
+    -- challenge alone may reconcile it after it expires.
+    self.replay_store:put_if_absent(PENDING_PREFIX .. signature .. ':' .. challenge_id, true)
+  end
   verifier_error('Settlement of transaction ' .. signature .. ' is in progress (' ..
     detail .. '); retry the same credential, do not pay again',
     error_codes.SETTLEMENT_IN_PROGRESS)
@@ -247,7 +252,7 @@ end
 -- The credential payload carries a base64 signed transaction. The handler
 -- verifies the transaction shape, optionally cosigns it, simulates with
 -- retry, broadcasts, consumes the signature, then awaits confirmation.
-function Handler:settle_pull(transaction_base64, request)
+function Handler:settle_pull(transaction_base64, request, challenge_id)
   if type(transaction_base64) ~= 'string' or transaction_base64 == '' then
     verifier_error('missing or empty transaction payload')
   end
@@ -277,28 +282,10 @@ function Handler:settle_pull(transaction_base64, request)
     end
   end
 
-  -- Stage 3: optional cosign. Returns a possibly-replaced base64 transaction.
-  local signed_base64 = transaction_base64
-  if type(self.pull_transaction_signer) == 'function' then
-    local signer_ok, signer_result = pcall(self.pull_transaction_signer, signed_base64)
-    if not signer_ok then
-      local message = type(signer_result) == 'table' and signer_result.message or tostring(signer_result)
-      verifier_error('cosign failed: ' .. message)
-    end
-    if type(signer_result) ~= 'string' or signer_result == '' then
-      verifier_error('cosign returned empty transaction')
-    end
-    signed_base64 = signer_result
-  end
-
-  -- Stage 4: derive the final signature and claim it before anything is
-  -- sent. A transaction already claimed is either pending (reconcile it) or
-  -- consumed.
-  local extractor = self.pull_signature_extractor or default_signature_extractor
-  local extract_ok, local_signature = pcall(extractor, signed_base64)
-  if not extract_ok or type(local_signature) ~= 'string' or local_signature == '' then
-    verifier_error('could not derive the transaction signature: ' .. error_message(local_signature))
-  end
+  -- Stages 3-4: optional cosign, then derive the final signature and claim
+  -- it before anything is sent. A transaction already claimed is either
+  -- pending (reconcile it) or consumed.
+  local signed_base64, local_signature = self:signed_transaction(transaction_base64)
   local ledger = consumed_signatures.new(self.replay_store)
   if not ledger:claim(local_signature) then
     local reconciled = self:reconcile_pending(local_signature)
@@ -353,18 +340,62 @@ function Handler:settle_pull(transaction_base64, request)
       ledger:release(local_signature)
       verifier_error('Simulation failed: ' .. error_message(signature))
     end
-    settlement_pending(self, local_signature, 'broadcast outcome unknown: ' .. error_message(signature))
+    settlement_pending(self, local_signature, 'broadcast outcome unknown: ' .. error_message(signature),
+      challenge_id)
   end
   if signature ~= local_signature then
     settlement_pending(self, local_signature,
-      'RPC returned signature ' .. tostring(signature) .. ' for a different transaction')
+      'RPC returned signature ' .. tostring(signature) .. ' for a different transaction', challenge_id)
   end
 
   -- Stage 7: confirmation polling. Errors here surface but the signature
   -- is already consumed, mirroring the Rust spine.
-  self:await_confirmation(signature)
+  self:await_confirmation(signature, challenge_id)
 
   return signature
+end
+
+--- The transaction as this server broadcasts it (co-signed when it pays the
+--- fee) and its first signature, which identifies it on chain.
+function Handler:signed_transaction(transaction_base64)
+  local signed_base64 = transaction_base64
+  if type(self.pull_transaction_signer) == 'function' then
+    local signer_ok, signer_result = pcall(self.pull_transaction_signer, signed_base64)
+    if not signer_ok then
+      local message = type(signer_result) == 'table' and signer_result.message or tostring(signer_result)
+      verifier_error('cosign failed: ' .. message)
+    end
+    if type(signer_result) ~= 'string' or signer_result == '' then
+      verifier_error('cosign returned empty transaction')
+    end
+    signed_base64 = signer_result
+  end
+  local extractor = self.pull_signature_extractor or default_signature_extractor
+  local extract_ok, local_signature = pcall(extractor, signed_base64)
+  if not extract_ok or type(local_signature) ~= 'string' or local_signature == '' then
+    verifier_error('could not derive the transaction signature: ' .. error_message(local_signature))
+  end
+  return signed_base64, local_signature
+end
+
+--- Reconcile the pending charge an expired credential's challenge left
+--- behind, from the chain only (never broadcast). Returns nil when that
+--- challenge has no pending charge of its own, so the credential is refused
+--- as expired.
+function Handler:reconcile_expired(payload, challenge_id)
+  if type(payload) ~= 'table' or payload.type ~= 'transaction'
+    or type(payload.transaction) ~= 'string' or payload.transaction == ''
+    or type(challenge_id) ~= 'string' or challenge_id == '' then
+    return nil
+  end
+  local ok, _, signature = pcall(self.signed_transaction, self, payload.transaction)
+  if not ok then
+    return nil
+  end
+  if not store_has(self.replay_store, PENDING_PREFIX .. signature .. ':' .. challenge_id) then
+    return nil
+  end
+  return self:reconcile_pending(signature)
 end
 
 --- Push-mode settlement.
@@ -394,12 +425,12 @@ end
 
 --- Drive the right mode based on the credential payload type. Convenience
 -- wrapper used by `as_callback()` so callers do not branch themselves.
-function Handler:settle(payload, request)
+function Handler:settle(payload, request, challenge_id)
   if type(payload) ~= 'table' then
     verifier_error('payload table is required')
   end
   if payload.type == 'transaction' then
-    return self:settle_pull(payload.transaction, request)
+    return self:settle_pull(payload.transaction, request, challenge_id)
   elseif payload.type == 'signature' then
     -- Audit #5: reject push-mode credentials unless the operator opted in.
     if not self.accept_push_mode then
@@ -427,7 +458,9 @@ function Handler:as_callback(options)
   local prefix = options.replay_key_prefix or 'solana-charge:server-noop:'
   local handler = self
   return function(context)
-    local signature = handler:settle(context.payload, context.request)
+    local challenge_id = context.credential and context.credential.challenge
+      and context.credential.challenge.id
+    local signature = handler:settle(context.payload, context.request, challenge_id)
     return {
       reference = signature,
       replay_key = prefix .. signature,
@@ -439,6 +472,23 @@ function Handler:as_callback(options)
   end
 end
 
+--- Build a `reconcile_expired` callback for `mpp.server.new`: it finishes the
+--- pending charge an expired credential's challenge left behind, and returns
+--- nil (the server then refuses the credential as expired) when there is
+--- none. Pass it beside `verify_payment = handler:as_callback()`.
+function Handler:reconcile_expired_callback()
+  local handler = self
+  return function(context)
+    local challenge_id = context.credential and context.credential.challenge
+      and context.credential.challenge.id
+    local signature = handler:reconcile_expired(context.payload, challenge_id)
+    if signature == nil then
+      return nil
+    end
+    return { reference = signature, consumed = true }
+  end
+end
+
 --- Poll `getSignatureStatuses` until the signature is confirmed/finalized
 -- or the attempt budget is exhausted. Raises on `meta.err`. A status that
 -- never surfaces (null, still processing, or an RPC error) is not proof the
@@ -446,7 +496,7 @@ end
 -- a transaction that committed in time. The charge then stays pending for
 -- reconciliation instead of failing, so the client is never released to pay
 -- a replacement.
-function Handler:await_confirmation(signature)
+function Handler:await_confirmation(signature, challenge_id)
   local last_error
   for attempt = 1, self.confirmation_attempts do
     local ok, statuses = pcall(self.rpc.signature_statuses, self.rpc, { signature })
@@ -471,7 +521,7 @@ function Handler:await_confirmation(signature)
     end
   end
   settlement_pending(self, signature, 'timed out waiting for confirmation' ..
-    (last_error and (': ' .. last_error) or ''))
+    (last_error and (': ' .. last_error) or ''), challenge_id)
 end
 
 --- Fetch a settled push-mode transaction by signature, retrying until the

@@ -768,3 +768,107 @@ t.test('Kong-style shared replay_store does not double-consume on first payment'
   t.assert_true(message:find('consumed', 1, true) ~= nil,
     'expected signature_consumed-style error, got: ' .. tostring(message))
 end)
+
+-- A broadcast whose response was lost stays pending. A retry after the
+-- challenge expired must still reconcile it (the payment may have landed),
+-- without broadcasting it again; an expired credential never starts a
+-- payment, nor reconciles a charge another challenge left pending.
+t.test('pending charge reconciles after its challenge expires', function()
+  local mpp = require('tests._mpp')
+  local SECRET = 'expiry-test-secret-key-long-enough-32b'
+  local RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
+  local shared = store.memory()
+  local handler, rpc = new_handler({
+    replay_store = shared,
+    pull_signature_extractor = function(tx) return 'sig-' .. tx end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } }, { result = { err = nil } } },
+      sendTransaction = {
+        { error = { code = 'transport-error', message = 'response lost' } },
+        { error = { code = 'transport-error', message = 'response lost' } },
+      },
+      getSignatureStatuses = {
+        { result = {} },
+        { result = { { confirmationStatus = 'confirmed' } } },
+      },
+    }),
+  })
+  local server = mpp.server.new({
+    recipient = RECIPIENT, currency = 'USDC', decimals = 6, network = 'localnet',
+    secret_key = SECRET, realm = 'MPP', store = shared,
+    verify_payment = handler:as_callback(),
+    reconcile_expired = handler:reconcile_expired_callback(),
+  })
+  local function issue(description)
+    local challenge = server:charge_with_options('1.00', { expires = '2030-01-01T00:00:00Z', description = description })
+    return challenge, challenge.request:decode()
+  end
+  local function credential(challenge, tx)
+    return mpp.NewPaymentCredential(challenge:to_echo(), { type = 'transaction', transaction = tx })
+  end
+  local later = os.time({ year = 2031, month = 1, day = 1, hour = 0 })
+  local function sends()
+    local n = 0
+    for _, call in ipairs(rpc.calls) do
+      if call.method == 'sendTransaction' then n = n + 1 end
+    end
+    return n
+  end
+
+  local challenge, expected = issue('first')
+  local err = raised(function() server:verify_credential_with_expected(credential(challenge, 'tx-a'), expected) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+
+  -- Expired, still unresolved: in progress, not expired.
+  err = raised(function()
+    server:verify_credential_with_expected(credential(challenge, 'tx-a'), expected, later)
+  end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  -- It landed: the same credential is granted once, never re-broadcast.
+  local receipt = server:verify_credential_with_expected(credential(challenge, 'tx-a'), expected, later)
+  t.assert_equal(receipt.reference, 'sig-tx-a')
+  t.assert_equal(sends(), 1)
+  err = raised(function()
+    server:verify_credential_with_expected(credential(challenge, 'tx-a'), expected, later)
+  end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+
+  -- An expired credential never starts a payment.
+  local fresh, fresh_expected = issue('fresh')
+  err = raised(function()
+    server:verify_credential_with_expected(credential(fresh, 'tx-b'), fresh_expected, later)
+  end)
+  t.assert_equal(err.code, error_codes.CHALLENGE_EXPIRED)
+  t.assert_equal(sends(), 1)
+
+  -- Nor reconciles a pending charge another challenge left behind.
+  local owner, owner_expected = issue('owner')
+  err = raised(function() server:verify_credential_with_expected(credential(owner, 'tx-c'), owner_expected) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  local other, other_expected = issue('other')
+  err = raised(function()
+    server:verify_credential_with_expected(credential(other, 'tx-c'), other_expected, later)
+  end)
+  t.assert_equal(err.code, error_codes.CHALLENGE_EXPIRED)
+end)
+
+-- Without the reconcile hook an expired challenge is refused outright and
+-- never reaches `verify_payment`, which would start a new payment.
+t.test('expired challenge never reaches verify_payment', function()
+  local mpp = require('tests._mpp')
+  local called = false
+  local server = mpp.server.new({
+    recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h', currency = 'USDC', decimals = 6,
+    network = 'localnet', secret_key = 'expiry-test-secret-key-long-enough-32b', realm = 'MPP',
+    verify_payment = function() called = true return { reference = 'x' } end,
+  })
+  local challenge = server:charge_with_options('1.00', { expires = '2030-01-01T00:00:00Z' })
+  local expected = challenge.request:decode()
+  local err = raised(function()
+    server:verify_credential_with_expected(
+      mpp.NewPaymentCredential(challenge:to_echo(), { type = 'transaction', transaction = 'tx' }),
+      expected, os.time({ year = 2031, month = 1, day = 1, hour = 0 }))
+  end)
+  t.assert_equal(err.code, error_codes.CHALLENGE_EXPIRED)
+  t.assert_true(not called, 'verify_payment must not run for an expired challenge')
+end)

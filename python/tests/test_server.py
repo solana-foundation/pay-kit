@@ -1268,6 +1268,60 @@ class TestAmbiguousBroadcast:
         with pytest.raises(ReplayError):
             await _verify(handler, credential, challenge)
 
+    async def test_pending_charge_reconciles_after_its_challenge_expires(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        # Expired but still unresolved: in progress, not expired.
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        # It landed: the same credential is granted once, without a rebroadcast.
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+        assert rpc.sends == 1
+        # Granted once: the charge is no longer pending, so it is just expired.
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, credential, challenge)
+
+    async def test_expired_credential_never_starts_a_payment(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC()
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, credential, challenge)
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(signature)) is None
+
+    async def test_expired_credential_cannot_reconcile_another_challenges_pending_charge(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        other = handler.charge_with_options("1.00", ChargeOptions(description="another route"))
+        replayed = PaymentCredential(challenge=other.to_echo(), payload=credential.payload)
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, replayed, other)
+
     async def test_pending_charge_cannot_be_reconciled_by_another_challenge(self):
         rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
         store = MemoryStore()

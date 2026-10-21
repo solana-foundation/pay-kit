@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp\Server;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
@@ -39,6 +40,14 @@ final class SolanaChargeHandler
     private readonly PaymentVerifier $verifier;
     private readonly TransactionPayloadVerifier $transactionVerifier;
     private readonly ConsumedSignatures $consumedSignatures;
+    private readonly Store $replayStore;
+
+    /**
+     * Prefix of the record binding a claimed, possibly broadcast signature to
+     * the challenge that broadcast it, so that challenge alone may reconcile
+     * it after expiry.
+     */
+    private const PENDING_BINDING_PREFIX = 'solana-charge:pending:';
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -93,7 +102,8 @@ final class SolanaChargeHandler
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode);
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode));
-        $this->consumedSignatures = new ConsumedSignatures($replayStore ?? new MemoryStore());
+        $this->replayStore = $replayStore ?? new MemoryStore();
+        $this->consumedSignatures = new ConsumedSignatures($this->replayStore);
     }
 
     /**
@@ -115,7 +125,7 @@ final class SolanaChargeHandler
      * Returns 200 ({@see ChargeSettlement}) only after a transaction has been
      * broadcast and confirmed.
      */
-    public function handle(?string $authorization, ChargeRequest $request): PaymentRequiredResponse|ChargeSettlement|SettlementPending
+    public function handle(?string $authorization, ChargeRequest $request, ?DateTimeImmutable $now = null): PaymentRequiredResponse|ChargeSettlement|SettlementPending
     {
         if ($authorization === null || $authorization === '') {
             return $this->challenges->paymentRequiredResponse($request);
@@ -124,24 +134,38 @@ final class SolanaChargeHandler
         $result = $this->challenges->verifyAuthorizationHeader(
             $authorization,
             $this->verifier,
+            $now,
             expectedRequest: $request,
         );
-        if (!$result->ok) {
-            return $this->challenges->paymentRequiredResponse($request, $result->reason);
-        }
-
         $credential = $result->credential;
         $challenge = $result->challenge;
-        if ($credential === null || $challenge === null) {
+        if (!$result->ok) {
+            // An expired challenge never starts a payment, but a retry after
+            // a lost broadcast response must still reconcile the charge this
+            // same challenge left pending: the payment may have landed.
+            if (!$result->expired || $credential === null || $challenge === null) {
+                return $this->challenges->paymentRequiredResponse($request, $result->reason);
+            }
+            try {
+                $signature = $this->reconcileExpired($credential, $challenge->id);
+            } catch (SettlementInProgressException $pending) {
+                return SettlementPending::withDetail($pending->getMessage());
+            } catch (Throwable $error) {
+                return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+            }
+            if ($signature === null) {
+                return $this->challenges->paymentRequiredResponse($request, $result->reason);
+            }
+        } elseif ($credential === null || $challenge === null) {
             return $this->challenges->paymentRequiredResponse($request, 'verified result is missing credential or challenge');
-        }
-
-        try {
-            $signature = $this->settleCredentialPayload($credential, $request);
-        } catch (SettlementInProgressException $pending) {
-            return SettlementPending::withDetail($pending->getMessage());
-        } catch (Throwable $error) {
-            return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+        } else {
+            try {
+                $signature = $this->settleCredentialPayload($credential, $request, $challenge->id);
+            } catch (SettlementInProgressException $pending) {
+                return SettlementPending::withDetail($pending->getMessage());
+            } catch (Throwable $error) {
+                return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+            }
         }
 
         $receipt = $this->challenges->createReceiptHeaderForReference(
@@ -176,7 +200,7 @@ final class SolanaChargeHandler
      * never touches the network. Mirrors Rust `charge.rs::settle()`,
      * Ruby `verifier.rb`, Lua `verify_signature`, and Python `_settle_push`.
      */
-    private function settleCredentialPayload(Credential $credential, ChargeRequest $request): string
+    private function settleCredentialPayload(Credential $credential, ChargeRequest $request, string $challengeId): string
     {
         $methodDetails = is_array($request->methodDetails) ? $request->methodDetails : [];
 
@@ -185,7 +209,7 @@ final class SolanaChargeHandler
             if ($this->isSurfpoolMismatch($transaction)) {
                 throw new RuntimeException("Signed with a Surfpool localnet blockhash but the server expects {$this->network}.");
             }
-            return $this->settle($transaction);
+            return $this->settle($transaction, $challengeId);
         }
 
         $signature = $credential->payload['signature'] ?? null;
@@ -274,19 +298,9 @@ final class SolanaChargeHandler
      * can still land. A retry of the same credential reconciles the claimed
      * signature against the chain.
      */
-    private function settle(string $transactionBase64): string
+    private function settle(string $transactionBase64, string $challengeId): string
     {
-        $wire = base64_decode($transactionBase64, true);
-        if ($wire === false || $wire === '') {
-            throw new InvalidArgumentException('invalid transaction payload');
-        }
-
-        $tx = TransactionWire::deserialize($wire);
-        if ($this->feePayer !== null) {
-            $tx->partialSign($this->feePayer);
-        }
-        $signed = $tx->serialize();
-        $signature = self::firstSignature($signed);
+        [$signed, $signature] = $this->signedTransaction($transactionBase64);
 
         try {
             $reported = $this->rpc->sendRawTransaction($signed, [
@@ -305,6 +319,7 @@ final class SolanaChargeHandler
                 // Never forwarded, so it cannot land: the charge failed.
                 throw new RuntimeException('Transaction rejected by preflight: ' . $error->getMessage(), 0, $error);
             }
+            $this->bindPending($signature, $challengeId);
             throw new SettlementInProgressException(
                 "Broadcast outcome unknown for transaction $signature; retry the same credential: " . $error->getMessage(),
                 0,
@@ -315,6 +330,7 @@ final class SolanaChargeHandler
         if (!$this->consumedSignatures->claim($signature)) {
             return $this->reconcile($signature);
         }
+        $this->bindPending($signature, $challengeId);
         if ($reported !== $signature) {
             throw new SettlementInProgressException(
                 "RPC reported signature $reported for transaction $signature; retry the same credential",
@@ -322,6 +338,55 @@ final class SolanaChargeHandler
         }
         $this->awaitConfirmation($signature);
         return $this->authorize($signature);
+    }
+
+    /**
+     * The transaction as this server broadcasts it (co-signed when it pays
+     * the fee) and its first signature, which identifies it on chain.
+     *
+     * @return array{string, string}
+     */
+    private function signedTransaction(string $transactionBase64): array
+    {
+        $wire = base64_decode($transactionBase64, true);
+        if ($wire === false || $wire === '') {
+            throw new InvalidArgumentException('invalid transaction payload');
+        }
+
+        $tx = TransactionWire::deserialize($wire);
+        if ($this->feePayer !== null) {
+            $tx->partialSign($this->feePayer);
+        }
+        $signed = $tx->serialize();
+        return [$signed, self::firstSignature($signed)];
+    }
+
+    /** Record that `$challengeId` claimed (and may have broadcast) `$signature`. */
+    private function bindPending(string $signature, string $challengeId): void
+    {
+        $this->replayStore->putIfAbsent(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId, true);
+    }
+
+    /**
+     * Reconcile the charge an expired credential's challenge left pending,
+     * from the chain only (never broadcast). Null when that challenge has no
+     * claimed transaction of its own, so the credential is refused as expired.
+     */
+    private function reconcileExpired(Credential $credential, string $challengeId): ?string
+    {
+        $transaction = $credential->payload['transaction'] ?? null;
+        if (!is_string($transaction) || $transaction === '') {
+            return null;
+        }
+        try {
+            [, $signature] = $this->signedTransaction($transaction);
+        } catch (Throwable) {
+            return null;
+        }
+        if (!$this->replayStore->has(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId)) {
+            return null;
+        }
+        return $this->reconcile($signature);
     }
 
     /**

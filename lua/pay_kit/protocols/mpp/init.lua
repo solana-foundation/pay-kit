@@ -128,6 +128,7 @@ local function build_mpp_server(config, gate, store)
     network        = network,
     rpc_url        = config.rpc_url,
     verify_payment = handler:as_callback(),
+    reconcile_expired = handler:reconcile_expired_callback(),
   }
   if fee_payer_signer then
     opts.fee_payer = true
