@@ -1,0 +1,332 @@
+[
+  {
+    "bugType": "wire",
+    "description": "The 50-byte receiver-authorizer voucher message magic(0x56,0x01) || channelId(32) || u64 LE cumulativeAmount || i64 LE expiresAt for the spec example (1858 units, expiresAt 1893456000). Frozen byte for byte: the facilitator rebuilds exactly these bytes to verify a claim voucher.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCUIHAAAAAAAAgNjbcAAAAAA",
+        "bytes": [
+          86,
+          1,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          66,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          128,
+          216,
+          219,
+          112,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "x402-upto-voucher-message-golden",
+    "input": {
+      "x402UptoVoucher": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "cumulativeAmount": "1858",
+        "expiresAt": 1893456000
+      }
+    },
+    "intent": "x402-upto",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d851126afb"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "0x56 0x01 || channelId || u64(cumulativeAmount).le || i64(expiresAt).le",
+      "section": "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The zero-charge refund voucher (cumulativeAmount 0) with a u64-max-adjacent expiry: still exactly 50 bytes, zero encoded verbatim.",
+    "expect": {
+      "exactBytes": {
+        "bytes": [
+          86,
+          1,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          87,
+          134,
+          244,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "x402-upto-voucher-message-zero-amount",
+    "input": {
+      "x402UptoVoucher": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "cumulativeAmount": "0",
+        "expiresAt": 4102444800
+      }
+    },
+    "intent": "x402-upto",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d851126afb"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "where cumulativeAmount == actual for upto, which MAY be 0 for a zero-charge settlement or refund.",
+      "section": "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A channelId that does not decode to 32 bytes cannot be packed into the voucher message and must be refused rather than truncated or padded.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "channelId is not a 32-byte address"
+    },
+    "id": "x402-upto-voucher-message-bad-channel-reject",
+    "input": {
+      "x402UptoVoucher": {
+        "channelId": "abc",
+        "cumulativeAmount": "1",
+        "expiresAt": 1893456000
+      }
+    },
+    "intent": "x402-upto",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d851126afb"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "0x56 0x01 || channelId || u64(cumulativeAmount).le || i64(expiresAt).le",
+      "section": "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "sha256(count u32 LE || recipient(32) || bps u16 LE) of the single explicit [{ payTo, 10000 }] distribution an upto open commits (the program's distribution_hash).",
+    "expect": {
+      "exactBytes": {
+        "bytes": [
+          74,
+          31,
+          25,
+          77,
+          17,
+          35,
+          50,
+          9,
+          1,
+          16,
+          29,
+          146,
+          13,
+          20,
+          231,
+          46,
+          170,
+          192,
+          135,
+          125,
+          47,
+          61,
+          224,
+          83,
+          38,
+          16,
+          104,
+          25,
+          87,
+          84,
+          80,
+          153
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "x402-upto-distribution-hash-golden",
+    "input": {
+      "x402UptoDistribution": {
+        "recipients": [
+          {
+            "bps": 10000,
+            "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+          }
+        ]
+      }
+    },
+    "intent": "x402-upto",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-8969786085"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "The explicit single-entry distribution is REQUIRED in all cases, including when payTo equals extra.receiverAuthorizer or extra.feePayer: the payee implicit remainder MUST be zero so that the facilitator in the payee seat has no claim on settled funds.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The channel PDA find_program_address([\"channel\", from, feePayer, asset, receiverAuthorizer, u64 LE nonce, u64 LE openSlot], canonical program), as 32 bytes.",
+    "expect": {
+      "exactBytes": {
+        "bytes": [
+          33,
+          193,
+          213,
+          145,
+          92,
+          67,
+          153,
+          105,
+          24,
+          139,
+          180,
+          139,
+          220,
+          110,
+          184,
+          122,
+          151,
+          74,
+          102,
+          174,
+          113,
+          52,
+          128,
+          110,
+          67,
+          61,
+          149,
+          41,
+          30,
+          136,
+          189,
+          30
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "x402-upto-channel-pda-golden",
+    "input": {
+      "x402UptoChannelPda": {
+        "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "openSlot": "400000000",
+        "payee": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "salt": "4242"
+      }
+    },
+    "intent": "x402-upto",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-eace5aece9",
+      "X402-edc9de017f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "The client MUST derive channelId before signing openTransaction, include the same PDA as the writable channel account in the open instruction, and set payload.channelId to that address.",
+      "section": "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)"
+    },
+    "tier": "offline"
+  }
+]

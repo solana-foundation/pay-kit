@@ -223,7 +223,27 @@ export type RejectCode =
   // x402-exact v2: the credential's `accepted` matches none of the route's
   // payment requirements (amount, payTo, asset or network differ). Covers
   // both targeted field checks and a structural match against the offers.
-  | "accepted-mismatch";
+  | "accepted-mismatch"
+  // x402-upto verify: the client payload carries voucherSignature (claim-only, server-owned).
+  | "unexpected-voucher"
+  // x402-upto verify: the client payload carries the per-settle `type`.
+  | "unexpected-type"
+  // x402-upto deposit: an account already exists at payload.channelId.
+  | "channel-already-open"
+  // x402-upto verify: maxTimeoutSeconds or expiresAt - now exceeds the facilitator's maxChannelLifetimeSecs.
+  | "channel-lifetime-exceeded"
+  // x402-upto verify: expiresAt is later than now + maxTimeoutSeconds (plus skew).
+  | "expires-at-mismatch"
+  // x402-upto verify: now < validAfter.
+  | "not-yet-active"
+  // x402-upto verify: payload.deposit differs from maxAmount.
+  | "deposit-not-ceiling"
+  // x402-upto verify: payload.authorizedSigner is not extra.receiverAuthorizer.
+  | "receiver-authorizer-mismatch"
+  // x402-upto verify: the PDA rederived from the open differs from the open's channel account or payload.channelId.
+  | "channel-id-mismatch"
+  // x402-upto verify: an open account, privilege or argument violates its required binding (payer, rent payer, payee, mint, token accounts, programs, salt, deposit, grace period, open slot, distribution, 14 accounts, no trailing bytes).
+  | "open-binding-mismatch";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

@@ -33,6 +33,16 @@ const rejectCodeSchema = {
     "voucher-expired",
     "voucher-expires-before-settlement",
     "accepted-mismatch",
+    "unexpected-voucher",
+    "unexpected-type",
+    "channel-already-open",
+    "channel-lifetime-exceeded",
+    "expires-at-mismatch",
+    "not-yet-active",
+    "deposit-not-ceiling",
+    "receiver-authorizer-mismatch",
+    "channel-id-mismatch",
+    "open-binding-mismatch",
   ],
 } as const;
 

@@ -126,6 +126,258 @@ required = true
 
 # Noise: normative sentences that do not apply to SVM, with the reason.
 
+[[requirement]]
+id = "X402-005b043052"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Outside the canonical open account positions defined below, extra.feePayer MUST NOT appear in any instruction's account list or as an invoked program."
+required = true
+
+[[requirement]]
+id = "X402-076bb2bdc3"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Deposit settle MUST open the channel itself for this authorization; out-of-band opens, prior deposits, and replay of an already-opened channelId MUST NOT succeed."
+required = true
+
+[[requirement]]
+id = "X402-11bbb0287f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "If both are present, SetComputeUnitLimit MUST precede SetComputeUnitPrice."
+required = true
+
+[[requirement]]
+id = "X402-14b8b2b598"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Therefore a read-only role at position 2 or 4 MAY be effectively writable and/or a signer when it equals another requirements-bound role (as payee == rent_payer always does in this profile); that expected privilege union MUST NOT itself cause rejection."
+required = true
+
+[[requirement]]
+id = "X402-1c7e99f632"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "| authorizedSigner | string | MUST equal extra.receiverAuthorizer; included for explicit payload validation."
+required = true
+
+[[requirement]]
+id = "X402-233dcf8a3e"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST set a compute-unit price no greater than 5000000 microlamports per compute unit (5 lamports per compute unit)."
+required = true
+
+[[requirement]]
+id = "X402-2cb22aa0de"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The channel distribution for upto MUST NOT assign any portion of the settled amount away from payTo."
+required = true
+
+[[requirement]]
+id = "X402-3b5914a7c5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The verifier MUST enforce the Phase 3 openTransaction acceptance policy so the client-signed transaction cannot debit feePayer beyond fees and the intended channel/escrow rent."
+required = true
+
+[[requirement]]
+id = "X402-443a167ea1"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."
+required = true
+
+[[requirement]]
+id = "X402-4504985ded"
+doc = "specs/schemes/upto/scheme_upto.md"
+text = "The authorization MUST cryptographically bind the recipient address."
+required = true
+
+[[requirement]]
+id = "X402-4c364688fc"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "type is per-settle and not part of the client authorization; presence on the client payload MUST fail with invalid_upto_svm_payload_type."
+required = true
+
+[[requirement]]
+id = "X402-521ba9b673"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST equal maxAmount. |"
+required = true
+
+[[requirement]]
+id = "X402-52c9f1e405"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Before signing, it MUST statically inspect the complete message and enforce the rules in this section."
+required = true
+
+[[requirement]]
+id = "X402-683361bbae"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST use only discriminator 2 (SetComputeUnitLimit, exactly 5 data bytes) or discriminator 3 (SetComputeUnitPrice, exactly 9 data bytes);"
+required = true
+
+[[requirement]]
+id = "X402-6a72109261"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The facilitator MUST always verify against the client-signed ceiling, never against the settlement-time amount."
+required = true
+
+[[requirement]]
+id = "X402-77ee69c328"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Although the program supports expires_at == 0 as no expiry, SVM upto MUST reject expiresAt == 0."
+required = true
+
+[[requirement]]
+id = "X402-7cd3ca69a6"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "A sponsor MAY apply a stricter local policy, including rejecting all optional instructions, but MUST NOT admit instructions outside this allowlist or relax the absolute compute-budget ceilings above."
+required = true
+
+[[requirement]]
+id = "X402-865b05c15d"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Deposit settle MUST open that channel itself and MUST reject if the channel account already exists."
+required = true
+
+[[requirement]]
+id = "X402-8969786085"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The explicit single-entry distribution is REQUIRED in all cases, including when payTo equals extra.receiverAuthorizer or extra.feePayer: the payee implicit remainder MUST be zero so that the facilitator in the payee seat has no claim on settled funds."
+required = true
+
+[[requirement]]
+id = "X402-99f2a389e8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST equal verification-phase amount. |"
+required = true
+
+[[requirement]]
+id = "X402-9af8f33cd6"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The complete required-signer set MUST equal the distinct addresses in { payload.from, extra.feePayer }."
+required = true
+
+[[requirement]]
+id = "X402-9d68660de5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The transaction fee payer MUST equal extra.feePayer."
+required = true
+
+[[requirement]]
+id = "X402-aaee5a4f5b"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "voucherSignature is claim-only and server-owned; presence on the client payload (including an empty string or undefined value) MUST fail with invalid_upto_svm_payload_unexpected_voucher."
+required = true
+
+[[requirement]]
+id = "X402-aec23b2308"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The facilitator MUST fully decode the canonical open instruction data, reject truncated data or trailing bytes, and enforce every field binding defined in section 4.2, including the exact deposit, salt, open slot, grace period, distribution, and rederived channel PDA."
+required = true
+
+[[requirement]]
+id = "X402-b2b604a864"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "If extra.memo is present, the facilitator MUST verify that exactly one Memo instruction exists in the suffix and that its data matches extra.memo encoded as UTF-8."
+required = true
+
+[[requirement]]
+id = "X402-b4167aad45"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST set a compute-unit limit no greater than 400000; and"
+required = true
+
+[[requirement]]
+id = "X402-bcbf7025e5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The payload.from signature MUST be present and valid before the facilitator signs."
+required = true
+
+[[requirement]]
+id = "X402-c1174b72d8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."
+required = true
+
+[[requirement]]
+id = "X402-c8544c0fdd"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "In particular, another payment-channels instruction, an arbitrary wallet program, or a duplicate open MUST cause rejection."
+required = true
+
+[[requirement]]
+id = "X402-ce3692afe0"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The top-level instructions MUST consist only of the following ordered regions:"
+required = true
+
+[[requirement]]
+id = "X402-cf373442ff"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The server/facilitator MUST rederive the PDA from the decoded openTransaction and reject the payload if it differs from either the decoded channel account or payload.channelId."
+required = true
+
+[[requirement]]
+id = "X402-d0ce5e5325"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Lighthouse and Memo instructions are allowed only in the optional suffix and MUST NOT reference extra.feePayer as an account or as the invoked program."
+required = true
+
+[[requirement]]
+id = "X402-d46a6b2b3b"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The suffix MUST contain at most three Lighthouse instructions."
+required = true
+
+[[requirement]]
+id = "X402-d75fb10a6f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The open instruction MUST encode:"
+required = true
+
+[[requirement]]
+id = "X402-d851126afb"
+doc = "specs/schemes/upto/scheme_upto.md"
+text = "Each authorization MUST have explicit validity time constraints:"
+required = true
+
+[[requirement]]
+id = "X402-d90b7dc5de"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The client MUST encode this exact value in open; the facilitator MUST reject any other value."
+required = true
+
+[[requirement]]
+id = "X402-e4509fb732"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The server/facilitator MUST, in order:"
+required = true
+
+[[requirement]]
+id = "X402-e829ad118e"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The open instruction MUST invoke the canonical payment-channels program for the selected network, use discriminator 1, contain exactly the following 14 account positions in order, and contain no remaining accounts:"
+required = true
+
+[[requirement]]
+id = "X402-eace5aece9"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The client MUST derive channelId before signing openTransaction, include the same PDA as the writable channel account in the open instruction, and set payload.channelId to that address."
+required = true
+
+[[requirement]]
+id = "X402-edc9de017f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Implementations MUST target the canonical payment-channels program id for the selected network and MUST NOT trust or negotiate a channelProgram value from extra."
+required = true
+
+[[requirement]]
+id = "X402-f747c74e76"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The deposit settle (Phase 3) MUST NOT include payload.voucherSignature."
+required = true
+
+[[requirement]]
+id = "X402-ffe188aee8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST be an integer greater than zero."
+required = true
+
 [[ignore]]
 id = "X402-07a28e5b57"
 reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Facilitator safety: the facilitator's address MUST NOT appea..."
