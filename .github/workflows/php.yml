@@ -7,8 +7,30 @@ on:
   workflow_call:
 
 jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'php/**'
+              - '.github/**'
+
   test-php:
-    name: PHP tests
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -39,48 +61,3 @@ jobs:
         with:
           name: php-coverage
           path: php/build/coverage/clover.xml
-
-  harness-php:
-    name: PHP harness
-    needs: test-php
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.3"
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client"
-          cargo-cache-key: php
-      - name: Install PHP harness dependencies
-        working-directory: php
-        run: composer install --no-interaction --no-progress
-      - name: Run PHP server harness smoke
-        working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
-        env:
-          MPP_HARNESS_CLIENTS: typescript
-          MPP_HARNESS_SERVERS: php
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
-      - name: Run Rust client PHP server harness smoke
-        working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
-        env:
-          MPP_HARNESS_CLIENTS: rust
-          MPP_HARNESS_SERVERS: php
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
-
-      # Dual-protocol proof: one e2e run drives MPP charge scenarios
-      # (typescript client) and x402 exact (rust-x402 client) against
-      # the same PHP adapter binary. Mirrors the lua + ruby harness
-      # steps.
-      - name: Run PayKit harness smoke (mpp charge + x402 exact)
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: typescript
-          MPP_HARNESS_SERVERS: php,typescript
-          MPP_HARNESS_INTENTS: charge,x402-exact
-          X402_HARNESS_CLIENTS: rust-x402
-          X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000

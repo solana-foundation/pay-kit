@@ -1,0 +1,191 @@
+name: TypeScript
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: typescript
+
+jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'typescript/**'
+              - 'html/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
+  audit:
+    name: audit
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # npm retired the quick-audit endpoint pnpm still targets (HTTP 410,
+      # "use the bulk advisory endpoint"); no pnpm release supports the bulk
+      # endpoint yet. Treat only that specific failure as a warning so real
+      # vulnerability findings keep failing the job. Drop this shim once
+      # pnpm audit works against the bulk advisory endpoint.
+      - name: Audit production dependencies
+        run: |
+          set -o pipefail
+          if output=$(pnpm audit --production 2>&1); then
+            echo "$output"
+          else
+            echo "$output"
+            if echo "$output" | grep -q "This endpoint is being retired"; then
+              echo "::warning::npm quick-audit endpoint retired (410); pnpm audit unavailable until pnpm supports the bulk advisory endpoint"
+              exit 0
+            fi
+            exit 1
+          fi
+
+  lint:
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports, so the
+      # type-aware lint rules need the package built first.
+      - run: pnpm --filter @solana/mpp build
+      - run: pnpm lint
+      - run: pnpm format:check
+
+  typecheck:
+    name: typecheck
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
+      - run: pnpm typecheck
+
+  test:
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit's tests import @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
+      # Every test (unit + surfpool integration) with coverage.
+      - name: Run tests with coverage
+        run: pnpm vitest run --coverage --config vitest.config.ci.ts
+        env:
+          # Reliable RPC datasource for the embedded surfnet.
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+      - name: Upload TS coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ts-coverage
+          path: typescript/coverage/coverage-summary.json
+
+  integration:
+    name: integration
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:integration
+
+  # The payment-link HTML is generated into every SDK and committed; fail
+  # when a change to html/ was not regenerated.
+  html:
+    name: html
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install and build
+        working-directory: html
+        run: |
+          npm install
+          npm run build
+      - name: Verify committed gen files are up to date
+        working-directory: .
+        run: |
+          if ! git diff --quiet -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/solana_pay_kit/protocols/mpp/server/html/ typescript/packages/mpp/src/server/html-assets.gen.ts; then
+            echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
+            git diff --stat -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/solana_pay_kit/protocols/mpp/server/html/ typescript/packages/mpp/src/server/html-assets.gen.ts
+            exit 1
+          fi

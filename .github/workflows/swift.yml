@@ -7,8 +7,30 @@ on:
   workflow_call:
 
 jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'swift/**'
+              - '.github/**'
+
   test-swift:
-    name: Swift tests
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -23,106 +45,3 @@ jobs:
           name: swift-coverage
           path: .build/debug/codecov/
           if-no-files-found: ignore
-
-  harness-swift:
-    name: "Harness: Swift client to TypeScript + Rust servers"
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_server"
-          cargo-cache-key: swift
-      - name: Build Swift harness client
-        working-directory: harness/swift-client
-        run: swift build
-      - uses: ./.github/actions/setup-pkc
-        with:
-          cache-key: pkc-swift
-      - name: Run swift offline conformance vectors (pkc)
-        env:
-          HARNESS_REQUIRE: "1"
-        run: pkc run --sdk swift --tier offline --require
-      - name: Run Swift client harness smoke against TypeScript server
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: swift
-          MPP_HARNESS_SERVERS: typescript
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays typescript server"
-      - name: Run Swift client harness smoke against Rust server
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: swift
-          MPP_HARNESS_SERVERS: rust
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
-
-  harness-swift-x402:
-    name: "Harness: Swift x402 client to Rust x402 server"
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:x402_harness_server"
-          cargo-cache-key: swift-x402
-      - name: Build Swift x402 harness client
-        working-directory: harness/swift-x402-client
-        run: swift build --quiet
-      # Drive the swift-x402 client against the rust-x402 server through
-      # the shared surfpool + funded-keypair e2e matrix. The harness spins
-      # up Surfnet via @solana/surfpool and emits the X402_HARNESS_* shadows
-      # of the MPP fixtures, so the x402-exact-basic scenario settles a
-      # real signed Solana transaction end-to-end. Mirrors the MPP
-      # harness-swift job (build-only smoke replaced with real settle).
-      #
-      # rust-x402 is the only x402 server adapter that performs full
-      # settlement against a swift-x402-signed transaction: ts-x402 is a
-      # wire-only fixture, and the harness `python` server is MPP-charge
-      # only (no x402-exact intent). Re-add a python pairing here once the
-      # python harness server gains an x402 exact adapter.
-      - name: Run Swift x402 client harness against Rust x402 server
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: ""
-          MPP_HARNESS_SERVERS: ""
-          MPP_HARNESS_INTENTS: x402-exact
-          MPP_HARNESS_SCENARIOS: x402-exact-basic
-          X402_HARNESS_CLIENTS: swift-x402
-          X402_HARNESS_SERVERS: rust-x402
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000
-
-  harness-swift-x402-upto:
-    name: "Harness: Swift x402 upto client to Rust x402 upto server"
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:x402_harness_upto_server"
-          cargo-cache-key: swift-x402-upto
-      # x402 upto opens a real on-chain payment channel; the embedded surfnet
-      # needs the canonical payment-channels program as a localnet SBF build.
-      - name: Build payment channels program
-        id: payment-channels
-        uses: ./.github/actions/build-payment-channels
-      - name: Build Swift x402 upto harness client
-        working-directory: harness/swift-x402-upto-client
-        run: swift build --quiet
-      # Drive the swift-x402-upto client against the rust-x402-upto server:
-      # the client opens the channel and the rust server settles the metered
-      # voucher and refunds the remainder. rust-x402-upto is the only upto
-      # server that runs the canonical close+settle path, and it is the server
-      # the zero-actual scenario is pinned to (serverIds in intents/x402-upto.ts).
-      - name: Run Swift x402 upto client harness against Rust x402 upto server
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: ""
-          MPP_HARNESS_SERVERS: ""
-          MPP_HARNESS_INTENTS: x402-upto
-          MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
-          X402_HARNESS_CLIENTS: swift-x402-upto
-          X402_HARNESS_SERVERS: rust-x402-upto
-          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
-          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
-          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

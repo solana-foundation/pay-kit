@@ -38,7 +38,7 @@ concurrency:
 jobs:
   ci:
     name: CI
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/typescript.yml
     secrets: inherit
 
   # Deprecated: @solana/mpp is superseded by @solana/pay-kit. This job is kept

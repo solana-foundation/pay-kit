@@ -1,0 +1,239 @@
+name: Payment links
+
+# Browser end-to-end tests of the payment-link page served by each SDK's
+# example server against a local Surfnet. The page assets are generated from
+# html/ and committed into every SDK (TypeScript / html checks they are
+# current), so these jobs use the committed assets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      typescript: ${{ github.event_name != 'pull_request' || steps.filter.outputs.typescript == 'true' }}
+      rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
+      go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - 'html/**'
+              - 'harness/start-surfnet-proxy.mjs'
+              - '.github/**'
+            typescript:
+              - *shared
+              - 'typescript/**'
+            rust:
+              - *shared
+              - 'rust/**'
+            go:
+              - *shared
+              - 'go/**'
+
+  e2e-typescript:
+    name: e2e (typescript)
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Install and build the TypeScript SDK
+        working-directory: typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Install playground API dependencies
+        working-directory: typescript/examples/playground-api
+        run: pnpm install --frozen-lockfile
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Start playground API
+        working-directory: typescript/examples/playground-api
+        # Funding and plan bootstrap run before listen(); point them at the
+        # local Surfnet started above rather than the shared remote sandbox.
+        run: npx tsx index.ts > "$RUNNER_TEMP/playground-api.log" 2>&1 &
+        env:
+          NETWORK: localnet
+          PLAYGROUND_DISABLE_SIDECAR: "1"
+          RPC_URL: http://localhost:8899
+      - name: Wait for playground server
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/api/v1/health && exit 0
+            sleep 1
+          done
+          echo "playground API did not become healthy in 60s; server log:"
+          cat "$RUNNER_TEMP/playground-api.log"
+          exit 1
+      - name: Run Playwright tests (Playground)
+        working-directory: html
+        run: npm run test:e2e:demo
+
+  e2e-rust:
+    name: e2e (rust)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: payment-link-server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Build Rust test server
+        working-directory: rust
+        run: cargo build --example payment_link_server --features axum
+      - name: Start Rust test server
+        working-directory: rust
+        run: cargo run --example payment_link_server --features axum > "$RUNNER_TEMP/payment-link-server.log" 2>&1 &
+      - name: Wait for Rust server
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/health && exit 0
+            sleep 1
+          done
+          echo "Rust payment link server did not become healthy in 60s; server log:"
+          cat "$RUNNER_TEMP/payment-link-server.log"
+          exit 1
+      - name: Run Playwright tests (Rust)
+        working-directory: html
+        run: npm run test:e2e:rust
+
+  e2e-go:
+    name: e2e (go)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Build Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: go build ./examples/playground-api
+      - name: Start Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+          PORT: "3002"
+          NETWORK: localnet
+          RPC_URL: http://localhost:8899
+          MPP_SECRET_KEY: playground-ci-secret-padding-0123456789
+        run: go run ./examples/playground-api &
+      - name: Wait for playground server
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3002/api/v1/health && break
+            sleep 1
+          done
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Run Playwright tests (Go playground)
+        working-directory: html
+        run: FORTUNE_PATH=/api/v1/fortune npm run test:e2e:go

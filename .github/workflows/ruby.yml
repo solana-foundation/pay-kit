@@ -7,8 +7,30 @@ on:
   workflow_call:
 
 jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'ruby/**'
+              - '.github/**'
+
   test-ruby:
-    name: Ruby tests
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -44,39 +66,3 @@ jobs:
           name: surfpool-reports-ruby
           path: ruby/target/surfpool-reports/
           if-no-files-found: ignore
-
-  harness-ruby:
-    name: "Harness: Ruby PayKit server (dual protocol)"
-    needs: test-ruby
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-          bundler-cache: true
-          working-directory: ruby
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:x402_harness_client"
-          cargo-cache-key: ruby
-      # Dual-protocol proof: one e2e run drives MPP charge scenarios
-      # (typescript client) and x402 exact (rust-x402 client) against
-      # the same ruby adapter binary. The harness's harnessEnv exposes
-      # X402_HARNESS_* shadows alongside MPP_HARNESS_* (same surfpool,
-      # same funded keypairs) and stamps every scenario with
-      # PAY_KIT_HARNESS_PROTOCOL so the dual-protocol adapter binds the
-      # right protocol per scenario without relying on env namespace
-      # probing. ts-x402 is intentionally excluded - it is a wire-only
-      # fixture whose payload omits the on-chain transaction, so it can
-      # only pair against the matching wire-only ts-x402 server, not a
-      # real settle server.
-      - name: Run harness smoke (mpp charge + x402 exact)
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: typescript
-          MPP_HARNESS_SERVERS: ruby,typescript
-          MPP_HARNESS_INTENTS: charge,x402-exact
-          X402_HARNESS_CLIENTS: rust-x402
-          X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000

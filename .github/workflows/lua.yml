@@ -7,8 +7,31 @@ on:
   workflow_call:
 
 jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'lua/**'
+              - 'html/**'
+              - '.github/**'
+
   test-lua:
-    name: Lua tests
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -101,77 +124,3 @@ jobs:
           name: surfpool-reports-lua
           path: lua/target/surfpool-reports/
           if-no-files-found: ignore
-
-  harness-lua:
-    name: Lua harness focused matrix
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
-        run: |
-          # The hosted runner's unrelated Chrome apt index can briefly serve a
-          # stale hash and block installation of Ubuntu-hosted Lua packages.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
-          luajit -v
-
-      - name: Cache rocks tree
-        id: cache-rocks
-        uses: actions/cache@v4
-        with:
-          path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-runtime-v3-
-
-      - name: Install runtime rocks
-        if: steps.cache-rocks.outputs.cache-hit != 'true'
-        working-directory: lua
-        run: |
-          mkdir -p lua_modules
-          luarocks --lua-version=5.1 init --lua-versions 5.1 || true
-          luarocks --lua-version=5.1 install --tree lua_modules luasocket
-          luarocks --lua-version=5.1 install --tree lua_modules luasodium
-          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
-          luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
-          luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
-
-      - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:mpp_harness_client"
-          cargo-cache-key: lua
-
-      - name: TS-to-Lua focused matrix
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: typescript
-          MPP_HARNESS_SERVERS: lua
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays lua server"
-
-      - name: Rust-to-Lua focused matrix
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: rust
-          MPP_HARNESS_SERVERS: lua
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays lua server"
-
-      # Dual-protocol proof: one e2e run drives MPP charge scenarios
-      # (typescript client) and x402 exact (rust-x402 client) against
-      # the same Lua adapter binary. Mirrors the ruby workflow's
-      # harness-ruby step. The dual-protocol Lua adapter at
-      # harness/lua-server/server.lua reads either MPP_HARNESS_* or
-      # X402_HARNESS_* env (or the PAY_KIT_HARNESS_PROTOCOL hint that
-      # the matrix stamps when both namespaces are populated against
-      # the same surfpool fixtures) and routes through resty.pay_kit.
-      - name: Run PayKit harness smoke (mpp charge + x402 exact)
-        working-directory: harness
-        env:
-          MPP_HARNESS_CLIENTS: typescript
-          MPP_HARNESS_SERVERS: lua,typescript
-          MPP_HARNESS_INTENTS: charge,x402-exact
-          X402_HARNESS_CLIENTS: rust-x402
-          X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000

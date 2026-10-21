@@ -1,0 +1,138 @@
+name: Rust
+
+# Three parallel jobs instead of one serial 12-minute job: coverage tests,
+# fmt + clippy, and the Redis-backed store tests each compile one
+# configuration (the old job compiled four in sequence: llvm-cov, a plain
+# x402 lib run that llvm-cov already covers, redis-store, all-features
+# clippy). rust/Cargo.lock is not committed, so a fixed actions/cache key
+# never refreshed; rust-cache keys on the manifests instead.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'rust/**'
+              - 'idl/**'
+              - '.github/**'
+
+  test:
+    name: test
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: rust-cov
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run tests with coverage
+        env:
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+          HARNESS_REQUIRE: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL != '' && '1' || '' }}
+        # Library scope: the inlined `mpp` module of solana-pay-kit (x402 runs
+        # here too but has its own, separate coverage budget), excluding the
+        # on-chain program adapters under src/mpp/program/ and the
+        # Codama-generated clients under src/generated/. The harness bins and
+        # the integration-tests crate do not count either.
+        run: cargo llvm-cov -p solana-pay-kit -p paykit-integration-tests --ignore-filename-regex 'crates/integration-tests/|crates/harness-bins/|src/mpp/program/|src/x402/|src/generated/' --json --output-path coverage.json
+      - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          with open('coverage.json') as f:
+              data = json.load(f)
+          pct = data['data'][0]['totals']['lines']['percent']
+          floor = 90.0
+          print(f"Rust line coverage: {pct:.2f}% (floor {floor})")
+          if pct < floor:
+              print(f"FAIL: {pct:.2f}% < {floor}")
+              sys.exit(1)
+          PY
+      - name: Upload Rust coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-coverage
+          path: rust/coverage.json
+
+  lint:
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: rust-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --check
+      - name: clippy
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libudev-dev pkg-config
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  integration:
+    name: integration
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: rust-redis
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Redis channel store tests
+        env:
+          PAY_KIT_TEST_REDIS_URL: redis://127.0.0.1:6379
+        run: cargo test -p solana-pay-kit --features redis-store --lib core::store::tests::redis_

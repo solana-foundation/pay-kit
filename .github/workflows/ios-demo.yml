@@ -1,4 +1,4 @@
-name: iOS Demo
+name: iOS
 
 on:
   push:
@@ -16,7 +16,7 @@ on:
 
 jobs:
   build-ios-demo:
-    name: iOS demo build
+    name: demo
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5

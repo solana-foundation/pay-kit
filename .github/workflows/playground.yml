@@ -1,0 +1,130 @@
+name: Playground
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Path filter: a PR that touches none of these skips the jobs below
+  # (skipped jobs satisfy required checks); pushes and calls run them all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'playground/**'
+              - 'typescript/**'
+              - 'html/**'
+              - 'harness/start-surfnet-proxy.mjs'
+              - '.github/**'
+
+  smoke:
+    name: smoke
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: |
+            typescript/pnpm-lock.yaml
+            playground/pnpm-lock.yaml
+      - name: Install playground dependencies
+        working-directory: playground
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        working-directory: playground
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Verify playground renders
+        working-directory: playground
+        run: pnpm exec playwright test --config playwright.smoke.config.ts
+
+  e2e:
+    name: e2e
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: |
+            typescript/pnpm-lock.yaml
+            playground/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        env:
+          # Fork the canonical sandbox so the local, single-instance RPC has
+          # the payment-channel and subscription programs without inheriting
+          # the hosted load balancer's cross-request blockhash races.
+          SURFPOOL_REMOTE_RPC_URL: https://402.surfnet.dev:8899
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Install branch TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build branch SDK
+        working-directory: typescript
+        run: pnpm build
+      - name: Install playground dependencies
+        working-directory: playground
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        working-directory: playground
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run all playground payment patterns
+        working-directory: playground
+        run: pnpm test:e2e
+        env:
+          PLAYGROUND_DISABLE_SIDECAR: "1"
+          RPC_URL: http://localhost:8899
+          VITE_RPC_URL: http://localhost:8899
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playground-playwright-report
+          path: |
+            playground/playwright-report/
+            playground/test-results/
+          if-no-files-found: ignore
