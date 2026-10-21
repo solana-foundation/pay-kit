@@ -1100,3 +1100,111 @@ t.test('settle_pull refuses a transaction without a challenge to bind it to', fu
   t.assert_error(function() handler:settle_pull('tx', {}, '') end, 'missing challenge id')
   t.assert_equal(#rpc.calls, 0)
 end)
+
+local function push_landed_tx()
+  return { result = { meta = { err = require('pay_kit.util.json').null },
+    transaction = { 'landed-b64', 'base64' }, blockTime = os.time() } }
+end
+
+-- A concurrent retry of the same credential can reconcile the landed
+-- transaction and be granted while the owner request is still simulating or
+-- sending. If the owner then fails (an already-processed simulation or
+-- preflight error) it must not hand the claim back: a push credential for the
+-- same signature would be granted a second time.
+for _, case in ipairs({
+  { name = 'simulation', fail_in = 'simulateTransaction' },
+  { name = 'preflight', fail_in = 'sendTransaction' },
+}) do
+  t.test('abandon after a concurrent grant keeps the claim (' .. case.name .. ')', function()
+    local replay = store.memory()
+    local handler, retry
+    local function concurrent_retry()
+      retry = handler:settle_pull('tx', {}, 'ch-payer')
+    end
+    local responses = {
+      simulateTransaction = { { result = { err = nil } } },
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
+      getTransaction = { push_landed_tx() },
+    }
+    if case.fail_in == 'simulateTransaction' then
+      responses.simulateTransaction = { function()
+        concurrent_retry()
+        return { err = 'AlreadyProcessed' }
+      end }
+    else
+      responses.sendTransaction = { function()
+        concurrent_retry()
+        error({ code = 'rpc-error', rpc_code = -32002,
+                message = 'Transaction simulation failed: This transaction has already been processed' })
+      end }
+    end
+    handler = new_handler({
+      replay_store = replay,
+      pull_signature_extractor = function() return 'sig-landed' end,
+      rpc = fake_rpc(responses),
+    })
+    local err = raised(function() handler:settle_pull('tx', {}, 'ch-payer') end)
+    t.assert_true(tostring(err.message):find('Simulation failed', 1, true) ~= nil, tostring(err.message))
+    t.assert_equal(retry, 'sig-landed')
+    local _, claimed = replay:get('solana:consumed-signature:sig-landed')
+    t.assert_true(claimed, 'a granted payment must stay claimed')
+
+    err = raised(function() handler:settle_push('sig-landed', {}) end)
+    t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+  end)
+end
+
+-- Positive control: with no grant, a failed simulation gives the claim back,
+-- so the same signature is accepted once afterwards.
+t.test('abandon without a grant releases the claim', function()
+  local replay = store.memory()
+  local handler = new_handler({
+    replay_store = replay,
+    pull_signature_extractor = function() return 'sig-unsent' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = 'InsufficientFundsForFee' } } },
+      getTransaction = { push_landed_tx() },
+    }),
+  })
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch-payer') end, 'Simulation failed')
+  local _, claimed = replay:get('solana:consumed-signature:sig-unsent')
+  t.assert_true(not claimed, 'an unsent transaction must be released')
+  t.assert_equal(handler:settle_push('sig-unsent', {}), 'sig-unsent')
+end)
+
+-- A retry that read the binding before the owner abandoned the charge, and
+-- reaches the grant after the claim was given back, must not be granted:
+-- the released signature could then be granted again through another path.
+t.test('a retry is not granted after the owner released the claim', function()
+  local replay = store.memory()
+  local owner
+  local handler = new_handler({
+    replay_store = replay,
+    pull_signature_extractor = function() return 'sig-raced' end,
+    rpc = fake_rpc({
+      simulateTransaction = { function()
+        coroutine.yield()
+        return { err = 'AlreadyProcessed' }
+      end },
+      getSignatureStatuses = { function()
+        -- The owner finishes (and abandons) while this retry awaits the status.
+        t.assert_true(coroutine.resume(owner))
+        t.assert_equal(coroutine.status(owner), 'dead')
+        return { { confirmationStatus = 'confirmed' } }
+      end },
+      getTransaction = { push_landed_tx(), push_landed_tx() },
+    }),
+  })
+  owner = coroutine.create(function()
+    local ok = pcall(handler.settle_pull, handler, 'tx', {}, 'ch-payer')
+    t.assert_true(not ok, 'the owner abandons')
+  end)
+  t.assert_true(coroutine.resume(owner))
+
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch-payer') end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+  -- The claim was given back, and the payment is granted exactly once.
+  t.assert_equal(handler:settle_push('sig-raced', {}), 'sig-raced')
+  err = raised(function() handler:settle_push('sig-raced', {}) end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+end)

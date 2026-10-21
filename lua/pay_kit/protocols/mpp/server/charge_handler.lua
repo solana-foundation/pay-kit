@@ -249,17 +249,42 @@ local function record_pending(self, signature, challenge_id)
 end
 
 -- Nothing was sent (or it provably never landed): drop the pending record
--- and give the claim back.
+-- and give the claim back, unless a grant already took it.
+--
+-- A concurrent retry of the same credential may have reconciled the
+-- transaction (it landed) and been granted while this request was still
+-- simulating or sending. Releasing the claim then would let the same
+-- signature be presented again (a push credential, an x402 payment) and
+-- granted twice. So the release is made conditional on the grant token:
+-- abandon takes that single-winner token first, and only while it holds it,
+-- so no grant can happen meanwhile, does it drop the binding and release the
+-- claim. A grant that took the token first means the payment authorized a
+-- request: the claim stays. A retry that read the binding before it was
+-- dropped re-checks it once it holds the token (see `grant`), so it cannot
+-- be granted after the claim was given back.
 local function abandon(self, ledger, signature, challenge_id)
+  local fence = RECONCILED_PREFIX .. signature
+  if not self.replay_store:put_if_absent(fence, true) then
+    return
+  end
   self.replay_store:delete(binding_key(signature, challenge_id))
   ledger:release(signature)
+  self.replay_store:delete(fence)
 end
 
 -- One request per payment: every grant, inline or reconciled, takes this
 -- single-winner token, so a retry reconciling the pending record cannot be
--- granted alongside the request that is still confirming it.
-local function grant(self, signature)
-  if not self.replay_store:put_if_absent(RECONCILED_PREFIX .. signature, true) then
+-- granted alongside the request that is still confirming it. The binding is
+-- re-checked while the token is held: an `abandon` that ran since it was
+-- read has given the claim back, so this payment can no longer be granted
+-- under it.
+local function grant(self, signature, challenge_id)
+  local token = RECONCILED_PREFIX .. signature
+  if not self.replay_store:put_if_absent(token, true) then
+    verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
+  end
+  if not store_has(self.replay_store, binding_key(signature, challenge_id)) then
+    self.replay_store:delete(token)
     verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
   end
   return signature
@@ -287,7 +312,7 @@ function Handler:reconcile_pending(signature, challenge_id)
     end
     local confirmation_status = status.confirmationStatus
     if confirmation_status == 'confirmed' or confirmation_status == 'finalized' then
-      return grant(self, signature)
+      return grant(self, signature, challenge_id)
     end
   end
   settlement_pending(signature, 'not yet confirmed')
@@ -410,7 +435,7 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
   -- is already consumed, mirroring the Rust spine.
   self:await_confirmation(signature)
 
-  return grant(self, signature)
+  return grant(self, signature, challenge_id)
 end
 
 --- The transaction as this server broadcasts it (co-signed when it pays the
