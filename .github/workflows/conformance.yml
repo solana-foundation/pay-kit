@@ -264,6 +264,31 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: ${{ matrix.sdk }}
         run: pnpm exec vitest run test/flow-conformance.test.ts
+      - name: Build the Rust adapters under a memory cap (diagnostic)
+        if: matrix.interop
+        timeout-minutes: 15
+        working-directory: harness
+        run: |
+          # Cap the build at 10 GB with no swap, so a runaway rustc is OOM-killed
+          # inside its own cgroup instead of taking the runner down with it.
+          ( peak=0; while sleep 1; do
+              r=$(ps -eo rss=,args= | grep -E 'rustc|ld|cc1' | grep -v grep | awk '{s+=$1} END {print s+0}')
+              top=$(ps -eo rss=,args= --sort=-rss | head -1 | cut -c1-140)
+              [ "$r" -gt "$peak" ] && peak=$r
+              echo "$(date -u +%T) build_rss=$((r/1024))M peak=$((peak/1024))M avail=$(free -m | awk '/Mem:/{print $7}')M top: $top"
+            done ) &
+          sampler=$!
+          set +e
+          sudo systemd-run --scope --quiet -p MemoryMax=10G -p MemorySwapMax=0 \
+            --uid="$(id -u)" --gid="$(id -g)" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
+            --setenv=CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" --setenv=RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            --working-directory="$PWD" -- \
+            cargo build --manifest-path ../rust/Cargo.toml -p paykit-harness-bins
+          status=$?
+          kill "$sampler" 2>/dev/null
+          sudo dmesg | grep -iE 'oom|killed process|memory' | tail -10
+          echo "cargo exit: $status"
+          exit $status
       - name: Interop against the Rust reference (pkc)
         if: matrix.interop
         timeout-minutes: 15
