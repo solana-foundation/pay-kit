@@ -223,7 +223,31 @@ export type RejectCode =
   // x402-exact v2: the credential's `accepted` matches none of the route's
   // payment requirements (amount, payTo, asset or network differ). Covers
   // both targeted field checks and a structural match against the offers.
-  | "accepted-mismatch";
+  | "accepted-mismatch"
+  | "unsupported-scheme"
+  | "payload-type"
+  | "payment-flow"
+  | "token-program"
+  | "voucher-signature"
+  | "channel-id-mismatch"
+  | "fee-payer-mismatch"
+  | "receiver-authorizer-mismatch"
+  | "receiver-binding-unavailable"
+  | "close-authorization"
+  | "close-amount-unsupported"
+  | "close-state"
+  | "channel-closing"
+  | "withdraw-delay-mismatch"
+  | "withdraw-delay-out-of-range"
+  | "cumulative-amount-mismatch"
+  | "cumulative-exceeds-deposit"
+  | "voucher-expiry"
+  | "setup-transaction"
+  | "settlement-simulation"
+  | "channel-state"
+  | "refund-transaction"
+  | "duplicate-settlement"
+  | "unsupported-transaction-version";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

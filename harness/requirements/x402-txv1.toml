@@ -10,3 +10,71 @@ files = [
 # PR 3473 (solana-foundation/x402 spec/svm-transaction-versions) until it
 # merges. id = "X402TX-" + sha256(normalised text)[:10]. `required = true`:
 # `pkc req-lint` fails if no case maps the id.
+
+# x402 batch-settlement (SVM)
+
+[[requirement]]
+id = "X402TX-0f874a9c63"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed 400000, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= 5000000 computeUnitLimit."
+required = true
+
+[[requirement]]
+id = "X402TX-2909c4b4ec"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST fail with unsupported_transaction_version when the intersection is empty."
+required = true
+
+[[requirement]]
+id = "X402TX-4750df8921"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Its message version MUST be one advertised in extra.transactionVersions. |"
+required = true
+
+[[requirement]]
+id = "X402TX-4de59a1f27"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."
+required = true
+
+[[requirement]]
+id = "X402TX-5267172b18"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator MUST reject a message whose version is outside the set it accepts, before inspecting any instruction, with unsupported_transaction_version."
+required = true
+
+[[requirement]]
+id = "X402TX-61c735c7a9"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The client MUST intersect the advertised versions ([0] when the field is absent) with the versions it and its signer support, then build the highest version in that intersection."
+required = true
+
+[[requirement]]
+id = "X402TX-644919eb3b"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST set computeUnitLimit and loadedAccountsDataSizeLimit (a version-1 transaction that omits either is budgeted zero and cannot execute), it MUST NOT contain Compute Budget program instructions, and its priorityFee is a total in lamports, evaluated against a per-compute-unit cap as priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit."
+required = true
+
+[[requirement]]
+id = "X402TX-936b492daa"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."
+required = true
+
+[[requirement]]
+id = "X402TX-d444d01b9e"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Its message version MUST be one advertised in extra.transactionVersions (see [Transaction versions](#transaction-versions)). |"
+required = true
+
+[[requirement]]
+id = "X402TX-dc7b0f3305"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "A legacy or version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes."
+required = true
+
+[[requirement]]
+id = "X402TX-f39a33ff74"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator advertises the versions it accepts as extra.transactionVersions in /supported, and the server MUST copy that value into PaymentRequirements.extra.transactionVersions."
+required = true
