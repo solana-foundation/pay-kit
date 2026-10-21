@@ -33,6 +33,15 @@ const rejectCodeSchema = {
     "voucher-expired",
     "voucher-expires-before-settlement",
     "accepted-mismatch",
+    "challenge-mismatch",
+    "challenge-expired",
+    "subscription-expired",
+    "authentication-invalid",
+    "recipient-mismatch",
+    "activation-scope",
+    "fee-payer-mismatch",
+    "subscription-inactive",
+    "source-mismatch",
   ],
 } as const;
 
@@ -66,7 +75,7 @@ export const conformanceVectorSchema = {
       additionalProperties: false,
       required: ["doc", "section", "quote"],
       properties: {
-        doc: { type: "string", pattern: "^(mpp-specs|x402)/specs/[^.][^\\s]*\\.md$" },
+        doc: { type: "string", pattern: "^(mpp-specs|mpp-specs-solana|x402)/specs/[^.][^\\s]*\\.md$" },
         section: { type: "string", minLength: 1 },
         quote: { type: "string", minLength: 12 },
       },

@@ -194,6 +194,7 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
             }
             x402_header_input(case.id.as_str(), spec)
         }
+        Input::Subscription(recipe) => subscription::materialize(case, recipe).await,
     }
 }
 

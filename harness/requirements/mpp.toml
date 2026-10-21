@@ -332,3 +332,21 @@ id = "MPP-fde6ebf8c7"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "MUST NOT be present when currency is \"sol\"."
 required = true
+
+[[requirement]]
+id = "MPP-3688fa68c7"
+doc = "specs/intents/draft-payment-intent-subscription-00.md"
+text = "Payment methods MUST reject request objects whose periodUnit or periodCount values they cannot represent exactly."
+required = true
+
+[[requirement]]
+id = "MPP-5a84bf0d0b"
+doc = "specs/core/draft-httpauth-payment-01.md"
+text = "Servers MUST verify the binding when processing a credential and MUST reject a credential whose echoed challenge parameters do not match the expected binding."
+required = true
+
+[[requirement]]
+id = "MPP-c1bffbb1a3"
+doc = "specs/intents/draft-payment-intent-subscription-00.md"
+text = "All payment methods implementing the \"subscription\" intent MUST support the required shared fields below."
+required = true

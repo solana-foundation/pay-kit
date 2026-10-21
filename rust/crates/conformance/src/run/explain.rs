@@ -161,6 +161,7 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
         f if f.starts_with("x402") => "rust/crates/conformance/src/cases/x402_exact.rs",
         f if f.starts_with("session") => "rust/crates/conformance/src/cases/session.rs",
         f if f.starts_with("charge") => "rust/crates/conformance/src/cases/charge.rs",
+        f if f.starts_with("subscription") => "rust/crates/conformance/src/cases/subscription.rs",
         _ => "rust/crates/conformance/src/cases/canonical.rs",
     };
     refs.push(SourceRef::new(
@@ -198,6 +199,32 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             "pub async fn accept_voucher(",
             "kit voucher verifier",
         )),
+        ("subscription", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("mpp/client/subscription.rs"),
+            "pub async fn build_subscription_activation_credential(",
+            "kit subscription client",
+        )),
+        ("subscription", "verify-transaction") => {
+            refs.push(if input.get("subscriptionActive").is_some() {
+                SourceRef::new(
+                    concat_kit("mpp/server/subscription.rs"),
+                    "pub async fn verify_active_subscription_at(",
+                    "kit subscription usability check",
+                )
+            } else if input.get("subscriptionProof").is_some() {
+                SourceRef::new(
+                    concat_kit("mpp/protocol/intents/subscription.rs"),
+                    "pub fn verify(&self, subscription_delegation: &str)",
+                    "kit bearer-proof verifier",
+                )
+            } else {
+                SourceRef::new(
+                    concat_kit("mpp/server/subscription.rs"),
+                    "pub async fn verify_activation_pre_broadcast(",
+                    "kit subscription activation verifier (pre-broadcast)",
+                )
+            })
+        }
         (_, _) => {
             if input.get("voucherPreimage").is_some() {
                 refs.push(SourceRef::new(
@@ -290,6 +317,8 @@ pub fn mutation_words(case: &Case) -> Option<String> {
 pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
     let checkout = if doc.starts_with("mpp-specs/") {
         "external/mpp-specs"
+    } else if doc.starts_with("mpp-specs-solana/") {
+        "external/mpp-specs-solana"
     } else {
         "typescript/external/x402"
     };

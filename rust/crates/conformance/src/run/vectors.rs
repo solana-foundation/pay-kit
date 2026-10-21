@@ -115,7 +115,8 @@ fn check_id(id: &str) -> bool {
 fn check_doc(doc: &str) -> bool {
     let rest = doc
         .strip_prefix("mpp-specs/specs/")
-        .or_else(|| doc.strip_prefix("x402/specs/"));
+        .or_else(|| doc.strip_prefix("x402/specs/"))
+        .or_else(|| doc.strip_prefix("mpp-specs-solana/specs/"));
     matches!(rest, Some(r) if !r.starts_with('.') && r.ends_with(".md") && !r.chars().any(char::is_whitespace))
 }
 
@@ -173,7 +174,10 @@ pub fn validate(vector: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .is_some_and(check_doc)
     {
-        return Err("spec.doc must be mpp-specs/specs/... or x402/specs/....md".into());
+        return Err(
+            "spec.doc must be mpp-specs/specs/..., mpp-specs-solana/specs/... or x402/specs/....md"
+                .into(),
+        );
     }
     if spec
         .get("section")

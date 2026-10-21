@@ -223,7 +223,25 @@ export type RejectCode =
   // x402-exact v2: the credential's `accepted` matches none of the route's
   // payment requirements (amount, payTo, asset or network differ). Covers
   // both targeted field checks and a structural match against the offers.
-  | "accepted-mismatch";
+  | "accepted-mismatch"
+  // subscription server: the echoed challenge was not issued by this server or does not match the route (HMAC id, realm, method, intent, plan, program, terms).
+  | "challenge-mismatch"
+  // subscription server: the activation challenge's `expires` is at or before now.
+  | "challenge-expired"
+  // subscription server: `subscriptionExpires` is at or before now.
+  | "subscription-expired"
+  // subscription: the bearer proof is missing, bound to another challenge, payer or delegation, or its Ed25519 signature does not verify.
+  | "authentication-invalid"
+  // subscription server: the first-period charge goes to a receiver ATA not owned by `recipient`.
+  | "recipient-mismatch"
+  // subscription server: the subscribe / transfer_subscription pair is missing, misordered, or binds another plan, puller, subscriber, amount or mint than the challenge.
+  | "activation-scope"
+  // subscription server: the activation fee payer is not `feePayerKey` (sponsored) or the subscriber (unsponsored).
+  | "fee-payer-mismatch"
+  // subscription server: the on-chain delegation is not usable at now (missing, foreign, cancelled, unpaid period, authority invalidated).
+  | "subscription-inactive"
+  // subscription server: the credential `source` is not the did:pkh:solana of the activation subscriber.
+  | "source-mismatch";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

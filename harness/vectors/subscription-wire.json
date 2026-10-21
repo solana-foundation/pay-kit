@@ -1,0 +1,384 @@
+[
+  {
+    "bugType": "wire",
+    "description": "The spec's request example round-tripped through the SDK's subscription request type and re-encoded as JCS: every shared and methodDetails field survives with its name and type.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwMDAwMCIsImN1cnJlbmN5IjoiRVBqRldkZDVBdWZxU1NxZU0ycU4xeHp5YmFwQzhHNHdFR0drWnd5VER0MXYiLCJkZXNjcmlwdGlvbiI6Ik1vbnRobHkgUHJvIHBsYW4iLCJleHRlcm5hbElkIjoibWVyY2hhbnQtc3Vic2NyaXB0aW9uLTI3MCIsIm1ldGhvZERldGFpbHMiOnsiZGVjaW1hbHMiOjYsImZlZVBheWVyIjp0cnVlLCJmZWVQYXllcktleSI6IjVmS2I1Y0YyMmNGeWJaQjFINGhMRHlkRmh3b1F5OUp6S3pSV2FTYk1rQjZoIiwibWludCI6IkVQakZXZGQ1QXVmcVNTcWVNMnFOMXh6eWJhcEM4RzR3RUdHa1p3eVREdDF2IiwibmV0d29yayI6Im1haW5uZXQiLCJwbGFuQWRkcmVzcyI6Ijh0V2JxTGtVSm9ZeTd6WGM1aDJFdkNSb2FRRXYyeG5RalV1WWhjM3J6Q2dUIiwicHVsbGVyIjoiNWZLYjVjRjIyY0Z5YlpCMUg0aExEeWRGaHdvUXk5SnpLelJXYVNiTWtCNmgiLCJzdWJzY3JpcHRpb25Qcm9ncmFtIjoiRGUxZWdBRk1rTVdaU041cllYUmo5Q0FkaGVCYW1vYlZOdWJUc2k5YXZSNDQiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIn0sInBlcmlvZENvdW50IjoiMzAiLCJwZXJpb2RVbml0IjoiZGF5IiwicmVjaXBpZW50IjoiOXhRZVd2RzgxNmJVeDlFUGpIbWFUMjN5dlZNMlpXYnJycFpiOVB1c1ZGaW4iLCJzdWJzY3JpcHRpb25FeHBpcmVzIjoiMjAyNi0wNy0xNFQxMjowMDowMFoifQ",
+        "canonicalJson": "{\"amount\":\"10000000\",\"currency\":\"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\"description\":\"Monthly Pro plan\",\"externalId\":\"merchant-subscription-270\",\"methodDetails\":{\"decimals\":6,\"feePayer\":true,\"feePayerKey\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"mint\":\"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\"network\":\"mainnet\",\"planAddress\":\"8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT\",\"puller\":\"5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h\",\"subscriptionProgram\":\"De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\"},\"periodCount\":\"30\",\"periodUnit\":\"day\",\"recipient\":\"9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin\",\"subscriptionExpires\":\"2026-07-14T12:00:00Z\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-wire-request-spec-example",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "description": "Monthly Pro plan",
+          "externalId": "merchant-subscription-270",
+          "methodDetails": {
+            "decimals": 6,
+            "feePayer": true,
+            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "network": "mainnet",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+          "subscriptionExpires": "2026-07-14T12:00:00Z"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-42cf63c8b8"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The request JSON MUST be serialized using JSON Canonicalization Scheme (JCS) {{RFC8785}} and base64url-encoded without padding per {{I-D.httpauth-payment}}.",
+      "section": "Request Schema"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A request with only the REQUIRED shared fields and REQUIRED methodDetails: no optional field is invented on re-encode.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwMDAwMCIsImN1cnJlbmN5IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJtZXRob2REZXRhaWxzIjp7ImRlY2ltYWxzIjo2LCJtaW50IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwbGFuQWRkcmVzcyI6Ikh3QUs4Nks4TFRWcW1hY3RwczJEcm84b0NxQnZKeVB3VldpWm80RmlUNmRLIiwicHVsbGVyIjoiRk1VRW10eGhVNDZHemhLRjRGVzlNTEpkUVdpTGdqaVhQOVRZUldTcnFUcFYiLCJzdWJzY3JpcHRpb25Qcm9ncmFtIjoiRGUxZWdBRk1rTVdaU041cllYUmo5Q0FkaGVCYW1vYlZOdWJUc2k5YXZSNDQiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIn0sInBlcmlvZENvdW50IjoiMiIsInBlcmlvZFVuaXQiOiJ3ZWVrIiwicmVjaXBpZW50IjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MifQ",
+        "canonicalJson": "{\"amount\":\"10000000\",\"currency\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"methodDetails\":{\"decimals\":6,\"mint\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"planAddress\":\"HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK\",\"puller\":\"FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV\",\"subscriptionProgram\":\"De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\"},\"periodCount\":\"2\",\"periodUnit\":\"week\",\"recipient\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-wire-request-required-only",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "2",
+          "periodUnit": "week",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-2bbba2b551",
+      "MPP-42cf63c8b8"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The Solana profile elevates recipient from OPTIONAL to REQUIRED and constrains the values that periodUnit may take.",
+      "section": "Shared Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=month is not a Solana subscription period unit; the request type refuses it.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "periodUnit month"
+    },
+    "id": "subscription-wire-request-month-reject",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "1",
+          "periodUnit": "month",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-cdbcb3a843",
+      "MPP-d063521350"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Billing period unit. The value MUST be day or week",
+      "section": "Required Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A request without recipient: optional in the shared intent, REQUIRED in the Solana profile.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "recipient missing"
+    },
+    "id": "subscription-wire-request-no-recipient-reject",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-2bbba2b551"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The Solana profile elevates recipient from OPTIONAL to REQUIRED and constrains the values that periodUnit may take.",
+      "section": "Shared Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A request without periodCount, a REQUIRED shared field.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "periodCount missing"
+    },
+    "id": "subscription-wire-request-no-period-count-reject",
+    "input": {
+      "subscriptionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aadffadc90"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Activation payload {type: \"transaction\", transaction, authentication: {type: \"proof\", challengeId, payer, signature}} round-tripped through the SDK's activation payload type.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhdXRoZW50aWNhdGlvbiI6eyJjaGFsbGVuZ2VJZCI6InFUOHdFcll1STNvUGxLakg2Z0ZkU2EiLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwic2lnbmF0dXJlIjoiNTJOWndFSlJ3eVRkc1dnVmg3Y2c3QldiUFdZMndZUTFOajc2R3NQanJFbjVEQm4ySlhZZ2N5UE40ZTI1MjJLVDl0QTlQU2c4UlphcFBwalg4RmJDbXp2byIsInR5cGUiOiJwcm9vZiJ9LCJ0cmFuc2FjdGlvbiI6IkFRQUIiLCJ0eXBlIjoidHJhbnNhY3Rpb24ifQ",
+        "canonicalJson": "{\"authentication\":{\"challengeId\":\"qT8wErYuI3oPlKjH6gFdSa\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"signature\":\"52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo\",\"type\":\"proof\"},\"transaction\":\"AQAB\",\"type\":\"transaction\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-wire-activation-payload",
+    "input": {
+      "subscriptionWire": {
+        "shape": "activation",
+        "value": {
+          "authentication": {
+            "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+            "type": "proof"
+          },
+          "transaction": "AQAB",
+          "type": "transaction"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-45b8ba4317",
+      "MPP-52f835b76c"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| authentication | object | REQUIRED | Reusable payer proof defined in {{subscription-bearer-proof}} |",
+      "section": "Payload"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "An activation payload without the REQUIRED authentication proof.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "authentication missing"
+    },
+    "id": "subscription-wire-activation-no-authentication-reject",
+    "input": {
+      "subscriptionWire": {
+        "shape": "activation",
+        "value": {
+          "transaction": "AQAB",
+          "type": "transaction"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-52f835b76c"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| authentication | object | REQUIRED | Reusable payer proof defined in {{subscription-bearer-proof}} |",
+      "section": "Payload"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Later-access payload {type: \"proof\", subscriptionDelegation, authentication} round-tripped through the SDK's access payload type.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhdXRoZW50aWNhdGlvbiI6eyJjaGFsbGVuZ2VJZCI6InFUOHdFcll1STNvUGxLakg2Z0ZkU2EiLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwic2lnbmF0dXJlIjoiNTJOWndFSlJ3eVRkc1dnVmg3Y2c3QldiUFdZMndZUTFOajc2R3NQanJFbjVEQm4ySlhZZ2N5UE40ZTI1MjJLVDl0QTlQU2c4UlphcFBwalg4RmJDbXp2byIsInR5cGUiOiJwcm9vZiJ9LCJzdWJzY3JpcHRpb25EZWxlZ2F0aW9uIjoiQXdDdGlYTGhDTHhZeXRKOUd6NXFRQmQ4R3hZNkdyd2ZSZGVldlB5c0VnSnkiLCJ0eXBlIjoicHJvb2YifQ",
+        "canonicalJson": "{\"authentication\":{\"challengeId\":\"qT8wErYuI3oPlKjH6gFdSa\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"signature\":\"52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo\",\"type\":\"proof\"},\"subscriptionDelegation\":\"AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy\",\"type\":\"proof\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-wire-access-payload",
+    "input": {
+      "subscriptionWire": {
+        "shape": "access",
+        "value": {
+          "authentication": {
+            "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+            "type": "proof"
+          },
+          "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy",
+          "type": "proof"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-9edde7b556"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| type | string | REQUIRED | The string \"proof\" |",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "An access payload whose authentication.type is \"signature\" instead of \"proof\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "authentication.type is not proof"
+    },
+    "id": "subscription-wire-access-wrong-proof-type-reject",
+    "input": {
+      "subscriptionWire": {
+        "shape": "access",
+        "value": {
+          "authentication": {
+            "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+            "type": "signature"
+          },
+          "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy",
+          "type": "proof"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-9edde7b556"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| type | string | REQUIRED | The string \"proof\" |",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  }
+]
