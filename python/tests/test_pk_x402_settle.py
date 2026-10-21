@@ -726,3 +726,31 @@ async def test_cosign_preserves_client_signature_and_uses_returned_transaction(s
     assert signed.message == partial.message
     assert signed.signatures[1] == client_signature
     assert signed.verify_with_results() == [True, True]
+
+
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+@pytest.mark.asyncio
+async def test_settled_payment_is_visible_to_replicas_on_the_previous_release(monkeypatch, legacy_prefix):
+    """Rolling upgrade: a replica on the previous release claims and checks only
+    its own legacy key. Every claim takes those keys too, so such a replica
+    refuses a payment this release accepted; a release gives them back."""
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert await store.put_if_absent(legacy_prefix + payment.transaction, True) is False
+
+    ledger = ConsumedSignatures(store)
+    assert await ledger.claim("sig-released") is True
+    await ledger.release("sig-released")
+    assert await store.get(legacy_prefix + "sig-released") is None
+    assert await ledger.claim("sig-released") is True
+
+
+@pytest.mark.asyncio
+async def test_refused_claim_gives_back_the_legacy_keys_it_took():
+    store = MemoryStore()
+    await store.put("x402-svm-exact:consumed:sig-held", True)
+    assert await ConsumedSignatures(store).claim("sig-held") is False
+    assert await store.get("solana-charge:consumed:sig-held") is None
+    assert await store.get(consumed_signature_key("sig-held")) is None

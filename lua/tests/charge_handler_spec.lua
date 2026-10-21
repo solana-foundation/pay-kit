@@ -872,3 +872,24 @@ t.test('expired challenge never reaches verify_payment', function()
   t.assert_equal(err.code, error_codes.CHALLENGE_EXPIRED)
   t.assert_true(not called, 'verify_payment must not run for an expired challenge')
 end)
+
+-- Rolling upgrade: an MPP replica on the previous release claims and checks
+-- only `solana-charge:consumed:<sig>`. Every claim takes that key too, so such
+-- a replica refuses a payment this release accepted; a release gives it back.
+t.test('a claim is visible to MPP replicas on the previous release', function()
+  local consumed_signatures = require('pay_kit.consumed_signatures')
+  for _, shared in ipairs({ require('pay_kit.store').memory(), require('pay_kit.protocols.mpp.store').memory() }) do
+    local ledger = consumed_signatures.new(shared)
+    t.assert_true(ledger:claim('sig-new'))
+    t.assert_true(not shared:put_if_absent('solana-charge:consumed:sig-new', true),
+      'a previous-release replica could claim a signature this release accepted')
+    ledger:release('sig-new')
+    t.assert_true(not shared:get('solana-charge:consumed:sig-new'), 'release left the legacy key behind')
+    t.assert_true(ledger:claim('sig-new'))
+
+    -- A refused claim gives back the legacy key it took.
+    shared:put_if_absent(consumed_signatures.key('sig-held'), true)
+    t.assert_true(not ledger:claim('sig-held'))
+    t.assert_true(not shared:get('solana-charge:consumed:sig-held'))
+  end
+end)

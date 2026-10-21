@@ -29,7 +29,13 @@ from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import PreflightRejectedError, SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store, consumed_before_ledger, consumed_signature_key
+from solana_pay_kit._paycore.store import (
+    ConsumedSignatures,
+    MemoryStore,
+    Store,
+    consumed_before_ledger,
+    consumed_signature_key,
+)
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError, SettlementInProgressError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.extensions import PaymentIdentifierError, verify_payment_identifier
@@ -229,13 +235,13 @@ class X402Adapter:
                     # preflight rejection: the transaction may still land.
                     # Record it as pending so a retry of the same payment
                     # reconciles it, and tell the client not to pay again.
-                    if not await self._store.put_if_absent(replay_key, replay_record):
+                    if not await ConsumedSignatures(self._store).claim(signature, replay_record):
                         raise _settlement_in_progress(signature, "a settlement of it is already recorded") from exc
                     raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
                 if not broadcast_signature:
                     raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
 
-                inserted = await self._store.put_if_absent(replay_key, replay_record)
+                inserted = await ConsumedSignatures(self._store).claim(signature, replay_record)
                 if not inserted:
                     current = await self._store.get(replay_key)
                     skip_confirmation = await _recover_replay_record(

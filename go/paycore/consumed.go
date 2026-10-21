@@ -41,32 +41,44 @@ func consumedSignatureKey(signature string) string {
 // legacyConsumedSignatureKey is the key MPP charge claimed signatures under
 // before the shared ledger. x402 exact kept its claims in process memory
 // then, so it left no store record to honour.
+//
+// Every claim also takes this key, so that during a rolling upgrade a
+// replica still running the previous release (which claims and checks only
+// this key) sees a payment this release accepted, and the other way round.
 func legacyConsumedSignatureKey(signature string) string {
 	return "solana-charge:consumed:" + signature
 }
 
 // Claim atomically claims signature. false means an earlier presentation,
-// through any protocol, already claimed it.
+// through any protocol and any release, already claimed it.
+//
+// The legacy key is taken first, with PutIfAbsent, so a replica on the
+// previous release, which claims that key the same way, contends on the
+// very same key: at most one of them wins, with no window between a check
+// and a write. A signature already held under it (a pre-ledger claim, or a
+// previous release's) stays consumed and is never migrated. When the claim
+// fails, refused or on a store error, the legacy key this call took is
+// given back: the caller then neither sends nor serves anything for it.
 func (c ConsumedSignatures) Claim(ctx context.Context, signature string) (bool, error) {
-	consumed, err := c.consumedBeforeLedger(ctx, signature)
-	if err != nil || consumed {
+	legacy := legacyConsumedSignatureKey(signature)
+	took, err := c.store.PutIfAbsent(ctx, legacy, true)
+	if err != nil || !took {
 		return false, err
 	}
-	return c.store.PutIfAbsent(ctx, consumedSignatureKey(signature), true)
-}
-
-// consumedBeforeLedger reports whether signature was claimed under the
-// pre-ledger MPP key, by a replica running an older release or before this
-// one upgraded. Read only and fail closed: such a signature stays consumed,
-// it is never migrated or claimed again.
-func (c ConsumedSignatures) consumedBeforeLedger(ctx context.Context, signature string) (bool, error) {
-	_, found, err := c.store.Get(ctx, legacyConsumedSignatureKey(signature))
-	return found, err
+	claimed, err := c.store.PutIfAbsent(ctx, consumedSignatureKey(signature), true)
+	if err != nil || !claimed {
+		_ = c.store.Delete(context.WithoutCancel(ctx), legacy)
+		return false, err
+	}
+	return true, nil
 }
 
 // Release drops a claim this caller made for a transaction that provably
 // never landed (for example a preflight rejection), so the payer may retry
-// it.
+// it. The ledger key goes first, then the legacy key the claim took.
 func (c ConsumedSignatures) Release(ctx context.Context, signature string) error {
-	return c.store.Delete(ctx, consumedSignatureKey(signature))
+	if err := c.store.Delete(ctx, consumedSignatureKey(signature)); err != nil {
+		return err
+	}
+	return c.store.Delete(ctx, legacyConsumedSignatureKey(signature))
 }

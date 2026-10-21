@@ -37,6 +37,7 @@ import {
     consumedSignatureKey,
     consumeReplayKey,
     inspectReplayKey,
+    legacyConsumedSignatureKey,
 } from './replay.js';
 
 /**
@@ -878,6 +879,10 @@ async function verifyTransaction(
         throw new Error('Transaction signature already consumed');
     }
     const replayKey = consumedSignatureKey(signature);
+    // The same record under the previous release's key, so a replica still on
+    // that release sees this settlement (and settles an identical retry the
+    // same way) during a rolling upgrade.
+    const legacyKey = legacyConsumedSignatureKey(signature);
     const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
     const replayStatus = await inspectReplayKey(store, replayKey, replayBinding);
     if (replayStatus === 'conflict' || replayStatus === 'retry') {
@@ -897,6 +902,13 @@ async function verifyTransaction(
         if (recoveryClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
+        const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
+        if (legacyClaim === 'conflict' || legacyClaim === 'retry') {
+            throw new Error('Transaction signature already consumed');
+        }
+        if (legacyClaim === 'pending') {
+            throw new Error('Transaction settlement is already in progress; retry shortly');
+        }
     } else if (replayStatus === 'available') {
         // Only a transaction with no prior settlement state reaches preflight
         // and broadcast. Exact-wire retries recover by signature above, even
@@ -909,6 +921,17 @@ async function verifyTransaction(
         if (replayClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
+        // Nothing is sent until the previous release's key is held too: a
+        // replica on that release that claimed it first owns the payment, and
+        // the ledger key is given back.
+        const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
+        if (legacyClaim !== 'reserved') {
+            await store.delete(replayKey);
+            if (legacyClaim === 'pending') {
+                throw new Error('Transaction settlement is already in progress; retry shortly');
+            }
+            throw new Error('Transaction signature already consumed');
+        }
         // Retain pending state if the RPC accepted the send but lost its response.
         await broadcastTransaction(rpcUrl, txToSend);
     }
@@ -917,7 +940,13 @@ async function verifyTransaction(
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
-    if (!(await consumeReplayKey(store, replayKey, replayBinding))) {
+    // One grant per payment across both releases: the previous release's key
+    // first (a replica on that release consumes it the same way), then the
+    // ledger key.
+    if (
+        !(await consumeReplayKey(store, legacyKey, replayBinding)) ||
+        !(await consumeReplayKey(store, replayKey, replayBinding))
+    ) {
         throw new Error('Transaction signature already consumed');
     }
 

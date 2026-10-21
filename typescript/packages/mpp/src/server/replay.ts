@@ -122,23 +122,45 @@ export function consumedSignatureKey(signature: string): string {
 }
 
 /**
- * Whether `signature` was claimed under the pre-ledger MPP charge key
- * (`solana-charge:consumed:<sig>`), by a replica running an older release or
- * before this one upgraded. Read only and fail closed: such a signature stays
- * consumed, it is never migrated or claimed again. The x402 adapter kept no
- * store record before the ledger, so it has no legacy key.
+ * Key under which MPP charge claimed signatures before the shared ledger. The
+ * x402 adapter kept no store record then, so it has no legacy key.
+ *
+ * Every claim also takes this key, holding the same record, so that during a
+ * rolling upgrade a replica still running the previous release (which claims
+ * and checks only this key) sees a payment this release accepted, and the
+ * other way round.
+ */
+export function legacyConsumedSignatureKey(signature: string): string {
+    return `solana-charge:consumed:${signature}`;
+}
+
+/**
+ * Whether `signature` is held under the legacy MPP charge key only, by a
+ * replica running the previous release or by this one before it upgraded.
+ * This release's own claims hold the ledger key too, so they are not
+ * reported. Read only and fail closed: such a signature stays consumed, it is
+ * never migrated or claimed again.
  */
 export async function consumedBeforeLedger(store: Store.Store, signature: string): Promise<boolean> {
-    return (await store.get(`solana-charge:consumed:${signature}`)) !== null;
+    if ((await store.get(consumedSignatureKey(signature))) !== null) return false;
+    return (await store.get(legacyConsumedSignatureKey(signature))) !== null;
 }
 
 /**
  * Atomically claim `signature` in the shared consumed-signature ledger.
- * `false` means an earlier presentation, through any protocol, claimed it.
+ * `false` means an earlier presentation, through any protocol or release,
+ * claimed it.
+ *
+ * The legacy key comes first, taken the way the previous release takes it, so
+ * a replica on that release contends on the very same key and at most one of
+ * them wins. A refused ledger claim gives the legacy key back.
  */
 export async function claimConsumedSignature(store: Store.Store, signature: string): Promise<boolean> {
-    if (await consumedBeforeLedger(store, signature)) return false;
-    return await reserveReplayKey(store, consumedSignatureKey(signature));
+    const legacy = legacyConsumedSignatureKey(signature);
+    if (!(await reserveReplayKey(store, legacy))) return false;
+    if (await reserveReplayKey(store, consumedSignatureKey(signature))) return true;
+    await store.delete(legacy);
+    return false;
 }
 
 /** Atomically reserves a replay key, falling back to a process-local lock for legacy stores. */

@@ -48,4 +48,21 @@ final class ConsumedSignaturesTest extends TestCase
         self::assertTrue($ledger->authorize('sig-fresh'));
         self::assertFalse($ledger->authorize('sig-fresh'));
     }
+
+    /**
+     * Rolling upgrade: a replica on the previous release claims and checks
+     * only its own legacy key. Every claim takes those keys too, so such a
+     * replica refuses a payment this release accepted, while this release
+     * still authorizes its own claim once.
+     */
+    #[DataProvider('legacyClaims')]
+    public function testClaimIsVisibleToReplicasOnThePreviousRelease(string $prefix, Store $store): void
+    {
+        $ledger = new ConsumedSignatures($store);
+
+        self::assertTrue($ledger->claim('sig-new'));
+        self::assertFalse($store->putIfAbsent($prefix . 'sig-new', true));
+        self::assertTrue($ledger->authorize('sig-new'));
+        self::assertFalse($ledger->authorize('sig-new'));
+    }
 }

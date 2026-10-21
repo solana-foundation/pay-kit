@@ -204,6 +204,10 @@ const LEGACY_X402_NETWORKS: [&str; 3] = [
 
 /// Keys under which MPP charge and x402 `exact` claimed signatures before
 /// they shared this ledger.
+///
+/// Every claim also takes these, so that during a rolling upgrade a replica
+/// still running the previous release (which claims and checks only its own
+/// legacy key) sees a payment this release accepted, and the other way round.
 fn legacy_consumed_signature_keys(signature: &str) -> impl Iterator<Item = String> + '_ {
     std::iter::once(format!("solana-charge:consumed:{signature}")).chain(
         LEGACY_X402_NETWORKS
@@ -218,27 +222,56 @@ impl ConsumedSignatures {
     }
 
     /// Atomically claim `signature`. `false` means an earlier presentation,
-    /// through any protocol, already claimed it.
+    /// through any protocol and any release, already claimed it.
     pub async fn claim(&self, signature: &str) -> Result<bool, StoreError> {
-        if self.consumed_before_ledger(signature).await? {
-            return Ok(false);
-        }
-        self.store
-            .put_if_absent(&consumed_signature_key(signature), serde_json::json!(true))
-            .await
+        self.claim_with(signature, serde_json::json!(true)).await
     }
 
-    /// Whether `signature` was claimed under a pre-ledger MPP or x402 key, by
-    /// a replica running an older release or before this one upgraded. Read
-    /// only and fail closed: such a signature stays consumed, it is never
-    /// migrated or claimed again.
-    async fn consumed_before_ledger(&self, signature: &str) -> Result<bool, StoreError> {
+    /// Take every legacy key, then the ledger key holding `value`.
+    ///
+    /// The legacy keys come first and each is taken with `put_if_absent`, so
+    /// a replica on the previous release, which claims its own legacy key the
+    /// same way, contends on the very same key: at most one of them wins,
+    /// with no window between a check and a write. A signature already held
+    /// under any of them (a pre-ledger claim, or a previous release's) stays
+    /// consumed and is never migrated. When the claim fails, refused or on a
+    /// store error, the keys this call took are given back: the caller then
+    /// neither sends nor serves anything for the signature.
+    async fn claim_with(
+        &self,
+        signature: &str,
+        value: serde_json::Value,
+    ) -> Result<bool, StoreError> {
+        let mut taken = Vec::new();
         for key in legacy_consumed_signature_keys(signature) {
-            if self.store.get(&key).await?.is_some() {
-                return Ok(true);
+            match self
+                .store
+                .put_if_absent(&key, serde_json::json!(true))
+                .await
+            {
+                Ok(true) => taken.push(key),
+                outcome => {
+                    self.give_back(&taken).await;
+                    return outcome;
+                }
             }
         }
-        Ok(false)
+        let outcome = self
+            .store
+            .put_if_absent(&consumed_signature_key(signature), value)
+            .await;
+        if !matches!(outcome, Ok(true)) {
+            self.give_back(&taken).await;
+        }
+        outcome
+    }
+
+    async fn give_back(&self, keys: &[String]) {
+        for key in keys {
+            if let Err(error) = self.store.delete(key).await {
+                tracing::warn!(%error, key, "failed to give back a legacy signature claim");
+            }
+        }
     }
 
     /// Claim `signature` for a transaction about to be broadcast, whose
@@ -249,13 +282,10 @@ impl ConsumedSignatures {
     /// taken: [`Self::claim`] refuses it, so no protocol can present the
     /// signature while its settlement is unresolved.
     pub async fn claim_pending(&self, signature: &str) -> Result<PendingClaim, StoreError> {
-        if self.consumed_before_ledger(signature).await? {
-            return Ok(PendingClaim::Consumed);
-        }
-        let key = consumed_signature_key(signature);
-        if self.store.put_if_absent(&key, pending_marker()).await? {
+        if self.claim_with(signature, pending_marker()).await? {
             return Ok(PendingClaim::Fresh);
         }
+        let key = consumed_signature_key(signature);
         Ok(if self.store.get(&key).await? == Some(pending_marker()) {
             PendingClaim::ResumePending
         } else {
@@ -278,8 +308,15 @@ impl ConsumedSignatures {
 
     /// Release a claim this caller made for a transaction that provably never
     /// landed (for example a preflight rejection), so the payer may retry it.
+    /// The ledger key goes first, then the legacy keys the claim took.
     pub async fn release(&self, signature: &str) -> Result<(), StoreError> {
-        self.store.delete(&consumed_signature_key(signature)).await
+        self.store
+            .delete(&consumed_signature_key(signature))
+            .await?;
+        for key in legacy_consumed_signature_keys(signature) {
+            self.store.delete(&key).await?;
+        }
+        Ok(())
     }
 }
 
@@ -3643,6 +3680,65 @@ mod tests {
             ledger.claim_pending("sig-other").await.unwrap(),
             PendingClaim::Fresh
         );
+    }
+
+    // Rolling upgrade: a replica on the previous release claims and checks
+    // only its own legacy key. Every claim takes those keys too, so such a
+    // replica refuses a payment this release accepted.
+    #[tokio::test]
+    async fn a_claim_is_visible_to_replicas_on_the_previous_release() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        let old_replica_claims = |raw: Arc<dyn Store>, key: String| async move {
+            raw.put_if_absent(&key, serde_json::json!(true))
+                .await
+                .unwrap()
+        };
+
+        assert!(ledger.claim("sig-new").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-pending").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        for signature in ["sig-new", "sig-pending"] {
+            for key in legacy_consumed_signature_keys(signature) {
+                assert!(!old_replica_claims(raw.clone(), key.clone()).await, "{key}");
+            }
+        }
+        // Resuming this release's own pending claim is still a resume.
+        assert_eq!(
+            ledger.claim_pending("sig-pending").await.unwrap(),
+            PendingClaim::ResumePending
+        );
+
+        // A release gives every key back, so the payer may retry and an
+        // older replica is not left refusing a payment that never landed.
+        ledger.release("sig-pending").await.unwrap();
+        for key in legacy_consumed_signature_keys("sig-pending") {
+            assert!(raw.get(&key).await.unwrap().is_none(), "{key}");
+        }
+        assert!(ledger.claim("sig-pending").await.unwrap());
+    }
+
+    // A previous release's claim on one legacy key refuses the signature, and
+    // the keys this claim took before finding it are given back.
+    #[tokio::test]
+    async fn a_refused_claim_gives_back_the_legacy_keys_it_took() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        let held = format!("x402-exact:consumed:{}:sig-old", LEGACY_X402_NETWORKS[2]);
+        raw.put(&held, serde_json::json!(true)).await.unwrap();
+
+        assert!(!ledger.claim("sig-old").await.unwrap());
+        for key in legacy_consumed_signature_keys("sig-old") {
+            let expected = (key == held).then_some(serde_json::Value::Bool(true));
+            assert_eq!(raw.get(&key).await.unwrap(), expected, "{key}");
+        }
+        assert!(raw
+            .get(&consumed_signature_key("sig-old"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

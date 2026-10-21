@@ -31,6 +31,22 @@ class ConsumedSignaturesTest < Minitest::Test
     end
   end
 
+  # Rolling upgrade: a replica on the previous release claims and checks only
+  # its own legacy key. Every claim takes those keys too, so such a replica
+  # refuses a payment this release accepted.
+  ["solana-charge:consumed:", "x402-svm-exact:consumed:"].each do |prefix|
+    STORES.each do |name, build|
+      define_method("test_claim_is_visible_to_#{prefix.split(":").first.tr("-", "_")}_replicas_on_the_previous_release_in_#{name.tr(" ", "_")}") do
+        store = build.call
+        ledger = PayCore::ConsumedSignatures.new(store)
+
+        assert ledger.claim("sig-new")
+        refute store.put_if_absent("#{prefix}sig-new", true)
+        assert ledger.claimed?("sig-new")
+      end
+    end
+  end
+
   def test_store_without_a_read_probe_is_refused_at_construction
     write_only = Class.new { def put_if_absent(_key, _value) = true }.new
     assert_raises(ArgumentError) { PayCore::ConsumedSignatures.new(write_only) }

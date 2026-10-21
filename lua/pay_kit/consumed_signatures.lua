@@ -33,11 +33,20 @@ function M.new(store)
   return setmetatable({ store = store }, Ledger)
 end
 
+-- Key under which MPP charge claimed signatures before the shared ledger.
+-- Every claim also takes it, so that during a rolling upgrade an MPP replica
+-- still running the previous release (which claims and checks only this key)
+-- sees a payment this release accepted, and the other way round.
+local function legacy_mpp_key(signature)
+  return 'solana-charge:consumed:' .. signature
+end
+
 -- Keys under which MPP charge and x402 `exact` claimed signatures before
--- they shared this ledger.
+-- they shared this ledger. The x402 one is only read: this release's x402
+-- adapter writes it to recognise its own retries, so a claim must not.
 local function legacy_keys(signature)
   return {
-    'solana-charge:consumed:' .. signature,
+    legacy_mpp_key(signature),
     'x402-svm-exact:' .. signature .. ':consumed',
   }
 end
@@ -63,16 +72,29 @@ function Ledger:consumed_before_ledger(signature)
 end
 
 --- Atomically claim `signature`. `false` means an earlier presentation,
---- through any protocol, already claimed it.
+--- through any protocol or release, already claimed it.
+---
+--- The legacy MPP key comes first, taken with `put_if_absent`, so an MPP
+--- replica on the previous release, which claims that key the same way,
+--- contends on the very same key: at most one of them wins, with no window
+--- between a check and a write. A signature already held under a legacy key
+--- stays consumed and is never migrated. A refused claim gives the legacy key
+--- back.
 function Ledger:claim(signature)
   if self:consumed_before_ledger(signature) then return false end
-  return self.store:put_if_absent(M.key(signature), true) == true
+  local legacy = legacy_mpp_key(signature)
+  if self.store:put_if_absent(legacy, true) ~= true then return false end
+  if self.store:put_if_absent(M.key(signature), true) == true then return true end
+  self.store:delete(legacy)
+  return false
 end
 
 --- Release a claim this caller made for a transaction that provably never
---- landed (for example a preflight rejection), so the payer may retry it.
+--- landed (for example a preflight rejection), so the payer may retry it,
+--- with the legacy key the claim took.
 function Ledger:release(signature)
   self.store:delete(M.key(signature))
+  self.store:delete(legacy_mpp_key(signature))
 end
 
 --- The store both protocols must claim in under the PayKit umbrella: the

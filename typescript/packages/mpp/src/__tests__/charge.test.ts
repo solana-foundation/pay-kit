@@ -31,7 +31,12 @@ import {
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
 import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
-import { claimConsumedSignature, consumedSignatureKey } from '../server/replay.js';
+import {
+    claimConsumedSignature,
+    consumedSignatureKey,
+    legacyConsumedSignatureKey,
+    reserveReplayKey,
+} from '../server/replay.js';
 import { transactionSignatureFromBase64 } from '../utils/transactions.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
@@ -593,8 +598,60 @@ test('signature: shares one consumed-signature ledger with other protocols', asy
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
 
     await store.delete(consumedSignatureKey(SIGNATURE));
+    await store.delete(legacyConsumedSignatureKey(SIGNATURE));
     await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
     expect(await claimConsumedSignature(store, SIGNATURE)).toBe(false);
+});
+
+// Rolling upgrade: a replica on the previous release claims and checks only
+// the legacy key. Every claim takes it too, so such a replica refuses a
+// payment this release accepted, through either settlement mode.
+test('a settled payment is visible to replicas on the previous release', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(await reserveReplayKey(store, legacyConsumedSignatureKey(SIGNATURE))).toBe(false);
+
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const signature = transactionSignatureFromBase64(transaction);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    await expect(
+        method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(await store.get(legacyConsumedSignatureKey(signature))).toMatchObject({ state: 'confirmed' });
+    expect(await reserveReplayKey(store, legacyConsumedSignatureKey(signature))).toBe(false);
+});
+
+// A previous-release replica that claimed the legacy key in the window after
+// the ledger check owns the payment: nothing is sent, and the ledger key is
+// given back.
+test('pull: a legacy claim taken by a previous release stops the broadcast', async () => {
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const signature = transactionSignatureFromBase64(transaction);
+    const legacy = legacyConsumedSignatureKey(signature);
+    let raced = false;
+    const racingStore: Store.Store = {
+        ...store,
+        async get(key) {
+            const value = await store.get(key);
+            // An old replica claims its key right after this release checked it.
+            if (key === legacy && !raced) {
+                raced = true;
+                await store.put(legacy, true);
+            }
+            return value;
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: racingStore });
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    await expect(
+        method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any }),
+    ).rejects.toThrow('already consumed');
+    expect(rpcMethods).not.toContain('sendTransaction');
+    expect(await store.get(consumedSignatureKey(signature))).toBeNull();
 });
 
 // A signature claimed under the pre-ledger MPP key (by an older replica, or
@@ -1944,7 +2001,10 @@ test('pull: recovers an accepted send with a lost response exactly once without 
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('send response lost');
     const pending = await store.get(key);
     expect(pending).toMatchObject({ state: 'pending' });
+    // The lease lapses on the ledger key and its legacy mirror alike.
     await store.put(key, { ...(pending as object), leaseUntil: 0 });
+    const legacy = legacyConsumedSignatureKey(transactionSignatureFromBase64(transaction));
+    await store.put(legacy, { ...((await store.get(legacy)) as object), leaseUntil: 0 });
     globalThis.fetch = successfulFetch;
 
     await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
@@ -2028,7 +2088,8 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
         ...store,
         async update(key, fn) {
             updates++;
-            if (!fail || updates !== 2) return update(key, fn);
+            // Updates: claim, legacy claim, legacy consume, ledger consume.
+            if (!fail || updates !== 4) return update(key, fn);
             if (committed) await update(key, fn);
             await Promise.resolve();
             throw new Error('atomic storage unavailable');

@@ -1007,9 +1007,12 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "sig-ordering",
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
 
+    # The claim takes the previous release's keys first, then the ledger key.
     assert_equal [
       [:broadcast],
       [:confirm, "sig-ordering"],
+      [:put_if_absent, "solana-charge:consumed:sig-ordering"],
+      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"],
       [:put_if_absent, "solana:consumed-signature:sig-ordering"]
     ], order
   end

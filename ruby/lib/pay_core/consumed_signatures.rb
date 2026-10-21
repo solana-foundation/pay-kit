@@ -17,7 +17,10 @@ module PayCore
   # read-only `key?(key)`.
   class ConsumedSignatures
     # Keys under which MPP charge and x402 `exact` claimed signatures before
-    # they shared this ledger.
+    # they shared this ledger. Every claim also takes them, so that during a
+    # rolling upgrade a replica still running the previous release (which
+    # claims and checks only its own legacy key) sees a payment this release
+    # accepted, and the other way round.
     LEGACY_KEY_PREFIXES = ["solana-charge:consumed:", "x402-svm-exact:consumed:"].freeze
 
     def self.key(signature)
@@ -34,10 +37,19 @@ module PayCore
     end
 
     # Atomically claim `signature`. `false` means an earlier presentation,
-    # through any protocol, already claimed it.
+    # through any protocol or release, already claimed it.
+    #
+    # The legacy keys come first, each taken with `put_if_absent`, so a
+    # replica on the previous release, which claims its own legacy key the
+    # same way, contends on the very same key: at most one of them wins, with
+    # no window between a check and a write. A signature already held under
+    # any of them stays consumed and is never migrated. The store cannot
+    # delete, so a refused claim keeps the legacy keys it took; that only
+    # fails closed, for a signature someone else already holds.
     def claim(signature)
-      return false if consumed_before_ledger?(signature)
-
+      LEGACY_KEY_PREFIXES.each do |prefix|
+        return false unless @store.put_if_absent("#{prefix}#{signature}", true)
+      end
       @store.put_if_absent(self.class.key(signature), true)
     end
 

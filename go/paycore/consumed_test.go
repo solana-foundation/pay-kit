@@ -39,3 +39,46 @@ func TestLegacyMppChargeClaimStaysConsumed(t *testing.T) {
 		t.Fatal("second claim of sig-fresh succeeded")
 	}
 }
+
+// Rolling upgrade: a replica on the previous release claims and checks only
+// the legacy key. Every claim takes it too, so such a replica refuses a
+// payment this release accepted; a release gives it back.
+func TestClaimIsVisibleToReplicasOnThePreviousRelease(t *testing.T) {
+	ctx := context.Background()
+	store := core.NewMemoryStore()
+	ledger := paycore.NewConsumedSignatures(store)
+	const legacyKey = "solana-charge:consumed:sig-new"
+
+	if claimed, err := ledger.Claim(ctx, "sig-new"); err != nil || !claimed {
+		t.Fatalf("claim = %v, %v", claimed, err)
+	}
+	if took, _ := store.PutIfAbsent(ctx, legacyKey, true); took {
+		t.Fatal("a previous-release replica could claim a signature this release accepted")
+	}
+
+	if err := ledger.Release(ctx, "sig-new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Get(ctx, legacyKey); found {
+		t.Fatal("release left the legacy key behind")
+	}
+	if claimed, err := ledger.Claim(ctx, "sig-new"); err != nil || !claimed {
+		t.Fatalf("claim after release = %v, %v", claimed, err)
+	}
+}
+
+// A refused claim gives back the legacy key it took.
+func TestRefusedClaimGivesBackTheLegacyKey(t *testing.T) {
+	ctx := context.Background()
+	store := core.NewMemoryStore()
+	ledger := paycore.NewConsumedSignatures(store)
+	if err := store.Put(ctx, "solana:consumed-signature:sig-held", true); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, _ := ledger.Claim(ctx, "sig-held"); claimed {
+		t.Fatal("claimed a held signature")
+	}
+	if _, found, _ := store.Get(ctx, "solana-charge:consumed:sig-held"); found {
+		t.Fatal("a refused claim kept the legacy key")
+	}
+}
