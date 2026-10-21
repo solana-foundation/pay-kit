@@ -1,6 +1,7 @@
 package x402
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -50,6 +51,9 @@ type AcceptsEntry struct {
 	Extra             Extra  `json:"extra"`
 
 	raw json.RawMessage
+	// resource is the challenge's `resource` (PaymentRequired.resource),
+	// echoed in the v2 credential so it names the resource it pays for.
+	resource json.RawMessage
 }
 
 type Extra struct {
@@ -184,6 +188,19 @@ func (e AcceptsEntry) RawAccepted() json.RawMessage { return e.raw }
 
 func (e *AcceptsEntry) ClearRaw() { e.raw = nil }
 
+// ChallengeResource is the `resource` of the challenge the entry was offered
+// in, verbatim; nil for an entry built in code.
+func (e AcceptsEntry) ChallengeResource() json.RawMessage { return e.resource }
+
+// SetChallengeResource records the challenge's `resource` for the credential
+// to echo. Anything but a JSON object is ignored.
+func (e *AcceptsEntry) SetChallengeResource(resource json.RawMessage) {
+	trimmed := bytes.TrimSpace(resource)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		e.resource = append(json.RawMessage(nil), trimmed...)
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {
@@ -209,12 +226,15 @@ func normalizeNetwork(network string) string {
 }
 
 type Credential struct {
-	X402Version int                `json:"x402Version"`
-	Scheme      string             `json:"scheme,omitempty"`
-	Network     string             `json:"network,omitempty"`
-	Payload     CredentialPayload  `json:"payload"`
-	Accepted    *AcceptsEntry      `json:"accepted,omitempty"`
-	Extensions  *PaymentExtensions `json:"extensions,omitempty"`
+	X402Version int               `json:"x402Version"`
+	Scheme      string            `json:"scheme,omitempty"`
+	Network     string            `json:"network,omitempty"`
+	Payload     CredentialPayload `json:"payload"`
+	Accepted    *AcceptsEntry     `json:"accepted,omitempty"`
+	// Resource is the v2 PaymentPayload `resource`: the challenge's resource,
+	// echoed so a server that binds payments to its route can match it.
+	Resource   json.RawMessage    `json:"resource,omitempty"`
+	Extensions *PaymentExtensions `json:"extensions,omitempty"`
 }
 
 type CredentialPayload struct {
