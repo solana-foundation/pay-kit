@@ -289,11 +289,11 @@ when the table is stale.
 
 | client \ server | go | lua | php | python | ruby | rust | typescript |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| go | 14/14 | 14/14 | 14/14 | 14/14 | 14/14 | **12**/14 | 9/9 · 5u |
-| python | 14/14 | 14/14 | 14/14 | 14/14 | 14/14 | **12**/14 | 9/9 · 5u |
-| rust | **12**/14 | **12**/14 | **12**/14 | **12**/14 | **12**/14 | **12**/14 | 9/9 · 5u |
-| swift | 14/14 | 14/14 | 14/14 | 14/14 | 14/14 | **12**/14 | 9/9 · 5u |
-| typescript | 9/9 | 9/9 | 9/9 | 9/9 | 9/9 | **7**/9 | 7/7 · 2u |
+| go | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
+| python | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
+| rust | **13**/15 | **13**/15 | **13**/15 | **13**/15 | **13**/15 | **13**/15 | 10/10 · 5u |
+| swift | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
+| typescript | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | **8**/10 | 8/8 · 2u |
 
 A server agrees with a build when it accepts what the Rust judge accepted (verifier plus instruction multiset against the kit's own build) and refuses what it refused; `u` counts builds the server reports it cannot express. Disagreements are listed in `harness/results/cross.json`.
 <!-- cross:end -->
