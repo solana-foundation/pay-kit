@@ -12,6 +12,7 @@ pub mod fixture_rpc;
 pub mod keys;
 pub mod mutate;
 pub mod realize;
+pub mod report;
 pub mod reqlint;
 pub mod run;
 pub mod tx;

@@ -8,6 +8,7 @@
 //!                               magnitudes, same verdicts) into DIR, never the committed tree
 //! pkc req-lint                  requirements lint over the pinned spec repositories
 //! pkc req-lint --list mpp|x402  print every extracted normative sentence with its id
+//! pkc report [--check]         requirement x SDK traceability (README table, results/report.json)
 //! pkc run --sdk <lang>[,..]|all --tier offline [--require] [...]   drive SDK testees
 //! pkc run --cross [--sdk <servers>] [--check] [--require]          client x server matrix
 //! pkc case show <id>            input, decoded expectation, mutation, spec, reference
@@ -26,12 +27,15 @@ use paykit_conformance::case::SpecRepo;
 use paykit_conformance::run::driver::{self, Options};
 use paykit_conformance::run::testee::{Abi, Manifest};
 use paykit_conformance::run::{cross, cross_gate, explain, next, scaffold, vectors};
-use paykit_conformance::{annotate, cases, fill, realize, repo_root, reqlint};
+use paykit_conformance::{annotate, cases, fill, realize, repo_root, report, reqlint};
 
 const HELP: &str = "pkc: pay-kit conformance
 
   pkc fill [--check | --list | --seed N --out DIR]
   pkc req-lint [--list mpp|x402]
+  pkc report [--check | --unmapped [mpp|x402]]
+      requirement x SDK traceability into harness/README.md (--check: fail if stale)
+      and harness/results/report.json (with observed outcomes); --unmapped prints the gap list
 
   pkc run --sdk <lang>[,<lang>...]|all --tier offline [options]
       --require              every claimed case must execute (also HARNESS_REQUIRE=1)
@@ -81,6 +85,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("fill") => fill_cmd(&root, &args[1..]),
         Some("req-lint") => req_lint_cmd(&root, &args[1..]),
+        Some("report") => report_cmd(&root, &args[1..]),
         Some("run") => run_cmd(&root, &args[1..]),
         Some("case") => case_cmd(&root, &args[1..]),
         Some("next") => next_cmd(&root, &args[1..]),
@@ -713,6 +718,18 @@ fn req_lint_cmd(root: &std::path::Path, args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn report_cmd(root: &Path, args: &[String]) -> ExitCode {
+    let unmapped =
+        has(args, "--unmapped").then(|| flag_value(args, "--unmapped").unwrap_or_default());
+    match report::command(root, has(args, "--check"), unmapped.as_deref()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("pkc report: {e}");
             ExitCode::FAILURE
         }
     }

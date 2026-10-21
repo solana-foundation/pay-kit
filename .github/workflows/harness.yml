@@ -581,9 +581,12 @@ jobs:
       - name: Requirements lint (pkc req-lint)
         working-directory: rust
         # Prints sentence / mapped / unmapped counts; fails only when a vector
-        # or RULINGS quote is missing from the pinned text or a mapped
-        # requirement's text changed.
+        # or RULINGS quote is missing from the pinned text, a mapped
+        # requirement's text changed, or a `required = true` one has no case.
         run: cargo run -q -p paykit-conformance --bin pkc -- req-lint
+      - name: Requirement traceability table is current (pkc report --check)
+        working-directory: rust
+        run: cargo run -q -p paykit-conformance --bin pkc -- report --check
       - uses: ./.github/actions/setup-harness-leg
       - name: Build Rust conformance runners
         working-directory: rust
