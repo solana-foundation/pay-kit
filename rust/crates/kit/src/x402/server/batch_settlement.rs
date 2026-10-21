@@ -1067,7 +1067,8 @@ impl X402BatchSettlement {
                 "authorization payloads belong to server-signed channels",
             )),
             BatchPayload::Refund { transaction, .. } => {
-                self.verify_refund(transaction, &config, &requirements, &channel_id)?;
+                self.verify_refund(transaction, &config, &requirements, &channel_id)
+                    .await?;
                 // A refund only needs the current watermark; read it out without
                 // cloning the record.
                 let max_claimable = Arc::new(Mutex::new(0u64));
@@ -1203,7 +1204,7 @@ impl X402BatchSettlement {
                 // so seeding a zero watermark would serve them again.
                 let onchain_without_record = match &stored {
                     Some(_) => None,
-                    None => Some(self.lookup_channel(&channel_id)?.is_some()),
+                    None => Some(self.lookup_channel(&channel_id).await?.is_some()),
                 };
                 if onchain_without_record == Some(true) {
                     return Err(batch_err(
@@ -1276,7 +1277,7 @@ impl X402BatchSettlement {
                     })
                     || match onchain_without_record {
                         Some(landed) => landed,
-                        None => self.lookup_channel(&channel_id)?.is_some(),
+                        None => self.lookup_channel(&channel_id).await?.is_some(),
                     };
                 let recent_slot = (matches!(form, SetupForm::Open) && !retrying)
                     .then(|| {
@@ -1542,7 +1543,7 @@ impl X402BatchSettlement {
         Ok(())
     }
 
-    fn verify_refund(
+    async fn verify_refund(
         &self,
         transaction: &str,
         config: &BatchChannelConfig,
@@ -1572,7 +1573,7 @@ impl X402BatchSettlement {
         self.check_settlement_accounts(&self.mint()?, &token_program, &receiver, &payer)?;
         // The channel must still be closeable. `Closing` is accepted so a
         // retried refund is idempotent rather than a second transition.
-        let channel = self.fetch_channel(channel_id)?;
+        let channel = self.fetch_channel(channel_id).await?;
         if channel.status != CHANNEL_STATUS_OPEN && channel.status != CHANNEL_STATUS_CLOSING {
             return Err(batch_err(
                 codes::INVALID_CLOSE_STATE,
@@ -1964,7 +1965,9 @@ impl X402BatchSettlement {
                 let signature = self
                     .broadcast_client_transaction(&deposit.transaction)
                     .await?;
-                let channel = self.fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)?;
+                let channel = self
+                    .fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)
+                    .await?;
                 self.check_channel_bindings(
                     &channel,
                     outcome.payload.channel_config(),
@@ -2240,7 +2243,7 @@ impl X402BatchSettlement {
         match &outcome.payload {
             BatchPayload::Refund { transaction, .. } => {
                 let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
-                let mut channel = self.fetch_channel(&channel_id)?;
+                let mut channel = self.fetch_channel(&channel_id).await?;
                 self.upsert_channel(&outcome, &channel).await?;
                 let signature = if channel.status == CHANNEL_STATUS_OPEN {
                     let state = self
@@ -2261,7 +2264,7 @@ impl X402BatchSettlement {
                         "channel cannot be closed",
                     ));
                 };
-                channel = self.fetch_channel(&channel_id)?;
+                channel = self.fetch_channel(&channel_id).await?;
                 if channel.status != CHANNEL_STATUS_CLOSING {
                     return Err(batch_err(
                         codes::INVALID_CLOSE_STATE,
@@ -2674,12 +2677,20 @@ impl X402BatchSettlement {
     /// an unreachable RPC, an undecodable account — is an error and never an
     /// absence: a durable record must not be dropped for a condition that can
     /// clear, because it holds the only copy of this server's charge watermark.
-    fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
-        rpc_lookup_channel(&self.rpc, channel_id, &self.program_id()?)
+    ///
+    /// The blocking RPC read runs on a blocking thread (`spawn_blocking`), so a
+    /// slow node never holds a Tokio worker that unrelated requests need.
+    async fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
+        let rpc = Arc::clone(&self.rpc);
+        let program_id = self.program_id()?;
+        let channel_id = *channel_id;
+        tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
+            .await
+            .map_err(|e| Error::Other(format!("channel lookup task failed: {e}")))?
     }
 
-    fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
-        self.lookup_channel(channel_id)?.ok_or_else(|| {
+    async fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
+        self.lookup_channel(channel_id).await?.ok_or_else(|| {
             batch_err(
                 codes::INVALID_CHANNEL_STATE,
                 format!("channel {} does not exist", pc::pubkey_string(channel_id)),
@@ -2919,7 +2930,7 @@ impl X402BatchSettlement {
         channel_id: &str,
         channel: &Pubkey,
     ) -> Result<Option<Channel>, Error> {
-        if let Some(onchain) = self.lookup_channel(channel)? {
+        if let Some(onchain) = self.lookup_channel(channel).await? {
             return Ok(Some(onchain));
         }
         // A channel being opened has a record before it has a PDA: its setup
@@ -5509,6 +5520,30 @@ mod tests {
             .await
             .expect_err("the placeholder transaction does not decode");
         assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// Channel reads run off the async worker. The blocking RPC client parks
+    /// its calling thread (`block_in_place`, which a current-thread runtime
+    /// refuses outright), so a read made inline from async verification would
+    /// hold a Tokio worker for a full RPC round trip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn channel_reads_do_not_block_the_async_worker() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (absent, _) = handler(store.clone());
+        let absent = absent.with_rpc_client(chain_at(None, 1));
+        assert!(absent.lookup_channel(&channel).await.unwrap().is_none());
+
+        let (present, _) = handler(store);
+        let present = present.with_rpc_client(chain_at(Some(&open), 1));
+        assert_eq!(
+            present.fetch_channel(&channel).await.unwrap().deposit,
+            5_000
+        );
     }
 
     /// A refresh served by a node behind the slot this record already
