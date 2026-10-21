@@ -41,9 +41,13 @@ request defines `amount`, `currency`, `description`, `recipient`,
 client is the transaction fee payer ... clients MAY include ATA creation
 instructions only for split recipients, and MUST include one for each split
 whose entry sets `ataCreationRequired: true`. Clients MUST NOT include ATA
-creation instructions for the top-level `recipient` or any other owner.” A
-client that is unwilling to fund that rent declines the challenge; it never
-builds a transaction without the instruction, and refusing is not the default.
+creation instructions for the top-level `recipient` or any other owner.” The
+sentence fixes the shape of a client-paid transaction; it does not oblige a
+client to accept the challenge, and Client-Side Verification leaves split
+acceptance to the client. A client that will not fund that rent declines the
+challenge, which is conformant; it never builds a transaction without the
+instruction. Rust's low-level builder includes the creation by default, and
+`PayKitClient`, whose spend cap covers only `amount`, declines.
 
 ## MPP core
 

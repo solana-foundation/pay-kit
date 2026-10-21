@@ -81,6 +81,8 @@ pub struct BuildChargeTransactionOptions {
     /// `ataCreationRequired`. The charge spec says the client MUST include
     /// the ATA creation, so the default funds it; [`PayerFundedAtaCreation::Decline`]
     /// refuses the whole challenge instead (never a transaction without it).
+    /// The rent is not counted against `max_amount_base_units`, so callers
+    /// that auto-pay untrusted challenges should decline, as `PayKitClient` does.
     pub payer_funded_ata_creation: PayerFundedAtaCreation,
     /// Bounded compute-unit price/limit for the prepared
     /// transaction. Defaults match the historical hardcoded budget (1

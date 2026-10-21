@@ -263,6 +263,10 @@ impl PayKitClient {
                     crate::mpp::client::BuildChargeTransactionOptions {
                         max_amount_base_units: authorization.max_amount_atomic(),
                         expected_network: Some(offer.network.to_string()),
+                        // The spend cap covers `request.amount` only, so split
+                        // ATA rent the wallet would fund sits outside it.
+                        payer_funded_ata_creation:
+                            crate::mpp::client::PayerFundedAtaCreation::Decline,
                         ..Default::default()
                     },
                 )
@@ -644,7 +648,10 @@ mod tests {
     use crate::{
         core::mints::USDC_MAINNET,
         mpp::{
-            protocol::{core::Base64UrlJson, solana::programs::TOKEN_PROGRAM},
+            protocol::{
+                core::Base64UrlJson,
+                solana::{programs::TOKEN_PROGRAM, Split},
+            },
             PaymentChallenge,
         },
         x402::exact::{SOLANA_DEVNET, SOLANA_MAINNET},
@@ -751,9 +758,18 @@ mod tests {
             recent_blockhash: Some(Hash::new_unique().to_string()),
             ..Default::default()
         };
+        mpp_challenge_server_with_details(amount, "USDC", recipient, details).await
+    }
+
+    async fn mpp_challenge_server_with_details(
+        amount: u64,
+        currency: &str,
+        recipient: Pubkey,
+        details: MethodDetails,
+    ) -> (String, Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
         let request = ChargeRequest {
             amount: amount.to_string(),
-            currency: "USDC".to_string(),
+            currency: currency.to_string(),
             recipient: Some(recipient.to_string()),
             method_details: Some(serde_json::to_value(details).unwrap()),
             ..Default::default()
@@ -1077,6 +1093,53 @@ mod tests {
         let response = client.get(url).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(saw_payment.load(Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn payer_funded_split_ata_rent_is_declined_before_signing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let signer = CountingSigner {
+            calls: calls.clone(),
+            pubkey: Pubkey::new_unique(),
+        };
+        let splits = (0..8)
+            .map(|_| Split {
+                recipient: Pubkey::new_unique().to_string(),
+                amount: "1".to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            })
+            .collect();
+        let details = MethodDetails {
+            network: Some("mainnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(TOKEN_PROGRAM.to_string()),
+            recent_blockhash: Some(Hash::new_unique().to_string()),
+            splits: Some(splits),
+            ..Default::default()
+        };
+        let (url, saw_payment, task) =
+            mpp_challenge_server_with_details(500_000, USDC_MAINNET, Pubkey::new_unique(), details)
+                .await;
+        let client = PayKitClient::builder()
+            .signer(signer)
+            .rpc_url("http://127.0.0.1:1")
+            .accept([ClientProtocol::Mpp])
+            .build()
+            .unwrap();
+
+        let error = client.get(url).send().await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ClientError::Mpp(crate::mpp::Error::PayerFundedAtaCreationDeclined)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!saw_payment.load(Ordering::SeqCst));
         task.abort();
     }
 
