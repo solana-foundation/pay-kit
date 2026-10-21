@@ -516,6 +516,9 @@ pub fn toml_name(repo: SpecRepo) -> &'static str {
     match repo {
         SpecRepo::MppSpecs => "mpp",
         SpecRepo::X402 => "x402",
+        SpecRepo::MppSpecsSolana => "mpp-solana",
+        SpecRepo::MppSpecsTxV1 => "mpp-txv1",
+        SpecRepo::X402TxV1 => "x402-txv1",
     }
 }
 
@@ -547,10 +550,13 @@ impl RepoAnalysis {
     /// The extracted sentence a mapped requirement points at, when its id,
     /// text and document still agree with the pinned text.
     pub fn sentence_of(&self, req: &Requirement) -> Option<&Sentence> {
+        // The same sentence can recur in several pinned files (the SVM
+        // scheme bindings share their transaction policy); match the one in
+        // the requirement's own document.
         self.sentences
             .iter()
-            .find(|s| s.id == req.id)
-            .filter(|s| s.doc == req.doc && sentence_id(self.repo, &req.text) == req.id)
+            .find(|s| s.id == req.id && s.doc == req.doc)
+            .filter(|_| sentence_id(self.repo, &req.text) == req.id)
     }
 
     /// Mapped requirements whose id, text or document no longer match the

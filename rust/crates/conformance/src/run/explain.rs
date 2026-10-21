@@ -154,6 +154,11 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
     let mut refs = Vec::new();
     let input = vector.input();
     let entry = match vector.file.as_str() {
+        f if f.starts_with("x402-upto-") => "rust/crates/conformance/src/cases/x402_upto.rs",
+        f if f.starts_with("batch-") => "rust/crates/conformance/src/cases/x402_batch.rs",
+        "charge-tx-versions.json" => "rust/crates/conformance/src/cases/charge_tx_versions.rs",
+        "session-tx-versions.json" => "rust/crates/conformance/src/cases/session_tx_versions.rs",
+        "x402-tx-versions.json" => "rust/crates/conformance/src/cases/x402_tx_versions.rs",
         f if f.ends_with("-policy.json") && f.starts_with("x402") => {
             "rust/crates/conformance/src/cases/x402_policy.rs"
         }
@@ -161,6 +166,7 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
         f if f.starts_with("x402") => "rust/crates/conformance/src/cases/x402_exact.rs",
         f if f.starts_with("session") => "rust/crates/conformance/src/cases/session.rs",
         f if f.starts_with("charge") => "rust/crates/conformance/src/cases/charge.rs",
+        f if f.starts_with("subscription") => "rust/crates/conformance/src/cases/subscription.rs",
         _ => "rust/crates/conformance/src/cases/canonical.rs",
     };
     refs.push(SourceRef::new(
@@ -193,11 +199,62 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             "pub async fn verify_payment_signature_for_requirements(",
             "kit x402 verifier",
         )),
+        ("x402-upto", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/client/upto/payment.rs"),
+            "pub async fn build_upto_payload(",
+            "kit upto client builder",
+        )),
+        ("x402-upto", "verify-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/server/upto.rs"),
+            "fn prepare_open(",
+            "kit upto pre-broadcast verifier",
+        )),
+        ("x402-batch-settlement", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/client/batch_settlement/payment.rs"),
+            "pub async fn build_deposit(",
+            "kit batch-settlement client builders",
+        )),
+        ("x402-batch-settlement", "verify-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/server/batch_settlement.rs"),
+            "pub async fn verify_and_reserve_payment(",
+            "kit batch-settlement server verifier",
+        )),
+        ("x402-batch-settlement", "canonical-bytes") => refs.push(SourceRef::new(
+            "rust/crates/conformance/src/realize/batch.rs",
+            "fn canonical(input: &Value)",
+            "kit batch-settlement encoders and wire types",
+        )),
         ("session", "verify-transaction") => refs.push(SourceRef::new(
             concat_kit("core/session.rs"),
             "pub async fn accept_voucher(",
             "kit voucher verifier",
         )),
+        ("subscription", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("mpp/client/subscription.rs"),
+            "pub async fn build_subscription_activation_credential(",
+            "kit subscription client",
+        )),
+        ("subscription", "verify-transaction") => {
+            refs.push(if input.get("subscriptionActive").is_some() {
+                SourceRef::new(
+                    concat_kit("mpp/server/subscription.rs"),
+                    "pub async fn verify_active_subscription_at(",
+                    "kit subscription usability check",
+                )
+            } else if input.get("subscriptionProof").is_some() {
+                SourceRef::new(
+                    concat_kit("mpp/protocol/intents/subscription.rs"),
+                    "pub fn verify(&self, subscription_delegation: &str)",
+                    "kit bearer-proof verifier",
+                )
+            } else {
+                SourceRef::new(
+                    concat_kit("mpp/server/subscription.rs"),
+                    "pub async fn verify_activation_pre_broadcast(",
+                    "kit subscription activation verifier (pre-broadcast)",
+                )
+            })
+        }
         (_, _) => {
             if input.get("voucherPreimage").is_some() {
                 refs.push(SourceRef::new(
@@ -288,11 +345,13 @@ pub fn mutation_words(case: &Case) -> Option<String> {
 
 /// Pinned SHA of a spec submodule, from the superproject's index.
 pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
-    let checkout = if doc.starts_with("mpp-specs/") {
-        "external/mpp-specs"
-    } else {
-        "typescript/external/x402"
-    };
+    let checkout = crate::case::SpecRepo::ALL
+        .into_iter()
+        .find(|repo| {
+            doc.strip_prefix(repo.prefix())
+                .is_some_and(|rest| rest.starts_with('/'))
+        })?
+        .checkout();
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -308,7 +367,7 @@ pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
 /// Requirement id to text, from `harness/requirements/*.toml`.
 pub fn requirement_texts(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    for name in ["mpp", "x402"] {
+    for name in ["mpp", "x402", "mpp-solana", "mpp-txv1", "x402-txv1"] {
         let Ok(raw) =
             std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
         else {
@@ -353,9 +412,10 @@ impl Context {
             .into_iter()
             .map(|c| (c.id.to_string(), c))
             .collect();
-        let shas = ["mpp-specs/", "x402/"]
+        let shas = crate::case::SpecRepo::ALL
             .iter()
-            .filter_map(|d| pinned_sha(root, d).map(|s| (d.to_string(), s)))
+            .map(|repo| format!("{}/", repo.prefix()))
+            .filter_map(|d| pinned_sha(root, &d).map(|s| (d, s)))
             .collect();
         Self {
             root: root.to_path_buf(),

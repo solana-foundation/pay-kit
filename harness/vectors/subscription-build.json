@@ -1,0 +1,3946 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "Activation for a 30-day plan, subscriber as fee payer: subscribe then transfer_subscription on the pinned program, first charge to the recipient's ATA, the merchant as puller. The SDK's build must pass the Rust server's activation verification and carry the same instruction multiset as the kit's build.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-activation",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11cddfe4f2",
+      "MPP-8a193ab322"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The subscriber-signed activation transaction MUST:",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "feePayer=true: the activation's fee payer is methodDetails.feePayerKey, whose signature slot the client leaves for the server.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-sponsored",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "feePayer": true,
+            "feePayerKey": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11cddfe4f2"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "set the fee payer to methodDetails.feePayerKey when methodDetails.feePayer is true, and to the subscriber otherwise;",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "externalId set: the activation may carry it as a memo instruction (memo is the one optional instruction besides compute budget).",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-external-id-memo",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "externalId": "merchant-subscription-270",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11cddfe4f2"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The subscriber-signed activation transaction MUST:",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A 2-week plan (336 period_hours): the subscribe instruction's expected period_hours is the mapped interval.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-week-period",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAABQAQAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 336,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "2",
+          "periodUnit": "week",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd",
+      "MPP-11cddfe4f2"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A Token-2022 mint: every token-touching instruction uses methodDetails.tokenProgram and the ATAs are derived under Token-2022.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-token-2022",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "BiEYwQhc55PeX4B7zkSQzzonom8r5jwSjGwZHDhbVNhA": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsF5JIO2yKKoe3Rx2BT5WR+TlchAqc49n01bp9OkuKdJ7qSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAABeSSDtsiiqHt0cdgU+Vkfk5XIQKnOPZ9NW6fTpLinSegJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": {
+            "decimals": 6,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-634239a4f5",
+      "MPP-11cddfe4f2"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "use the SPL Token or Token-2022 program identified by methodDetails.tokenProgram for all token-touching instructions;",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge's puller is not the plan owner but is listed in plan.pullers, so it may collect: the client signs.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-plan-puller-listed",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADHevlXTfHInaLE3ExyqYIcICy4LYLlL14XRRXXPpJi8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-327d9b66ba"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "MUST be plan.owner or appear in plan.pullers |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A challenge carrying exactly the spec's fields (REQUIRED methodDetails plus network and recentBlockhash), with the plan on-chain: everything the activation needs is in the challenge or the plan, so the client builds it.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-build-spec-request",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-c1bffbb1a3"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/intents/draft-payment-intent-subscription-00.md",
+      "quote": "All payment methods implementing the \"subscription\" intent MUST support the required shared fields below.",
+      "section": "Shared Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "feePayer=true without feePayerKey: the client cannot name the fee payer and must refuse the challenge.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-fee-payer-without-key-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "feePayer": true,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-f90bd07116"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "REQUIRED when feePayer is true |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails.subscriptionProgram names a program other than the subscriptions deployment the client trusts. The program would receive the subscriber's signature and token account; the client must refuse before signing.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-untrusted-program-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "AQdMTK22n488xfqds8HhVDppF6cEdCTFHZAfrzCJagkb": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "Vote111111111111111111111111111111111111111"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "Vote111111111111111111111111111111111111111"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "Vote111111111111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-12c23b8418"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST pin its deployment address in methodDetails.subscriptionProgram, and clients MUST validate that address before signing.",
+      "section": "Definition"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "currency names one mint and methodDetails.mint another: the wallet would display one token and sign a delegation over another.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-currency-not-mint-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-5d14dd20cb"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Implementations MUST treat currency and methodDetails.mint as the same value; servers MUST reject request objects where they differ.",
+      "section": "Currency Formats"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "periodUnit=month: a client must not approximate a calendar month with a fixed interval.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-month-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "month",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3688fa68c7",
+      "MPP-cdbcb3a843"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs/specs/intents/draft-payment-intent-subscription-00.md",
+      "quote": "Payment methods MUST reject request objects whose periodUnit or periodCount values they cannot represent exactly.",
+      "section": "Required Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "periodCount=366 days maps to 8784 hours, over the profile's 8760-hour limit.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-interval-over-limit-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAABQIgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 8784,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "366",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "amount=\"010000000\" uses a leading zero; the client must refuse the request rather than read it as 10000000.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-amount-leading-zero-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "010000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "010000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-6739698bb1",
+      "MPP-95dab3a64d"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The amount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "amount=\"0\" is not a positive integer, even against a plan whose amount is 0.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-zero-amount-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAAAAAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "0",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "0",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-6739698bb1"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The amount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "periodCount=\"030\" uses a leading zero.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-period-count-leading-zero-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "030",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-aadffadc90",
+      "MPP-95dab3a64d"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails.tokenProgram is the System program, neither SPL Token nor Token-2022.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-token-program-not-spl-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "11111111111111111111111111111111"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-634239a4f5"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The value MUST be the SPL Token program or the SPL Token-2022 program |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails without planAddress, a REQUIRED field.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-no-plan-address-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7ebd75eefc"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| methodDetails.planAddress | string | REQUIRED | Base58 address of the on-chain Plan account |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails without puller, a REQUIRED field: the client cannot name the transfer_subscription signer.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-no-puller-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-463ea35304"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| methodDetails.puller | string | REQUIRED | Base58 of the server's puller pubkey.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails without decimals, a REQUIRED field (wallets render the per-period amount with it).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-no-decimals-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-60413f3bf6"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| methodDetails.decimals | number | REQUIRED | Decimal precision of the mint |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "methodDetails.planAddress is not a base58 address.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-invalid-plan-address-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "not-a-plan",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7ebd75eefc"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "| methodDetails.planAddress | string | REQUIRED | Base58 address of the on-chain Plan account |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "No account exists at methodDetails.planAddress: there is no on-chain Plan for the challenge to agree with.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-missing-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-62866c1462",
+      "MPP-4a9406cfcb"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Clients MUST NOT sign an activation transaction whose on-chain Plan does not match the challenge.",
+      "section": "Amount and Period Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The on-chain Plan charges 5000000 per period; the challenge says 10000000.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-amount-mismatch-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nQEtMAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-62866c1462",
+      "MPP-4a9406cfcb"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Clients MUST NOT sign an activation transaction whose on-chain Plan does not match the challenge.",
+      "section": "Amount and Period Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The on-chain Plan bills every 168 hours; the challenge says 30 days (720 hours).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-period-mismatch-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAACoAAAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-62866c1462",
+      "MPP-4a9406cfcb"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Clients MUST NOT sign an activation transaction whose on-chain Plan does not match the challenge.",
+      "section": "Amount and Period Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The on-chain Plan is denominated in another mint than methodDetails.mint.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-mint-mismatch-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "3ha1af3sUkjRkhDk4tNBoW3xPhKSW4PPLLkqHdwnbjq6": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIszgEOYK/tsicXvWMZL1QUWj+WWjO7gtLHAp6yzh4ggmTqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAAM4BDmCv7bInF71jGS9UFFo/llozu4LSxwKess4eIIJkgJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-4a98642d3c",
+      "MPP-62866c1462"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "MUST equal the on-chain plan.mint |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge's puller is neither plan.owner nor in plan.pullers: the program would refuse every pull, so the activation could never charge.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-puller-unauthorized-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-327d9b66ba",
+      "MPP-4a9406cfcb"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "MUST be plan.owner or appear in plan.pullers |",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The plan's destination whitelist is empty, so the program would let renewals pay any receiver.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-no-destination-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-fc9334823a"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers and clients MUST reject request objects referencing a plan with an empty destination whitelist, more than one non-zero destination, or a destination different from recipient.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The plan whitelists the recipient and a second address: renewals could be routed to the other one.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-two-destinations-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAACRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOgah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-fc9334823a"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers and clients MUST reject request objects referencing a plan with an empty destination whitelist, more than one non-zero destination, or a destination different from recipient.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The plan's only destination is not the challenge's recipient.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the client must refuse to sign this challenge"
+    },
+    "id": "subscription-build-plan-other-destination-reject",
+    "input": {
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK": {
+            "data": "AdVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja/QEHAAAAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAAAAAAAAAAAAAGodgXkTdUKpg0N73+KnqyVX9TXIp4citopJ3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "subscriptionChallenge": {
+        "expires": "2030-03-17T17:51:40Z",
+        "id": "qT8wErYuI3oPlKjH6gFdSa",
+        "intent": "subscription",
+        "method": "solana",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "10000000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "amount": "10000000",
+            "decimals": 6,
+            "expectedCreatedAt": 1700000000,
+            "expectedPeriodHours": 720,
+            "merchant": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "network": "devnet",
+            "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+            "planBump": 253,
+            "planIdNumeric": 7,
+            "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "periodCount": "30",
+          "periodUnit": "day",
+          "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+        }
+      }
+    },
+    "intent": "subscription",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-1d44630921",
+      "MPP-fc9334823a"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The non-zero entries in plan.destinations MUST consist of exactly one address, and that address MUST equal recipient.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  }
+]

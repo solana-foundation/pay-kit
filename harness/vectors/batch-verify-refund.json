@@ -1,0 +1,2216 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "Client-mode refund retried with a payer-signed request_close (binding unavailable): the voucher equals the accepted cumulative (3000), the transaction is exactly request_close(payer, channel) plus the seller memo, the channel is Open and the payer's return ATA healthy.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-verify-refund-request-close",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUNPOTZTYkJ0TDE0S25mNktPNmhMWERwMkhjN3lqelBlUU1RdEdmajJDQkE5QlZSa09nVXg1TzkyM3NJQzJLclYxYTlxeU1BUmZ2VnBtT2FsOWVqMDhFZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-a8645e7833",
+      "X402-a6092f0a02",
+      "X402-fbdea947ae"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "When the binding is unavailable, the facilitator MUST validate and co-sign the client's `request_close` transaction with `extra.feePayer`",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A client-mode refund carrying only the request_close and no voucher.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "payload-type"
+    },
+    "id": "batch-verify-refund-without-voucher-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUNPOTZTYkJ0TDE0S25mNktPNmhMWERwMkhjN3lqelBlUU1RdEdmajJDQkE5QlZSa09nVXg1TzkyM3NJQzJLclYxYTlxeU1BUmZ2VnBtT2FsOWVqMDhFZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQifSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-fa34804f1b"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The refund's voucher is at 2000 while the server accepted 3000: a payer cannot close at an older watermark.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "close-state"
+    },
+    "id": "batch-verify-refund-voucher-not-accepted-cumulative-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUNPOTZTYkJ0TDE0S25mNktPNmhMWERwMkhjN3lqelBlUU1RdEdmajJDQkE5QlZSa09nVXg1TzkyM3NJQzJLclYxYTlxeU1BUmZ2VnBtT2FsOWVqMDhFZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIyMDAwIiwic2lnbmF0dXJlIjoiM1BqWTVzNEdEajg2ZVVwOWVOMktSZkRCaXhub1NUek5rZ21SRFNTNHlEWnMzTTRzY1JMc0dpa2JWTnN0eVppUHJ5akMyUUpoSzkycWJZc0RMeGpCVnJDZSJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-3679bfc55e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "In client mode it MUST reject a voucher whose `maxClaimableAmount` differs from its accepted cumulative amount.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A refund naming amount \"1500\" (a partial refund): only the full unused escrow returns.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "close-amount-unsupported"
+    },
+    "id": "batch-verify-refund-with-amount-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJhbW91bnQiOiIxNTAwIiwiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiNDIiLCJ0b2tlbiI6IjR6TU1DOXNydDVSaTVYMTRHQWdYaGFIaWkzR25QQUVFUllQSmdaSkRuY0RVIiwid2l0aGRyYXdEZWxheSI6MzYwMH0sInRyYW5zYWN0aW9uIjoiQWdBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDTzk2U2JCdEwxNEtuZjZLTzZoTFhEcDJIYzd5anpQZVFNUXRHZmoyQ0JBOUJWUmtPZ1V4NU85MjNzSUMyS3JWMWE5cXlNQVJmdlZwbU9hbDllajA4RWdBSUJBZ1g5RnlRNFdxREhXMlQ3ZU0xZ0w2SFprZjNyOTJzVHhZN1hBdXJJTmVuMkdPcEtiR1BpbkZJS3Z2VlFleE11eGZtVlIzYXV2cjU3a2tJZTZta1VSdElzK0ttQ1cxanZMVnpIZERIaCtjWXREWCtsSmgrTHQvaUhiWjhlaWFEWkt5QUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFamFlaCs2VHJLd2tKay9mUzM5WXJpZUs0Y2dkNlk1L1gxMGVvNlo5ajFCV3VBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ0JBSUJBZ0VGQXdBS2FXNTJiMmxqWlMwME1nQT0iLCJ0eXBlIjoicmVmdW5kIiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJIamcyUERnTHhZRGlRV1JIckplZVk5VjlpTnllYk05TVd1dG9BNjdlaXZzWiIsImV4cGlyZXNBdCI6MCwibWF4Q2xhaW1hYmxlQW1vdW50IjoiMzAwMCIsInNpZ25hdHVyZSI6IjRDYTNKOEdKMmJoaVREZ1kyYWJacUpRNzhLcW45NE54RlQyUTlTM2IxSGVXWEZITXFQdHJzb3dheGZCa1VnR2NSSHIxUFo4QVFndlFqcGhCTnJZcTZwc2sifX0sIng0MDJWZXJzaW9uIjoyfQ=="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-e98b9b9bec"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "the payload MUST NOT contain an `amount`.",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The channel is already Sealed: it cannot be closed again.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "close-state"
+    },
+    "id": "batch-verify-refund-sealed-channel-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ASoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUNPOTZTYkJ0TDE0S25mNktPNmhMWERwMkhjN3lqelBlUU1RdEdmajJDQkE5QlZSa09nVXg1TzkyM3NJQzJLclYxYTlxeU1BUmZ2VnBtT2FsOWVqMDhFZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-fbdea947ae"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The channel MUST be `Open` or still within its `Closing` grace period",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A seal instruction rides along after request_close.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-extra-instruction-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUNHeUtxUmVkclpUS3dsQllvbWFlamFINGIyaUtKK2ZrTHE2eGRuU1dxQnEzaC9DM1JrcU52NHhGdUdBZnY0RnJ1VHB4VVp0ZnRldEgrVjQ0b3ovVGdDZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFEQkFJQkFnRUZCQUVDQVFZREFBcHBiblp2YVdObExUUXlBQT09IiwidHlwZSI6InJlZnVuZCIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjMwMDAiLCJzaWduYXR1cmUiOiI0Q2EzSjhHSjJiaGlURGdZMmFiWnFKUTc4S3FuOTROeEZUMlE5UzNiMUhlV1hGSE1xUHRyc293YXhmQmtVZ0djUkhyMVBaOEFRZ3ZRanBoQk5yWXE2cHNrIn19LCJ4NDAyVmVyc2lvbiI6Mn0="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-a6092f0a02"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The refund transaction MUST contain exactly one canonical payment-channels `request_close` instruction for the PDA derived from `channelConfig`.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "Only a ComputeBudget prefix and a memo: no request_close at all.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-prefix-only-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJycExYZDgxd3BiclJQelNCcW9hMC85QWp1aitXTFVMOGY4UURpNTc1WTFJWDVHNTBwaWVXWkhGUC9ERmlDUFVNVGJxRzZYVGFlT1I5TEliWDlCc2dKZ0FJQkFnVDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNBd1pHYitVaEZ6TC83SzI2Y3NPYjU3eU01YnZGOXhKckxFT2JPa0FBQUFBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqUUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFnSUJBUVVDUUEwREFBTUFDbWx1ZG05cFkyVXRORElBIiwidHlwZSI6InJlZnVuZCIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjMwMDAiLCJzaWduYXR1cmUiOiI0Q2EzSjhHSjJiaGlURGdZMmFiWnFKUTc4S3FuOTROeEZUMlE5UzNiMUhlV1hGSE1xUHRyc293YXhmQmtVZ0djUkhyMVBaOEFRZ3ZRanBoQk5yWXE2cHNrIn19LCJ4NDAyVmVyc2lvbiI6Mn0="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-a6092f0a02"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The refund transaction MUST contain exactly one canonical payment-channels `request_close` instruction for the PDA derived from `channelConfig`.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "An out-of-policy ComputeBudget prefix (price 5000001) before request_close.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-compute-price-over-cap-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQURybDAvSStlU084YXF2dmZpUkZQWVZmbGU3c25HOGN4dFRhTzhlcWo1NHgrZlF3TWpDRWQ5YytrRmxHdS9wODdaTHk3amJHcWhBSElEcDRpSHlpV01DZ0FJQkF3YjlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBREJrWnY1U0VYTXYvc3JicHl3NXZudkl6bHU4WDNFbXNzUTVzNlFBQUFBQVZLVTFxWktTRUdUU1RvY1dEYU9IeDhOYlhkdkpLN2dlUWZxRUJCQlVTTnA2SDdwT3NyQ1FtVDk5TGYxaXVKNHJoeUIzcGpuOWZYUjZqcG4yUFVGYTRBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBTURBQWtEUVV0TUFBQUFBQUFGQWdFQ0FRVUVBQXBwYm5admFXTmxMVFF5QUE9PSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-5276aee847",
+      "X402-a93234f1d7"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "It MAY also contain the bounded Compute Budget prefix allowed above",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A System-program instruction in the suffix (outside the Memo/Lighthouse allowlist).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-disallowed-suffix-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQURoTEtSTjhBN3l1bnhvbHVpM3ZoaUVRR0JrajRZc0FZS1BSTlRNUXVJMmZJb05lZ2loYXVBWnlqWlYvTU9sZy9UT05yWEZMODZJcXZoa2RQOXpYZDhCZ0FJQkF3YjlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQVZLVTFxWktTRUdUU1RvY1dEYU9IeDhOYlhkdkpLN2dlUWZxRUJCQlVTTnA2SDdwT3NyQ1FtVDk5TGYxaXVKNHJoeUIzcGpuOWZYUjZqcG4yUFVGYTRBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBTUZBZ0VDQVFVRUFBcHBiblp2YVdObExUUXlBd0FCQ1FBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-5276aee847"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The suffix uses the same program and fee-payer-isolation rules as setup transactions; when `extra.memo` is present, a supplied Memo MUST match it.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The supplied memo differs from extra.memo.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-memo-mismatch-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJQbkRPTHU5UkswUjA1UUhacGJuZFA2Y0Y0WWU4VHRoSUVvR1VTdzJucElVcWo3NlFMdVpPalo3YTVUTnlmejJKem5KZU1rVzArc3VXNkxsTDB3dzRLZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTXdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-5276aee847"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The suffix uses the same program and fee-payer-isolation rules as setup transactions; when `extra.memo` is present, a supplied Memo MUST match it.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer is its own fee payer: the sponsor's slot is not the fee-payer slot.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-fee-payer-not-sponsor-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBUnFFSVVra245NTNKL2FMNzFVR2hRZGZwZlpBMHpicm4wc2p5enJ6ZmdsLzVtRVYzV2tRSmZOdHB4YlQwcnVvanMwbk51dC90NXpOVE9BZmM4aTZvZ09BQVFBQ0JPcEtiR1BpbkZJS3Z2VlFleE11eGZtVlIzYXV2cjU3a2tJZTZta1VSdElzK0ttQ1cxanZMVnpIZERIaCtjWXREWCtsSmgrTHQvaUhiWjhlaWFEWkt5QUZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFamFlaCs2VHJLd2tKay9mUzM5WXJpZUs0Y2dkNlk1L1gxMGVvNlo5ajFCV3VBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ0F3SUFBUUVGQWdBS2FXNTJiMmxqWlMwME1nQT0iLCJ0eXBlIjoicmVmdW5kIiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJIamcyUERnTHhZRGlRV1JIckplZVk5VjlpTnllYk05TVd1dG9BNjdlaXZzWiIsImV4cGlyZXNBdCI6MCwibWF4Q2xhaW1hYmxlQW1vdW50IjoiMzAwMCIsInNpZ25hdHVyZSI6IjRDYTNKOEdKMmJoaVREZ1kyYWJacUpRNzhLcW45NE54RlQyUTlTM2IxSGVXWEZITXFQdHJzb3dheGZCa1VnR2NSSHIxUFo4QVFndlFqcGhCTnJZcTZwc2sifX0sIng0MDJWZXJzaW9uIjoyfQ=="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-c88cc9c766"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The transaction MUST contain the payer signature and `extra.feePayer` as fee payer; no other signer or address lookup table is permitted.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer slot holds a signature by another key.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-invalid-payer-signature-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-c88cc9c766"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The transaction MUST contain the payer signature and `extra.feePayer` as fee payer; no other signer or address lookup table is permitted.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "request_close with a third (remaining) account.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-extra-account-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQURpMmI2VmxTdXgyY1pVc1RGdFN3aDBNd040aFAyR2RwTlBWUlV6Zmk5WVRZeEJFSUYxZDdmdjRydW9qeVdYN3I0dm5ROE9yenhPTWFrN2xDVzM4ZlVNZ0FJQkF3YjlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXMrS21DVzFqdkxWekhkREhoK2NZdERYK2xKaCtMdC9pSGJaOGVpYURaS3lBRlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdXEwNHJNeDVMVHpvVlFycmcrVlhkWFRNRFNjZE9vY2NLa2dYc0JsVUpJak1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBSUVBd0VDQlFFRkF3QUthVzUyYjJsalpTMDBNZ0E9IiwidHlwZSI6InJlZnVuZCIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiSGpnMlBEZ0x4WURpUVdSSHJKZWVZOVY5aU55ZWJNOU1XdXRvQTY3ZWl2c1oiLCJleHBpcmVzQXQiOjAsIm1heENsYWltYWJsZUFtb3VudCI6IjMwMDAiLCJzaWduYXR1cmUiOiI0Q2EzSjhHSjJiaGlURGdZMmFiWnFKUTc4S3FuOTROeEZUMlE5UzNiMUhlV1hGSE1xUHRyc293YXhmQmtVZ0djUkhyMVBaOEFRZ3ZRanBoQk5yWXE2cHNrIn19LCJ4NDAyVmVyc2lvbiI6Mn0="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-d450762477"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The instruction MUST use discriminator `5`, contain exactly these two accounts in order, and contain no remaining accounts:",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "request_close for the salt-43 channel instead of the derived PDA.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "refund-transaction"
+    },
+    "id": "batch-verify-refund-wrong-channel-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJPNFJUNEZaNmFoTCsrZWViNHVJQlNFY2g3OG1oNjJySWMvY1p2Q2N5L2c5MVMvWklVYzRjWkdYUm85SGkyVm1CQmMzNTV1MEhEcllOUVV2UFBYZmNCZ0FJQkFnWDlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNPTGRaWktSUE1GU1EyMk1SemxnRVVwMnRrNWZEWDN3RFczNURIbld4WFU4RlNsTmFtU2toQmswazZIRmcyamg4ZkRXMTNieVN1NEhrSDZoQVFRVkVqYWVoKzZUckt3a0prL2ZTMzlZcmllSzRjZ2Q2WTUvWDEwZW82WjlqMUJXdUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFDQkFJQkFnRUZBd0FLYVc1MmIybGpaUzAwTWdBPSIsInR5cGUiOiJyZWZ1bmQiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkhqZzJQRGdMeFlEaVFXUkhySmVlWTlWOWlOeWViTTlNV3V0b0E2N2VpdnNaIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIzMDAwIiwic2lnbmF0dXJlIjoiNENhM0o4R0oyYmhpVERnWTJhYlpxSlE3OEtxbjk0TnhGVDJROVMzYjFIZVdYRkhNcVB0cnNvd2F4ZkJrVWdHY1JIcjFQWjhBUWd2UWpwaEJOcllxNnBzayJ9fSwieDQwMlZlcnNpb24iOjJ9"
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-a6092f0a02"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The refund transaction MUST contain exactly one canonical payment-channels `request_close` instruction for the PDA derived from `channelConfig`.",
+      "section": "Canonical refund request_close"
+    },
+    "tier": "offline"
+  }
+]

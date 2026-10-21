@@ -68,7 +68,10 @@ pub struct ReqId(String);
 
 impl ReqId {
     pub fn new(id: &str) -> Result<Self, String> {
-        let hex = id.strip_prefix("MPP-").or_else(|| id.strip_prefix("X402-"));
+        let hex = SpecRepo::ALL.iter().find_map(|repo| {
+            id.strip_prefix(repo.req_prefix())
+                .and_then(|rest| rest.strip_prefix('-'))
+        });
         match hex {
             Some(hex)
                 if hex.len() == 10
@@ -79,7 +82,7 @@ impl ReqId {
                 Ok(Self(id.to_string()))
             }
             _ => Err(format!(
-                "invalid requirement id {id:?}: expected MPP-<10 hex> or X402-<10 hex>"
+                "invalid requirement id {id:?}: expected <MPP|X402|MPPTX|X402TX>-<10 hex>"
             )),
         }
     }
@@ -96,16 +99,36 @@ pub enum SpecRepo {
     MppSpecs,
     /// `typescript/external/x402` (x402-foundation/x402).
     X402,
+    /// `external/mpp-specs-solana` (solana-foundation/mpp-specs): Solana
+    /// method drafts not yet merged upstream (the subscription method).
+    MppSpecsSolana,
+    /// `external/mpp-specs-txv1` (solana-foundation/mpp-specs
+    /// feat/solana-transaction-versions): transaction-version negotiation
+    /// for the Solana charge and session methods, not yet merged upstream.
+    MppSpecsTxV1,
+    /// `external/x402-txv1` (solana-foundation/x402, x402-foundation/x402
+    /// PR 3473): SVM transaction-version negotiation for exact, upto and
+    /// batch-settlement, not yet merged upstream.
+    X402TxV1,
 }
 
 impl SpecRepo {
-    pub const ALL: [SpecRepo; 2] = [SpecRepo::MppSpecs, SpecRepo::X402];
+    pub const ALL: [SpecRepo; 5] = [
+        SpecRepo::MppSpecs,
+        SpecRepo::X402,
+        SpecRepo::MppSpecsSolana,
+        SpecRepo::MppSpecsTxV1,
+        SpecRepo::X402TxV1,
+    ];
 
     /// Prefix of `SpecRef::doc` naming this repository.
     pub fn prefix(self) -> &'static str {
         match self {
             SpecRepo::MppSpecs => "mpp-specs",
             SpecRepo::X402 => "x402",
+            SpecRepo::MppSpecsSolana => "mpp-specs-solana",
+            SpecRepo::MppSpecsTxV1 => "mpp-specs-txv1",
+            SpecRepo::X402TxV1 => "x402-txv1",
         }
     }
 
@@ -114,14 +137,21 @@ impl SpecRepo {
         match self {
             SpecRepo::MppSpecs => "external/mpp-specs",
             SpecRepo::X402 => "typescript/external/x402",
+            SpecRepo::MppSpecsSolana => "external/mpp-specs-solana",
+            SpecRepo::MppSpecsTxV1 => "external/mpp-specs-txv1",
+            SpecRepo::X402TxV1 => "external/x402-txv1",
         }
     }
 
     /// Requirement-id prefix for sentences from this repository.
     pub fn req_prefix(self) -> &'static str {
         match self {
-            SpecRepo::MppSpecs => "MPP",
+            SpecRepo::MppSpecs | SpecRepo::MppSpecsSolana => "MPP",
             SpecRepo::X402 => "X402",
+            // The txv1 drafts copy most of the pinned text; a distinct prefix
+            // keeps their sentence ids apart from the merged documents'.
+            SpecRepo::MppSpecsTxV1 => "MPPTX",
+            SpecRepo::X402TxV1 => "X402TX",
         }
     }
 }
@@ -149,7 +179,9 @@ impl SpecRef {
                     .and_then(|rest| rest.strip_prefix('/'))
                     .map(|path| (*repo, path))
             })
-            .ok_or_else(|| format!("spec doc {doc:?} must start with mpp-specs/ or x402/"))?;
+            .ok_or_else(|| {
+                format!("spec doc {doc:?} must start with a pinned spec checkout prefix (mpp-specs/, x402/, ...)")
+            })?;
         if !path.starts_with("specs/") || !path.ends_with(".md") || path.contains("..") {
             return Err(format!(
                 "spec doc {doc:?} must be a markdown file under specs/"
@@ -226,14 +258,34 @@ pub enum Intent {
     Charge,
     X402Exact,
     Session,
+    X402Upto,
+    X402BatchSettlement,
+    Subscription,
 }
 
 impl Intent {
+    pub const ALL: [Intent; 6] = [
+        Intent::Charge,
+        Intent::X402Exact,
+        Intent::Session,
+        Intent::X402Upto,
+        Intent::X402BatchSettlement,
+        Intent::Subscription,
+    ];
+
+    /// The intent a vector's `intent` string names.
+    pub fn parse(name: &str) -> Option<Intent> {
+        Intent::ALL.into_iter().find(|i| i.as_str() == name)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Intent::Charge => "charge",
             Intent::X402Exact => "x402-exact",
             Intent::Session => "session",
+            Intent::X402Upto => "x402-upto",
+            Intent::X402BatchSettlement => "x402-batch-settlement",
+            Intent::Subscription => "subscription",
         }
     }
 }
@@ -341,12 +393,60 @@ pub enum RejectCode {
     VoucherExpired,
     VoucherExpiresBeforeSettlement,
     AcceptedMismatch,
+    UnexpectedVoucher,
+    UnexpectedType,
+    ChannelAlreadyOpen,
+    ChannelLifetimeExceeded,
+    ExpiresAtMismatch,
+    NotYetActive,
+    DepositNotCeiling,
+    ReceiverAuthorizerMismatch,
+    ChannelIdMismatch,
+    OpenBindingMismatch,
+    /// subscription server: the echoed challenge was not issued by this server or does not match the route (HMAC id, realm, method, intent, plan, program, terms).
+    ChallengeMismatch,
+    /// subscription server: the activation challenge's `expires` is at or before now.
+    ChallengeExpired,
+    /// subscription server: `subscriptionExpires` is at or before now.
+    SubscriptionExpired,
+    /// subscription: the bearer proof is missing, bound to another challenge, payer or delegation, or its Ed25519 signature does not verify.
+    AuthenticationInvalid,
+    /// subscription server: the first-period charge goes to a receiver ATA not owned by `recipient`.
+    RecipientMismatch,
+    /// subscription server: the subscribe / transfer_subscription pair is missing, misordered, or binds another plan, puller, subscriber, amount or mint than the challenge.
+    ActivationScope,
+    /// subscription server: the activation fee payer is not `feePayerKey` (sponsored) or the subscriber (unsponsored).
+    FeePayerMismatch,
+    /// subscription server: the on-chain delegation is not usable at now (missing, foreign, cancelled, unpaid period, authority invalidated).
+    SubscriptionInactive,
+    /// subscription server: the credential `source` is not the did:pkh:solana of the activation subscriber.
+    SourceMismatch,
+    UnsupportedScheme,
+    PayloadType,
+    PaymentFlow,
+    TokenProgram,
+    VoucherSignature,
+    ReceiverBindingUnavailable,
+    CloseAuthorization,
+    CloseAmountUnsupported,
+    CloseState,
+    ChannelClosing,
+    WithdrawDelayMismatch,
+    WithdrawDelayOutOfRange,
+    CumulativeAmountMismatch,
+    CumulativeExceedsDeposit,
+    VoucherExpiry,
+    SetupTransaction,
+    SettlementSimulation,
+    ChannelState,
+    RefundTransaction,
+    DuplicateSettlement,
     MixedFundingAuthority,
     UnexpectedSigner,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 20] = [
+    pub const ALL: [RejectCode; 59] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -365,6 +465,45 @@ impl RejectCode {
         RejectCode::VoucherExpired,
         RejectCode::VoucherExpiresBeforeSettlement,
         RejectCode::AcceptedMismatch,
+        RejectCode::UnexpectedVoucher,
+        RejectCode::UnexpectedType,
+        RejectCode::ChannelAlreadyOpen,
+        RejectCode::ChannelLifetimeExceeded,
+        RejectCode::ExpiresAtMismatch,
+        RejectCode::NotYetActive,
+        RejectCode::DepositNotCeiling,
+        RejectCode::ReceiverAuthorizerMismatch,
+        RejectCode::ChannelIdMismatch,
+        RejectCode::OpenBindingMismatch,
+        RejectCode::ChallengeMismatch,
+        RejectCode::ChallengeExpired,
+        RejectCode::SubscriptionExpired,
+        RejectCode::AuthenticationInvalid,
+        RejectCode::RecipientMismatch,
+        RejectCode::ActivationScope,
+        RejectCode::FeePayerMismatch,
+        RejectCode::SubscriptionInactive,
+        RejectCode::SourceMismatch,
+        RejectCode::UnsupportedScheme,
+        RejectCode::PayloadType,
+        RejectCode::PaymentFlow,
+        RejectCode::TokenProgram,
+        RejectCode::VoucherSignature,
+        RejectCode::ReceiverBindingUnavailable,
+        RejectCode::CloseAuthorization,
+        RejectCode::CloseAmountUnsupported,
+        RejectCode::CloseState,
+        RejectCode::ChannelClosing,
+        RejectCode::WithdrawDelayMismatch,
+        RejectCode::WithdrawDelayOutOfRange,
+        RejectCode::CumulativeAmountMismatch,
+        RejectCode::CumulativeExceedsDeposit,
+        RejectCode::VoucherExpiry,
+        RejectCode::SetupTransaction,
+        RejectCode::SettlementSimulation,
+        RejectCode::ChannelState,
+        RejectCode::RefundTransaction,
+        RejectCode::DuplicateSettlement,
         RejectCode::MixedFundingAuthority,
         RejectCode::UnexpectedSigner,
     ];
@@ -389,6 +528,45 @@ impl RejectCode {
             RejectCode::VoucherExpired => "voucher-expired",
             RejectCode::VoucherExpiresBeforeSettlement => "voucher-expires-before-settlement",
             RejectCode::AcceptedMismatch => "accepted-mismatch",
+            RejectCode::UnexpectedVoucher => "unexpected-voucher",
+            RejectCode::UnexpectedType => "unexpected-type",
+            RejectCode::ChannelAlreadyOpen => "channel-already-open",
+            RejectCode::ChannelLifetimeExceeded => "channel-lifetime-exceeded",
+            RejectCode::ExpiresAtMismatch => "expires-at-mismatch",
+            RejectCode::NotYetActive => "not-yet-active",
+            RejectCode::DepositNotCeiling => "deposit-not-ceiling",
+            RejectCode::ReceiverAuthorizerMismatch => "receiver-authorizer-mismatch",
+            RejectCode::ChannelIdMismatch => "channel-id-mismatch",
+            RejectCode::OpenBindingMismatch => "open-binding-mismatch",
+            RejectCode::ChallengeMismatch => "challenge-mismatch",
+            RejectCode::ChallengeExpired => "challenge-expired",
+            RejectCode::SubscriptionExpired => "subscription-expired",
+            RejectCode::AuthenticationInvalid => "authentication-invalid",
+            RejectCode::RecipientMismatch => "recipient-mismatch",
+            RejectCode::ActivationScope => "activation-scope",
+            RejectCode::FeePayerMismatch => "fee-payer-mismatch",
+            RejectCode::SubscriptionInactive => "subscription-inactive",
+            RejectCode::SourceMismatch => "source-mismatch",
+            RejectCode::UnsupportedScheme => "unsupported-scheme",
+            RejectCode::PayloadType => "payload-type",
+            RejectCode::PaymentFlow => "payment-flow",
+            RejectCode::TokenProgram => "token-program",
+            RejectCode::VoucherSignature => "voucher-signature",
+            RejectCode::ReceiverBindingUnavailable => "receiver-binding-unavailable",
+            RejectCode::CloseAuthorization => "close-authorization",
+            RejectCode::CloseAmountUnsupported => "close-amount-unsupported",
+            RejectCode::CloseState => "close-state",
+            RejectCode::ChannelClosing => "channel-closing",
+            RejectCode::WithdrawDelayMismatch => "withdraw-delay-mismatch",
+            RejectCode::WithdrawDelayOutOfRange => "withdraw-delay-out-of-range",
+            RejectCode::CumulativeAmountMismatch => "cumulative-amount-mismatch",
+            RejectCode::CumulativeExceedsDeposit => "cumulative-exceeds-deposit",
+            RejectCode::VoucherExpiry => "voucher-expiry",
+            RejectCode::SetupTransaction => "setup-transaction",
+            RejectCode::SettlementSimulation => "settlement-simulation",
+            RejectCode::ChannelState => "channel-state",
+            RejectCode::RefundTransaction => "refund-transaction",
+            RejectCode::DuplicateSettlement => "duplicate-settlement",
             RejectCode::MixedFundingAuthority => "mixed-funding-authority",
             RejectCode::UnexpectedSigner => "unexpected-signer",
         }
@@ -480,6 +658,25 @@ pub enum Input {
     /// transaction in the scheme_exact_svm §3.1 static layout (see
     /// `x402tx.rs`), optionally mutated, wrapped in an envelope.
     X402Header(Box<X402HeaderSpec>),
+    /// A `subscription` vector whose input the kit materializes (activation
+    /// credentials built by the kit's client, then edited). See
+    /// `realize/subscription.rs`.
+    Subscription(Box<crate::realize::subscription::Recipe>),
+    /// A session verify vector whose `input.sessionOpenVerify.open` is the
+    /// kit client's `open` action for the challenge the kit's session server
+    /// issues under `server` (or under `built_from`, so the server verifies
+    /// an open built for another challenge), optionally mutated.
+    SessionOpen(Box<SessionOpenSpec>),
+}
+
+/// Recipe for a session `open` verify vector (`input.sessionOpenVerify`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionOpenSpec {
+    /// The verifying server's configuration (`sessionOpenVerify.server`).
+    pub server: Value,
+    /// Build the open against the challenge of this configuration instead.
+    pub built_from: Option<Value>,
+    pub mutation: Option<Mutation>,
 }
 
 /// Recipe for an x402 verify vector's payment header.
@@ -504,6 +701,15 @@ pub struct X402HeaderSpec {
     pub mutation: Option<Mutation>,
     /// Extra static input keys (e.g. `x402ServerRequiresPaymentIdentifier`).
     pub extra_input: Vec<(&'static str, Value)>,
+    /// Message format of the static-layout transaction before `mutation`
+    /// (version 1 carries the compute budget in its header, §1.5).
+    pub tx_format: crate::tx::MessageFormat,
+    /// The sponsor's accepted transaction versions
+    /// (`input.x402ServerTransactionVersions`). The route advertises them as
+    /// `extra.transactionVersions` (§1.5: the server copies the facilitator's
+    /// value) and the client echoes them in `accepted`. `None`: the default
+    /// `[0]`, nothing advertised.
+    pub server_transaction_versions: Option<&'static [u8]>,
 }
 
 /// An x402 server route.
@@ -644,6 +850,8 @@ mod tests {
         }
         assert!(ReqId::new("MPP-0123456789").is_ok());
         assert!(ReqId::new("X402-abcdef0123").is_ok());
+        assert!(ReqId::new("X402TX-abcdef0123").is_ok());
+        assert!(ReqId::new("MPPTX-abcdef0123").is_ok());
     }
 
     #[test]

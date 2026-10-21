@@ -432,6 +432,11 @@ pub fn x402_verify_input(build_input: &Value, header: &str) -> Result<Value, Str
     if let Some(memo) = offer.pointer("/extra/memo") {
         input["x402ServerMemo"] = memo.clone();
     }
+    // The offer's `extra.transactionVersions` is the sponsor's accepted set
+    // the route copied (§1.5); the verifying sponsor accepts exactly it.
+    if let Some(versions) = offer.pointer("/extra/transactionVersions") {
+        input["x402ServerTransactionVersions"] = versions.clone();
+    }
     // Server SDKs configure their sponsor from its secret; the harness holds
     // the seeds of both sponsors the vectors use.
     let fee_payer = offer.pointer("/extra/feePayer").and_then(Value::as_str);
@@ -508,7 +513,10 @@ pub fn build_artifact(vector: &Vector, result: &Value) -> Result<Option<String>,
     let field = match vector.intent.as_str() {
         "charge" => "transaction",
         "x402-exact" => "x402PaymentHeader",
-        _ => return Ok(None),
+        other => match crate::realize::suite_build_artifact_field(other) {
+            Some(field) => field,
+            None => return Ok(None),
+        },
     };
     match result.get(field).and_then(Value::as_str) {
         Some(artifact) => Ok(Some(artifact.to_string())),
@@ -630,6 +638,31 @@ pub fn compare_transactions(
     let (got_payer, got_signers, got) = normalised(actual_tx, nonce_memo)
         .map_err(|e| Failure::new(format!("the SDK's transaction does not decode: {e}")))?;
     let mut problems = Vec::new();
+    // The message version and, for version 1, the header compute config are
+    // part of what executes: the budget is not an instruction there.
+    let format = |tx: &str| {
+        decode_b64(tx).map(|t| {
+            (
+                crate::tx::MessageFormat::of(&t.message),
+                crate::tx::v1_config(&t.message),
+            )
+        })
+    };
+    let ((want_format, want_config), (got_format, got_config)) = (
+        format(expected_tx).map_err(Failure::new)?,
+        format(actual_tx).map_err(Failure::new)?,
+    );
+    if want_format != got_format {
+        problems.push(format!(
+            "message version {} (Rust: {})",
+            got_format.as_str(),
+            want_format.as_str()
+        ));
+    } else if want_config != got_config {
+        problems.push(format!(
+            "version-1 header config {got_config:?} (Rust: {want_config:?})"
+        ));
+    }
     if want_payer != got_payer {
         problems.push(format!(
             "fee payer {} (Rust: {})",
@@ -716,6 +749,11 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     let intent = match vector.intent.as_str() {
         "charge" => Intent::Charge,
         "x402-exact" => Intent::X402Exact,
+        "x402-upto" => return crate::realize::upto::judge_build(vector, artifact).await,
+        "x402-batch-settlement" => {
+            return crate::realize::batch::judge_build(vector, artifact).await
+        }
+        "subscription" => return crate::realize::subscription::judge_build(vector, artifact).await,
         _ => return Ok(()),
     };
     let verify_input = verify_input_for_build(vector, artifact).map_err(Failure::new)?;
@@ -755,6 +793,68 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         ),
     };
     compare_transactions(&expected_tx, &actual_tx, nonce_memo)
+}
+
+/// For a build the judge refused: whether it is nevertheless a transaction
+/// every conforming server must accept, because the Rust verifier accepts it
+/// and it differs from the kit's build only in its message version (the same
+/// fee payer, signers and instructions once the compute budget's encoding,
+/// ComputeBudget instructions or the version-1 header, is set aside). The
+/// client picked another advertised version, which its own build vector
+/// reports; the cross matrix (`pkc run --cross`) must not then expect
+/// servers to refuse a valid payment.
+pub async fn alternative_version_accepted(vector: &Vector, artifact: &str) -> bool {
+    let intent = match vector.intent.as_str() {
+        "charge" => Intent::Charge,
+        "x402-exact" => Intent::X402Exact,
+        _ => return false,
+    };
+    let Ok(verify_input) = verify_input_for_build(vector, artifact) else {
+        return false;
+    };
+    if !matches!(
+        realize::run(intent, Mode::VerifyTransaction, &verify_input).await,
+        Observed::Accept(_)
+    ) {
+        return false;
+    }
+    let Observed::Accept(reference) =
+        realize::run(intent, Mode::BuildTransaction, vector.input()).await
+    else {
+        return false;
+    };
+    let (expected_tx, actual_tx, nonce_memo) = match intent {
+        Intent::Charge => (
+            reference.transaction.unwrap_or_default(),
+            artifact.to_string(),
+            false,
+        ),
+        _ => match (
+            header_transaction(&reference.header.unwrap_or_default()),
+            header_transaction(artifact),
+        ) {
+            (Ok(e), Ok(a)) => (
+                e,
+                a,
+                vector.input().pointer("/x402Offer/extra/memo").is_none(),
+            ),
+            _ => return false,
+        },
+    };
+    let format = |tx: &str| decode_b64(tx).map(|t| crate::tx::MessageFormat::of(&t.message));
+    if format(&expected_tx).ok() == format(&actual_tx).ok() {
+        return false;
+    }
+    let budget_free = |tx: &str| {
+        normalised(tx, nonce_memo).map(|(payer, signers, ixs)| {
+            let ixs: Vec<Ix> = ixs
+                .into_iter()
+                .filter(|ix| ix.program != keys::COMPUTE_BUDGET_PROGRAM)
+                .collect();
+            (payer, signers, ixs)
+        })
+    };
+    matches!((budget_free(&expected_tx), budget_free(&actual_tx)), (Ok(a), Ok(b)) if a == b)
 }
 
 #[cfg(test)]
@@ -813,17 +913,27 @@ mod tests {
         let rt = runtime();
         let all = vectors::load(&crate::repo_root().join("harness/vectors")).unwrap();
         let mut judged = 0;
+        // Kit builds the Rust expectations record as known failures are the
+        // judge catching the kit (FINDINGS.md), not the judge being wrong.
+        let rust_toml =
+            std::fs::read_to_string(crate::repo_root().join("harness/expectations/rust.toml"))
+                .unwrap();
         for v in all.iter().filter(|v| {
-            v.mode == "build-transaction" && v.expect_outcome() == "accept" && v.intent != "session"
+            v.mode == "build-transaction"
+                && v.expect_outcome() == "accept"
+                && build_artifact(v, &json!({})).is_err()
+                // An authored build pins spec behaviour the kit may diverge
+                // from; its divergence is asserted by the registry instead.
+                && v.raw.get("provenance").and_then(Value::as_str) != Some("authored")
+                && !rust_toml.contains(&format!("\"vector/{}\"", v.id))
         }) {
-            let intent = if v.intent == "charge" {
-                Intent::Charge
-            } else {
-                Intent::X402Exact
-            };
+            let intent = Intent::parse(&v.intent).expect("known intent");
             let output = match rt.block_on(realize::run(intent, Mode::BuildTransaction, v.input()))
             {
                 Observed::Accept(o) => o,
+                // An authored accept the kit cannot build records that
+                // divergence; there is no kit build to judge.
+                _ if v.raw["provenance"] == "authored" => continue,
                 other => panic!("{}: {}", v.id, other.summary()),
             };
             let artifact = output.transaction.or(output.header).unwrap();

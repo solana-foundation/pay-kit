@@ -8,7 +8,7 @@ use base64::Engine;
 use ed25519_dalek::Signer as _;
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
-use solana_message::{v0, VersionedMessage};
+use solana_message::{v0, v1, VersionedMessage};
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
@@ -101,6 +101,94 @@ pub fn compile_v0(decompiled: &Decompiled) -> Result<VersionedTransaction, Strin
         signatures: vec![Signature::default(); message.header().num_required_signatures as usize],
         message,
     })
+}
+
+/// The three Solana message formats. The kit folds legacy into version 0
+/// for policy (`TxVersion::of`); the vectors keep it distinct because the
+/// specs do not (MPP rejects legacy, x402 deprecates it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MessageFormat {
+    Legacy,
+    V0,
+    V1,
+}
+
+impl MessageFormat {
+    pub fn of(message: &VersionedMessage) -> MessageFormat {
+        match message {
+            VersionedMessage::Legacy(_) => MessageFormat::Legacy,
+            VersionedMessage::V0(_) => MessageFormat::V0,
+            VersionedMessage::V1(_) => MessageFormat::V1,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageFormat::Legacy => "legacy",
+            MessageFormat::V0 => "0",
+            MessageFormat::V1 => "1",
+        }
+    }
+}
+
+/// The header compute config of a version-1 message.
+pub fn v1_config(message: &VersionedMessage) -> Option<v1::TransactionConfig> {
+    match message {
+        VersionedMessage::V1(m) => Some(m.config),
+        _ => None,
+    }
+}
+
+/// The version-1 header config the kit derives from a compute budget
+/// (limit, price in micro-lamports per unit, maximum loaded-data limit).
+pub fn v1_config_for(unit_limit: u32, unit_price_micro_lamports: u64) -> v1::TransactionConfig {
+    solana_pay_kit::core::tx::ComputeBudget::new(unit_limit, unit_price_micro_lamports).v1_config()
+}
+
+/// Compile into an unsigned transaction of `format` (all slots empty).
+/// Version 1 carries `config` in its header; the other formats ignore it.
+pub fn compile_as(
+    format: MessageFormat,
+    decompiled: &Decompiled,
+    config: v1::TransactionConfig,
+) -> Result<VersionedTransaction, String> {
+    let message = match format {
+        MessageFormat::V0 => return compile_v0(decompiled),
+        MessageFormat::Legacy => {
+            VersionedMessage::Legacy(solana_message::Message::new_with_blockhash(
+                &decompiled.instructions,
+                Some(&decompiled.fee_payer),
+                &decompiled.blockhash,
+            ))
+        }
+        MessageFormat::V1 => VersionedMessage::V1(
+            v1::Message::try_compile_with_config(
+                &decompiled.fee_payer,
+                &decompiled.instructions,
+                decompiled.blockhash,
+                config,
+            )
+            .map_err(|e| format!("compile v1 message: {e}"))?,
+        ),
+    };
+    Ok(VersionedTransaction {
+        signatures: vec![Signature::default(); message.header().num_required_signatures as usize],
+        message,
+    })
+}
+
+/// Recompile in the format of `original`; a version-1 message keeps its
+/// header config. Every transaction operator goes through this, so a
+/// mutation never changes the message version as a side effect.
+pub fn recompile(
+    original: &VersionedMessage,
+    decompiled: &Decompiled,
+) -> Result<VersionedTransaction, String> {
+    compile_as(
+        MessageFormat::of(original),
+        decompiled,
+        v1_config(original).unwrap_or_default(),
+    )
 }
 
 /// Sign every listed seed's slot (seeds whose pubkey is not a required
@@ -217,6 +305,30 @@ pub fn x402_static_layout(layout: &StaticLayout<'_>) -> Result<VersionedTransact
     })?;
     sign_slots(&mut tx, &[keys::CLIENT_SEED]);
     Ok(tx)
+}
+
+/// [`x402_static_layout`] as a version-1 message (scheme_exact_svm §3.1,
+/// version-1 layout): the TransferChecked and the Memo, with the compute
+/// budget in the header `config` instead of the two ComputeBudget
+/// instructions. The client signs.
+pub fn x402_static_layout_v1(
+    layout: &StaticLayout<'_>,
+    config: v1::TransactionConfig,
+) -> Result<VersionedTransaction, String> {
+    let v0 = x402_static_layout(layout)?;
+    let mut d = decompile(&v0.message)?;
+    d.instructions
+        .retain(|ix| ix.program_id != pubkey(COMPUTE_BUDGET_PROGRAM));
+    let mut tx = compile_as(MessageFormat::V1, &d, config)?;
+    sign_slots(&mut tx, &[keys::CLIENT_SEED]);
+    Ok(tx)
+}
+
+/// The compute budget the static layout declares (200_000 units at 1
+/// micro-lamport), as a version-1 header: the kit's rounding of the total
+/// priority fee (1 lamport) and the maximum loaded-data limit.
+pub fn x402_static_layout_v1_config() -> v1::TransactionConfig {
+    v1_config_for(200_000, 1)
 }
 
 /// Deterministic 32-character memo nonce for a vector id, the formula the

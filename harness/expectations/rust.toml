@@ -3,7 +3,14 @@ language = "rust"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session"]
+vector = [
+  "charge",
+  "x402-exact",
+  "session",
+  "x402-upto",
+  "x402-batch-settlement",
+  "subscription",
+]
 protocol = true
 flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -75,3 +82,283 @@ ids = [
 ]
 reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
 tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-client-voucher-reject",
+  "vector/x402-upto-verify-client-voucher-empty-reject",
+  "vector/x402-upto-verify-client-type-reject",
+]
+reason = "verify accepts a client payload carrying voucherSignature or type: UptoPayload ignores keys it does not model"
+tracking = "FINDINGS.md#upto-client-settle-fields-accepted"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-expires-beyond-timeout-reject",
+  "vector/x402-upto-verify-timeout-over-lifetime-reject",
+  "vector/x402-upto-verify-expires-over-lifetime-reject",
+]
+reason = "X402Upto has no maxChannelLifetimeSecs and never bounds expiresAt by now + maxTimeoutSeconds"
+tracking = "FINDINGS.md#upto-lifetime-unbounded"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-channel-already-open-reject",
+]
+reason = "verify_open_for_route co-signs without reading the channel account; an existing channel fails only at broadcast"
+tracking = "FINDINGS.md#upto-channel-exists-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-missing-payer-signature-reject",
+  "vector/x402-upto-verify-invalid-payer-signature-reject",
+]
+reason = "the fee payer co-signs without checking that payload.from signed the open"
+tracking = "FINDINGS.md#upto-payer-signature-not-verified"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-extra-signer-reject",
+]
+reason = "the open policy never compares the required-signer set with { payload.from, extra.feePayer }"
+tracking = "FINDINGS.md#upto-signer-set-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-writable-mint-reject",
+  "vector/x402-upto-verify-open-extra-account-reject",
+]
+reason = "validate_open_instruction checks the 14 account keys only: no privileges, no remaining-account bound"
+tracking = "FINDINGS.md#upto-open-privileges-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-two-memos-unbound-accept",
+]
+reason = "refuses a second Memo on an unbound route, which the four-instruction suffix allows"
+tracking = "FINDINGS.md#upto-second-memo-refused"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-nonce-not-decimal-reject",
+  "vector/x402-upto-verify-open-slot-not-decimal-reject",
+]
+reason = "compares payload.nonce / openSlot with the open arguments as text and reports a binding mismatch instead of a malformed payload"
+tracking = "FINDINGS.md#upto-seed-fields-textual"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-open-slot-number-accept",
+  "vector/x402-upto-build-recent-slot-number",
+]
+reason = "openSlot and recentSlot are modelled as strings; the pinned spec types them as numbers"
+tracking = "FINDINGS.md#upto-slot-wire-type"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-build-memo-nonce",
+]
+reason = "the client emits a bare open when the challenge declares no memo; the spec requires a random hex nonce memo"
+tracking = "FINDINGS.md#upto-client-memo-nonce-missing"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-v1-small-loaded-limit-accept",
+]
+reason = "requires a version-1 loadedAccountsDataSizeLimit equal to 64 MiB rather than present"
+tracking = "FINDINGS.md#upto-v1-loaded-limit-strict"
+# subscription (draft-solana-subscription-00) vectors
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-spec-request",
+]
+reason = "the client needs the kit's own methodDetails extensions (amount, recipient, planIdNumeric, planBump, expectedPeriodHours, expectedCreatedAt) and refuses a spec-shaped challenge (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:176, rust/crates/kit/src/mpp/client/subscription.rs:266); the case records the kit divergence"
+tracking = "FINDINGS.md#subscription-rust-client-kit-extensions"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-amount-leading-zero-reject",
+  "vector/subscription-build-zero-amount-reject",
+  "vector/subscription-build-period-count-leading-zero-reject",
+  "vector/subscription-period-count-leading-zero-reject",
+  "vector/subscription-period-count-sign-reject",
+  "vector/subscription-build-token-program-not-spl-reject",
+  "vector/subscription-build-no-decimals-reject",
+]
+reason = "the request's amount / periodCount formats, tokenProgram and decimals are never validated: u64::from_str accepts \"010000000\", \"0\", \"030\", \"+30\" (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:201-212), any tokenProgram is used (rust/crates/kit/src/mpp/client/subscription.rs:224) and decimals is optional (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:322); the cases record the kit divergence"
+tracking = "FINDINGS.md#subscription-rust-request-format"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-plan-missing-reject",
+  "vector/subscription-build-plan-amount-mismatch-reject",
+  "vector/subscription-build-plan-period-mismatch-reject",
+  "vector/subscription-build-plan-mint-mismatch-reject",
+  "vector/subscription-build-plan-puller-unauthorized-reject",
+  "vector/subscription-build-plan-no-destination-reject",
+  "vector/subscription-build-plan-two-destinations-reject",
+  "vector/subscription-build-plan-other-destination-reject",
+]
+reason = "the client never reads the on-chain Plan: it signs SubscribeData built from methodDetails (rust/crates/kit/src/mpp/client/subscription.rs:266), so a plan that does not match the challenge (terms, pullers, destinations, or no plan at all) is signed; the cases record the kit divergence"
+tracking = "FINDINGS.md#subscription-rust-client-plan-unread"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-source-other-address-reject",
+  "vector/subscription-verify-source-other-method-reject",
+]
+reason = "verify_credential never reads credential.source (rust/crates/kit/src/mpp/server/subscription.rs:420); the cases record the kit divergence"
+tracking = "FINDINGS.md#subscription-source-not-verified"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-sponsor-not-fee-payer-reject",
+]
+reason = "with feePayer=true the server looks for the subscriber after the sponsor slot and reports \"Could not identify subscriber\" (invalid-payload) before it checks the fee payer (rust/crates/kit/src/mpp/server/subscription.rs:1867); the case records the kit divergence"
+tracking = "FINDINGS.md#subscription-rust-sponsor-fee-payer-code"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-wire-activation-no-authentication-reject",
+]
+reason = "ActivatePayload.authentication is Option (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:260): the wire type accepts an activation without the REQUIRED proof, verify_credential refuses it later; the case records the kit divergence"
+tracking = "FINDINGS.md#subscription-rust-wire-optional-authentication"
+# ── x402 batch-settlement (SVM) ──
+
+[[unsupported]]
+reason = "the Rust kit has no CloseAuthorization encoder: it refuses every cooperative close (x402/protocol/schemes/batch_settlement/verify.rs check_no_cooperative_close), so no public API produces the close digest"
+ids = [
+  "vector/batch-close-authorization-digest-binds-network",
+  "vector/batch-close-authorization-digest-binds-watermark",
+  "vector/batch-close-authorization-digest-frozen",
+]
+
+[[unsupported]]
+reason = "the Rust kit exposes no receiver-binding memo encoder (RECEIVER_BINDING_MEMO_PREFIX is private to x402/client/batch_settlement/payment.rs)"
+ids = [
+  "vector/batch-receiver-binding-memo-frozen",
+]
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-open",
+  "vector/batch-build-terms-payment-flow-authorization",
+  "vector/batch-verify-open-accept",
+  "vector/batch-verify-open-foreign-binding-reject",
+  "vector/batch-verify-open-grace-period-mismatch-reject",
+  "vector/batch-verify-open-missing-binding-memo-reject",
+]
+reason = "the client opens a client-mode channel without the receiver-binding memo, and the server admits exactly one memo in an open, so it accepts an unbound open and refuses the spec's two-memo open (\"An open suffix also carries exactly one binding Memo from section 3.\")"
+tracking = "FINDINGS.md#batch-open-binding-memo"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-refund",
+  "vector/batch-txv1-refund-v1-not-advertised-reject",
+  "vector/batch-verify-refund-compute-price-over-cap-reject",
+  "vector/batch-verify-refund-disallowed-suffix-reject",
+  "vector/batch-verify-refund-extra-account-reject",
+  "vector/batch-verify-refund-extra-instruction-reject",
+  "vector/batch-verify-refund-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-refund-invalid-payer-signature-reject",
+  "vector/batch-verify-refund-memo-mismatch-reject",
+  "vector/batch-verify-refund-prefix-only-reject",
+  "vector/batch-verify-refund-request-close",
+  "vector/batch-verify-refund-sealed-channel-reject",
+  "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
+  "vector/batch-verify-refund-without-voucher-reject",
+  "vector/batch-verify-refund-wrong-channel-reject",
+  "vector/batch-wire-payload-refund-cooperative",
+  "vector/batch-wire-payload-refund-transaction-without-voucher-reject",
+]
+reason = "the kit implements the superseded request_close-only refund: the client sends no voucher, the wire type requires transaction, and the server refuses any refund carrying a voucher (close_authorization) while accepting one without (\"| voucher | BatchVoucher | REQUIRED in client mode.\")"
+tracking = "FINDINGS.md#batch-refund-superseded-shape"
+
+[[known_failing]]
+ids = [
+  "vector/batch-wire-redemption-claim-empty-reject",
+  "vector/batch-wire-redemption-claim-five-entries-reject",
+]
+reason = "BatchRedemptionPayload::Claim parses any number of claims (\"claims[] MUST contain between one and four entries\")"
+tracking = "FINDINGS.md#batch-claims-unbounded"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-top-up-v1-not-advertised-reject",
+  "vector/batch-verify-accepted-amount-mismatch-reject",
+  "vector/batch-verify-accepted-network-mismatch-reject",
+  "vector/batch-verify-accepted-pay-to-mismatch-reject",
+  "vector/batch-verify-top-up-frozen-payer-ata-reject",
+  "vector/batch-verify-top-up-missing-receiver-ata-reject",
+  "vector/batch-verify-x402-version-1-reject",
+]
+reason = "the server rejects these for the right reason under another code: an accepted/requirements mismatch and a v1 envelope as channel_state, unusable settlement ATAs as setup_transaction, an unadvertised message version as setup_transaction"
+tracking = "FINDINGS.md#batch-server-reject-codes"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-top-up-v1-loaded-limit-below-max",
+]
+reason = "a version-1 setup transaction must set loadedAccountsDataSizeLimit to exactly 67108864; a smaller present value is refused (x402-txv1: \"loadedAccountsDataSizeLimit MUST be present\")"
+tracking = "FINDINGS.md#batch-v1-loaded-limit-pinned"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-voucher-onchain-closed-account-reject",
+]
+reason = "a refreshed stale snapshot re-checks the channel's payee, mint, authorizer, grace period, open slot and distribution hash but not its discriminator, so a voucher against a ClosedChannel account is served (\"Confirm the channel exists, is `Open`\")"
+tracking = "FINDINGS.md#batch-voucher-onchain-bindings"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-terms-withdraw-delay-fractional-reject",
+]
+reason = "extra.withdrawDelay is a u32, so 900.5 fails deserialization (invalid-challenge) rather than the withdrawDelay range rule (\"MUST be an integer from 900 through 2592000\")"
+tracking = "FINDINGS.md#batch-server-reject-codes"
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[known_failing]]
+ids = [
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+  "vector/session-open-legacy-reject",
+]
+reason = "the charge and session open verifiers police a legacy message as version 0 and accept it wherever version 0 is accepted (rust/crates/kit/src/core/tx/version.rs TxVersion::of); draft-solana-charge-00 (txv1): servers MUST reject a legacy message"
+tracking = "FINDINGS.md#txv1-rust-legacy-accepted"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/x402-build-empty-advertisement-reject",
+]
+reason = "an empty transactionVersions is read as the absent default [0] (rust/crates/kit/src/core/tx/version.rs accepted_versions) and the client builds version 0 instead of refusing (RULINGS T2)"
+tracking = "FINDINGS.md#txv1-rust-empty-advertisement"
+
+[[known_failing]]
+id = "vector/x402-build-legacy-only-reject"
+reason = "extra.transactionVersions [\"legacy\"] fails to parse (invalid-payload) instead of an empty intersection failing with unsupported_transaction_version (scheme_exact_svm.md §1.5)"
+tracking = "FINDINGS.md#txv1-rust-x402-legacy-offer-code"
+
+[[known_failing]]
+id = "vector/x402-verify-v1-missing-loaded-data-limit-reject"
+reason = "rejected, but every check_v1_budget_caps error is reported as compute_price_instruction_too_high (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs verify_exact_versioned_transaction)"
+tracking = "FINDINGS.md#txv1-rust-x402-budget-codes"
+
+# Cross-verification of the transaction-version builds.
+
+[[known_failing]]
+ids = [
+  "cross/x402-build-duplicate-advertisement/go/rust",
+  "cross/x402-build-duplicate-advertisement/python/rust",
+  "cross/x402-build-duplicate-advertisement/rust/rust",
+  "cross/x402-build-duplicate-advertisement/swift/rust",
+  "cross/x402-build-duplicate-advertisement/typescript/rust",
+  "cross/x402-build-v0-advertised/go/rust",
+  "cross/x402-build-v0-advertised/python/rust",
+  "cross/x402-build-v0-advertised/rust/rust",
+  "cross/x402-build-v0-advertised/swift/rust",
+  "cross/x402-build-v0-advertised/typescript/rust",
+]
+reason = "the kit's x402 server advertises extra.transactionVersions only as [0, 1] (TxV1Mode::On) or not at all, so an offer's echoed [0] or [1, 0, 1] fails its accepted match (an echoed hint must equal the route's); scheme_exact_svm.md §1.5: the server MUST copy the facilitator's value"
+tracking = "FINDINGS.md#txv1-rust-x402-advertisement-fixed"

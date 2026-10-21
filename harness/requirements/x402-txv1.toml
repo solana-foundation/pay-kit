@@ -1,0 +1,156 @@
+repo = "x402-txv1"
+commit = "3d723dd54706b9edab8a33dc2c4e9cad22f35745"
+files = [
+  "specs/schemes/exact/scheme_exact_svm.md",
+  "specs/schemes/upto/scheme_upto_svm.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+]
+
+# SVM transaction-version negotiation, pinned from x402-foundation/x402
+# PR 3473 (solana-foundation/x402 spec/svm-transaction-versions) until it
+# merges. id = "X402TX-" + sha256(normalised text)[:10]. `required = true`:
+# `pkc req-lint` fails if no case maps the id.
+
+[[requirement]]
+id = "X402TX-0f874a9c63"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed 400000, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= 5000000 computeUnitLimit."
+required = true
+
+[[requirement]]
+id = "X402TX-125d312b26"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "A version-1 transaction carries its compute budget in the message config and MUST NOT contain this prefix."
+required = true
+
+[[requirement]]
+id = "X402TX-2909c4b4ec"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "It MUST fail with unsupported_transaction_version when the intersection is empty."
+required = true
+
+[[requirement]]
+id = "X402TX-4de59a1f27"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."
+required = true
+
+[[requirement]]
+id = "X402TX-5267172b18"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The facilitator MUST reject a message whose version is outside the set it accepts, before inspecting any instruction, with unsupported_transaction_version."
+required = true
+
+[[requirement]]
+id = "X402TX-61c735c7a9"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The client MUST intersect the advertised versions ([0] when the field is absent) with the versions it and its signer support, then build the highest version in that intersection."
+required = true
+
+[[requirement]]
+id = "X402TX-644919eb3b"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "It MUST set computeUnitLimit and loadedAccountsDataSizeLimit (a version-1 transaction that omits either is budgeted zero and cannot execute), it MUST NOT contain Compute Budget program instructions, and its priorityFee is a total in lamports, evaluated against a per-compute-unit cap as priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit."
+required = true
+
+[[requirement]]
+id = "X402TX-77742f428c"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "They are never advertised in extra.transactionVersions and clients MUST NOT build them."
+required = true
+
+[[requirement]]
+id = "X402TX-936b492daa"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."
+required = true
+
+[[requirement]]
+id = "X402TX-d444d01b9e"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Its message version MUST be one advertised in extra.transactionVersions (see [Transaction versions](#transaction-versions)). |"
+required = true
+
+[[requirement]]
+id = "X402TX-dc7b0f3305"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A legacy or version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes."
+required = true
+
+[[requirement]]
+id = "X402TX-4750df8921"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Its message version MUST be one advertised in extra.transactionVersions. |"
+required = true
+
+[[requirement]]
+id = "X402TX-f39a33ff74"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator advertises the versions it accepts as extra.transactionVersions in /supported, and the server MUST copy that value into PaymentRequirements.extra.transactionVersions."
+required = true
+
+[[requirement]]
+id = "X402TX-10b3fe2ef3"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Its message version MUST be one the requirements advertise in extra.transactionVersions, or version 0 when that field is absent (see §1.5)."
+required = true
+
+[[requirement]]
+id = "X402TX-24efe57db3"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The sponsor MUST reject a message whose version is outside the set it accepts, before inspecting any instruction, with unsupported_transaction_version."
+required = true
+
+[[requirement]]
+id = "X402TX-2ad7a3f326"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1."
+required = true
+
+[[requirement]]
+id = "X402TX-516a2d7b57"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A matching transfer MAY exceed PaymentRequirements.amount (overpayment is tolerated to accommodate smart wallets with internal fee rounding); it MUST NOT be less."
+required = true
+
+[[requirement]]
+id = "X402TX-9b240d95a0"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The transaction MUST NOT require any signatures beyond the client and the sponsor (feePayer)."
+required = true
+
+[[requirement]]
+id = "X402TX-bc031b7add"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "The fee payer / sponsor MUST NOT be the authority on any observed transfer (self-spend protection)."
+required = true
+
+[[requirement]]
+id = "X402TX-d188782061"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "A version-1 transaction MUST contain 1 to 5 instructions in this order:"
+required = true
+
+[[requirement]]
+id = "X402TX-dd5384e0fe"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Fee payer isolation (§2.1.1): the fee payer MUST NOT appear in any instruction's accounts or as a program ID, after ALT resolution (§2.1.2)."
+required = true
+
+[[requirement]]
+id = "X402TX-eb681e1701"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit."
+required = true
+
+[[requirement]]
+id = "X402TX-ee90546220"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Across all top-level instructions and the full CPI trace, exactly one transfer MUST match the requirements (correct mint, correct destination ATA, amount >= required)."
+required = true
+
+[[requirement]]
+id = "X402TX-f9c2b66234"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Match exactly one transfer (§1.4): across top-level and inner instructions, exactly one TransferChecked MUST match the required mint, destination ATA (derived for both token programs), and amount (>= required)."
+required = true

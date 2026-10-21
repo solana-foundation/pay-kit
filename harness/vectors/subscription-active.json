@@ -1,0 +1,747 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "Delegation for the route's plan and payer, paid for the current period (started an hour ago), authority generation current: usable.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-active-live",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791",
+      "MPP-1ec64dcbc6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Verify the subscription is still usable by reading delegation.expires_at_ts on-chain; a non-zero timestamp only blocks renewal once the current time is at or after that timestamp.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Cancellation scheduled a minute after the pinned clock: the paid period is still honoured.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-active-cancellation-scheduled",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAPLM/cQAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Verify the subscription is still usable by reading delegation.expires_at_ts on-chain; a non-zero timestamp only blocks renewal once the current time is at or after that timestamp.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "delegation.expires_at_ts equals the pinned clock: cancellation has taken effect.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-cancelled-now-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAALM/cQAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791",
+      "MPP-9dab72f223"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Verify the subscription is still usable by reading delegation.expires_at_ts on-chain; a non-zero timestamp only blocks renewal once the current time is at or after that timestamp.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The pinned clock is the last second of the paid period [start, start + 720h): still usable.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-active-last-second-of-period",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAAEmGHEAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Period 0: [anchor, anchor + mappedPeriodSeconds)",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The paid period ended exactly at the pinned clock (end is exclusive) and the next one is not charged.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-period-ended-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAAAmGHEAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791",
+      "MPP-1ec64dcbc6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Period 0: [anchor, anchor + mappedPeriodSeconds)",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "amount_pulled_in_period is zero: the current period was never charged.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-unpaid-period-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAAAAAAAAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-1ec64dcbc6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "It becomes invalid when cancellation takes effect, subscriptionExpires is reached, the delegation or its authority is invalidated, or the current billing period is not paid.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The subscriber closed and reopened their SubscriptionAuthority: its init_id (78) no longer equals the delegation's (77).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-authority-reinitialized-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9OAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "A missing authority or mismatched incarnation invalidates the subscription.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The SubscriptionAuthority account is closed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-authority-missing-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "A missing authority or mismatched incarnation invalidates the subscription.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "An account at the authority PDA, but owned by another program.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-authority-foreign-owner-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "Vote111111111111111111111111111111111111111"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b87a0cd7d3",
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Before deserializing or mutating any account, implementations MUST validate the expected program owner for:",
+      "section": "Account Ownership and Program-ID Validation"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "No SubscriptionDelegation at the derived PDA: a derivable address is not evidence of a subscription.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-delegation-missing-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "A signature over a derivable PDA whose account does not exist is not evidence of an active subscription.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Delegation bytes at the derived PDA, owned by another program.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-delegation-foreign-owner-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "Vote111111111111111111111111111111111111111"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b87a0cd7d3",
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Before deserializing or mutating any account, implementations MUST validate the expected program owner for:",
+      "section": "Account Ownership and Program-ID Validation"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The delegation at the derived address names another plan as delegatee.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-delegation-other-plan-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAH/6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwGodgXkTdUKpg0N73+KnqyVX9TXIp4citopJ3AAAAAAOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Verify the SubscriptionDelegation account exists, is owned by methodDetails.subscriptionProgram, has the expected discriminator and version, and still identifies the bound plan and payer.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The delegation header carries version 2.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "subscription-inactive",
+      "rejectReason": "the on-chain subscription is not usable at the pinned clock"
+    },
+    "id": "subscription-active-delegation-wrong-version-reject",
+    "input": {
+      "nowSeconds": 1900000000,
+      "rpcFixtures": {
+        "accounts": {
+          "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy": {
+            "data": "BAL+6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz7muJWuLqvsQG9lh71xeQMcehN4pwo5UOAjYjSJnusDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTQAAAAAAAACAlpgAAAAAANACAAAAAAAAAPFTZQAAAACAlpgAAAAAAPCkP3EAAAAAAAAAAAAAAAA=",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          },
+          "HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY": {
+            "data": "AOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLP9NAAAAAAAAAA==",
+            "owner": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+          }
+        },
+        "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+      },
+      "subscriptionActive": {
+        "amount": "10000000",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      },
+      "subscriptionServer": {
+        "amount": "10000000",
+        "decimals": 6,
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "network": "devnet",
+        "periodCount": 30,
+        "periodUnit": "day",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "puller": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+        "realm": "api.example.com",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "secretKey": "subscription-conformance-binding-secret",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Verify the SubscriptionDelegation account exists, is owned by methodDetails.subscriptionProgram, has the expected discriminator and version, and still identifies the bound plan and payer.",
+      "section": "Server Accounting and Idempotency"
+    },
+    "tier": "offline"
+  }
+]

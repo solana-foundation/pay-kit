@@ -1,0 +1,3037 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "Client opens a channel with a 10000 deposit and the first voucher (= amount). The judge checks the spec's open: fee payer, rent_payer and payee are extra.feePayer, the payer slot signed and the sponsor slot empty, the single 100% distribution to payTo, the seller memo AND the receiver-binding memo, a voucher at exactly the amount signed by payerAuthorizer for the derived PDA.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-deposit-open",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d16b3abbab",
+      "X402-87c5fe8803",
+      "X402-063b58b983",
+      "X402-f265c321e3"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "For `open`, the client MUST set `payee = extra.feePayer`, `authorized_signer = channelConfig.payerAuthorizer`, `rent_payer = extra.feePayer`",
+      "section": "Phase 1 - Open or Top Up"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Steady state: the server confirmed 3000 of a 10000 deposit; the next voucher authorizes exactly 4000 with expiresAt 0. Judged structurally and by the Rust server on the same stored record.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-voucher-next",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "3000",
+          "deposit": "10000"
+        },
+        "operation": "voucher",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-a6efa8062a",
+      "X402-2073737c58"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "In client mode, using the last authenticated `PAYMENT-RESPONSE`, the client sets",
+      "section": "Phase 2 - Steady-State Request"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A channel opened with no charge yet: the voucher authorizes exactly the amount.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-voucher-first",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "0",
+          "deposit": "10000"
+        },
+        "operation": "voucher",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "0",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-a6efa8062a"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "For a new channel, `chargedCumulativeAmount` starts at zero.",
+      "section": "Phase 2 - Steady-State Request"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Charged 3000 of a 4000 deposit: the client adds 6000 of escrow and authorizes the next request (4000) in one deposit payload. Judged structurally and by the Rust server on the same stored record (canonical top_up, the seller memo, the sponsor slot empty).",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-top-up",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "3000",
+          "deposit": "4000"
+        },
+        "depositAmount": "6000",
+        "operation": "topUp",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "4000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAoA8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-06bb8f3a9e",
+      "X402-129e295f0c"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The facilitator MUST confirm the decoded amount equals `payload.deposit.amount`; the channel is `Open`;",
+      "section": "Canonical top_up"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises transactionVersions [0, 1] and the signer signs version 1: the top-up is built as version 1 (header compute budget) and the version-1 server accepts it.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-top-up-version-1",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "3000",
+          "deposit": "4000"
+        },
+        "depositAmount": "6000",
+        "operation": "topUp",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ],
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "transactionVersions": [
+          0,
+          1
+        ],
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "4000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAoA8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-61c735c7a9"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "then build the highest version in that intersection.",
+      "section": "Transaction versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Client-mode refund of a channel charged 3000: the payload carries the accepted voucher at 3000 and no amount. The judge requires the voucher (spec §4.3).",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-refund",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "channel": {
+          "channelConfig": {
+            "openSlot": 341000000,
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "salt": "42",
+            "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "withdrawDelay": 3600
+          },
+          "chargedCumulativeAmount": "3000",
+          "deposit": "10000"
+        },
+        "operation": "refund",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "10000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAECcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-fa34804f1b",
+      "X402-e98b9b9bec"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).",
+      "section": "4.3 Client PaymentPayload Variants"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "extra.tokenProgram is SPL Token but the mint is owned by Token-2022 onchain: the client refuses before deriving any ATA.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "token-program"
+    },
+    "id": "batch-build-terms-token-program-not-mint-owner-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-23747f44c3",
+      "X402-1230bb35a3"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The client and facilitator MUST confirm `extra.tokenProgram` equals the onchain owner of `channelConfig.token`",
+      "section": "4.2 Shared Wire Objects and Program Mapping"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "extra.tokenProgram names the System program: not a supported SPL token program.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "token-program"
+    },
+    "id": "batch-build-terms-unsupported-token-program-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "11111111111111111111111111111111",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-1230bb35a3"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "SPL Token (`Tokenkeg...`) or Token-2022 (`TokenzQ...`) program that owns `asset`.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "extra.paymentFlow \"upfront\": the scheme resolves only to the authorization flow.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "payment-flow"
+    },
+    "id": "batch-build-terms-payment-flow-upfront-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "paymentFlow": "upfront",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-bde1322bb3",
+      "X402-04b1c68ba2"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `paymentFlow` | string | no | When present, MUST be `\"authorization\"`.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "Paired accept: an explicit extra.paymentFlow \"authorization\" is the protocol default and builds.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "batch-build-terms-payment-flow-authorization",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "paymentFlow": "authorization",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-bde1322bb3"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "| `paymentFlow` | string | no | When present, MUST be `\"authorization\"`.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "withdrawDelay 899 is one second under the 900-second minimum.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "withdraw-delay-out-of-range"
+    },
+    "id": "batch-build-terms-withdraw-delay-below-range-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 899
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7556a4ec7c",
+      "X402-180abaa115"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "MUST be an integer from `900` through `2592000` (15 minutes through 30 days), MUST be `>= maxTimeoutSeconds`",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "withdrawDelay 2592001 is one second over the 30-day maximum.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "withdraw-delay-out-of-range"
+    },
+    "id": "batch-build-terms-withdraw-delay-above-range-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 2592001
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7556a4ec7c"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "MUST be an integer from `900` through `2592000` (15 minutes through 30 days), MUST be `>= maxTimeoutSeconds`",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "withdrawDelay 900 with maxTimeoutSeconds 901: the grace period must outlast the HTTP completion window.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "withdraw-delay-out-of-range"
+    },
+    "id": "batch-build-terms-withdraw-delay-below-max-timeout-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 900
+          },
+          "maxTimeoutSeconds": 901,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-7556a4ec7c"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "MUST be an integer from `900` through `2592000` (15 minutes through 30 days), MUST be `>= maxTimeoutSeconds`",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "withdrawDelay 900.5 is not an integer from 900 through 2592000.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "withdraw-delay-out-of-range"
+    },
+    "id": "batch-build-terms-withdraw-delay-fractional-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 900.5
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402-7556a4ec7c"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "MUST be an integer from `900` through `2592000` (15 minutes through 30 days), MUST be `>= maxTimeoutSeconds`",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "A server-mode accept (voucherSigner \"server\", extra.operator) without a local operator grant: the client refuses it rather than delegate voucher authority on a 402's word.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge"
+    },
+    "id": "batch-build-terms-server-signed-untrusted-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "operator": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "server",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f882f2074a",
+      "X402-84916fe051"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "Absent a grant the client MUST refuse the server-mode accept",
+      "section": "8. Security Properties"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "extra.operator on a client-mode accept (no voucherSigner).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge"
+    },
+    "id": "batch-build-terms-operator-in-client-mode-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "operator": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-df15443ca9"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "REQUIRED when `voucherSigner == \"server\"`; MUST be absent in client mode.",
+      "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The client's own key is the challenge's extra.feePayer: it cannot be both the channel payer and the sponsor.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-mismatch"
+    },
+    "id": "batch-build-deposit-payer-is-fee-payer-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-d171becfd9",
+      "X402-13c8fefbbf"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "MUST NOT equal `feePayer`, because the program requires distinct payer and payee accounts.",
+      "section": "4.2 Shared Wire Objects and Program Mapping"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises only version 1 and the client's signer signs up to version 0: the intersection is empty.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version"
+    },
+    "id": "batch-build-version-intersection-empty-reject",
+    "input": {
+      "batchClient": {
+        "blockhash": "11111111111111111111111111111111",
+        "depositAmount": "10000",
+        "maxTransactionVersion": 0,
+        "openSlot": 341000000,
+        "operation": "deposit",
+        "requirements": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              1
+            ],
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        },
+        "secretKey": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44
+        ]
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-2909c4b4ec"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "It MUST fail with `unsupported_transaction_version` when the intersection is empty.",
+      "section": "Transaction versions"
+    },
+    "tier": "offline"
+  }
+]

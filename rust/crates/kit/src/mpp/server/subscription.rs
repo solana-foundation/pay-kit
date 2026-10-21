@@ -421,6 +421,87 @@ impl SubscriptionServer {
         &self,
         credential: &PaymentCredential,
     ) -> Result<ReceiptKind, VerificationError> {
+        let PreparedActivation {
+            request,
+            subscriber,
+            tx,
+            authentication,
+        } = match self
+            .prepare_credential(credential, time::OffsetDateTime::now_utc())
+            .await?
+        {
+            PreparedCredential::Access { request, access } => {
+                return self
+                    .verify_access_credential(credential, &request, access)
+                    .await;
+            }
+            PreparedCredential::Activation(activation) => activation,
+        };
+
+        // Idempotent retry: if the delegation PDA already exists, a
+        // previous broadcast of this same transaction may have landed
+        // while the receipt round-trip failed. Accept that only when
+        // this exact transaction succeeded on-chain; the subsequent
+        // fetch and terms check catch any divergence.
+        let program_id = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|e| VerificationError::new(e.to_string()))?;
+        let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
+            .map_err(|e| VerificationError::new(e.to_string()))?;
+        let (delegation_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
+        let delegation_already_exists = self
+            .fetch_subscription_delegation(&delegation_pda)
+            .await
+            .is_ok();
+
+        let signature = VerifiedSignature::of(&tx)?;
+        let key = format!("solana-subscription:consumed:{signature}");
+        let binding = serde_json::json!({
+            "challengeId": credential.challenge.id,
+        });
+        let activation_signature = if delegation_already_exists {
+            self.ensure_activation_landed(&signature).await?;
+            // Already reserved under another challenge: either a
+            // recovery of an activation whose binding was never
+            // written, or a retry of one already bound. The binder
+            // tells them apart, after re-verifying on-chain.
+            try_reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
+            signature
+        } else {
+            reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
+            match self.broadcast_and_confirm(&tx).await {
+                Ok(_) => signature,
+                // A transaction that can no longer land needs no
+                // replay record; ambiguous outcomes keep theirs.
+                Err(BroadcastError::Rejected(error)) => {
+                    self.store.delete(&key).await.map_err(|e| {
+                        VerificationError::new(format!(
+                            "Failed to release activation reservation: {e}"
+                        ))
+                    })?;
+                    return Err(error);
+                }
+                Err(BroadcastError::Unknown(error)) => return Err(error),
+            }
+        };
+        self.bind_confirmed_activation(
+            credential,
+            &request,
+            subscriber,
+            activation_signature,
+            authentication.as_ref(),
+        )
+        .await
+    }
+
+    /// The offline half of [`Self::verify_credential`], evaluated at `now`:
+    /// challenge binding, request terms, activation payload, bearer proof,
+    /// activation scope and the fee-payer co-signature. Nothing here reads
+    /// the chain, consumes replay state or broadcasts.
+    async fn prepare_credential(
+        &self,
+        credential: &PaymentCredential,
+        now: time::OffsetDateTime,
+    ) -> Result<PreparedCredential, VerificationError> {
         // ── Tier 1: HMAC ─────────────────────────────────────────────────
         let expected_id = compute_challenge_id(
             &self.challenge_binding_secret,
@@ -531,9 +612,7 @@ impl SubscriptionServer {
                         "Failed to decode proof payload: {error}"
                     ))
                 })?;
-            return self
-                .verify_access_credential(credential, &request, access)
-                .await;
+            return Ok(PreparedCredential::Access { request, access });
         }
 
         // Challenge expiry limits creation of the durable bearer binding. An
@@ -549,14 +628,14 @@ impl SubscriptionServer {
                         value,
                         &time::format_description::well_known::Rfc3339,
                     )
-                    .map_or(true, |expires| expires <= time::OffsetDateTime::now_utc())
+                    .map_or(true, |expires| expires <= now)
                 });
         if activation_challenge_expired {
             return Err(VerificationError::invalid_payload(
                 "Subscription activation challenge has expired",
             ));
         }
-        validate_activation_subscription_expiry(request.subscription_expires.as_deref())?;
+        validate_activation_subscription_expiry(request.subscription_expires.as_deref(), now)?;
 
         // ── Decode the activation payload ───────────────────────────────
         // The credential's `payload` may carry either a raw `ActivatePayload`
@@ -573,8 +652,8 @@ impl SubscriptionServer {
             ));
         }
 
-        // ── Settle the activation transaction ────────────────────────────
-        let (subscriber, activation_signature) = match payload_type {
+        // ── Validate the activation transaction ──────────────────────────
+        match payload_type {
             "transaction" => {
                 let tx_b64 = activate.transaction.as_deref().ok_or_else(|| {
                     VerificationError::invalid_payload(
@@ -625,54 +704,12 @@ impl SubscriptionServer {
                     co_sign_as_fee_payer(&mut tx, self.config.fee_payer_signer.as_ref().unwrap())
                         .await?;
                 }
-
-                // Idempotent retry: if the delegation PDA already exists, a
-                // previous broadcast of this same transaction may have landed
-                // while the receipt round-trip failed. Accept that only when
-                // this exact transaction succeeded on-chain; the subsequent
-                // fetch and terms check catch any divergence.
-                let program_id = parse_pubkey(&self.program_id, "program_id")
-                    .map_err(|e| VerificationError::new(e.to_string()))?;
-                let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
-                    .map_err(|e| VerificationError::new(e.to_string()))?;
-                let (delegation_pda, _) =
-                    find_subscription_pda(&plan_pda, &subscriber, &program_id);
-                let delegation_already_exists = self
-                    .fetch_subscription_delegation(&delegation_pda)
-                    .await
-                    .is_ok();
-
-                let signature = VerifiedSignature::of(&tx)?;
-                let key = format!("solana-subscription:consumed:{signature}");
-                let binding = serde_json::json!({
-                    "challengeId": credential.challenge.id,
-                });
-                let sig = if delegation_already_exists {
-                    self.ensure_activation_landed(&signature).await?;
-                    // Already reserved under another challenge: either a
-                    // recovery of an activation whose binding was never
-                    // written, or a retry of one already bound. The binder
-                    // tells them apart, after re-verifying on-chain.
-                    try_reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
-                    signature
-                } else {
-                    reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
-                    match self.broadcast_and_confirm(&tx).await {
-                        Ok(_) => signature,
-                        // A transaction that can no longer land needs no
-                        // replay record; ambiguous outcomes keep theirs.
-                        Err(BroadcastError::Rejected(error)) => {
-                            self.store.delete(&key).await.map_err(|e| {
-                                VerificationError::new(format!(
-                                    "Failed to release activation reservation: {e}"
-                                ))
-                            })?;
-                            return Err(error);
-                        }
-                        Err(BroadcastError::Unknown(error)) => return Err(error),
-                    }
-                };
-                (subscriber, Some(sig))
+                Ok(PreparedCredential::Activation(PreparedActivation {
+                    request,
+                    subscriber,
+                    tx,
+                    authentication: activate.authentication,
+                }))
             }
             "signature" => {
                 // Push mode (client already broadcast). Not yet supported
@@ -680,31 +717,15 @@ impl SubscriptionServer {
                 // subscriber from a fetched transaction requires a
                 // versioned-message-aware account_keys reader we don't
                 // ship in pay-kit yet.
-                return Err(VerificationError::invalid_payload(
+                Err(VerificationError::invalid_payload(
                     "Push-mode (type=\"signature\") activation is not yet supported by this server. \
                      Use type=\"transaction\" for v0.",
-                ));
+                ))
             }
-            other => {
-                return Err(VerificationError::invalid_payload(format!(
-                    "Unsupported payload type `{other}` (expected `transaction` or `signature`)"
-                )))
-            }
-        };
-
-        let activation_signature = activation_signature.ok_or_else(|| {
-            VerificationError::transaction_failed("Activation transaction signature is unavailable")
-        })?;
-        let bound = self
-            .bind_confirmed_activation(
-                credential,
-                &request,
-                subscriber,
-                activation_signature,
-                activate.authentication.as_ref(),
-            )
-            .await;
-        bound
+            other => Err(VerificationError::invalid_payload(format!(
+                "Unsupported payload type `{other}` (expected `transaction` or `signature`)"
+            ))),
+        }
     }
 
     /// Turn a confirmed activation into the subscription's bearer binding:
@@ -1008,6 +1029,17 @@ impl SubscriptionServer {
         subscriber: &Pubkey,
         amount_base_units: &str,
     ) -> Result<SubscriptionDelegationView, VerificationError> {
+        self.verify_active_subscription_at(subscriber, amount_base_units, now_unix_secs())
+            .await
+    }
+
+    /// [`Self::verify_active_subscription`] evaluated at `now` (unix seconds).
+    async fn verify_active_subscription_at(
+        &self,
+        subscriber: &Pubkey,
+        amount_base_units: &str,
+        now: i64,
+    ) -> Result<SubscriptionDelegationView, VerificationError> {
         let expected_amount = amount_base_units.parse::<u64>().map_err(|_| {
             VerificationError::invalid_payload("Subscription amount must be an unsigned integer")
         })?;
@@ -1021,7 +1053,7 @@ impl SubscriptionServer {
             expected_amount,
             period_hours,
             self.config.subscription_expires.as_deref(),
-            now_unix_secs(),
+            now,
         )
         .await
         .map(|(delegation, _)| delegation)
@@ -1366,6 +1398,79 @@ impl std::fmt::Display for VerifiedSignature {
     }
 }
 
+/// What [`SubscriptionServer::prepare_credential`] hands to the settlement half.
+enum PreparedCredential {
+    /// A `type="proof"` access credential; verified against the binding.
+    Access {
+        request: SubscriptionRequest,
+        access: SubscriptionAccessPayload,
+    },
+    /// An activation whose transaction passed every offline check.
+    Activation(PreparedActivation),
+}
+
+struct PreparedActivation {
+    request: SubscriptionRequest,
+    subscriber: Pubkey,
+    /// Co-signed by the sponsor when fee sponsorship is configured.
+    tx: VersionedTransaction,
+    authentication: Option<SubscriptionAuthentication>,
+}
+
+/// Conformance hooks (feature `testkit`). Not a payment verifier: nothing
+/// here reads the chain, consumes replay state or broadcasts. Use
+/// [`SubscriptionServer::verify_credential`] to accept subscriptions.
+#[cfg(feature = "testkit")]
+pub mod testkit {
+    use super::*;
+
+    /// How far [`verify_activation_pre_broadcast`] got.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PreBroadcast {
+        /// An activation passed every check
+        /// [`SubscriptionServer::verify_credential`] applies before it
+        /// reserves the signature and broadcasts.
+        Activation,
+        /// A `type="proof"` access credential: verifying it needs the
+        /// binding a confirmed activation writes, which is not offline.
+        AccessProof,
+    }
+
+    /// Run the offline half of [`SubscriptionServer::verify_credential`] at
+    /// `now` (unix seconds): the challenge binding and expiry, the request
+    /// terms, the activation payload and bearer proof, the activation scope,
+    /// the fee-payer co-signature and the fee payer's signature over the
+    /// message, stopping where the production path first reads the chain.
+    pub async fn verify_activation_pre_broadcast(
+        server: &SubscriptionServer,
+        credential: &PaymentCredential,
+        now: i64,
+    ) -> Result<PreBroadcast, VerificationError> {
+        let now = time::OffsetDateTime::from_unix_timestamp(now)
+            .map_err(|error| VerificationError::new(format!("invalid clock: {error}")))?;
+        match server.prepare_credential(credential, now).await? {
+            PreparedCredential::Access { .. } => Ok(PreBroadcast::AccessProof),
+            PreparedCredential::Activation(activation) => {
+                VerifiedSignature::of(&activation.tx)?;
+                Ok(PreBroadcast::Activation)
+            }
+        }
+    }
+
+    /// [`SubscriptionServer::verify_active_subscription`] at `now` (unix
+    /// seconds) instead of the wall clock.
+    pub async fn verify_active_subscription_at(
+        server: &SubscriptionServer,
+        subscriber: &Pubkey,
+        amount_base_units: &str,
+        now: i64,
+    ) -> Result<SubscriptionDelegationView, VerificationError> {
+        server
+            .verify_active_subscription_at(subscriber, amount_base_units, now)
+            .await
+    }
+}
+
 enum BroadcastError {
     /// The transaction did not and cannot land.
     Rejected(VerificationError),
@@ -1388,6 +1493,7 @@ fn confirmed_rpc(rpc_url: String) -> solana_rpc_client::rpc_client::RpcClient {
 
 fn validate_activation_subscription_expiry(
     subscription_expires: Option<&str>,
+    now: time::OffsetDateTime,
 ) -> Result<(), VerificationError> {
     let Some(subscription_expires) = subscription_expires else {
         return Ok(());
@@ -1399,7 +1505,7 @@ fn validate_activation_subscription_expiry(
     .map_err(|error| {
         VerificationError::invalid_payload(format!("Invalid subscriptionExpires: {error}"))
     })?;
-    if expires_at <= time::OffsetDateTime::now_utc() {
+    if expires_at <= now {
         return Err(VerificationError::transaction_failed(
             "Subscription has expired",
         ));
@@ -2489,8 +2595,11 @@ mod tests {
 
     #[test]
     fn activation_rejects_expired_subscription() {
-        let err = validate_activation_subscription_expiry(Some("2000-01-01T00:00:00Z"))
-            .expect_err("expired subscriptions must not activate");
+        let err = validate_activation_subscription_expiry(
+            Some("2000-01-01T00:00:00Z"),
+            time::OffsetDateTime::now_utc(),
+        )
+        .expect_err("expired subscriptions must not activate");
         assert!(err
             .message
             .to_lowercase()
