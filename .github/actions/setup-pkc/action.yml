@@ -22,7 +22,7 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: rust
-        shared-key: pkc-${{ inputs.features || 'offline' }}
+        shared-key: pkc-${{ inputs.features || 'offline' }}-diag-nocache
         save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Build pkc
       shell: bash

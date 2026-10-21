@@ -305,6 +305,9 @@ jobs:
                 echo "### ${{ matrix.sdk }} $(date -u +%T) (run ${{ github.run_id }})"
                 echo '```'
                 grep -E 'PRETTY_NAME' /etc/os-release; nproc; free -m; cat /proc/loadavg
+                echo "io pressure: $(tr '\n' ' ' < /proc/pressure/io)"
+                grep -E '^(Dirty|Writeback):' /proc/meminfo | tr '\n' ' '; echo
+                awk '$3 ~ /^(sda|sdb|nvme0n1|vda)$/ {print $3, "reads="$4, "writes="$8, "inflight="$12, "io_ms="$13}' /proc/diskstats
                 df -h / /tmp | tail -2
                 ps -eo pid,ppid,rss,etime,stat,args --sort=-rss | head -14 | cut -c1-200
                 echo "procs: $(ps -e --no-headers | wc -l)"
