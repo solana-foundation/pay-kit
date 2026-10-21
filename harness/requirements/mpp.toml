@@ -12,118 +12,142 @@ files = [
 # Requirements the vectors cover. id = prefix + sha256(normalised text)[:10];
 # the id changes with the text, which is how `pkc req-lint` detects drift.
 # Cases map ids through `requirements` in the registry (rust/crates/conformance).
+# `required = true`: `pkc req-lint` fails if no case maps the id any more.
 
 [[requirement]]
 id = "MPP-048617f9d7"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "Servers MUST verify that the transaction contains only the expected instructions: transfer instruction(s) matching the challenge parameters, ATA creation (idempotent), and optionally compute budget instructions."
+required = true
 
 [[requirement]]
 id = "MPP-197d674f50"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "When the client is the transaction fee payer (feePayer is false or omitted), clients MAY include ATA creation instructions only for split recipients, and MUST include one for each split whose entry sets ataCreationRequired: true."
+required = true
 
 [[requirement]]
 id = "MPP-1a2e7c737e"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "Any unexpected instructions MUST cause rejection."
+required = true
 
 [[requirement]]
 id = "MPP-4a77950278"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "A single transfer instruction MUST NOT satisfy more than one required payment leg, even if multiple legs share the same recipient."
+required = true
 
 [[requirement]]
 id = "MPP-4acddd43ce"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "A payload whose magic does not match exactly MUST be rejected."
+required = true
 
 [[requirement]]
 id = "MPP-51806e831a"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "All JSON {{RFC8259}} objects carried in auth-params or HTTP headers in this specification MUST be serialized using the JSON Canonicalization Scheme (JCS) {{RFC8785}} before encoding."
+required = true
 
 [[requirement]]
 id = "MPP-5348f3f797"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "MUST be present when currency is a mint address; MUST be absent when currency is \"sol\"."
+required = true
 
 [[requirement]]
 id = "MPP-64da85f4f3"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "When feePayer is false or omitted, the client MAY include idempotent ATA creation instructions only for split recipients, and MUST include one for each split whose entry sets ataCreationRequired to true."
+required = true
 
 [[requirement]]
 id = "MPP-69c0a4f95f"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "Conditionally REQUIRED when channelId is absent and MUST be absent when resuming an existing channel."
+required = true
 
 [[requirement]]
 id = "MPP-6ce505e77b"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "If the same recipient appears more than once in splits, each occurrence is a distinct payment leg and MUST be verified separately; servers MUST NOT implicitly aggregate such entries."
+required = true
 
 [[requirement]]
 id = "MPP-6e9ac6c31d"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "If any required transfer instruction is missing, the server MUST reject the credential."
+required = true
 
 [[requirement]]
 id = "MPP-71198689c1"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "The resulting bytes MUST then be encoded using base64url {{RFC4648}} Section 5 without padding characters (=)."
+required = true
 
 [[requirement]]
 id = "MPP-7743ae4e51"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "If omitted, clients MUST determine the correct token program by fetching the mint account from the network and inspecting its owner program."
+required = true
 
 [[requirement]]
 id = "MPP-8a3cdc949b"
 doc = "specs/core/draft-httpauth-payment-01.md"
 text = "Servers MUST bind the challenge id to realm, method, intent, and request, and to expires, digest, opaque, and header when present."
+required = true
 
 [[requirement]]
 id = "MPP-96ba338b1e"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "If any required transferChecked instruction is missing, the server MUST reject the credential."
+required = true
 
 [[requirement]]
 id = "MPP-b134044e08"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "The primary recipient receives amount minus the sum of all split amounts; this remainder MUST be greater than zero."
+required = true
 
 [[requirement]]
 id = "MPP-c189ef935e"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "If that lookup fails, returns an unexpected owner, or cannot be verified, clients MUST reject the challenge rather than falling back to the Token Program."
+required = true
 
 [[requirement]]
 id = "MPP-d90a2b66e5"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "A single instruction MUST NOT satisfy more than one required payment leg, even if multiple legs resolve to the same destination ATA."
+required = true
 
 [[requirement]]
 id = "MPP-dc4603ccd4"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "| openSlot | string | REQUIRED | Decimal u64 per-incarnation epoch encoded into the open instruction as open_slot; MUST be no greater than the challenge's methodDetails.recentSlot and MUST satisfy the on-chain window rule of {{channel-closure}} when the transaction executes."
+required = true
 
 [[requirement]]
 id = "MPP-e02293d02d"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "The client MUST construct a transaction containing a System Program transfer instruction with:"
+required = true
 
 [[requirement]]
 id = "MPP-ebee0156c7"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "| voucher | object | REQUIRED | Signed voucher (see {{voucher-format}}) |"
+required = true
 
 [[requirement]]
 id = "MPP-ec9e85084d"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "The server MUST verify each voucher:"
+required = true
 
 [[requirement]]
 id = "MPP-f4eca94243"
 doc = "specs/methods/solana/draft-solana-charge-00.md"
 text = "Implementations MUST NOT append = padding when encoding, and MUST accept input with or without padding when decoding."
+required = true

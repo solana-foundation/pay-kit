@@ -10,61 +10,73 @@ files = [
 # Requirements the vectors cover. id = prefix + sha256(normalised text)[:10];
 # the id changes with the text, which is how `pkc req-lint` detects drift.
 # Cases map ids through `requirements` in the registry (rust/crates/conformance).
+# `required = true`: `pkc req-lint` fails if no case maps the id any more.
 
 [[requirement]]
 id = "X402-2f0d5ef017"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "MUST reject if more than one matching transfer is found (ambiguous / potential double-payment)."
+required = true
 
 [[requirement]]
 id = "X402-516a2d7b57"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "A matching transfer MAY exceed PaymentRequirements.amount (overpayment is tolerated to accommodate smart wallets with internal fee rounding); it MUST NOT be less."
+required = true
 
 [[requirement]]
 id = "X402-6708749c55"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "The feePayer MUST NOT appear in the accounts list of any instruction (top-level or, where resolvable, otherwise referenced), and MUST NOT be invoked as a program."
+required = true
 
 [[requirement]]
 id = "X402-6b3e9350c8"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "Clients MUST include a Memo instruction containing either the value of extra.memo (when present) or a random nonce (at least 16 bytes, hex-encoded for UTF-8 compliance)."
+required = true
 
 [[requirement]]
 id = "X402-93650bf2e3"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "A sponsor that signs a transaction as feePayer MUST enforce all of the following before signing."
+required = true
 
 [[requirement]]
 id = "X402-bac6bc288a"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "MUST reject if zero matching transfers are found."
+required = true
 
 [[requirement]]
 id = "X402-c9a227ad88"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "If extra.memo is present, the facilitator MUST verify that exactly one Memo instruction exists and that its data matches extra.memo encoded as UTF-8."
+required = true
 
 [[requirement]]
 id = "X402-ed41478ffe"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "The feePayer MUST NOT be used as an authority, source, or delegate for any transfer."
+required = true
 
 [[requirement]]
 id = "X402-ee90546220"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
 text = "Across all top-level instructions and the full CPI trace, exactly one transfer MUST match the requirements (correct mint, correct destination ATA, amount >= required)."
+required = true
 
 [[requirement]]
 id = "X402-f45fed3f51"
 doc = "specs/schemes/exact/scheme_exact.md"
 text = "Destination correctness: the receiver MUST match the payTo derived destination for the specified asset."
+required = true
 
 [[requirement]]
 id = "X402-f870a56d25"
 doc = "specs/schemes/exact/scheme_exact.md"
 text = "The proof artifact MUST be carried in PaymentPayload.payload."
+required = true
 
 # Noise: normative sentences that do not apply to SVM, with the reason.
 

@@ -6,7 +6,9 @@
 //! `harness/requirements/<repo>.toml` and the vectors:
 //!
 //! - unmapped sentences (neither mapped nor ignored): counted, not fatal;
-//! - mapped ids with zero cases: counted, not fatal;
+//! - mapped ids with zero cases: counted, not fatal, unless the entry says
+//!   `required = true`: then FATAL, so a covered requirement cannot quietly
+//!   lose its last case;
 //! - mapped ids whose text changed (the id no longer hashes from the pinned
 //!   text): FATAL;
 //! - vector `spec.quote`s and `harness/expectations/RULINGS.md` quotes that
@@ -23,7 +25,8 @@ use sha2::{Digest, Sha256};
 
 use crate::case::SpecRepo;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequirementsFile {
     pub repo: String,
     pub commit: String,
@@ -34,14 +37,20 @@ pub struct RequirementsFile {
     pub ignores: Vec<Ignore>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Requirement {
     pub id: String,
     pub doc: String,
     pub text: String,
+    /// The requirement must keep at least one case: `pkc req-lint` fails
+    /// when no vector maps it.
+    #[serde(default)]
+    pub required: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ignore {
     pub id: String,
     pub reason: String,
@@ -52,6 +61,9 @@ pub struct Ignore {
 pub struct Sentence {
     pub id: String,
     pub doc: String,
+    /// Innermost heading above the sentence, without `#` marks or a
+    /// trailing `{#anchor}`; empty before the first heading.
+    pub section: String,
     pub text: String,
 }
 
@@ -134,34 +146,50 @@ fn strip_marker(unit: &str) -> &str {
     unit
 }
 
+/// A heading line's text without the `#` marks and a trailing `{#anchor}`.
+fn heading_text(trimmed: &str) -> String {
+    let text = trimmed.trim_start_matches('#').trim();
+    let text = match text.rfind("{#") {
+        Some(at) if text.ends_with('}') => text[..at].trim_end(),
+        _ => text,
+    };
+    normalise(text)
+}
+
 /// Paragraphs, list items, definition bodies and table rows, each joined
-/// into one line. Headings are dropped.
-fn units(markdown: &str) -> Vec<String> {
+/// into one line and paired with the innermost heading above it. Headings
+/// are not units.
+fn units(markdown: &str) -> Vec<(String, String)> {
     let mut units = Vec::new();
     let mut current = String::new();
-    let flush = |current: &mut String, units: &mut Vec<String>| {
+    let mut section = String::new();
+    let flush = |current: &mut String, section: &str, units: &mut Vec<(String, String)>| {
         let unit = strip_marker(current.trim()).to_string();
-        if !unit.is_empty() && !current.trim().starts_with('#') {
-            units.push(unit);
+        if !unit.is_empty() {
+            units.push((section.to_string(), unit));
         }
         current.clear();
     };
     for line in prose_lines(markdown) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            flush(&mut current, &mut units);
+            flush(&mut current, &section, &mut units);
             continue;
         }
         if starts_unit(trimmed) {
-            flush(&mut current, &mut units);
+            flush(&mut current, &section, &mut units);
+        }
+        if trimmed.starts_with('#') {
+            section = heading_text(trimmed);
+            continue;
         }
         current.push(' ');
         current.push_str(trimmed);
-        if trimmed.starts_with('|') || trimmed.starts_with('#') {
-            flush(&mut current, &mut units);
+        if trimmed.starts_with('|') {
+            flush(&mut current, &section, &mut units);
         }
     }
-    flush(&mut current, &mut units);
+    flush(&mut current, &section, &mut units);
     units
 }
 
@@ -200,7 +228,7 @@ fn split_sentences(unit: &str) -> Vec<String> {
 pub fn extract(repo: SpecRepo, doc: &str, markdown: &str) -> Vec<Sentence> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for unit in units(markdown) {
+    for (section, unit) in units(markdown) {
         for sentence in split_sentences(&unit) {
             if !is_normative(&sentence) {
                 continue;
@@ -210,6 +238,7 @@ pub fn extract(repo: SpecRepo, doc: &str, markdown: &str) -> Vec<Sentence> {
                 out.push(Sentence {
                     id,
                     doc: doc.to_string(),
+                    section: section.clone(),
                     text: sentence,
                 });
             }
@@ -318,12 +347,12 @@ fn all_markdown(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
 }
 
 /// Requirement id -> ids of the vectors citing it.
-type ByRequirement = BTreeMap<String, Vec<String>>;
+pub type ByRequirement = BTreeMap<String, Vec<String>>;
 /// (vector id, `spec` object) per vector.
-type VectorSpecs = Vec<(String, Value)>;
+pub type VectorSpecs = Vec<(String, Value)>;
 
 /// Requirement ids each vector maps, keyed by id → vector ids.
-fn vector_requirements(vectors_dir: &Path) -> Result<(ByRequirement, VectorSpecs), String> {
+pub fn vector_requirements(vectors_dir: &Path) -> Result<(ByRequirement, VectorSpecs), String> {
     let mut by_req: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut specs = Vec::new();
     let mut files: Vec<PathBuf> = fs::read_dir(vectors_dir)
@@ -365,18 +394,8 @@ pub fn lint(root: &Path) -> Result<Report, String> {
     let mut corpus: BTreeMap<SpecRepo, Vec<(String, String)>> = BTreeMap::new();
 
     for repo in SpecRepo::ALL {
-        let toml_path = root.join(format!("harness/requirements/{}.toml", toml_name(repo)));
-        let raw =
-            fs::read_to_string(&toml_path).map_err(|e| format!("{}: {e}", toml_path.display()))?;
-        let file: RequirementsFile =
-            toml::from_str(&raw).map_err(|e| format!("{}: {e}", toml_path.display()))?;
-        if repo_of(&file.repo)? != repo {
-            return Err(format!(
-                "{}: repo must be {}",
-                toml_path.display(),
-                repo.prefix()
-            ));
-        }
+        let analysis = analyse(root, repo)?;
+        let (file, sentences, docs) = (&analysis.file, &analysis.sentences, &analysis.docs);
         let checkout = root.join(repo.checkout());
         if let Some(head) = git_head(&checkout) {
             if !head.starts_with(&file.commit) {
@@ -387,17 +406,6 @@ pub fn lint(root: &Path) -> Result<Report, String> {
                 ));
             }
         }
-        let mut docs = Vec::new();
-        for pattern in &file.files {
-            docs.extend(expand(&checkout, pattern)?);
-        }
-        let mut sentences = Vec::new();
-        for doc in &docs {
-            let text = fs::read_to_string(checkout.join(doc)).map_err(|e| format!("{doc}: {e}"))?;
-            sentences.extend(extract(repo, doc, &text));
-        }
-        let extracted: BTreeMap<&str, &Sentence> =
-            sentences.iter().map(|s| (s.id.as_str(), s)).collect();
         let ignored: BTreeSet<&str> = file.ignores.iter().map(|i| i.id.as_str()).collect();
         for ignore in &file.ignores {
             if ignore.reason.trim().is_empty() {
@@ -408,42 +416,39 @@ pub fn lint(root: &Path) -> Result<Report, String> {
                 ));
             }
         }
-        let mut mapped = 0;
-        let mut zero_cases = Vec::new();
+        let drifted = analysis.drifted();
         for req in &file.requirements {
             all_mapped.insert(req.id.clone());
-            let hashed = sentence_id(repo, &req.text);
-            match extracted.get(req.id.as_str()) {
-                Some(sentence) if hashed == req.id && sentence.doc == req.doc => mapped += 1,
-                _ => failures.push(format!(
-                    "{}: mapped requirement {} ({}) no longer matches the pinned text: {:?}",
-                    repo.prefix(),
-                    req.id,
-                    req.doc,
-                    req.text
-                )),
-            }
-            if !by_req.contains_key(&req.id) {
-                zero_cases.push(req.id.clone());
-            }
         }
-        let unmapped = sentences
-            .iter()
-            .filter(|s| {
-                !ignored.contains(s.id.as_str()) && !file.requirements.iter().any(|r| r.id == s.id)
-            })
-            .count();
+        for req in &drifted {
+            failures.push(format!(
+                "{}: mapped requirement {} ({}) no longer matches the pinned text: {:?}",
+                repo.prefix(),
+                req.id,
+                req.doc,
+                req.text
+            ));
+        }
+        let coverage = case_coverage(&file.requirements, &by_req);
+        for id in &coverage.required_without_cases {
+            failures.push(format!(
+                "{}: requirement {id} is marked required = true but no case maps it; restore its case or drop `required` in harness/requirements/{}.toml (the PR description must say why)",
+                repo.prefix(),
+                toml_name(repo)
+            ));
+        }
         lines.push(format!(
-            "{}: {} normative sentences in {} files; {} mapped, {} ignored, {} unmapped; {} mapped with zero cases",
+            "{}: {} normative sentences in {} files; {} mapped ({} required), {} ignored, {} unmapped; {} mapped with zero cases",
             repo.prefix(),
             sentences.len(),
             docs.len(),
-            mapped,
+            file.requirements.len() - drifted.len(),
+            file.requirements.iter().filter(|r| r.required).count(),
             ignored.len(),
-            unmapped,
-            zero_cases.len()
+            analysis.unmapped().len(),
+            coverage.zero_cases.len()
         ));
-        for id in zero_cases {
+        for id in coverage.zero_cases {
             lines.push(format!("  zero cases: {id}"));
         }
         let mut texts = Vec::new();
@@ -526,22 +531,118 @@ fn git_head(checkout: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// All extracted sentences of a repo's scoped files (for `pkc req-lint
-/// --list`, which is how requirement entries are written).
-pub fn list(root: &Path, repo: SpecRepo) -> Result<Vec<Sentence>, String> {
+/// One requirements file reconciled with the pinned text of its scoped
+/// documents. Shared by `pkc req-lint` and `pkc report`.
+#[derive(Debug, Clone)]
+pub struct RepoAnalysis {
+    pub repo: SpecRepo,
+    pub file: RequirementsFile,
+    /// Scoped documents, in `files` order.
+    pub docs: Vec<String>,
+    /// Every normative sentence of `docs`, in document order.
+    pub sentences: Vec<Sentence>,
+}
+
+impl RepoAnalysis {
+    /// The extracted sentence a mapped requirement points at, when its id,
+    /// text and document still agree with the pinned text.
+    pub fn sentence_of(&self, req: &Requirement) -> Option<&Sentence> {
+        self.sentences
+            .iter()
+            .find(|s| s.id == req.id)
+            .filter(|s| s.doc == req.doc && sentence_id(self.repo, &req.text) == req.id)
+    }
+
+    /// Mapped requirements whose id, text or document no longer match the
+    /// pinned text.
+    pub fn drifted(&self) -> Vec<&Requirement> {
+        self.file
+            .requirements
+            .iter()
+            .filter(|r| self.sentence_of(r).is_none())
+            .collect()
+    }
+
+    /// Sentences neither mapped nor ignored.
+    pub fn unmapped(&self) -> Vec<&Sentence> {
+        let known: BTreeSet<&str> = self
+            .file
+            .requirements
+            .iter()
+            .map(|r| r.id.as_str())
+            .chain(self.file.ignores.iter().map(|i| i.id.as_str()))
+            .collect();
+        self.sentences
+            .iter()
+            .filter(|s| !known.contains(s.id.as_str()))
+            .collect()
+    }
+
+    pub fn ignored(&self, id: &str) -> bool {
+        self.file.ignores.iter().any(|i| i.id == id)
+    }
+}
+
+/// Load `harness/requirements/<repo>.toml` and extract the sentences of the
+/// documents it scopes.
+pub fn analyse(root: &Path, repo: SpecRepo) -> Result<RepoAnalysis, String> {
     let toml_path = root.join(format!("harness/requirements/{}.toml", toml_name(repo)));
     let raw =
         fs::read_to_string(&toml_path).map_err(|e| format!("{}: {e}", toml_path.display()))?;
-    let file: RequirementsFile = toml::from_str(&raw).map_err(|e| e.to_string())?;
+    let file: RequirementsFile =
+        toml::from_str(&raw).map_err(|e| format!("{}: {e}", toml_path.display()))?;
+    if repo_of(&file.repo)? != repo {
+        return Err(format!(
+            "{}: repo must be {}",
+            toml_path.display(),
+            repo.prefix()
+        ));
+    }
     let checkout = root.join(repo.checkout());
-    let mut out = Vec::new();
+    let mut docs = Vec::new();
     for pattern in &file.files {
-        for doc in expand(&checkout, pattern)? {
-            let text = fs::read_to_string(checkout.join(&doc)).map_err(|e| e.to_string())?;
-            out.extend(extract(repo, &doc, &text));
+        docs.extend(expand(&checkout, pattern)?);
+    }
+    let mut sentences = Vec::new();
+    for doc in &docs {
+        let text = fs::read_to_string(checkout.join(doc)).map_err(|e| format!("{doc}: {e}"))?;
+        sentences.extend(extract(repo, doc, &text));
+    }
+    Ok(RepoAnalysis {
+        repo,
+        file,
+        docs,
+        sentences,
+    })
+}
+
+/// Mapped requirements without a case, split by whether that is fatal.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CaseCoverage {
+    /// Every mapped id no vector cites (reported).
+    pub zero_cases: Vec<String>,
+    /// The subset marked `required = true` (fails the lint).
+    pub required_without_cases: Vec<String>,
+}
+
+pub fn case_coverage(requirements: &[Requirement], by_req: &ByRequirement) -> CaseCoverage {
+    let mut out = CaseCoverage::default();
+    for req in requirements {
+        if by_req.get(&req.id).is_some_and(|cases| !cases.is_empty()) {
+            continue;
+        }
+        out.zero_cases.push(req.id.clone());
+        if req.required {
+            out.required_without_cases.push(req.id.clone());
         }
     }
-    Ok(out)
+    out
+}
+
+/// All extracted sentences of a repo's scoped files (for `pkc req-lint
+/// --list`, which is how requirement entries are written).
+pub fn list(root: &Path, repo: SpecRepo) -> Result<Vec<Sentence>, String> {
+    Ok(analyse(root, repo)?.sentences)
 }
 
 #[cfg(test)]
@@ -589,5 +690,85 @@ mod tests {
             rulings_quotes("a “one” b “two `\"x\"`” c"),
             vec!["one", "two `\"x\"`"]
         );
+    }
+
+    #[test]
+    fn sentences_carry_their_innermost_section() {
+        let md = "Intro MUST a.\n\n# Verification Procedure {#verification}\n\nServers MUST b.\n\n## Native SOL `transfer`\n\n- Each leg MUST c.\n";
+        let got: Vec<(String, String)> = extract(SpecRepo::MppSpecs, "d.md", md)
+            .into_iter()
+            .map(|s| (s.section, s.text))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (String::new(), "Intro MUST a.".to_string()),
+                ("Verification Procedure".into(), "Servers MUST b.".into()),
+                ("Native SOL transfer".into(), "Each leg MUST c.".into()),
+            ]
+        );
+    }
+
+    fn requirement(id: &str, required: bool) -> Requirement {
+        Requirement {
+            id: id.into(),
+            doc: "d.md".into(),
+            text: "t".into(),
+            required,
+        }
+    }
+
+    #[test]
+    fn a_required_requirement_without_cases_fails() {
+        let reqs = [requirement("MPP-0000000001", true)];
+        let coverage = case_coverage(&reqs, &ByRequirement::new());
+        assert_eq!(coverage.required_without_cases, vec!["MPP-0000000001"]);
+        // An empty case list (a vector entry with no ids) is still zero.
+        let empty: ByRequirement = [("MPP-0000000001".to_string(), vec![])].into();
+        assert_eq!(
+            case_coverage(&reqs, &empty).required_without_cases,
+            vec!["MPP-0000000001"]
+        );
+    }
+
+    #[test]
+    fn covered_or_unrequired_requirements_pass() {
+        let reqs = [
+            requirement("MPP-0000000001", true),
+            requirement("MPP-0000000002", false),
+        ];
+        let by_req: ByRequirement = [("MPP-0000000001".to_string(), vec!["case-a".into()])].into();
+        let coverage = case_coverage(&reqs, &by_req);
+        assert!(coverage.required_without_cases.is_empty());
+        assert_eq!(coverage.zero_cases, vec!["MPP-0000000002"]);
+    }
+
+    #[test]
+    fn requirement_entries_reject_unknown_keys() {
+        let toml = "repo = \"x402\"\ncommit = \"c\"\nfiles = []\n[[requirement]]\nid = \"X402-0000000001\"\ndoc = \"d\"\ntext = \"t\"\nrequried = true\n";
+        assert!(toml::from_str::<RequirementsFile>(toml).is_err());
+        let ok = toml.replace("requried", "required");
+        let file: RequirementsFile = toml::from_str(&ok).unwrap();
+        assert!(file.requirements[0].required);
+    }
+
+    /// Every committed requirement that has cases today is marked required,
+    /// so losing its last case fails CI.
+    #[test]
+    fn committed_requirements_with_cases_are_required() {
+        let root = crate::repo_root();
+        let (by_req, _) = vector_requirements(&root.join("harness/vectors")).unwrap();
+        for repo in SpecRepo::ALL {
+            let raw = fs::read_to_string(
+                root.join(format!("harness/requirements/{}.toml", toml_name(repo))),
+            )
+            .unwrap();
+            let file: RequirementsFile = toml::from_str(&raw).unwrap();
+            for req in &file.requirements {
+                if by_req.contains_key(&req.id) {
+                    assert!(req.required, "{} has cases but is not required", req.id);
+                }
+            }
+        }
     }
 }
