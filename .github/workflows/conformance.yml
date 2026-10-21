@@ -145,7 +145,7 @@ jobs:
     name: ${{ matrix.sdk }}
     needs: plan
     if: needs.plan.outputs.any == 'true'
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
