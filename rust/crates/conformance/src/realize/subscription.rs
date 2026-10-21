@@ -1518,6 +1518,66 @@ async fn verify_input_for_build(vector: &Vector, artifact: &str) -> Result<Value
     Ok(out)
 }
 
+/// The SDK's `subscribe` data must carry exactly the terms the program
+/// checks against the live plan and authority the vector serves: plan id
+/// and bump, mint, amount, period, creation time and the authority's
+/// `init_id`. Without them the activation cannot land on-chain.
+fn check_subscribe_data(input: &Value, artifact: &str) -> Result<(), Failure> {
+    use solana_pay_kit::generated::subscriptions::accounts::{Plan, SubscriptionAuthority};
+    let md = &input["subscriptionChallenge"]["request"]["methodDetails"];
+    let field = |k: &str| md[k].as_str().unwrap_or_default();
+    let program_id = pubkey(field("subscriptionProgram"));
+    let account = |address: &str| -> Result<Vec<u8>, Failure> {
+        use base64::Engine;
+        let data = input["rpcFixtures"]["accounts"][address]["data"]
+            .as_str()
+            .ok_or_else(|| Failure::new(format!("rpcFixtures has no account {address}")))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| Failure::new(format!("account {address}: {e}")))
+    };
+    let plan = Plan::from_bytes(&account(field("planAddress"))?)
+        .map_err(|e| Failure::new(format!("fixture plan: {e}")))?;
+    let mint = Pubkey::new_from_array(plan.data.mint.to_bytes());
+    let subscriber = pubkey(
+        &signer_from(input, "signerSecretKey")
+            .map_err(Failure::new)?
+            .pubkey()
+            .to_string(),
+    );
+    let (authority, _) = find_subscription_authority_pda(&subscriber, &mint, &program_id);
+    let init_id = SubscriptionAuthority::from_bytes(&account(&authority.to_string())?)
+        .map_err(|e| Failure::new(format!("fixture subscription authority: {e}")))?
+        .init_id;
+    let want = SubscribeData {
+        plan_id: plan.data.plan_id,
+        plan_bump: plan.bump,
+        expected_mint: mint,
+        expected_amount: plan.data.terms.amount,
+        expected_period_hours: plan.data.terms.period_hours,
+        expected_created_at: plan.data.terms.created_at,
+        expected_subscription_authority_init_id: init_id,
+    }
+    .to_bytes();
+    let tx = decode_b64(artifact).map_err(Failure::new)?;
+    let d = decompile(&tx.message).map_err(Failure::new)?;
+    let got = d
+        .instructions
+        .iter()
+        .find(|ix| ix.program_id == program_id && ix.data.first() == Some(&INSTRUCTION_SUBSCRIBE))
+        .map(|ix| ix.data.clone())
+        .ok_or_else(|| Failure::new("the activation has no subscribe instruction"))?;
+    if got != want {
+        return Err(Failure {
+            message: "subscribe data must carry the plan's id, bump and terms and the authority's init_id".into(),
+            path: Some("subscribe.data".into()),
+            expected: Some(json!(want)),
+            actual: Some(json!(got)),
+        });
+    }
+    Ok(())
+}
+
 /// Judge an accepted SDK build of a `subscription` vector: the kit server's
 /// activation verification must accept it, and its fee payer, signer set
 /// and instruction multiset must equal the kit's own build of the case
@@ -1547,13 +1607,85 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             transaction: Some(reference),
             ..
         }) => compare_transactions(&reference, artifact, false),
+        // No kit build to compare with: the verification above checks the
+        // subscribe accounts, so pin its data to the fixture plan here.
         other if vector.raw["provenance"] == "authored" => {
             let _ = other;
-            Ok(())
+            check_subscribe_data(vector.input(), artifact)
         }
         other => Err(Failure::new(format!(
             "the Rust kit cannot build this case ({}); the vector is wrong, file against the filler",
             other.summary()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::vectors;
+
+    fn vector(id: &str) -> Vector {
+        vectors::load(&crate::repo_root().join("harness/vectors"))
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap()
+    }
+
+    /// The spec-request case has no kit build; the kit's build of the
+    /// kit-shaped request on the same plan is a correct activation for it.
+    fn activation(rt: &tokio::runtime::Runtime) -> String {
+        let sibling = vector("subscription-build-activation");
+        match rt.block_on(super::super::run(
+            Intent::Subscription,
+            Mode::BuildTransaction,
+            sibling.input(),
+        )) {
+            Observed::Accept(Output {
+                transaction: Some(tx),
+                ..
+            }) => tx,
+            other => panic!("{}", other.summary()),
+        }
+    }
+
+    // An authored case used to accept any build the kit's verification
+    // accepts, and that verification checks the subscribe accounts and
+    // discriminator but not its data.
+    #[test]
+    fn subscribe_data_off_the_plan_fails_the_authored_build_judge() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let v = vector("subscription-build-spec-request");
+        let honest = activation(&rt);
+        rt.block_on(judge_build(&v, &honest)).unwrap();
+        for data in [vec![INSTRUCTION_SUBSCRIBE], {
+            let mut d = decompile(&decode_b64(&honest).unwrap().message).unwrap();
+            let ix = d
+                .instructions
+                .iter_mut()
+                .find(|ix| ix.data.first() == Some(&INSTRUCTION_SUBSCRIBE))
+                .unwrap();
+            ix.data[1] ^= 1;
+            ix.data.clone()
+        }] {
+            let mut d = decompile(&decode_b64(&honest).unwrap().message).unwrap();
+            d.instructions
+                .iter_mut()
+                .find(|ix| ix.data.first() == Some(&INSTRUCTION_SUBSCRIBE))
+                .unwrap()
+                .data = data;
+            let mut tx = compile_v0(&d).unwrap();
+            sign_slots(&mut tx, &[keys::CLIENT_SEED]);
+            let failure = rt
+                .block_on(judge_build(&v, &encode_b64(&tx).unwrap()))
+                .unwrap_err();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some("subscribe.data"),
+                "{}",
+                failure.message
+            );
+        }
     }
 }

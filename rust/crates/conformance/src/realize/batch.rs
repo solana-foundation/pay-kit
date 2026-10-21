@@ -735,7 +735,66 @@ fn judge_open(
     if at(5) != Some(*channel_id) {
         return Err(fail("open channel account is not the derived PDA"));
     }
-    let receiver = pc::parse_pubkey(&requirements.pay_to).map_err(|e| fail(e.to_string()))?;
+    // Every one of the 14 accounts, with its privileges, is the one the
+    // kit's own builder writes for these arguments: a swapped token
+    // account, token program or sysvar re-signed by the payer is refused.
+    let parse = |s: &str| pc::parse_pubkey(s).map_err(|e| fail(e.to_string()));
+    let receiver = parse(&requirements.pay_to)?;
+    let expected = pc::build_open_instruction(&pc::OpenChannelParams {
+        payer,
+        rent_payer: fee_payer,
+        payee: fee_payer,
+        mint: parse(&config.token)?,
+        authorized_signer: parse(&config.payer_authorizer)?,
+        salt: args.salt,
+        open_slot: args.open_slot,
+        deposit: args.deposit,
+        grace_period: args.grace_period,
+        recipients: pc::sole_recipient(&receiver),
+        token_program: parse(&requirements.extra.token_program)?,
+        program_id: program,
+    });
+    if open.accounts.len() != expected.accounts.len() {
+        return Err(fail(format!(
+            "open names {} accounts, expected {}",
+            open.accounts.len(),
+            expected.accounts.len()
+        )));
+    }
+    // A message gives each key one privilege set, the union of its roles
+    // (the fee payer is also rent payer and payee), so that union is what
+    // each slot is compared with.
+    let privileges = |key: Pubkey| {
+        let fee = key == fee_payer;
+        expected
+            .accounts
+            .iter()
+            .filter(|m| pc::from_address(&m.pubkey) == key)
+            .fold((fee, fee), |(s, w), m| {
+                (s || m.is_signer, w || m.is_writable)
+            })
+    };
+    for (i, (&index, want)) in open.accounts.iter().zip(&expected.accounts).enumerate() {
+        let index = index as usize;
+        let got = keys[index];
+        let signer = tx.message.is_signer(index);
+        let writable = tx.message.is_maybe_writable_with_reserved_addresses(
+            index,
+            None::<&std::collections::HashSet<Pubkey>>,
+        );
+        let want_key = pc::from_address(&want.pubkey);
+        let (want_signer, want_writable) = privileges(want_key);
+        if got != want_key || signer != want_signer || writable != want_writable {
+            return Err(fail_at(
+                &format!("open.accounts[{i}]"),
+                Some(
+                    &json!({"key": want_key.to_string(), "signer": want_signer, "writable": want_writable}),
+                ),
+                Some(&json!({"key": got.to_string(), "signer": signer, "writable": writable})),
+                "the open must name the accounts and privileges the program requires",
+            ));
+        }
+    }
     let mut distribution = 1u32.to_le_bytes().to_vec();
     distribution.extend_from_slice(receiver.as_ref());
     distribution.extend_from_slice(&pc::FULL_SHARE_BPS.to_le_bytes());
@@ -1310,6 +1369,7 @@ mod tests {
     use super::*;
     use crate::case::Intent;
     use crate::run::vectors;
+    use solana_message::VersionedMessage;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -1363,6 +1423,55 @@ mod tests {
             "{}",
             failure.message
         );
+    }
+
+    // The open names 14 accounts; the judge used to check only the payer,
+    // rent payer, payee and channel slots. A payer re-signing a deposit
+    // whose token accounts or token program are swapped must fail on that
+    // account, before the memo check the kit's own build fails last.
+    #[test]
+    fn a_swapped_open_account_fails_the_build_judge() {
+        let rt = runtime();
+        let v = vector("batch-build-deposit-open");
+        let seed: [u8; 32] = v.input()["batchClient"]["secretKey"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(32)
+            .map(|b| b.as_u64().unwrap() as u8)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        for slot in [6usize, 7, 8] {
+            let swapped = edited_build(&rt, &v, |e| {
+                let mut tx =
+                    crate::tx::decode_b64(e["payload"]["deposit"]["transaction"].as_str().unwrap())
+                        .unwrap();
+                let program = pc::default_program_id();
+                let keys = tx.message.static_account_keys();
+                let open = tx
+                    .message
+                    .instructions()
+                    .iter()
+                    .find(|ix| keys[ix.program_id_index as usize] == program)
+                    .unwrap();
+                let index = open.accounts[slot] as usize;
+                match &mut tx.message {
+                    VersionedMessage::Legacy(m) => m.account_keys[index] = Pubkey::new_unique(),
+                    VersionedMessage::V0(m) => m.account_keys[index] = Pubkey::new_unique(),
+                    _ => panic!("the kit builds legacy or version 0"),
+                }
+                crate::tx::sign_slots(&mut tx, &[seed]);
+                e["payload"]["deposit"]["transaction"] = json!(crate::tx::encode_b64(&tx).unwrap());
+            });
+            let failure = rt.block_on(judge_build(&v, &swapped)).unwrap_err();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some(format!("open.accounts[{slot}]").as_str()),
+                "slot {slot}: {}",
+                failure.message
+            );
+        }
     }
 
     /// A spec-shaped client refund (§4.3): channelConfig plus the voucher at
