@@ -37,6 +37,7 @@ require('tests.error_codes_spec')
 require('tests.store_shared_dict_spec')
 require('tests.intents_charge_spec')
 require('tests.json_util_spec')
+require('tests.rockspec_modules_spec')
 
 -- PayKit umbrella suites (P1+).
 require('tests.pay_kit.errors_spec')
