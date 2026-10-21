@@ -256,11 +256,11 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | --- | ---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
-| vector charge | 112 | 65 · 47k | — | 52 · 29u · 31k | 54 · 29u · 29k | 74 · 38k | 55 · 29u · 28k | 107 · 5k | 29 · 67u · 16k | 69 · 2u · 41k |
+| vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 79 · 38k | 60 · 29u · 28k | 112 · 5k | 29 · 72u · 16k | 74 · 2u · 41k |
 | vector session | 31 | 8 · 23u | 3 · 28u | — | — | 17 · 8u · 6k | — | 30 · 1k | 3 · 28u | 17 · 8u · 6k |
 | vector subscription | 123 | — | — | — | — | — | — | 103 · 20k | — | 70 · 15u · 38k |
 | vector x402-batch-settlement | 165 | — | — | — | — | — | — | 126 · 4u · 35k | — | 66 · 27u · 72k |
-| vector x402-exact | 71 | 45 · 26k | — | 30 · 19u · 22k | 30 · 21u · 20k | 42 · 2u · 27k | 27 · 19u · 25k | 68 · 3k | 14 · 50u · 7k | 33 · 29u · 9k |
+| vector x402-exact | 73 | 47 · 26k | — | 32 · 19u · 22k | 32 · 21u · 20k | 44 · 2u · 27k | 29 · 19u · 25k | 70 · 3k | 14 · 52u · 7k | 35 · 29u · 9k |
 | vector x402-upto | 124 | — | — | — | — | — | — | 105 · 19k | — | 104 · 2u · 18k |
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
