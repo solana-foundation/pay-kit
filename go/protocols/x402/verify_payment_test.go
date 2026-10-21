@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 	"github.com/solana-foundation/pay-kit/go/protocols/x402/client"
 )
@@ -152,5 +154,58 @@ func TestVerifyPaymentHeaderEnvelopeRejects(t *testing.T) {
 	})
 	if _, err := x402.VerifyPaymentHeader(v1, f.route); err != nil {
 		t.Fatalf("v1 devnet credential: %v", err)
+	}
+}
+
+// rewriteTransaction decodes the credential's transaction, applies edit,
+// and re-encodes it into the header.
+func rewriteTransaction(t *testing.T, header string, edit func(*solana.Transaction)) string {
+	t.Helper()
+	return rewrite(t, header, func(m map[string]any) {
+		payload := m["payload"].(map[string]any)
+		tx, err := solanatx.DecodeTransactionBase64(payload["transaction"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		edit(tx)
+		encoded, err := solanatx.EncodeTransactionBase64(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload["transaction"] = encoded
+	})
+}
+
+// RULINGS SIG1: the verifier refuses a credential whose client signature
+// does not verify over the message, or whose signature list is shorter
+// than the message requires, before the server co-signs or sends it. The
+// fee payer slot the server signs itself may arrive empty.
+func TestVerifyPaymentHeaderChecksClientSignatures(t *testing.T) {
+	f := newPaymentFixture(t, paycore.TokenProgram)
+	good := f.header(t)
+	if _, err := x402.VerifyPaymentHeader(good, f.route); err != nil {
+		t.Fatalf("honest credential: %v", err)
+	}
+	var forged solana.Signature
+	for i := range forged {
+		forged[i] = 7
+	}
+	cases := map[string]func(*solana.Transaction){
+		"forged_client_signature": func(tx *solana.Transaction) { tx.Signatures[1] = forged },
+		"missing_client_signature": func(tx *solana.Transaction) {
+			tx.Signatures[1] = solana.Signature{}
+		},
+		"truncated_signatures": func(tx *solana.Transaction) { tx.Signatures = tx.Signatures[:1] },
+	}
+	for name, edit := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := x402.VerifyPaymentHeader(rewriteTransaction(t, good, edit), f.route)
+			if code := reasonOf(t, err); code != x402.ReasonInvalidPayload {
+				t.Fatalf("code = %s, want %s (%v)", code, x402.ReasonInvalidPayload, err)
+			}
+			if !strings.Contains(err.Error(), solanatx.ErrSignatureVerification.Error()) {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
 	}
 }

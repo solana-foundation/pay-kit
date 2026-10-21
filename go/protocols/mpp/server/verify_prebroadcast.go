@@ -57,7 +57,31 @@ func VerifyChargeTransactionPreBroadcast(
 	if err != nil {
 		return core.WrapError(core.ErrCodeInvalidConfig, "invalid recipient", err)
 	}
-	return verifyTransfersAgainstChallenge(tx, amount, request.Currency, recipient, request.ExternalID, details)
+	if err := verifyTransfersAgainstChallenge(tx, amount, request.Currency, recipient, request.ExternalID, details); err != nil {
+		return err
+	}
+	var serverFeePayer *solana.PublicKey
+	if feeSponsored {
+		serverFeePayer = feePayerKey(details)
+		if serverFeePayer == nil {
+			return core.NewError(core.ErrCodeInvalidPayload, "fee-sponsored challenge carries no valid feePayerKey")
+		}
+	}
+	return verifyClientSignatures(tx, serverFeePayer)
+}
+
+// verifyClientSignatures refuses a credential transaction whose signature
+// list is not exactly the message's required count, or whose client
+// signatures do not verify over the message, before the server claims,
+// co-signs or sends it (RULINGS SIG1). serverFeePayer is the server's own
+// fee-payer key when it sponsors fees: it must be account zero, whose slot
+// the server overwrites when it co-signs. Both the pre-broadcast verifier
+// and the live verifyTransaction call it.
+func verifyClientSignatures(tx *solana.Transaction, serverFeePayer *solana.PublicKey) error {
+	if err := solanatx.VerifyClientSignatures(tx, serverFeePayer); err != nil {
+		return core.WrapError(core.ErrCodeInvalidPayload, "invalid payload: verify client signatures", err)
+	}
+	return nil
 }
 
 // decodeCredentialTransaction decodes a client-supplied credential

@@ -95,8 +95,9 @@ type VerifiedPayment struct {
 // (v1) header and runs every check a server performs before it cosigns or
 // broadcasts: version dispatch, the envelope binding to the route (v1:
 // scheme + network; v2: the echoed accepted requirements), the
-// payment-identifier gate, and the structural exact-SVM transaction checks
-// (VerifyExactTransaction). Failures are *VerifyError values carrying a
+// payment-identifier gate, the structural exact-SVM transaction checks
+// (VerifyExactTransaction) and the client signatures
+// (solanatx.VerifyClientSignatures). Failures are *VerifyError values carrying a
 // canonical reason code.
 func VerifyPaymentHeader(header string, route ExactRoute) (*VerifiedPayment, error) {
 	credBytes, err := base64.StdEncoding.DecodeString(header)
@@ -151,6 +152,13 @@ func VerifyPaymentHeader(header string, route ExactRoute) (*VerifiedPayment, err
 	}
 	if err := VerifyExactTransaction(tx, route.Requirements); err != nil {
 		return nil, err
+	}
+	// The client's signatures must verify over this message before the
+	// server co-signs or sends it; only the facilitator's fee-payer slot
+	// (account zero) may be empty (RULINGS SIG1).
+	feePayer := route.Requirements.FeePayer
+	if err := solanatx.VerifyClientSignatures(tx, &feePayer); err != nil {
+		return nil, VerifyFail(ReasonInvalidPayload, fmt.Sprintf("invalid payload: %v", err))
 	}
 	return &VerifiedPayment{Credential: credential, Transaction: tx, RawTransaction: rawTx}, nil
 }

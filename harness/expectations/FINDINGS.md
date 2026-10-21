@@ -175,15 +175,14 @@ half was not.
 ## charge-server-fee-payer-not-checked
 
 **Case:** `vector/charge-verify-fee-payer-not-server-key-reject`
-**SDKs:** go, python
+**SDKs:** python
 
 Pull Mode Verification: “The transaction MUST have the server's feePayerKey
-set as the fee payer account.” Under `feePayer: true`, Go
-(`go/protocols/mpp/server/server.go:595`; `feePayerKey` is only used to forbid
-it as a transfer source, `:976`) and Python
+set as the fee payer account.” Under `feePayer: true`, Python
 (`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:558`; account 0 is
-only used as the expected ATA payer, `:316`) never compare account 0 with the
-key. Python's later slot check (`_assert_signature_slot`,
+only used as the expected ATA payer, `:316`) never compares account 0 with the
+key. Go now refuses it in its client-signature check
+(`solanatx.VerifyClientSignatures`). Python's later slot check (`_assert_signature_slot`,
 `python/src/solana_pay_kit/protocols/mpp/server/_verify.py:84`) runs only when
 co-signing, after verification passed.
 

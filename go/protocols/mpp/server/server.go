@@ -719,6 +719,17 @@ func (m *Mpp) verifyTransaction(
 	if err := verifyTransfersAgainstChallenge(tx, amount, request.Currency, m.recipient, request.ExternalID, details); err != nil {
 		return core.Receipt{}, err
 	}
+	// The client's signatures must verify over this message before anything
+	// is co-signed, claimed or sent; only the server's own fee-payer slot
+	// (account zero, which it overwrites) is left unchecked.
+	var serverFeePayer *solana.PublicKey
+	if feeSponsored {
+		key := m.feePayerSigner.PublicKey()
+		serverFeePayer = &key
+	}
+	if err := verifyClientSignatures(tx, serverFeePayer); err != nil {
+		return core.Receipt{}, err
+	}
 	if m.feePayerSigner != nil {
 		if err := solanatx.SignTransaction(tx, m.feePayerSigner); err != nil {
 			return core.Receipt{}, err

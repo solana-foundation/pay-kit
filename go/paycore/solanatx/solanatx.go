@@ -236,9 +236,51 @@ func SignTransaction(tx *solana.Transaction, signer Signer) error {
 	return nil
 }
 
-// ErrSignatureVerification is wrapped by VerifiedSignature when a transaction
-// carries the wrong number of signatures or one that does not verify.
+// ErrSignatureVerification is wrapped by VerifyClientSignatures and
+// VerifiedSignature when a transaction carries the wrong number of
+// signatures or one that does not verify.
 var ErrSignatureVerification = errors.New("transaction signature verification failed")
+
+// VerifyClientSignatures checks the signatures a client placed on a
+// transaction before the server claims, co-signs, simulates or sends it.
+// The signature list must have exactly header.num_required_signatures
+// entries. When serverFeePayer is non-nil it must be account key zero, and
+// that one slot is not checked: the server always overwrites it with its
+// own signature when it co-signs, so whatever the client put there
+// (normally nothing) never names the payment. Every other required
+// signature must verify against the exact message. A signature that does
+// not verify names some other transaction, so a refusal here is definite:
+// nothing was claimed and nothing was sent.
+//
+// It is the single signature check of every server verify path; the
+// post-cosign VerifiedSignature is this check with no server slot.
+func VerifyClientSignatures(tx *solana.Transaction, serverFeePayer *solana.PublicKey) error {
+	required := int(tx.Message.Header.NumRequiredSignatures)
+	keys := tx.Message.AccountKeys
+	if required == 0 || len(tx.Signatures) != required || len(keys) < required {
+		return fmt.Errorf("%w: message requires %d signatures, transaction carries %d",
+			ErrSignatureVerification, required, len(tx.Signatures))
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("%w: serialize message: %w", ErrSignatureVerification, err)
+	}
+	for index, signature := range tx.Signatures {
+		key := keys[index]
+		if serverFeePayer != nil && index == 0 {
+			if !key.Equals(*serverFeePayer) {
+				return fmt.Errorf("%w: account zero %s is not the server fee payer %s",
+					ErrSignatureVerification, key, *serverFeePayer)
+			}
+			continue
+		}
+		if !signature.Verify(key, message) {
+			return fmt.Errorf("%w: invalid client transaction signature for required signer %s",
+				ErrSignatureVerification, key)
+		}
+	}
+	return nil
+}
 
 // VerifiedSignature returns the transaction's identity, its first signature,
 // only once every signature the message requires is present and verifies
@@ -250,13 +292,8 @@ var ErrSignatureVerification = errors.New("transaction signature verification fa
 // reconciled on that other transaction's status. A refusal here is definite:
 // nothing was claimed and nothing was sent.
 func VerifiedSignature(tx *solana.Transaction) (solana.Signature, error) {
-	required := int(tx.Message.Header.NumRequiredSignatures)
-	if required == 0 || len(tx.Signatures) != required {
-		return solana.Signature{}, fmt.Errorf("%w: message requires %d signatures, transaction carries %d",
-			ErrSignatureVerification, required, len(tx.Signatures))
-	}
-	if err := tx.VerifySignatures(); err != nil {
-		return solana.Signature{}, fmt.Errorf("%w: %w", ErrSignatureVerification, err)
+	if err := VerifyClientSignatures(tx, nil); err != nil {
+		return solana.Signature{}, err
 	}
 	return tx.Signatures[0], nil
 }

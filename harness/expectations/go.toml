@@ -75,11 +75,6 @@ reason = "under feePayer=true the ATA owner allowlist includes splits without at
 tracking = "FINDINGS.md#go-charge-ata-owner-allowlist"
 
 [[known_failing]]
-id = "vector/charge-verify-fee-payer-not-server-key-reject"
-reason = "under feePayer=true account 0 is never compared with feePayerKey (go/protocols/mpp/server/server.go:595)"
-tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"
-
-[[known_failing]]
 ids = [
   "interop/charge-client-wrong-network/go/rust",
 ]
