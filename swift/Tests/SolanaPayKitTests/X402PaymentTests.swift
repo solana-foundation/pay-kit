@@ -305,6 +305,32 @@ struct X402PaymentBuildingTests {
         )
     }
 
+    /// The credential names the resource it pays for: the challenge's
+    /// `resource` is echoed in the v2 envelope, and an offer built in code
+    /// carries none.
+    @Test
+    func echoesTheChallengeResource() async throws {
+        let signer = try Self.makeSigner()
+        let rpc = Self.makeRpc()
+        let offer = try JSONEncoder().encode(Self.solOffer())
+        let challenge = #"{"x402Version":2,"resource":{"url":"/protected","description":"report"},"accepts":["#
+            + String(decoding: offer, as: UTF8.self) + "]}"
+        let parsed = try #require(parseX402Challenge(
+            headers: [(name: "payment-required", value: Data(challenge.utf8).base64EncodedString())],
+            body: nil,
+            selection: X402ChallengeSelection(network: SolanaNetwork.devnet)
+        ))
+        func resource(_ header: String) throws -> [String: Any]? {
+            let data = try #require(Data(base64Encoded: header))
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return object["resource"] as? [String: Any]
+        }
+        let echoed = try resource(try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: parsed))
+        #expect(echoed?["url"] as? String == "/protected")
+        #expect(echoed?["description"] as? String == "report")
+        #expect(try resource(try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: Self.solOffer())) == nil)
+    }
+
     @Test
     func buildsSolPaymentHeader() async throws {
         let signer = try Self.makeSigner()

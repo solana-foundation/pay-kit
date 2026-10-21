@@ -85,6 +85,12 @@ public struct X402AcceptsEntry: Codable, Sendable {
     /// not model (`maxTimeoutSeconds`, `resource`, server extras).
     public let raw: JSONValue?
 
+    /// The `resource` of the challenge this entry was offered in
+    /// (`PaymentRequired.resource`), echoed in the v2 envelope so the
+    /// credential names the resource it pays for. `nil` for entries built in
+    /// code. Set by challenge parsing; not part of the entry's own JSON.
+    public internal(set) var challengeResource: JSONValue? = nil
+
     private enum CodingKeys: String, CodingKey {
         case scheme, network, amount, maxAmountRequired, asset, payTo, recipient, extra
         case currency, decimals, tokenProgram, recentBlockhash, maxTimeoutSeconds
@@ -297,15 +303,23 @@ public struct X402PaymentRequiredEnvelope: Codable, Sendable {
     public let x402Version: Int?
     public let accepts: [X402AcceptsEntry]
     public let extensions: JSONValue?
+    /// The protected resource (`PaymentRequired.resource`), verbatim.
+    public let resource: JSONValue?
 
-    public init(x402Version: Int?, accepts: [X402AcceptsEntry], extensions: JSONValue? = nil) {
+    public init(
+        x402Version: Int?,
+        accepts: [X402AcceptsEntry],
+        extensions: JSONValue? = nil,
+        resource: JSONValue? = nil
+    ) {
         self.x402Version = x402Version
         self.accepts = accepts
         self.extensions = extensions
+        self.resource = resource
     }
 
     private enum CodingKeys: String, CodingKey {
-        case x402Version, accepts, extensions
+        case x402Version, accepts, extensions, resource
     }
 
     public init(from decoder: Decoder) throws {
@@ -313,11 +327,13 @@ public struct X402PaymentRequiredEnvelope: Codable, Sendable {
         x402Version = try container.decodeIfPresent(Int.self, forKey: .x402Version)
         accepts = try container.decode([X402AcceptsEntry].self, forKey: .accepts)
         extensions = try container.decodeIfPresent(JSONValue.self, forKey: .extensions)
+        resource = try? container.decodeIfPresent(JSONValue.self, forKey: .resource)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(x402Version, forKey: .x402Version)
+        try container.encodeIfPresent(resource, forKey: .resource)
         try container.encode(accepts, forKey: .accepts)
         try container.encodeIfPresent(extensions, forKey: .extensions)
     }
@@ -564,7 +580,7 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case x402Version, scheme, network, accepted, payload, extensions
+        case x402Version, scheme, network, resource, accepted, payload, extensions
     }
 
     public init(from decoder: Decoder) throws {
@@ -583,6 +599,12 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
         // Legacy v1 siblings; omitted (and thus absent on v2) when nil.
         try container.encodeIfPresent(scheme, forKey: .scheme)
         try container.encodeIfPresent(network, forKey: .network)
+        // v2 PaymentPayload `resource`: the challenge's resource, so a server
+        // that binds payments to its route can match it. The legacy v1
+        // envelope carries no `accepted` and so no resource.
+        if case .object = accepted?.challengeResource {
+            try container.encodeIfPresent(accepted?.challengeResource, forKey: .resource)
+        }
         // Echo the offered requirement verbatim when we captured it on the
         // wire (preserves maxTimeoutSeconds / resource / server extras the
         // typed entry does not model); fall back to the typed encoding for
