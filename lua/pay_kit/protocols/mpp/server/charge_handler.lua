@@ -30,8 +30,10 @@ the Greptile P1 fix landed on PR #85:
        surfaces keeps the charge pending: only an explicit on-chain outcome
        resolves it
 
-  A later presentation of the same transaction while it is pending
-  reconciles it against its on-chain status instead of paying again.
+  A later presentation of the same transaction under the same challenge
+  while it is pending reconciles it against its on-chain status instead of
+  paying again. The pending record is bound to that challenge: the same
+  bytes under any other challenge are a replay, never reconciled.
 
   Push mode:
     1. decode credential payload `{type='signature', signature=<base58>}`
@@ -222,38 +224,34 @@ local function error_message(err)
   return type(err) == 'table' and tostring(err.message) or tostring(err)
 end
 
--- Keep the claimed signature and record the charge as pending: the
--- transaction may land, so the client must not be released to pay again.
-local function settlement_pending(self, signature, detail, challenge_id)
-  self.replay_store:put_if_absent(PENDING_PREFIX .. signature, true)
-  if type(challenge_id) == 'string' and challenge_id ~= '' then
-    -- Binds the pending charge to the challenge that broadcast it, so that
-    -- challenge alone may reconcile it after it expires.
-    self.replay_store:put_if_absent(PENDING_PREFIX .. signature .. ':' .. challenge_id, true)
-  end
+-- The pending charge `challenge_id` claimed (and may have broadcast) under
+-- `signature`. Only that challenge may reconcile it: anyone can copy a landed
+-- transaction's bytes, and presenting them under their own same-terms
+-- challenge must not win the grant the payer's request is still confirming.
+local function binding_key(signature, challenge_id)
+  return PENDING_PREFIX .. signature .. ':' .. challenge_id
+end
+
+-- The charge stays pending: the claim is kept, because the transaction may
+-- land, so the client must not be released to pay again.
+local function settlement_pending(signature, detail)
   verifier_error('Settlement of transaction ' .. signature .. ' is in progress (' ..
     detail .. '); retry the same credential, do not pay again',
     error_codes.SETTLEMENT_IN_PROGRESS)
 end
 
--- Record the charge as pending under its signature (and its challenge) with
--- the claim, before anything is sent. Written only after an ambiguous send,
--- a store failure would leave a claim with no record, and every retry would
--- refuse a payment that may have landed as consumed.
+-- Bind the pending charge to its challenge with the claim, before anything is
+-- sent. Written only after an ambiguous send, a store failure would leave a
+-- claim with no record, and every retry would refuse a payment that may have
+-- landed as consumed.
 local function record_pending(self, signature, challenge_id)
-  self.replay_store:put_if_absent(PENDING_PREFIX .. signature, true)
-  if type(challenge_id) == 'string' and challenge_id ~= '' then
-    self.replay_store:put_if_absent(PENDING_PREFIX .. signature .. ':' .. challenge_id, true)
-  end
+  self.replay_store:put_if_absent(binding_key(signature, challenge_id), true)
 end
 
 -- Nothing was sent (or it provably never landed): drop the pending record
 -- and give the claim back.
 local function abandon(self, ledger, signature, challenge_id)
-  self.replay_store:delete(PENDING_PREFIX .. signature)
-  if type(challenge_id) == 'string' and challenge_id ~= '' then
-    self.replay_store:delete(PENDING_PREFIX .. signature .. ':' .. challenge_id)
-  end
+  self.replay_store:delete(binding_key(signature, challenge_id))
   ledger:release(signature)
 end
 
@@ -264,24 +262,27 @@ local function grant(self, signature)
   if not self.replay_store:put_if_absent(RECONCILED_PREFIX .. signature, true) then
     verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
   end
-  self.replay_store:delete(PENDING_PREFIX .. signature)
   return signature
 end
 
---- Resolve a pending charge from its on-chain status. Only an explicit
---- on-chain outcome resolves it; anything else leaves it pending.
-function Handler:reconcile_pending(signature)
-  if not store_has(self.replay_store, PENDING_PREFIX .. signature) then
+--- Resolve the pending charge `challenge_id` left under `signature` from its
+--- on-chain status. Any other claim (a payment already settled on the shared
+--- ledger, or another challenge's pending charge) is a replay. Only an
+--- explicit on-chain outcome resolves it; anything else leaves it pending.
+function Handler:reconcile_pending(signature, challenge_id)
+  if type(challenge_id) ~= 'string' or challenge_id == ''
+    or not store_has(self.replay_store, binding_key(signature, challenge_id))
+    or store_has(self.replay_store, RECONCILED_PREFIX .. signature) then
     verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
   end
   local ok, statuses = pcall(self.rpc.signature_statuses, self.rpc, { signature })
   if not ok then
-    settlement_pending(self, signature, 'status unavailable: ' .. error_message(statuses))
+    settlement_pending(signature, 'status unavailable: ' .. error_message(statuses))
   end
   local status = statuses and statuses[1]
   if type(status) == 'table' then
     if status.err ~= nil and status.err ~= json.null then
-      self.replay_store:delete(PENDING_PREFIX .. signature)
+      self.replay_store:delete(binding_key(signature, challenge_id))
       verifier_error('Transaction ' .. signature .. ' landed on-chain but failed: ' .. tostring(status.err))
     end
     local confirmation_status = status.confirmationStatus
@@ -289,7 +290,7 @@ function Handler:reconcile_pending(signature)
       return grant(self, signature)
     end
   end
-  settlement_pending(self, signature, 'not yet confirmed')
+  settlement_pending(signature, 'not yet confirmed')
 end
 
 --- Pull-mode settlement.
@@ -299,6 +300,11 @@ end
 function Handler:settle_pull(transaction_base64, request, challenge_id)
   if type(transaction_base64) ~= 'string' or transaction_base64 == '' then
     verifier_error('missing or empty transaction payload')
+  end
+  -- The pending charge is bound to the challenge that claimed it; without one
+  -- a charge left pending could never be reconciled.
+  if type(challenge_id) ~= 'string' or challenge_id == '' then
+    verifier_error('missing challenge id for pull settlement')
   end
 
   -- Stage 1: shape verification. Failing here means we never touch the RPC.
@@ -336,7 +342,7 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
   end
   local ledger = consumed_signatures.new(self.replay_store)
   if not ledger:claim(local_signature) then
-    local reconciled = self:reconcile_pending(local_signature)
+    local reconciled = self:reconcile_pending(local_signature, challenge_id)
     return reconciled
   end
   local recorded, record_err = pcall(record_pending, self, local_signature, challenge_id)
@@ -393,17 +399,16 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
       abandon(self, ledger, local_signature, challenge_id)
       verifier_error('Simulation failed: ' .. error_message(signature))
     end
-    settlement_pending(self, local_signature, 'broadcast outcome unknown: ' .. error_message(signature),
-      challenge_id)
+    settlement_pending(local_signature, 'broadcast outcome unknown: ' .. error_message(signature))
   end
   if signature ~= local_signature then
-    settlement_pending(self, local_signature,
-      'RPC returned signature ' .. tostring(signature) .. ' for a different transaction', challenge_id)
+    settlement_pending(local_signature,
+      'RPC returned signature ' .. tostring(signature) .. ' for a different transaction')
   end
 
   -- Stage 7: confirmation polling. Errors here surface but the signature
   -- is already consumed, mirroring the Rust spine.
-  self:await_confirmation(signature, challenge_id)
+  self:await_confirmation(signature)
 
   return grant(self, signature)
 end
@@ -445,10 +450,10 @@ function Handler:reconcile_expired(payload, challenge_id)
   if not ok then
     return nil
   end
-  if not store_has(self.replay_store, PENDING_PREFIX .. signature .. ':' .. challenge_id) then
+  if not store_has(self.replay_store, binding_key(signature, challenge_id)) then
     return nil
   end
-  return self:reconcile_pending(signature)
+  return self:reconcile_pending(signature, challenge_id)
 end
 
 --- Push-mode settlement.
@@ -559,7 +564,7 @@ end
 -- a transaction that committed in time. The charge then stays pending for
 -- reconciliation instead of failing, so the client is never released to pay
 -- a replacement.
-function Handler:await_confirmation(signature, challenge_id)
+function Handler:await_confirmation(signature)
   local last_error
   for attempt = 1, self.confirmation_attempts do
     local ok, statuses = pcall(self.rpc.signature_statuses, self.rpc, { signature })
@@ -583,8 +588,8 @@ function Handler:await_confirmation(signature, challenge_id)
       self.sleep(self.confirmation_delay_seconds)
     end
   end
-  settlement_pending(self, signature, 'timed out waiting for confirmation' ..
-    (last_error and (': ' .. last_error) or ''), challenge_id)
+  settlement_pending(signature, 'timed out waiting for confirmation' ..
+    (last_error and (': ' .. last_error) or ''))
 end
 
 --- Fetch a settled push-mode transaction by signature, retrying until the

@@ -115,7 +115,7 @@ t.test('settle_pull happy path: verify → simulate → send → consume → awa
       getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed', err = nil } } } },
     }),
   })
-  local signature = handler:settle_pull('tx-b64', { amount = '1' })
+  local signature = handler:settle_pull('tx-b64', { amount = '1' }, 'ch')
   t.assert_equal(signature, 'sig-1')
   local methods = {}
   for _, call in ipairs(rpc.calls) do methods[#methods + 1] = call.method end
@@ -145,7 +145,7 @@ t.test('settle_pull accepts json.null err sentinels through full lifecycle', fun
       },
     }),
   })
-  local signature = handler:settle_pull('tx-b64', { amount = '1' })
+  local signature = handler:settle_pull('tx-b64', { amount = '1' }, 'ch')
   t.assert_equal(signature, 'sig-json-null')
   t.assert_equal(#rpc.calls, 3)
 end)
@@ -161,7 +161,7 @@ t.test('settle_pull surfaces verifier rejection without touching RPC', function(
     rpc = rpc,
     transaction_verifier = function() error({ code = 'verification-error', message = 'bad shape' }) end,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'bad shape')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'bad shape')
   t.assert_equal(#rpc.calls, 0)
 end)
 
@@ -170,7 +170,7 @@ t.test('settle_pull network gate rejects surfpool tx against mainnet', function(
     network = 'mainnet',
     pull_blockhash_extractor = function() return 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxxxxxxxxx' end,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'localnet')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'localnet')
 end)
 
 t.test('settle_pull network gate allows surfpool tx on localnet', function()
@@ -183,7 +183,7 @@ t.test('settle_pull network gate allows surfpool tx on localnet', function()
       getSignatureStatuses = { { result = { { confirmationStatus = 'finalized', err = nil } } } },
     }),
   })
-  t.assert_equal(handler:settle_pull('tx', {}), 'sig')
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch'), 'sig')
 end)
 
 t.test('settle_pull cosign replaces transaction before simulate', function()
@@ -196,7 +196,7 @@ t.test('settle_pull cosign replaces transaction before simulate', function()
     rpc = rpc,
     pull_transaction_signer = function(_tx) return 'cosigned-tx' end,
   })
-  handler:settle_pull('original-tx', {})
+  handler:settle_pull('original-tx', {}, 'ch')
   t.assert_equal(rpc.calls[1].tx, 'cosigned-tx')
 end)
 
@@ -204,14 +204,14 @@ t.test('settle_pull surfaces cosign failure as verification error', function()
   local handler = new_handler({
     pull_transaction_signer = function() error('signer offline') end,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'cosign failed')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'cosign failed')
 end)
 
 t.test('settle_pull rejects empty cosign result', function()
   local handler = new_handler({
     pull_transaction_signer = function() return '' end,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'empty transaction')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'empty transaction')
 end)
 
 t.test('settle_pull retries simulation on transient RPC failure', function()
@@ -226,7 +226,7 @@ t.test('settle_pull retries simulation on transient RPC failure', function()
     }),
     simulation_max_attempts = 3,
   })
-  t.assert_equal(handler:settle_pull('tx', {}), 'sig')
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch'), 'sig')
   local sim_calls = 0
   for _, c in ipairs(rpc.calls) do if c.method == 'simulateTransaction' then sim_calls = sim_calls + 1 end end
   t.assert_equal(sim_calls, 2)
@@ -243,7 +243,7 @@ t.test('settle_pull bails after exhausting simulation retries', function()
     }),
     simulation_max_attempts = 3,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'Simulation failed')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'Simulation failed')
 end)
 
 t.test('settle_pull fails when simulation reports program error', function()
@@ -253,7 +253,7 @@ t.test('settle_pull fails when simulation reports program error', function()
     }),
     simulation_max_attempts = 1,
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'InsufficientFunds')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'InsufficientFunds')
 end)
 
 t.test('settle_pull consumes signature before awaiting confirmation', function()
@@ -271,7 +271,7 @@ t.test('settle_pull consumes signature before awaiting confirmation', function()
       },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'in progress')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'in progress')
   -- The replay store should already contain the consumed signature key.
   local _value, present = replay:get('solana:consumed-signature:sig-x')
   t.assert_true(present, 'signature must be consumed before confirmation poll completes')
@@ -287,7 +287,7 @@ t.test('settle_pull rejects already-consumed signature', function()
       sendTransaction = { { result = 'sig-dupe' } },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'already consumed')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'already consumed')
 end)
 
 t.test('settle_pull surfaces transaction failure during confirmation', function()
@@ -298,7 +298,7 @@ t.test('settle_pull surfaces transaction failure during confirmation', function(
       getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed', err = 'AccountInUse' } } } },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'AccountInUse')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'AccountInUse')
 end)
 
 t.test('settle_pull keeps the charge pending when confirmation never surfaces', function()
@@ -313,7 +313,7 @@ t.test('settle_pull keeps the charge pending when confirmation never surfaces', 
       },
     }),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'in progress')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'in progress')
 end)
 
 -- ─── Ambiguous broadcast (SOLA1-301) ─────────────────────────────────────
@@ -345,17 +345,17 @@ t.test('ambiguous send error is pending, not failed, and reconciles on retry', f
     }),
   })
 
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
   local _v, claimed = replay:get('solana:consumed-signature:sig-lost')
   t.assert_true(claimed, 'the possibly-sent signature must stay claimed')
 
   -- Not visible yet: still pending, never failed.
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
   -- It landed: the identical retry is granted, once.
-  t.assert_equal(handler:settle_pull('tx', {}), 'sig-lost')
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch'), 'sig-lost')
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
 end)
 
@@ -372,7 +372,7 @@ t.test('preflight rejection fails the charge and releases the claim', function()
       end },
     }),
   })
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.PAYMENT_INVALID)
   t.assert_true(tostring(err.message):match('Simulation failed') ~= nil, tostring(err.message))
   local _v, claimed = replay:get('solana:consumed-signature:sig-rejected')
@@ -401,12 +401,12 @@ t.test('missing signature status never fails a pending charge', function()
       },
     }),
   })
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
   -- When the status does surface, the same retry is granted.
-  t.assert_equal(handler:settle_pull('tx', {}), 'sig-unseen')
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch'), 'sig-unseen')
 end)
 
 t.test('an explicit on-chain failure resolves a pending charge as failed', function()
@@ -422,12 +422,12 @@ t.test('an explicit on-chain failure resolves a pending charge as failed', funct
       },
     }),
   })
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.PAYMENT_INVALID)
   t.assert_true(tostring(err.message):match('landed on%-chain but failed') ~= nil, tostring(err.message))
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
 end)
 
@@ -448,11 +448,11 @@ t.test('signature consumed by one protocol is rejected by the other', function()
     }),
   })
 
-  t.assert_equal(handler:settle_pull('tx', {}), 'mpp-paid')
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch'), 'mpp-paid')
   t.assert_equal(x402_private.claim_signature(shared, shared, 'mpp-paid'), 'consumed')
 
   t.assert_equal(x402_private.claim_signature(shared, shared, 'x402-paid'), 'claimed')
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'already consumed')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'already consumed')
 
   -- An unrelated payment is still accepted, and x402's own retry recovery
   -- of a signature it claimed keeps working.
@@ -493,7 +493,7 @@ t.test('pre-ledger MPP charge claim is consumed for x402 and MPP settlement', fu
     pull_signature_extractor = function() return 'legacy-sig' end,
     rpc = fake_rpc({}),
   })
-  t.assert_error(function() handler:settle_pull('tx', {}) end, 'already consumed')
+  t.assert_error(function() handler:settle_pull('tx', {}, 'ch') end, 'already consumed')
 end)
 
 t.test('PayKit adapters resolve one ledger store for MPP and x402', function()
@@ -696,7 +696,7 @@ t.test('settle dispatches based on payload type', function()
       getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed', err = nil } } } },
     }),
   })
-  t.assert_equal(handler:settle({ type = 'transaction', transaction = 'tx' }, {}), 'pull-sig')
+  t.assert_equal(handler:settle({ type = 'transaction', transaction = 'tx' }, {}, 'ch'), 'pull-sig')
 end)
 
 t.test('settle rejects unknown payload type', function()
@@ -718,7 +718,8 @@ t.test('as_callback returns a function usable by mpp.server', function()
     }),
   })
   local cb = handler:as_callback()
-  local result = cb({ payload = { type = 'transaction', transaction = 'tx' }, request = {} })
+  local result = cb({ payload = { type = 'transaction', transaction = 'tx' }, request = {},
+    credential = { challenge = { id = 'ch' } } })
   t.assert_equal(result.reference, 'cb-sig')
   t.assert_true(result.replay_key:find('server-noop', 1, true) ~= nil)
   -- The callback must signal that the durable replay marker is already in
@@ -970,14 +971,14 @@ t.test('a forged client signature is refused before it is claimed', function()
     sleep = function() end,
   })
   for _ = 1, 2 do
-    local err = raised(function() handler:settle_pull(forged, {}) end)
+    local err = raised(function() handler:settle_pull(forged, {}, 'ch') end)
     t.assert_true(tostring(err.message):find('signature verification failed', 1, true) ~= nil, tostring(err.message))
   end
   t.assert_equal(#rpc.calls, 0)
 
   -- Positive control: the same transaction, really signed, passes the check
   -- and reaches simulation.
-  pcall(function() handler:settle_pull(signed, {}) end)
+  pcall(function() handler:settle_pull(signed, {}, 'ch') end)
   t.assert_equal(rpc.calls[1] and rpc.calls[1].method, 'simulateTransaction')
 end)
 
@@ -995,7 +996,7 @@ t.test('a pending charge another SDK recorded is not reconciled here', function(
       getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
     }),
   })
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
 end)
 
@@ -1019,16 +1020,16 @@ t.test('the pending record is written before anything is sent', function()
       sendTransaction = { { error = { code = 'transport-error', message = 'response lost' } } },
     }),
   })
-  local err = raised(function() handler:settle_pull('tx', {}) end)
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_true(tostring(err):find('injected store outage', 1, true) ~= nil, tostring(err))
   t.assert_equal(#rpc.calls, 0)
   local _, claimed = inner:get('solana:consumed-signature:sig-recorded')
   t.assert_true(not claimed, 'nothing was sent, so the claim is given back')
 
   failing = false
-  err = raised(function() handler:settle_pull('tx', {}) end)
+  err = raised(function() handler:settle_pull('tx', {}, 'ch') end)
   t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
-  local _, pending = inner:get('pay-kit:lua:charge-pending:sig-recorded')
+  local _, pending = inner:get('pay-kit:lua:charge-pending:sig-recorded:ch')
   t.assert_true(pending, 'an ambiguous send leaves a pending record')
 end)
 
@@ -1054,4 +1055,48 @@ t.test('settle_push refuses a payment older than the claim retention', function(
     local _, claimed = replay:get('solana:consumed-signature:sig-old')
     t.assert_true(not claimed, 'an old payment is refused before it is claimed')
   end
+end)
+
+-- ─── Pending charges are bound to their challenge (PR #386) ──────────────
+
+local function count_calls(rpc, method)
+  local n = 0
+  for _, call in ipairs(rpc.calls) do
+    if call.method == method then n = n + 1 end
+  end
+  return n
+end
+
+-- Anyone can copy a landed transaction's bytes. Presented under their own
+-- same-terms challenge while the payer's request is confirming, they must not
+-- reconcile (and win the grant for) the payer's pending charge: the payer
+-- would be charged and refused as SIGNATURE_CONSUMED.
+t.test('a pending charge is not reconciled under another challenge', function()
+  local handler, rpc = new_handler({
+    pull_signature_extractor = function() return 'sig-copied' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { error = { code = 'transport-error', message = 'response lost' } } },
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed' } } } },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}, 'ch-payer') end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+
+  -- The same bytes under another challenge: a replay, never reconciled.
+  err = raised(function() handler:settle_pull('tx', {}, 'ch-copier') end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+  t.assert_equal(count_calls(rpc, 'getSignatureStatuses'), 0)
+
+  -- Positive control: the payer's own retry reconciles and gets its delivery.
+  t.assert_equal(handler:settle_pull('tx', {}, 'ch-payer'), 'sig-copied')
+  err = raised(function() handler:settle_pull('tx', {}, 'ch-copier') end)
+  t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
+end)
+
+t.test('settle_pull refuses a transaction without a challenge to bind it to', function()
+  local handler, rpc = new_handler({ rpc = fake_rpc({}) })
+  t.assert_error(function() handler:settle_pull('tx', {}) end, 'missing challenge id')
+  t.assert_error(function() handler:settle_pull('tx', {}, '') end, 'missing challenge id')
+  t.assert_equal(#rpc.calls, 0)
 end)
