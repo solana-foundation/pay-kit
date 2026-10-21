@@ -236,6 +236,31 @@ func SignTransaction(tx *solana.Transaction, signer Signer) error {
 	return nil
 }
 
+// ErrSignatureVerification is wrapped by VerifiedSignature when a transaction
+// carries the wrong number of signatures or one that does not verify.
+var ErrSignatureVerification = errors.New("transaction signature verification failed")
+
+// VerifiedSignature returns the transaction's identity, its first signature,
+// only once every signature the message requires is present and verifies
+// against the exact message. Call it after the server has co-signed its own
+// slot: it is the only source of the key a settlement claims, so nothing can
+// be claimed, recorded pending or sent on a signature that does not belong
+// to this message. A forged slot-0 signature copied from a landed
+// transaction would otherwise name the payment, and a retry would be
+// reconciled on that other transaction's status. A refusal here is definite:
+// nothing was claimed and nothing was sent.
+func VerifiedSignature(tx *solana.Transaction) (solana.Signature, error) {
+	required := int(tx.Message.Header.NumRequiredSignatures)
+	if required == 0 || len(tx.Signatures) != required {
+		return solana.Signature{}, fmt.Errorf("%w: message requires %d signatures, transaction carries %d",
+			ErrSignatureVerification, required, len(tx.Signatures))
+	}
+	if err := tx.VerifySignatures(); err != nil {
+		return solana.Signature{}, fmt.Errorf("%w: %w", ErrSignatureVerification, err)
+	}
+	return tx.Signatures[0], nil
+}
+
 // ResolveTokenProgram resolves the mint owner into the token program ID.
 func ResolveTokenProgram(ctx context.Context, rpcClient RPCClient, mint solana.PublicKey, tokenProgramHint string) (solana.PublicKey, error) {
 	if tokenProgramHint != "" {

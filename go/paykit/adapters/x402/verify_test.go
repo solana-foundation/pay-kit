@@ -292,10 +292,12 @@ type fakeRPC struct {
 	confirmErr *struct{ msg string } // non-nil => on-chain tx error
 	nullStatus bool                  // no status recorded for the signature
 	sends      int
+	sent       string // the last base64 wire transaction handed to sendTransaction
 }
 
-func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, _ string, _ rpc.TransactionOpts) (solana.Signature, error) {
+func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, encoded string, _ rpc.TransactionOpts) (solana.Signature, error) {
 	f.sends++
+	f.sent = encoded
 	if f.sendErr != nil {
 		return solana.Signature{}, f.sendErr
 	}
@@ -318,16 +320,27 @@ func (f *fakeRPC) GetLatestBlockhash(_ context.Context, _ rpc.CommitmentType) (*
 }
 
 // settleFixture builds an adapter whose operator IS the fixture
-// fee-payer + recipient, a matching valid transaction, and a credential
-// wrapping it. Returns everything VerifyAndSettle needs to settle.
+// fee-payer + recipient, a matching valid transaction signed by the client's
+// transfer authority, and a credential wrapping it. Returns everything
+// VerifyAndSettle needs to settle.
 func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string) {
+	t.Helper()
+	a, gate, tx, _ := settleFixtureParts(t, fake)
+	return a, gate, credentialFor(t, a, gate, tx)
+}
+
+// settleFixtureParts is settleFixture before the credential is encoded: the
+// client-signed transaction (operator slot 0 left empty) and the authority
+// key that signed slot 1, so a test can tamper with either.
+func settleFixtureParts(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, *solana.Transaction, solana.PrivateKey) {
 	t.Helper()
 	// Operator = a generated signer; payTo defaults to its pubkey.
 	op := signer.Generate()
 	opPub := solana.MustPublicKeyFromBase58(string(op.Pubkey()))
 	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
 	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
-	authority := solana.NewWallet().PublicKey()
+	authorityKey := solana.NewWallet().PrivateKey
+	authority := authorityKey.PublicKey()
 	source := solana.NewWallet().PublicKey()
 	dest, err := solanatx.FindAssociatedTokenAddressWithProgram(opPub, mint, tokenProgram)
 	if err != nil {
@@ -335,7 +348,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	}
 	computeBudget := solana.MustPublicKeyFromBase58(proto.ComputeBudgetProgram)
 
-	keys := solana.PublicKeySlice{opPub, source, mint, dest, authority, computeBudget, tokenProgram}
+	keys := solana.PublicKeySlice{opPub, authority, source, mint, dest, computeBudget, tokenProgram}
 	const amount = uint64(1000)
 	priceData := make([]byte, 9)
 	priceData[0] = 3
@@ -347,19 +360,16 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	tx := &solana.Transaction{
 		Message: solana.Message{
 			AccountKeys: keys,
+			Header:      solana.MessageHeader{NumRequiredSignatures: 2, NumReadonlyUnsignedAccounts: 3},
 			Instructions: []solana.CompiledInstruction{
 				{ProgramIDIndex: 5, Data: []byte{2, 0, 0, 0, 0}},
 				{ProgramIDIndex: 5, Data: priceData},
-				{ProgramIDIndex: 6, Accounts: []uint16{1, 2, 3, 4}, Data: transferData},
+				{ProgramIDIndex: 6, Accounts: []uint16{2, 3, 4, 1}, Data: transferData},
 			},
 		},
-		Signatures: []solana.Signature{{}, solana.MustSignatureFromBase58(sampleClientSig)},
 	}
 	tx.Message.SetVersion(solana.MessageVersionV0)
-	wire, err := tx.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
+	tx.Signatures = []solana.Signature{{}, signMessage(t, tx, authorityKey)}
 	a := &Adapter{
 		cfg: paykit.Config{
 			Network:     paykit.SolanaLocalnet,
@@ -372,12 +382,34 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 		blockhashProvider: func() (string, error) { return "BH", nil },
 	}
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	return a, gate, tx, authorityKey
+}
+
+func signMessage(t *testing.T, tx *solana.Transaction, key solana.PrivateKey) solana.Signature {
+	t.Helper()
+	msg, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := key.Sign(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sig
+}
+
+func credentialFor(t *testing.T, a *Adapter, gate *paykit.Gate, tx *solana.Transaction) string {
+	t.Helper()
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cred := proto.Credential{X402Version: proto.X402Version, Accepted: acceptedFor(a, gate), Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
 	credJSON, err := json.Marshal(cred)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a, gate, base64.StdEncoding.EncodeToString(credJSON)
+	return base64.StdEncoding.EncodeToString(credJSON)
 }
 
 func TestVerifyAndSettleHappyPath(t *testing.T) {
@@ -574,13 +606,14 @@ func settledSignature(t *testing.T, a *Adapter, sig string) string {
 }
 
 func TestTransactionReplayKeyIsTheCosignedFeePayerSignature(t *testing.T) {
-	feePayerSig := solana.MustSignatureFromBase58(sampleSig)
-	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
+	feePayer := solana.NewWallet().PrivateKey
+	client := solana.NewWallet().PrivateKey
 	tx := &solana.Transaction{
-		Message:    solana.Message{AccountKeys: solana.PublicKeySlice{solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()}},
-		Signatures: []solana.Signature{feePayerSig, clientSig},
+		Message: solana.Message{AccountKeys: solana.PublicKeySlice{feePayer.PublicKey(), client.PublicKey()}},
 	}
 	tx.Message.Header.NumRequiredSignatures = 2
+	feePayerSig := signMessage(t, tx, feePayer)
+	tx.Signatures = []solana.Signature{feePayerSig, signMessage(t, tx, client)}
 	wire, err := tx.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -589,8 +622,8 @@ func TestTransactionReplayKeyIsTheCosignedFeePayerSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transactionReplayKey: %v", err)
 	}
-	if key != sampleSig {
-		t.Fatalf("replay key = %s, want %s", key, sampleSig)
+	if key != feePayerSig.String() {
+		t.Fatalf("replay key = %s, want %s", key, feePayerSig)
 	}
 
 	// Not yet co-signed: no on-chain identity to claim.

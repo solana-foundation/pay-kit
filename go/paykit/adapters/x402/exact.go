@@ -360,16 +360,20 @@ func (a *Adapter) reconcilePending(ctx context.Context, gate *paykit.Gate, repla
 // transactionReplayKey is the signature that identifies the fully signed
 // (co-signed) wire transaction on-chain: its first signature. MPP charge
 // claims the same signature, so the shared ledger catches a transaction
-// presented through both protocols.
+// presented through both protocols. It is derived through
+// solanatx.VerifiedSignature, so a key is only ever produced for a
+// transaction whose every signature verifies against its message: a forged
+// signature is refused before anything is claimed or sent.
 func transactionReplayKey(wire []byte) (string, error) {
 	tx, err := solanatx.DecodeTransaction(wire)
 	if err != nil {
 		return "", fmt.Errorf("transaction decode: %w", err)
 	}
-	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
-		return "", errors.New("transaction is missing its fee payer signature")
+	signature, err := solanatx.VerifiedSignature(tx)
+	if err != nil {
+		return "", err
 	}
-	return tx.Signatures[0].String(), nil
+	return signature.String(), nil
 }
 
 // consumed is the consumed-signature ledger shared with MPP charge.
@@ -495,9 +499,11 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
+	// The operator slot is always (re)signed: whatever the client put there
+	// is overwritten, so a client-filled slot can never name the payment.
 	cosignIdx := -1
 	for i, key := range tx.Message.AccountKeys {
-		if key.Equals(operator) && i < len(tx.Signatures) && tx.Signatures[i].IsZero() {
+		if key.Equals(operator) && i < int(tx.Message.Header.NumRequiredSignatures) && i < len(tx.Signatures) {
 			cosignIdx = i
 			break
 		}

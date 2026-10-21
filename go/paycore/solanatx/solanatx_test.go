@@ -944,3 +944,42 @@ func TestFetchTransactionMissingVersionStillDecodesLegacyBytes(t *testing.T) {
 		t.Fatalf("version = %v, want legacy", fetched.Message.GetVersion())
 	}
 }
+
+// VerifiedSignature refuses a list whose length is not the message's
+// required signature count or whose signatures do not verify, and returns
+// slot 0 only when every one does.
+func TestVerifiedSignatureRequiresEveryRequiredSignature(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	memo, err := BuildMemoInstruction("verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{memo}, solana.Hash{}, solana.TransactionPayer(payer.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignTransaction(tx, payer); err != nil {
+		t.Fatal(err)
+	}
+	got, err := VerifiedSignature(tx)
+	if err != nil || got != tx.Signatures[0] {
+		t.Fatalf("genuine transaction: sig=%s err=%v", got, err)
+	}
+	var forgedSig solana.Signature
+	for i := range forgedSig {
+		forgedSig[i] = 7
+	}
+	cases := map[string][]solana.Signature{
+		"empty":  nil,
+		"longer": {tx.Signatures[0], tx.Signatures[0]},
+		"forged": {forgedSig},
+		"zero":   {{}},
+	}
+	for name, sigs := range cases {
+		mutated := *tx
+		mutated.Signatures = sigs
+		if _, err := VerifiedSignature(&mutated); !errors.Is(err, ErrSignatureVerification) {
+			t.Errorf("%s: err = %v, want ErrSignatureVerification", name, err)
+		}
+	}
+}
