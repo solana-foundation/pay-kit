@@ -1328,6 +1328,40 @@ pub fn verify_input_for_offer(build_input: &Value, header: &str) -> Result<Value
     Ok(input)
 }
 
+/// The kit types `extra.recentSlot` as a string while the spec's table and
+/// examples use a number (RULINGS.md U1). The judge reads a numeric slot as
+/// its decimal string, so that divergence alone is bypassed: every other
+/// field reaches the kit's verifier and reference build unchanged.
+fn stringify_recent_slot(value: &mut Value, pointer: &str) {
+    if let Some(slot) = value.pointer_mut(pointer) {
+        if let Some(n) = slot.as_u64() {
+            *slot = json!(n.to_string());
+        }
+    }
+}
+
+/// The vector input as the kit's client can read it, for the reference build.
+fn kit_reference_input(input: &Value) -> Value {
+    let mut input = input.clone();
+    stringify_recent_slot(&mut input, "/x402Offer/extra/recentSlot");
+    input
+}
+
+/// The SDK's header as the kit's verifier can read it; the open transaction
+/// is untouched.
+fn kit_reference_header(header: &str) -> Result<String, String> {
+    let mut envelope = decode_header(header)?;
+    if !envelope
+        .pointer("/accepted/extra/recentSlot")
+        .is_some_and(Value::is_u64)
+    {
+        return Ok(header.to_string());
+    }
+    stringify_recent_slot(&mut envelope, "/accepted/extra/recentSlot");
+    let bytes = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 fn decode_header(header: &str) -> Result<Value, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(header)
@@ -1383,8 +1417,10 @@ fn open_of(envelope: &Value) -> Result<(Vec<AccountMeta>, Vec<u8>, VersionedTran
 /// offer; and the open instruction equals the kit's own build modulo the
 /// values a client chooses freely (salt, hence channel and its token
 /// account) — accounts, privileges, deposit, grace period, open slot and
-/// distribution must match. Authored vectors encode spec behaviour the kit
-/// diverges from, so only their pinned summary is judged.
+/// distribution must match. Authored vectors get the same checks: the
+/// reference build reads them through [`kit_reference_input`], which bypasses
+/// only the recorded kit divergence, and the summary pins what the spec asks
+/// for where the kit differs (the memo).
 pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure> {
     let offer = vector
         .input()
@@ -1407,11 +1443,20 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             }
         }
     }
-    if vector.raw.get("provenance").and_then(Value::as_str) == Some("authored") {
-        return Ok(());
-    }
-    let input = verify_input_for_offer(vector.input(), artifact).map_err(Failure::new)?;
-    match verify(&input).await {
+    // The kit's server derives its memo from the route, so it cannot offer
+    // any other declared memo; the open is still compared with the kit's build.
+    let server_can_offer = offer
+        .pointer("/extra/memo")
+        .and_then(Value::as_str)
+        .is_none_or(|memo| memo == route_memo());
+    let verified = if server_can_offer {
+        let header = kit_reference_header(artifact).map_err(Failure::new)?;
+        let input = verify_input_for_offer(vector.input(), &header).map_err(Failure::new)?;
+        verify(&input).await
+    } else {
+        Ok(Observed::Accept(Output::default()))
+    };
+    match verified {
         Ok(Observed::Accept(_)) => {}
         Ok(other) => {
             return Err(Failure {
@@ -1426,7 +1471,7 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         }
         Err(e) => return Err(Failure::new(format!("verify setup: {e}"))),
     }
-    let reference = match build(vector.input()).await {
+    let reference = match build(&kit_reference_input(vector.input())).await {
         Ok(Observed::Accept(output)) => output.header.unwrap_or_default(),
         Ok(other) => {
             return Err(Failure::new(format!(
@@ -1529,6 +1574,27 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     {
         problems.push("the transaction fee payer is not extra.feePayer".into());
     }
+    // The client signs its own slots; only the sponsoring fee payer's slot is
+    // left for the facilitator. Judged here because the kit's verifier does
+    // not check the payer's signature (FINDINGS.md).
+    let fee_payer = offer.pointer("/extra/feePayer").and_then(Value::as_str);
+    let required = got_tx.message.header().num_required_signatures as usize;
+    if got_tx.signatures.len() != required {
+        problems.push(format!(
+            "{} signatures for {required} required signers",
+            got_tx.signatures.len()
+        ));
+    }
+    for (key, slot) in crate::tx::signature_slots(&got_tx) {
+        let ok = if Some(key.as_str()) == fee_payer {
+            slot == crate::tx::Slot::Empty
+        } else {
+            slot == crate::tx::Slot::Signed
+        };
+        if !ok {
+            problems.push(format!("signature slot of {key} is {slot:?}"));
+        }
+    }
     if problems.is_empty() {
         Ok(())
     } else {
@@ -1536,5 +1602,67 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             "the build differs from the Rust kit's build of the same case: {}",
             problems.join("; ")
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::vectors;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn vector(id: &str) -> Vector {
+        vectors::load(&crate::repo_root().join("harness/vectors"))
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap()
+    }
+
+    /// The kit's build of an authored vector (read past its recorded
+    /// divergence), decoded, edited by `edit`, re-encoded.
+    fn edited_build(rt: &tokio::runtime::Runtime, v: &Vector, edit: impl Fn(&mut Value)) -> String {
+        let header = match rt.block_on(build(&kit_reference_input(v.input()))) {
+            Ok(Observed::Accept(output)) => output.header.unwrap(),
+            other => panic!("{}: {other:?}", v.id),
+        };
+        let mut envelope = decode_header(&header).unwrap();
+        edit(&mut envelope);
+        base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&envelope).unwrap())
+    }
+
+    // An authored vector pins only the field the kit gets wrong; the rest of
+    // the build is still judged against the verifier and the kit's open.
+    #[test]
+    fn an_authored_build_is_judged_beyond_its_pinned_summary() {
+        let rt = runtime();
+        let v = vector("x402-upto-build-recent-slot-number");
+        let honest = edited_build(&rt, &v, |_| {});
+        rt.block_on(judge_build(&v, &honest)).unwrap();
+
+        let unsigned = edited_build(&rt, &v, |e| {
+            let mut tx = decode_b64(e["payload"]["openTransaction"].as_str().unwrap()).unwrap();
+            for signature in &mut tx.signatures {
+                *signature = Signature::default();
+            }
+            e["payload"]["openTransaction"] = json!(encode_b64(&tx).unwrap());
+        });
+        let failure = rt.block_on(judge_build(&v, &unsigned)).unwrap_err();
+        assert!(
+            failure.message.contains("signature slot"),
+            "{}",
+            failure.message
+        );
+
+        let underfunded = edited_build(&rt, &v, |e| e["payload"]["deposit"] = json!("1"));
+        let failure = rt.block_on(judge_build(&v, &underfunded)).unwrap_err();
+        assert!(failure.path.is_some(), "{}", failure.message);
     }
 }
