@@ -47,6 +47,13 @@ class ConsumedSignaturesTest < Minitest::Test
     end
   end
 
+  # A custom store written against the base class before `key?` existed must
+  # fail at boot, not with NotImplementedError after a broadcast.
+  def test_store_subclass_without_a_read_probe_is_refused_at_construction
+    legacy = Class.new(PayKit::Protocols::Mpp::Store) { def put_if_absent(_key, _value) = true }.new
+    assert_raises(ArgumentError) { PayCore::ConsumedSignatures.new(legacy) }
+  end
+
   def test_store_without_a_read_probe_is_refused_at_construction
     write_only = Class.new { def put_if_absent(_key, _value) = true }.new
     assert_raises(ArgumentError) { PayCore::ConsumedSignatures.new(write_only) }

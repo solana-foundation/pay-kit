@@ -5,14 +5,16 @@ require "json"
 
 module PayKit::Protocols::Mpp
   # Atomic replay-protection store interface.
+  #
+  # A store implements `put_if_absent(key, value)` (insert only if `key` does
+  # not exist) and `key?(key)` (whether `key` exists; read only, never creates
+  # it). `key?` is deliberately not stubbed here: the consumed-signature
+  # ledger checks `respond_to?(:key?)` at construction, and an inherited stub
+  # would let a store without it boot and then raise NotImplementedError after
+  # a payment was broadcast.
   class Store
     # Insert `value` only if `key` does not exist.
     def put_if_absent(_key, _value)
-      raise NotImplementedError
-    end
-
-    # Whether `key` exists. Read only: never creates the key.
-    def key?(_key)
       raise NotImplementedError
     end
   end
