@@ -5344,7 +5344,8 @@ mod tests {
         let mpp = test_mpp();
         let request = ChargeRequest {
             amount: "100000".to_string(),
-            currency: "USDC".to_string(),
+            // The endpoint issues the mint, so only the payload type differs.
+            currency: crate::core::mints::USDC_DEVNET.to_string(),
             recipient: Some(TEST_RECIPIENT.to_string()),
             method_details: Some(serde_json::json!({ "network": "devnet", "confidential": true })),
             ..Default::default()
