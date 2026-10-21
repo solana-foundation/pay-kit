@@ -66,14 +66,14 @@ export const conformanceVectorSchema = {
       additionalProperties: false,
       required: ["doc", "section", "quote"],
       properties: {
-        doc: { type: "string", pattern: "^(mpp-specs|x402)/specs/[^.][^\\s]*\\.md$" },
+        doc: { type: "string", pattern: "^(mpp-specs|x402|mpp-specs-solana|mpp-specs-txv1|x402-txv1)/specs/[^.][^\\s]*\\.md$" },
         section: { type: "string", minLength: 1 },
         quote: { type: "string", minLength: 12 },
       },
     },
     requirements: {
       type: "array",
-      items: { type: "string", pattern: "^(MPP|X402)-[0-9a-f]{10}$" },
+      items: { type: "string", pattern: "^(MPP|X402|MPPTX|X402TX)-[0-9a-f]{10}$" },
     },
     bugType: {
       enum: ["replay", "auth-bypass", "settlement", "wire", "defaults", "malleability", "precedence"],

@@ -431,6 +431,11 @@ pub fn x402_verify_input(build_input: &Value, header: &str) -> Result<Value, Str
     if let Some(memo) = offer.pointer("/extra/memo") {
         input["x402ServerMemo"] = memo.clone();
     }
+    // The offer's `extra.transactionVersions` is the sponsor's accepted set
+    // the route copied (§1.5); the verifying sponsor accepts exactly it.
+    if let Some(versions) = offer.pointer("/extra/transactionVersions") {
+        input["x402ServerTransactionVersions"] = versions.clone();
+    }
     // Server SDKs configure their sponsor from its secret; the harness holds
     // the seeds of both sponsors the vectors use.
     let fee_payer = offer.pointer("/extra/feePayer").and_then(Value::as_str);
@@ -599,6 +604,31 @@ pub fn compare_transactions(
     let (got_payer, got_signers, got) = normalised(actual_tx, nonce_memo)
         .map_err(|e| Failure::new(format!("the SDK's transaction does not decode: {e}")))?;
     let mut problems = Vec::new();
+    // The message version and, for version 1, the header compute config are
+    // part of what executes: the budget is not an instruction there.
+    let format = |tx: &str| {
+        decode_b64(tx).map(|t| {
+            (
+                crate::tx::MessageFormat::of(&t.message),
+                crate::tx::v1_config(&t.message),
+            )
+        })
+    };
+    let ((want_format, want_config), (got_format, got_config)) = (
+        format(expected_tx).map_err(Failure::new)?,
+        format(actual_tx).map_err(Failure::new)?,
+    );
+    if want_format != got_format {
+        problems.push(format!(
+            "message version {} (Rust: {})",
+            got_format.as_str(),
+            want_format.as_str()
+        ));
+    } else if want_config != got_config {
+        problems.push(format!(
+            "version-1 header config {got_config:?} (Rust: {want_config:?})"
+        ));
+    }
     if want_payer != got_payer {
         problems.push(format!(
             "fee payer {} (Rust: {})",

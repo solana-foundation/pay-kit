@@ -368,11 +368,39 @@ export type VectorInput = {
   // verifier MUST require exactly one Memo instruction carrying it
   // (scheme_exact_svm §3.1), and the route's accepted object carries it.
   x402ServerMemo?: string;
+
+  // ── transaction versions (SIMD-0385; charge, session, x402-exact) ───
+  // build-transaction: the highest Solana message version the client's
+  // signer can sign (0 or 1; a hardware wallet may sign version 0 only).
+  // The runner hands it to the SDK builder's own option; the builder MUST
+  // build the highest advertised version within it and refuse
+  // (rejectCode "unsupported-version") when none is buildable. Absent: no
+  // limit below what the counterparty advertises. The versions a charge or
+  // session server accepts are its challenge's
+  // `methodDetails.transactionVersions` (`[0]` when absent); charge verify
+  // runners configure the server from it.
+  signerMaxTransactionVersion?: 0 | 1;
+  // verify-transaction (x402): the sponsor's own accepted message versions
+  // (scheme_exact_svm §1.5: "The sponsor enforces its own accepted set";
+  // absent means [0]). The route advertises them as
+  // `extra.transactionVersions` and the vector's `accepted` echoes them.
+  x402ServerTransactionVersions?: Array<0 | 1>;
+  // canonical-bytes (charge): an MPP charge request round-trip. The runner
+  // DECODES `value` with the production SDK charge-request type (incl.
+  // typed methodDetails), RE-ENCODES it, JCS-canonicalizes the result and
+  // emits exactBytes.canonicalJson/base64Url; a value the type refuses is
+  // rejectCode "invalid-payload". Mirrors `sessionWire`.
+  chargeWire?: { value: unknown };
+  // canonical-bytes (x402-exact): one `accepts[]` PaymentRequirements
+  // round-tripped through the production SDK requirements type, as
+  // `chargeWire`.
+  x402Wire?: { value: unknown };
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a
-// pinned spec repository: `mpp-specs/...` (external/mpp-specs) or `x402/...`
-// (typescript/external/x402). `quote` appears verbatim (whitespace and
+// pinned spec repository: `mpp-specs/...` (external/mpp-specs), `x402/...`
+// (typescript/external/x402), or an unmerged draft (`mpp-specs-solana/`,
+// `mpp-specs-txv1/`, `x402-txv1/`, under external/). `quote` appears verbatim (whitespace and
 // markdown emphasis normalised) in that file; `pkc req-lint` enforces it.
 export type VectorSpecRef = {
   doc: string;

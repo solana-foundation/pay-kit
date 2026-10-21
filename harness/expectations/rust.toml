@@ -75,3 +75,31 @@ ids = [
 ]
 reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
 tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[known_failing]]
+ids = [
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+]
+reason = "the charge verifier polices a legacy message as version 0 and accepts it wherever version 0 is accepted (rust/crates/kit/src/core/tx/version.rs TxVersion::of); draft-solana-charge-00 (txv1): servers MUST reject a legacy message"
+tracking = "FINDINGS.md#txv1-rust-legacy-accepted"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/x402-build-empty-advertisement-reject",
+]
+reason = "an empty transactionVersions is read as the absent default [0] (rust/crates/kit/src/core/tx/version.rs accepted_versions) and the client builds version 0 instead of refusing (RULINGS T2)"
+tracking = "FINDINGS.md#txv1-rust-empty-advertisement"
+
+[[known_failing]]
+id = "vector/x402-build-legacy-only-reject"
+reason = "extra.transactionVersions [\"legacy\"] fails to parse (invalid-payload) instead of an empty intersection failing with unsupported_transaction_version (scheme_exact_svm.md §1.5)"
+tracking = "FINDINGS.md#txv1-rust-x402-legacy-offer-code"
+
+[[known_failing]]
+id = "vector/x402-verify-v1-missing-loaded-data-limit-reject"
+reason = "rejected, but every check_v1_budget_caps error is reported as compute_price_instruction_too_high (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs verify_exact_versioned_transaction)"
+tracking = "FINDINGS.md#txv1-rust-x402-budget-codes"

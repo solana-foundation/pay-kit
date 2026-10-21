@@ -550,6 +550,15 @@ pub struct X402HeaderSpec {
     pub mutation: Option<Mutation>,
     /// Extra static input keys (e.g. `x402ServerRequiresPaymentIdentifier`).
     pub extra_input: Vec<(&'static str, Value)>,
+    /// Message format of the static-layout transaction before `mutation`
+    /// (version 1 carries the compute budget in its header, §1.5).
+    pub tx_format: crate::tx::MessageFormat,
+    /// The sponsor's accepted transaction versions
+    /// (`input.x402ServerTransactionVersions`). The route advertises them as
+    /// `extra.transactionVersions` (§1.5: the server copies the facilitator's
+    /// value) and the client echoes them in `accepted`. `None`: the default
+    /// `[0]`, nothing advertised.
+    pub server_transaction_versions: Option<&'static [u8]>,
 }
 
 /// An x402 server route.

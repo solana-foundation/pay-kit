@@ -1,0 +1,307 @@
+[
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising transactionVersions [0, 1] for client-submitted open and topUp transactions: the SDK's session request schema parses the field and re-encodes it unchanged, as integers. Pins the canonical JSON; an SDK that drops the field tells its clients the server accepts version 0 only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfSwibWluaW11bURlcG9zaXQiOiIxMDAwIiwicmVjaXBpZW50IjoiMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJzdWdnZXN0ZWREZXBvc2l0IjoiNTAwMCIsInVuaXRUeXBlIjoicmVxdWVzdCJ9",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-both-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-5410e1de47",
+      "MPPTX-4563533e08"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [1] only: round-trips as written, not widened to the [0] default.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlsxXX0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[1]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-v1-only-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              1
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-5410e1de47"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [0] explicitly: equal in meaning to the omitted default, but present on the wire, so the canonical bytes keep it.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswXX0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-v0-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [\"legacy\"]: servers MUST NOT advertise legacy; the SDK's session schema refuses the entry.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "\"legacy\" is not a transactionVersions entry"
+    },
+    "id": "session-wire-transaction-versions-legacy-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "legacy"
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5b29a4494f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [0, 2]: each entry is the integer 0 or 1 (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "2 is not a Solana message version"
+    },
+    "id": "session-wire-transaction-versions-unknown-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              2
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [\"0\"]: entries are integers, never strings (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "a string entry"
+    },
+    "id": "session-wire-transaction-versions-string-entry-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "0"
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  }
+]
