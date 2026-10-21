@@ -100,7 +100,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           # pkc req-lint reads the pinned spec repositories
-          # (external/mpp-specs, typescript/external/x402).
+          # (external/mpp-specs, external/mpp-specs-solana,
+          # typescript/external/x402).
           submodules: true
       - uses: ./.github/actions/setup-pkc
         with:
