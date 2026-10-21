@@ -698,7 +698,7 @@ async fn x402_build(input: &Value) -> Result<Outcome, Rejection> {
         .get("x402Offer")
         .ok_or("x402 build vector is missing input.x402Offer")?;
     let requirements: PaymentRequirements = serde_json::from_value(offer.clone())
-        .map_err(|e| format!("invalid payload: x402Offer: {e}"))?;
+        .map_err(|e| format!("invalid challenge: x402Offer: {e}"))?;
     let signer = signer_from(input)?;
     let rpc = fixture_rpc(input)?;
 
@@ -930,6 +930,10 @@ fn classify_reject(message: &str) -> Option<&'static str> {
     // block at the top of harness/src/conformance/reject.ts).
     let code = if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
         "fee-payer-is-funds-source"
+    } else if has("share one funding authority") {
+        "mixed-funding-authority"
+    } else if has("unexpected signer") {
+        "unexpected-signer"
     } else if has("primary amount is zero after splits") || has("split amounts exceed") {
         "splits-exceed-amount"
     } else if has("splits exceed maximum") {

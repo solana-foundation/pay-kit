@@ -13,6 +13,8 @@
 //! signature (except [`Mutation::DropSignature`], whose point that is).
 
 use solana_instruction::{AccountMeta, Instruction};
+use solana_message::VersionedMessage;
+use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 
 use crate::case::{RejectCode, Suite};
@@ -114,6 +116,16 @@ pub enum Mutation {
     /// Make the key of `seed` a required signer (a read-only signer account
     /// of the n-th Memo instruction) and sign with it.
     ExtraSigner { memo: usize, seed: [u8; 32] },
+    /// Fund transfer #n from the key of `seed` instead of the client, which
+    /// then signs as that leg's authority (SOL: the System transfer's source;
+    /// SPL: the owner of its own token account).
+    SecondAuthority {
+        transfer: TransferIndex,
+        seed: [u8; 32],
+    },
+    /// Make the key of `seed` a required signer that no instruction names,
+    /// and sign with it.
+    UnusedSigner { seed: [u8; 32] },
     /// Envelope: claim another network in `accepted.network` (x402 v2).
     WrongNetwork { network: &'static str },
     /// Challenge expiry in the past. Not expressible offline in the vector
@@ -164,6 +176,8 @@ impl Mutation {
                 Some(UnexpectedInstruction)
             }
             (ExtraSigner { .. }, Suite::X402Exact) => Some(UnexpectedInstruction),
+            (SecondAuthority { .. }, Suite::Charge) => Some(MixedFundingAuthority),
+            (UnusedSigner { .. }, Suite::Charge) => Some(UnexpectedSigner),
             (DuplicateMemo { .. }, Suite::X402Exact) => Some(InvalidPayload),
             (Mutation::WrongNetwork { .. }, Suite::X402Exact) => Some(RejectCode::AcceptedMismatch),
             _ => None,
@@ -249,6 +263,14 @@ impl Mutation {
             Mutation::DuplicateMemo { memo } => format!("memo #{memo} duplicated"),
             Mutation::ExtraSigner { memo, seed } => format!(
                 "{} added as a required signer of memo #{memo}",
+                keys::pubkey_of_seed(*seed)
+            ),
+            Mutation::SecondAuthority { transfer, seed } => format!(
+                "transfer #{transfer} funded and signed by {}",
+                keys::pubkey_of_seed(*seed)
+            ),
+            Mutation::UnusedSigner { seed } => format!(
+                "{} added as a required signer no instruction names",
                 keys::pubkey_of_seed(*seed)
             ),
             Mutation::WrongNetwork { network } => format!("accepted.network set to {network}"),
@@ -524,6 +546,55 @@ impl Mutation {
                     .accounts
                     .push(AccountMeta::new_readonly(keys::pubkey_of_seed(*seed), true));
                 let mut out = compile_v0(&d)?;
+                let mut seeds = signers.to_vec();
+                seeds.push(*seed);
+                sign_slots(&mut out, &seeds);
+                return Ok(out);
+            }
+            Mutation::SecondAuthority { transfer, seed } => {
+                let at = transfer_at(*transfer)?;
+                let authority = keys::pubkey_of_seed(*seed);
+                let ix = &mut d.instructions[at];
+                if ix.program_id == pubkey(SYSTEM_PROGRAM) {
+                    ix.accounts[0] = AccountMeta::new(authority, true);
+                } else {
+                    let mint = ix.accounts[1].pubkey.to_string();
+                    let program = ix.program_id.to_string();
+                    ix.accounts[0] =
+                        AccountMeta::new(ata(&authority.to_string(), &mint, &program), false);
+                    ix.accounts[3] = AccountMeta::new_readonly(authority, true);
+                }
+                let mut out = compile_v0(&d)?;
+                let mut seeds = signers.to_vec();
+                seeds.push(*seed);
+                sign_slots(&mut out, &seeds);
+                return Ok(out);
+            }
+            Mutation::UnusedSigner { seed } => {
+                let mut out = compile_v0(&d)?;
+                let VersionedMessage::V0(message) = &mut out.message else {
+                    unreachable!("compile_v0 builds a version-0 message")
+                };
+                // The new key joins the end of the signer block as a
+                // read-only signer; every later index shifts by one.
+                let at = message.header.num_required_signatures;
+                message
+                    .account_keys
+                    .insert(at as usize, keys::pubkey_of_seed(*seed));
+                message.header.num_required_signatures += 1;
+                message.header.num_readonly_signed_accounts += 1;
+                for ix in &mut message.instructions {
+                    if ix.program_id_index >= at {
+                        ix.program_id_index += 1;
+                    }
+                    for account in &mut ix.accounts {
+                        if *account >= at {
+                            *account += 1;
+                        }
+                    }
+                }
+                out.signatures =
+                    vec![Signature::default(); message.header.num_required_signatures as usize];
                 let mut seeds = signers.to_vec();
                 seeds.push(*seed);
                 sign_slots(&mut out, &seeds);

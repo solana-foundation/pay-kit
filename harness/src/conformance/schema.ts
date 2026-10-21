@@ -216,7 +216,13 @@ export type RejectCode =
   // x402-exact v2: the credential's `accepted` matches none of the route's
   // payment requirements (amount, payTo, asset or network differ). Covers
   // both targeted field checks and a structural match against the offers.
-  | "accepted-mismatch";
+  | "accepted-mismatch"
+  // charge verify, fee-sponsored: the payment legs are funded by more than
+  // one authority, so the sponsor pays a signature fee for each.
+  | "mixed-funding-authority"
+  // charge verify, fee-sponsored: a required signer that is neither the fee
+  // payer nor the payment's funding authority.
+  | "unexpected-signer";
 
 export type VectorInput = {
   // build-transaction / verify-transaction

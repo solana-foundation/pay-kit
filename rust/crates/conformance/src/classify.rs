@@ -27,6 +27,11 @@ pub fn classify(message: &str) -> Option<RejectCode> {
     } else if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
         // The charge verifier's SOL / SPL funding-source checks.
         FeePayerIsFundsSource
+    } else if has("share one funding authority") {
+        // Fee-sponsored charges: one funding authority, no other signers.
+        MixedFundingAuthority
+    } else if has("unexpected signer") {
+        UnexpectedSigner
     } else if has("primary amount is zero after splits") || has("split amounts exceed") {
         SplitsExceedAmount
     } else if has("splits exceed maximum") {

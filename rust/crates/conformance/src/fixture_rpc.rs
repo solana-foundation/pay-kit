@@ -216,7 +216,10 @@ pub fn handle(fixtures: &Fixtures, method: &str, params: &Value) -> Result<Value
         "getHealth" => Ok(json!("ok")),
         // The fixture's chain knows one blockhash: its latest.
         "isBlockhashValid" => {
-            let latest = fixtures.recent_blockhash.as_deref().unwrap_or(DEFAULT_BLOCKHASH);
+            let latest = fixtures
+                .recent_blockhash
+                .as_deref()
+                .unwrap_or(DEFAULT_BLOCKHASH);
             let asked = params.first().and_then(Value::as_str).unwrap_or_default();
             Ok(json!({ "context": context, "value": asked == latest }))
         }

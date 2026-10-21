@@ -341,10 +341,12 @@ pub enum RejectCode {
     VoucherExpired,
     VoucherExpiresBeforeSettlement,
     AcceptedMismatch,
+    MixedFundingAuthority,
+    UnexpectedSigner,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 18] = [
+    pub const ALL: [RejectCode; 20] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -363,6 +365,8 @@ impl RejectCode {
         RejectCode::VoucherExpired,
         RejectCode::VoucherExpiresBeforeSettlement,
         RejectCode::AcceptedMismatch,
+        RejectCode::MixedFundingAuthority,
+        RejectCode::UnexpectedSigner,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -385,6 +389,8 @@ impl RejectCode {
             RejectCode::VoucherExpired => "voucher-expired",
             RejectCode::VoucherExpiresBeforeSettlement => "voucher-expires-before-settlement",
             RejectCode::AcceptedMismatch => "accepted-mismatch",
+            RejectCode::MixedFundingAuthority => "mixed-funding-authority",
+            RejectCode::UnexpectedSigner => "unexpected-signer",
         }
     }
 }

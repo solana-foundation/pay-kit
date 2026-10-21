@@ -134,3 +134,8 @@ ids = [
 ]
 reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
 tracking = "FINDINGS.md#x402-replay-route-missing"
+
+[[known_failing]]
+id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
+reason = "the x402 exact verifier caps the unit price alone (go/protocols/x402/verify.go:21), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
+tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"

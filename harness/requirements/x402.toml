@@ -201,3 +201,9 @@ reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet 
 [[ignore]]
 id = "X402-84cdebd3a5"
 reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Outcome from the record (transferExecutor): settlement succe..."
+
+[[requirement]]
+id = "X402-fc2225a882"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "While implementation details vary by network, facilitators MUST enforce security constraints that prevent sponsorship abuse."
+required = true

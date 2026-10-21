@@ -119,5 +119,243 @@
       "section": "5.2.2 Field Descriptions (PaymentPayload)"
     },
     "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The devnet USDC offer of x402-exact-v2-build plus fields a server adds beside the x402 ones, each disagreeing with its x402 field: `recipient` (another wallet), `currency` (another mint), `maxAmountRequired`, and top-level `tokenProgram` (Token-2022), `decimals` (9) and `feePayerKey`. The client reads only the x402 fields (RULINGS X1), so it builds the same payment as x402-exact-v2-build: the transfer pays payTo in asset, and the fee payer is extra.feePayer. Offer per scheme_exact_svm.md: extra.feePayer is required, decimals come from the mint account (fixture RPC), and the client builds and signs a real transfer.",
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "acceptedAmount": "1000",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedScheme": "exact",
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "x402Version": 2
+      }
+    },
+    "id": "x402-exact-v2-build-ignores-non-spec-fields",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "currency": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        "decimals": 9,
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        },
+        "feePayerKey": "Stake11111111111111111111111111111111111111",
+        "maxAmountRequired": "999999",
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "recipient": "Stake11111111111111111111111111111111111111",
+        "scheme": "exact",
+        "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f45fed3f51",
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "| `payTo`             | `string` | Required | Recipient wallet address or role constant (e.g., \"merchant\")",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The devnet USDC offer of x402-exact-v2-build without its required `network`: the client refuses it instead of signing for a network it guessed (a default to mainnet would sign a payment valid on a cluster nobody approved).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "the offer names no network"
+    },
+    "id": "x402-exact-v2-build-missing-network-reject",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        },
+        "maxTimeoutSeconds": 300,
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-f870a56d25"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/x402-specification-v2.md",
+      "quote": "| network | string | Required | Blockchain network identifier in CAIP-2 format (e.g., \"eip155:84532\") |",
+      "section": "5.1.2 Field Descriptions (PaymentRequired)"
+    },
+    "tier": "offline"
   }
 ]

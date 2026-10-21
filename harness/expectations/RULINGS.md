@@ -63,7 +63,13 @@ assigns that case to the Python adapter only) or reject the header with
 **X1. `PaymentRequirements` has exactly the spec's fields.** `scheme`,
 `network`, `amount`, `asset`, `payTo`, `maxTimeoutSeconds`, `extra`. There is
 no `protocol` field; clients MUST NOT require one. Servers MAY add fields, and
-clients ignore what they do not understand.
+clients ignore what they do not understand. That covers the legacy aliases some
+servers still send beside the x402 fields (`recipient`, `currency`, top-level
+`decimals`, `tokenProgram`, `recentBlockhash`, `feePayerKey`): a client reads
+each term from its x402 field only and never lets an alias replace it, so the
+signed transfer pays what the echoed `accepted` names. Only `amount` and
+`maxTimeoutSeconds` fall back to the v1 names a legacy credential uses. Vector:
+`x402-exact-v2-build-ignores-non-spec-fields`.
 
 **X2. `amount` is atomic units.** “Required payment amount in atomic token
 units”. A server MUST NOT put a decimal or human price on the wire. A server
@@ -104,6 +110,16 @@ transferred amount MUST equal maxAmountRequired”) is listed under “Examples
 include”, uses the v1 field name, and is superseded by the network binding's
 normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
 as an explicit stricter policy; default verifiers MUST accept it.
+
+**S6. A sponsor bounds the priority fee as limit times price.**
+scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
+enforcing maximum compute unit limits and maximum compute unit (priority fee)
+price”. Capping each field alone still lets the largest limit pair with the
+largest price, so the fee the sponsor pays is bounded as their product. The
+pay-kit sponsors cap it at 2,000 lamports; a 200,000 unit limit at 5,000,000
+micro-lamports per unit (each within its own cap, a 1,000,000 lamport fee) is
+refused as `compute-price-over-cap`. Vector:
+`x402-exact-verify-priority-fee-over-cap-reject`.
 
 ## Harness consequences
 

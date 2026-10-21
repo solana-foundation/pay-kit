@@ -33,6 +33,8 @@ const rejectCodeSchema = {
     "voucher-expired",
     "voucher-expires-before-settlement",
     "accepted-mismatch",
+    "mixed-funding-authority",
+    "unexpected-signer",
   ],
 } as const;
 
