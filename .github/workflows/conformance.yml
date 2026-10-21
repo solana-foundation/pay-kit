@@ -268,12 +268,15 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.program.outputs.program-so }}
         timeout-minutes: 15
         run: |
-          # Diagnostic: dump the process tree while a run is still going.
-          ( for t in 240 480 720; do sleep 240; echo "::group::interop still running after $((t / 60)) min"; ps -eo pid,ppid,etime,stat,wchan:20,args --forest | grep -v ' \[' ; echo "::endgroup::"; done ) &
-          watchdog=$!
-          pkc run --tier interop --shard ${{ matrix.sdk }} --require
+          # Diagnostic: where does the interop step hang?
+          echo "::group::runner"; cat /etc/os-release | head -3; uname -a; nproc; free -m; df -h / | tail -1; ulimit -a | head -20; echo "::endgroup::"
+          ( while sleep 20; do echo "--- $(date -u +%T) $(free -m | awk '/Mem:/{print "used="$3"M avail="$7"M"}') $(free -m | awk '/Swap:/{print "swap="$3"M"}') load=$(cut -d' ' -f1 /proc/loadavg)"; ps -eo rss=,etime=,stat=,args= --sort=-rss | head -6 | cut -c1-160; done ) &
+          sampler=$!
+          set +e
+          timeout -k 15 480 pkc run --tier interop --shard ${{ matrix.sdk }} --require
           status=$?
-          kill "$watchdog" 2>/dev/null || true
+          kill "$sampler" 2>/dev/null
+          if [ "$status" = 124 ]; then echo "::error::pkc did not finish in 8 min"; ps -eo pid,ppid,etime,stat,wchan:24,rss,args --forest | cut -c1-220; fi
           exit $status
       - uses: actions/upload-artifact@v7
         if: always()
