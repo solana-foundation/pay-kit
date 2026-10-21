@@ -128,7 +128,13 @@ pub fn cross(opts: &Options) -> Result<CrossReport, String> {
                 let (builds, by_id) = (&builds, &by_id);
                 scope.spawn(move || -> Vec<Cell> {
                     let Some(manifest) = manifest else {
-                        return Vec::new();
+                        let reason = format!("no runner manifest for {server}");
+                        return builds
+                            .iter()
+                            .filter(|b| intents.contains(&b.intent.as_str()))
+                            .filter(|b| by_id.contains_key(b.case.as_str()))
+                            .map(|b| unstartable_cell(server, b, &reason))
+                            .collect();
                     };
                     let mut testee = match Testee::new(
                         &manifest,
@@ -140,8 +146,17 @@ pub fn cross(opts: &Options) -> Result<CrossReport, String> {
                     ) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("cross: cannot start {server}: {e}");
-                            return Vec::new();
+                            // Every build this server should have verified
+                            // becomes a failed cell, so a missing runner
+                            // cannot look like a completed matrix.
+                            let reason = format!("cannot start {server}: {e}");
+                            eprintln!("cross: {reason}");
+                            return builds
+                                .iter()
+                                .filter(|b| intents.contains(&b.intent.as_str()))
+                                .filter(|b| by_id.contains_key(b.case.as_str()))
+                                .map(|b| unstartable_cell(server, b, &reason))
+                                .collect();
                         }
                     };
                     builds
@@ -169,6 +184,19 @@ pub fn cross(opts: &Options) -> Result<CrossReport, String> {
         servers,
         cells,
     })
+}
+
+fn unstartable_cell(server: &str, build: &SavedBuild, reason: &str) -> Cell {
+    Cell {
+        intent: build.intent.clone(),
+        client: build.sdk.clone(),
+        server: server.to_string(),
+        case: build.case.clone(),
+        expected: if build.judged { "accept" } else { "reject" },
+        observed: "error".into(),
+        agree: false,
+        detail: Some(reason.to_string()),
+    }
 }
 
 fn verify_one(testee: &mut Testee, server: &str, build: &SavedBuild, vector: &Vector) -> Cell {
@@ -320,6 +348,25 @@ pub fn rewrite(readme: &str, table: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unstartable_server_yields_failed_cells() {
+        let build = crate::run::driver::SavedBuild {
+            sdk: "rust".into(),
+            case: "charge-sol-native-build".into(),
+            intent: "charge".into(),
+            artifact: String::new(),
+            judged: true,
+        };
+        let cell = unstartable_cell("kotlin", &build, "cannot start kotlin: missing binary");
+        assert!(!cell.agree);
+        assert_eq!(cell.observed, "error");
+        assert_eq!(cell.expected, "accept");
+        assert_eq!(
+            cell.detail.as_deref(),
+            Some("cannot start kotlin: missing binary")
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -301,7 +301,12 @@ fn cross_cmd(root: &Path, opts: &Options, check: bool) -> Result<(), ()> {
         std::fs::write(&readme_path, next).map_err(|e| eprintln!("{e}"))?;
         println!("cross: rewrote the table in harness/README.md");
     }
-    Ok(())
+    // A disagreement, including a server that could not start, fails the run.
+    if disagreements.is_empty() {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
 
 fn case_cmd(root: &Path, args: &[String]) -> ExitCode {

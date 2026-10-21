@@ -500,7 +500,10 @@ fn header_transaction(header: &str) -> Result<String, String> {
 
 /// One instruction as compared across SDKs: program, the SET of accounts
 /// (SDKs may order accounts differently inside a signer/writable class) and
-/// the data bytes. Signatures never enter the comparison.
+/// the data bytes. Each account carries its signer and writable flags
+/// (`<pubkey>|<s or ->|<w or r>`): a read-only recipient executes
+/// differently on-chain even with identical keys and data. Signatures never
+/// enter the comparison.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ix {
     pub program: String,
@@ -513,7 +516,12 @@ impl Ix {
         let accounts: Vec<String> = self
             .accounts
             .iter()
-            .map(|a| annotate::address_name(a))
+            .map(|a| {
+                let mut parts = a.split('|');
+                let key = parts.next().unwrap_or_default();
+                let flags: String = parts.collect();
+                format!("{}({flags})", annotate::address_name(key))
+            })
             .collect();
         format!(
             "{} data={} accounts=[{}]",
@@ -556,7 +564,18 @@ pub fn normalised(
             }
             Ix {
                 program,
-                accounts: ix.accounts.iter().map(|a| a.pubkey.to_string()).collect(),
+                accounts: ix
+                    .accounts
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            "{}|{}|{}",
+                            a.pubkey,
+                            if a.is_signer { "s" } else { "-" },
+                            if a.is_writable { "w" } else { "r" }
+                        )
+                    })
+                    .collect(),
                 data,
             }
         })
@@ -787,6 +806,40 @@ mod tests {
         assert!(failure.path.is_some());
         // Control: the honest build compares equal to itself.
         compare_transactions(&built, &built, false).unwrap();
+    }
+
+    // A read-only recipient keeps keys and data identical but cannot be
+    // credited on-chain; the comparison must see the writable flag.
+    #[test]
+    fn a_read_only_recipient_fails_the_multiset_comparison() {
+        let rt = runtime();
+        let v = vector("charge-sol-native-build");
+        let built = match rt.block_on(realize::run(
+            Intent::Charge,
+            Mode::BuildTransaction,
+            v.input(),
+        )) {
+            Observed::Accept(o) => o.transaction.unwrap(),
+            other => panic!("{}", other.summary()),
+        };
+        let tx = decode_b64(&built).unwrap();
+        let mut decompiled = decompile(&tx.message).unwrap();
+        let transfer = decompiled
+            .instructions
+            .iter_mut()
+            .find(|ix| ix.program_id.to_string() == keys::SYSTEM_PROGRAM)
+            .unwrap();
+        // System transfer accounts: [from (signer, writable), to (writable)].
+        transfer.accounts[1].is_writable = false;
+        let mut planted = crate::tx::compile_v0(&decompiled).unwrap();
+        crate::tx::sign_slots(&mut planted, &[keys::CLIENT_SEED]);
+        let planted = crate::tx::encode_b64(&planted).unwrap();
+        let failure = compare_transactions(&built, &planted, false).unwrap_err();
+        assert!(
+            failure.message.contains("charge recipient)(-r)"),
+            "{}",
+            failure.message
+        );
     }
 
     #[test]
