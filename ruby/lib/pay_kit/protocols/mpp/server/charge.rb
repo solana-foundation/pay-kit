@@ -257,6 +257,9 @@ module PayKit::Protocols::Mpp
         PENDING_PREFIX = "pay-kit:ruby:charge-pending:"
         # Single-winner token for the one response a payment grants.
         GRANTED_PREFIX = "solana-charge:granted:"
+        # A claimed signature refused for good (preflight, or already processed
+        # elsewhere): the store cannot release it, so no retry reconciles it.
+        REFUSED_PREFIX = "pay-kit:ruby:charge-refused:"
 
         private
 
@@ -299,27 +302,44 @@ module PayKit::Protocols::Mpp
           simulation = simulate_transaction_with_retry(signed_base64)
           raise ::PayKit::Protocols::Mpp::VerificationError, "Simulation failed: #{simulation["err"].inspect}" unless simulation["err"].nil?
 
+          # Claim the signature and bind it to this challenge before anything
+          # is sent, so a payment that may land always has the record its
+          # retry reconciles. Bound only after an ambiguous send, a store
+          # failure would leave a claim with nothing to reconcile, and every
+          # retry would refuse a payment that may have landed. A failure here
+          # sends nothing.
+          return reconcile(local_signature, challenge_id) unless claim_pending(local_signature, challenge_id)
+
           # Only a preflight rejection proves the node did not forward the
-          # transaction, so it alone leaves the signature unclaimed for the
-          # payer to present again. Any other send error (a lost response, a
-          # 5xx from a proxy that already forwarded it) leaves the outcome
-          # unknown: the signature stays claimed and pending, and the charge
-          # is reported as still settling rather than failed.
+          # transaction. The store cannot release the claim, so the refusal
+          # is recorded and the charge fails. Any other send error (a lost
+          # response, a 5xx from a proxy that already forwarded it) leaves the
+          # outcome unknown: the charge is reported as still settling.
           begin
             @rpc.send_raw_transaction(signed_base64)
-          rescue ::PayCore::Solana::Rpc::PreflightRejection
-            raise
           rescue ::PayCore::Solana::Rpc::RpcError => error
-            return reconcile(local_signature, challenge_id) unless claim_pending(local_signature, challenge_id)
+            if error.message.match?(/already (been )?processed/i)
+              # It landed, yet this store held no claim on it: it was settled
+              # somewhere this store cannot see. A replay.
+              mark_refused(local_signature)
+              raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED)
+            end
+            if error.is_a?(::PayCore::Solana::Rpc::PreflightRejection)
+              mark_refused(local_signature)
+              raise
+            end
 
             raise SettlementInProgress,
               "Settlement of transaction #{local_signature} is in progress: broadcast outcome unknown " \
               "(#{error.message}); retry the same credential, do not pay again"
           end
-          return reconcile(local_signature, challenge_id) unless claim_pending(local_signature, challenge_id)
 
           await_confirmation(local_signature)
           grant(local_signature)
+        end
+
+        def mark_refused(signature)
+          @replay_store.put_if_absent("#{REFUSED_PREFIX}#{signature}", true)
         end
 
         # Claim `signature` and record it as pending under this challenge.
@@ -344,6 +364,7 @@ module PayKit::Protocols::Mpp
           unless @replay_store.key?(pending_key(signature, challenge_id))
             raise ::PayKit::Protocols::Mpp::VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED)
           end
+          raise ::PayKit::Protocols::Mpp::VerificationError, "Transaction #{signature} was refused and cannot settle" if @replay_store.key?("#{REFUSED_PREFIX}#{signature}")
 
           status = @rpc.signature_statuses([signature]).first
           if status.is_a?(Hash)

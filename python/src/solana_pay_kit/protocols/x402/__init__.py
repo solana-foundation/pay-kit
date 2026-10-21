@@ -224,49 +224,50 @@ class X402Adapter:
         rpc: SolanaRpc | None = None
         try:
             if should_broadcast:
-                rpc = SolanaRpc(rpc_url)
-                try:
-                    response = await rpc.send_raw_transaction(cosigned_wire)
-                    broadcast_signature = str(response.value if hasattr(response, "value") else response)
-                except PreflightRejectedError as exc:
-                    # The one send failure that proves no node was handed the
-                    # transaction: nothing is recorded, the payer may retry.
-                    raise InvalidProofError(
-                        f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
-                    ) from exc
-                except _RpcError as exc:
-                    if exc.code != "signature_consumed":
-                        if not await ConsumedSignatures(self._store).claim(signature, replay_record):
-                            raise _settlement_in_progress(signature, "a settlement of it is already recorded") from exc
-                        raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
-                    # The node already processed this exact transaction, yet
-                    # this store held no settlement of it: it was settled
-                    # somewhere this store cannot see (another instance or
-                    # store, or before a restart). Serving it again would
-                    # grant one payment twice: refuse it, and keep it consumed
-                    # here.
-                    await ConsumedSignatures(self._store).claim(signature, True)
-                    raise InvalidProofError(
-                        "solana_pay_kit: signature_consumed: the transaction was already processed",
-                        code="signature_consumed",
-                    ) from exc
-                except Exception as exc:  # noqa: BLE001
-                    # A lost response, a timeout, a refusal other than a
-                    # preflight rejection: the transaction may still land.
-                    # Record it as pending so a retry of the same payment
-                    # reconciles it, and tell the client not to pay again.
-                    if not await ConsumedSignatures(self._store).claim(signature, replay_record):
-                        raise _settlement_in_progress(signature, "a settlement of it is already recorded") from exc
-                    raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
-                if not broadcast_signature:
-                    raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
-
-                inserted = await ConsumedSignatures(self._store).claim(signature, replay_record)
-                if not inserted:
+                ledger = ConsumedSignatures(self._store)
+                # Record the pending settlement with the claim, before anything
+                # is sent. Written only after the send, a store failure would
+                # leave a payment that may have landed with no record, and the
+                # retry would find it already processed and refuse it.
+                if not await ledger.claim(signature, replay_record):
                     current = await self._store.get(replay_key)
                     skip_confirmation = await _recover_replay_record(
                         self._store, replay_key, binding, replay_record, current, now
                     )
+                else:
+                    rpc = SolanaRpc(rpc_url)
+                    try:
+                        response = await rpc.send_raw_transaction(cosigned_wire)
+                        broadcast_signature = str(response.value if hasattr(response, "value") else response)
+                    except PreflightRejectedError as exc:
+                        # The one send failure that proves no node was handed
+                        # the transaction: the claim is given back, the payer
+                        # may retry.
+                        await ledger.release(signature)
+                        raise InvalidProofError(
+                            f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
+                        ) from exc
+                    except _RpcError as exc:
+                        if exc.code != "signature_consumed":
+                            raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+                        # The node already processed this exact transaction,
+                        # yet this store held no settlement of it: it was
+                        # settled somewhere this store cannot see (another
+                        # instance or store, or before a restart). Serving it
+                        # again would grant one payment twice: refuse it, and
+                        # keep it consumed here.
+                        await self._store.put(replay_key, True)
+                        raise InvalidProofError(
+                            "solana_pay_kit: signature_consumed: the transaction was already processed",
+                            code="signature_consumed",
+                        ) from exc
+                    except Exception as exc:  # noqa: BLE001
+                        # A lost response, a timeout, a refusal other than a
+                        # preflight rejection: the transaction may still land,
+                        # and its pending record is already kept.
+                        raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+                    if not broadcast_signature:
+                        raise _settlement_in_progress(signature, "empty broadcast result")
 
             # Await on-chain confirmation BEFORE returning success. Without this
             # the adapter returned a settlement header for a transaction that

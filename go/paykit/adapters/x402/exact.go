@@ -250,9 +250,25 @@ func settlementInProgress(gate *paykit.Gate, signature string, cause error) *pay
 // broadcast sends the claimed transaction and confirms it. The claim is
 // released only when the transaction provably moved nothing: the node's
 // preflight refused it (so no node was handed it), or it landed and failed.
-// Any other outcome keeps the claim and records the settlement as pending.
+// Any other outcome keeps the claim and answers settlement_in_progress.
+//
+// The pending record a retry reconciles is written with the claim, before
+// anything is sent: written afterwards, a store failure would leave a claim
+// with no record, and the retry would refuse a payment that may have landed
+// as consumed forever. Every grant, inline or reconciled, takes the same
+// single-winner token, so a concurrent retry cannot grant it a second time.
 func (a *Adapter) broadcast(ctx context.Context, gate *paykit.Gate, wire []byte, replayKey string) (solana.Signature, error) {
-	release := func() { _ = a.consumed().Release(context.WithoutCancel(ctx), replayKey) }
+	store := a.ledgerStore()
+	pendingKey := pendingSettlementPrefix + replayKey
+	detached := context.WithoutCancel(ctx)
+	unsent := func() {
+		_ = store.Delete(detached, pendingKey)
+		_ = a.consumed().Release(detached, replayKey)
+	}
+	if _, err := store.PutIfAbsent(ctx, pendingKey, pendingSettlement{Gate: gate.Name}); err != nil {
+		unsent()
+		return solana.Signature{}, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: gate}
+	}
 	signature, err := a.rpc.SendEncodedTransactionWithOpts(ctx,
 		base64.StdEncoding.EncodeToString(wire),
 		rpc.TransactionOpts{
@@ -262,33 +278,36 @@ func (a *Adapter) broadcast(ctx context.Context, gate *paykit.Gate, wire []byte,
 	)
 	if err != nil {
 		if solanatx.IsPreflightRejection(err) {
-			release()
+			unsent()
 			return solana.Signature{}, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: gate}
 		}
 		// A lost response, a timeout, a 5xx from a proxy that already
 		// forwarded it: the transaction may still land.
-		return solana.Signature{}, a.markPending(ctx, gate, replayKey, err)
+		return solana.Signature{}, settlementInProgress(gate, replayKey, err)
 	}
 	if err := a.awaitConfirmation(ctx, signature); err != nil {
 		if errors.Is(err, errUnconfirmed) || ctx.Err() != nil {
-			return solana.Signature{}, a.markPending(ctx, gate, replayKey, err)
+			return solana.Signature{}, settlementInProgress(gate, replayKey, err)
 		}
-		release()
+		unsent()
 		return solana.Signature{}, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: gate}
 	}
-	return signature, nil
+	return signature, a.grant(ctx, gate, replayKey)
 }
 
-// markPending records replayKey as an in-flight settlement and returns the
-// settlement-in-progress error. It never releases the claim: if the record
-// cannot be written the payment still fails closed, it just cannot be
-// reconciled.
-func (a *Adapter) markPending(ctx context.Context, gate *paykit.Gate, replayKey string, cause error) error {
-	ctx = context.WithoutCancel(ctx)
-	if _, err := a.ledgerStore().PutIfAbsent(ctx, pendingSettlementPrefix+replayKey, pendingSettlement{Gate: gate.Name}); err != nil {
-		return settlementInProgress(gate, replayKey, fmt.Errorf("%w (recording the pending settlement failed: %w)", cause, err))
+// grant takes the payment's single-winner token and drops its pending
+// record. A false means another presentation already granted it.
+func (a *Adapter) grant(ctx context.Context, gate *paykit.Gate, replayKey string) error {
+	store := a.ledgerStore()
+	granted, err := store.PutIfAbsent(ctx, resolvedSettlementPrefix+replayKey, true)
+	if err != nil {
+		return &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: gate}
 	}
-	return settlementInProgress(gate, replayKey, cause)
+	if !granted {
+		return &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: gate}
+	}
+	_ = store.Delete(context.WithoutCancel(ctx), pendingSettlementPrefix+replayKey)
+	return nil
 }
 
 // reconcilePending resolves a presentation whose signature is already
@@ -332,14 +351,9 @@ func (a *Adapter) reconcilePending(ctx context.Context, gate *paykit.Gate, repla
 		return solana.Signature{}, settlementInProgress(gate, replayKey, errUnconfirmed)
 	}
 	// Grant the landed payment exactly once across concurrent retries.
-	granted, err := store.PutIfAbsent(ctx, resolvedSettlementPrefix+replayKey, true)
-	if err != nil {
-		return solana.Signature{}, &paykit.PaymentError{Code: "store_error", Err: fmt.Errorf("x402 replay store: %w", err), Gate: gate}
+	if err := a.grant(ctx, gate, replayKey); err != nil {
+		return solana.Signature{}, err
 	}
-	if !granted {
-		return solana.Signature{}, consumed
-	}
-	_ = store.Delete(context.WithoutCancel(ctx), pendingSettlementPrefix+replayKey)
 	return signature, nil
 }
 

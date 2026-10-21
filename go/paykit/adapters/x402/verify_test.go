@@ -838,3 +838,40 @@ func acceptedFor(a *Adapter, gate *paykit.Gate) *proto.AcceptsEntry {
 	route := a.routeAccepts(gate)
 	return &route
 }
+
+// failingPendingStore refuses writes of pending-settlement records.
+type failingPendingStore struct {
+	core.Store
+	fail bool
+}
+
+func (s *failingPendingStore) PutIfAbsent(ctx context.Context, key string, value any) (bool, error) {
+	if s.fail && strings.HasPrefix(key, pendingSettlementPrefix) {
+		return false, errors.New("injected store outage")
+	}
+	return s.Store.PutIfAbsent(ctx, key, value)
+}
+
+// The pending record a retry reconciles is written with the claim, before
+// anything is sent: written after, a store failure would strand a payment
+// that may have landed (claimed, with no record to reconcile).
+func TestVerifyAndSettleRecordsPendingBeforeSending(t *testing.T) {
+	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
+	a, gate, sig := settleFixture(t, fake)
+	store := &failingPendingStore{Store: core.NewMemoryStore(), fail: true}
+	a.cfg.MPP.Store = store
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != "store_error" {
+		t.Fatalf("expected store_error, got %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("a transaction without a recovery record was sent: sends=%d", fake.sends)
+	}
+	// Nothing was sent, so the claim was given back.
+	store.fail = false
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); settleCode(err) != paykit.CodeSettlementInProgress {
+		t.Fatalf("expected settlement_in_progress, got %v", err)
+	}
+	if _, found, _ := store.Get(context.Background(), pendingSettlementPrefix+settledSignature(t, a, sig)); !found {
+		t.Fatal("an ambiguous send must leave a pending record")
+	}
+}

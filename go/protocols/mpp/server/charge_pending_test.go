@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +225,47 @@ func TestExpiredCredentialNeverStartsAPayment(t *testing.T) {
 	rpcClient.Statuses[signature] = &rpc.SignatureStatusesResult{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}
 	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeChallengeExpired {
 		t.Fatalf("want challenge expired for another challenge's pending charge, got %v", err)
+	}
+}
+
+// failingPendingStore refuses writes of pending-charge records.
+type failingPendingStore struct {
+	core.Store
+	fail bool
+}
+
+func (s *failingPendingStore) Put(ctx context.Context, key string, value any) error {
+	if s.fail && strings.HasPrefix(key, pendingChargePrefix) {
+		return errors.New("injected store outage")
+	}
+	return s.Store.Put(ctx, key, value)
+}
+
+// The pending record a retry reconciles is written with the claim, before
+// anything is sent. Written after an ambiguous send, a store failure would
+// strand a payment that may have landed: claimed, with no record to
+// reconcile, so every retry would be refused as consumed.
+func TestPendingRecordIsWrittenBeforeSending(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	store := &failingPendingStore{Store: handler.store, fail: true}
+	handler.store = store
+	credential, tx := pullCredential(t, handler, rpcClient, cfg.Client)
+	rpcClient.SendErr = &jsonrpc.RPCError{Code: -32099, Message: "response lost"}
+
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
+		t.Fatal("expected the store failure")
+	}
+	if len(rpcClient.Sent) != 0 {
+		t.Fatalf("a transaction without a recovery record was sent: %d sends", len(rpcClient.Sent))
+	}
+
+	// Nothing was sent, so the claim was given back; with the store healthy
+	// the same credential goes pending, recoverably.
+	store.fail = false
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); errCode(t, err) != core.ErrCodeSettlementInProgress {
+		t.Fatalf("want settlement in progress, got %v", err)
+	}
+	if _, found, _ := store.Get(context.Background(), pendingChargePrefix+tx.Signatures[0].String()); !found {
+		t.Fatal("an ambiguous send must leave a pending record")
 	}
 }

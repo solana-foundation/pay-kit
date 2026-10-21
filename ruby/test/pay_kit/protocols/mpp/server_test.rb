@@ -906,7 +906,65 @@ class ChargeHandlerTest < Minitest::Test
     response = handler_with(FailingSendRpc.new(send_error: rejected), store: store).handle(authorization, request)
     assert_equal 402, response.status
     assert_match(/simulation failed/, response.body["message"])
-    assert store.put_if_absent(key, true), "a preflight rejection proves non-delivery and leaves the signature unclaimed"
+    # The store cannot release the claim taken before the send, so the
+    # refusal is recorded: the charge stays failed, never pending.
+    response = handler_with(FakeRpc.new, store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_match(/refused/, response.body["message"])
+  end
+
+  # The claim and its challenge binding are written before anything is sent:
+  # bound only after an ambiguous send, a store failure would strand a payment
+  # that may have landed, with nothing for the retry to reconcile.
+  def test_pending_binding_is_written_before_sending
+    request = charge_request
+    wire = v0_transaction(
+      signer: 4,
+      account_keys: [signer_pubkey(4), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    authorization = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"transaction" => Base64.strict_encode64(wire)}
+    ).to_authorization_header
+    inner = PayKit::Protocols::Mpp::MemoryStore.new
+    store = Class.new do
+      def initialize(inner) = @inner = inner
+
+      def put_if_absent(key, value)
+        raise ArgumentError, "injected store outage" if key.start_with?("pay-kit:ruby:charge-pending:")
+
+        @inner.put_if_absent(key, value)
+      end
+
+      def key?(key) = @inner.key?(key)
+    end.new(inner)
+    rpc = FakeRpc.new
+    response = handler_with(rpc, store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_empty rpc.sent_transactions
+  end
+
+  # The node already processed this exact transaction, yet this store held no
+  # claim on it: it was settled where this store cannot see. A replay.
+  def test_already_processed_with_a_fresh_claim_is_a_replay
+    request = charge_request
+    wire = v0_transaction(
+      signer: 5,
+      account_keys: [signer_pubkey(5), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    authorization = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"transaction" => Base64.strict_encode64(wire)}
+    ).to_authorization_header
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    processed = ::PayCore::Solana::Rpc::RpcError.new("sendTransaction: This transaction has already been processed")
+    response = handler_with(FailingSendRpc.new(send_error: processed), store: store).handle(authorization, request)
+    assert_equal 402, response.status
+    assert_match(/already consumed/, response.body["message"])
+    response = handler_with(FakeRpc.new, store: store).handle(authorization, request)
+    assert_equal 402, response.status
   end
 
   # A signature copied from any landed transaction must not name the charge:

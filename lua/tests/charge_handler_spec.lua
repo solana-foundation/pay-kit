@@ -998,3 +998,36 @@ t.test('a pending charge another SDK recorded is not reconciled here', function(
   local err = raised(function() handler:settle_pull('tx', {}) end)
   t.assert_equal(err.code, error_codes.SIGNATURE_CONSUMED)
 end)
+
+-- The pending record a retry reconciles is written with the claim, before
+-- anything is sent: written after an ambiguous send, a store failure would
+-- strand a payment that may have landed (claimed, with nothing to reconcile).
+t.test('the pending record is written before anything is sent', function()
+  local inner = store.memory()
+  local failing = true
+  local flaky = setmetatable({
+    put_if_absent = function(self, key, value)
+      if failing and key:find('charge-pending', 1, true) then error('injected store outage') end
+      return inner:put_if_absent(key, value)
+    end,
+  }, { __index = function(_, k) return function(_, ...) return inner[k](inner, ...) end end })
+  local handler, rpc = new_handler({
+    replay_store = flaky,
+    pull_signature_extractor = function() return 'sig-recorded' end,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { error = { code = 'transport-error', message = 'response lost' } } },
+    }),
+  })
+  local err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_true(tostring(err):find('injected store outage', 1, true) ~= nil, tostring(err))
+  t.assert_equal(#rpc.calls, 0)
+  local _, claimed = inner:get('solana:consumed-signature:sig-recorded')
+  t.assert_true(not claimed, 'nothing was sent, so the claim is given back')
+
+  failing = false
+  err = raised(function() handler:settle_pull('tx', {}) end)
+  t.assert_equal(err.code, error_codes.SETTLEMENT_IN_PROGRESS)
+  local _, pending = inner:get('pay-kit:lua:charge-pending:sig-recorded')
+  t.assert_true(pending, 'an ambiguous send leaves a pending record')
+end)

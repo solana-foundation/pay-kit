@@ -233,6 +233,38 @@ local function settlement_pending(self, signature, detail, challenge_id)
     error_codes.SETTLEMENT_IN_PROGRESS)
 end
 
+-- Record the charge as pending under its signature (and its challenge) with
+-- the claim, before anything is sent. Written only after an ambiguous send,
+-- a store failure would leave a claim with no record, and every retry would
+-- refuse a payment that may have landed as consumed.
+local function record_pending(self, signature, challenge_id)
+  self.replay_store:put_if_absent(PENDING_PREFIX .. signature, true)
+  if type(challenge_id) == 'string' and challenge_id ~= '' then
+    self.replay_store:put_if_absent(PENDING_PREFIX .. signature .. ':' .. challenge_id, true)
+  end
+end
+
+-- Nothing was sent (or it provably never landed): drop the pending record
+-- and give the claim back.
+local function abandon(self, ledger, signature, challenge_id)
+  self.replay_store:delete(PENDING_PREFIX .. signature)
+  if type(challenge_id) == 'string' and challenge_id ~= '' then
+    self.replay_store:delete(PENDING_PREFIX .. signature .. ':' .. challenge_id)
+  end
+  ledger:release(signature)
+end
+
+-- One request per payment: every grant, inline or reconciled, takes this
+-- single-winner token, so a retry reconciling the pending record cannot be
+-- granted alongside the request that is still confirming it.
+local function grant(self, signature)
+  if not self.replay_store:put_if_absent(RECONCILED_PREFIX .. signature, true) then
+    verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
+  end
+  self.replay_store:delete(PENDING_PREFIX .. signature)
+  return signature
+end
+
 --- Resolve a pending charge from its on-chain status. Only an explicit
 --- on-chain outcome resolves it; anything else leaves it pending.
 function Handler:reconcile_pending(signature)
@@ -251,12 +283,7 @@ function Handler:reconcile_pending(signature)
     end
     local confirmation_status = status.confirmationStatus
     if confirmation_status == 'confirmed' or confirmation_status == 'finalized' then
-      -- One request per payment: only the first reconciliation is granted.
-      if not self.replay_store:put_if_absent(RECONCILED_PREFIX .. signature, true) then
-        verifier_error('Transaction signature already consumed', error_codes.SIGNATURE_CONSUMED)
-      end
-      self.replay_store:delete(PENDING_PREFIX .. signature)
-      return signature
+      return grant(self, signature)
     end
   end
   settlement_pending(self, signature, 'not yet confirmed')
@@ -309,6 +336,11 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
     local reconciled = self:reconcile_pending(local_signature)
     return reconciled
   end
+  local recorded, record_err = pcall(record_pending, self, local_signature, challenge_id)
+  if not recorded then
+    pcall(abandon, self, ledger, local_signature, challenge_id)
+    error(record_err, 0)
+  end
 
   -- Stage 5: simulate with bounded retries. A program-level error fails
   -- the request immediately (no retry, because the result is deterministic
@@ -342,7 +374,7 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
     simulation_failure = 'Simulation failed: ' .. tostring(simulation.err)
   end
   if simulation_failure then
-    ledger:release(local_signature)
+    abandon(self, ledger, local_signature, challenge_id)
     verifier_error(simulation_failure)
   end
 
@@ -355,7 +387,7 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
   local send_ok, signature = pcall(self.rpc.send_raw_transaction, self.rpc, signed_base64)
   if not send_ok then
     if is_preflight_rejection(signature) then
-      ledger:release(local_signature)
+      abandon(self, ledger, local_signature, challenge_id)
       verifier_error('Simulation failed: ' .. error_message(signature))
     end
     settlement_pending(self, local_signature, 'broadcast outcome unknown: ' .. error_message(signature),
@@ -370,7 +402,7 @@ function Handler:settle_pull(transaction_base64, request, challenge_id)
   -- is already consumed, mirroring the Rust spine.
   self:await_confirmation(signature, challenge_id)
 
-  return signature
+  return grant(self, signature)
 end
 
 --- The transaction as this server broadcasts it (co-signed when it pays the

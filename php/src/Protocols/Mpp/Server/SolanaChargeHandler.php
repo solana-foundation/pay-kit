@@ -50,6 +50,8 @@ final class SolanaChargeHandler
     // Namespaced to this SDK: another SDK's pending record under a look-alike
     // key must never be reconciled (and authorized) here, nor ours there.
     private const PENDING_BINDING_PREFIX = 'pay-kit:php:charge-pending:';
+    /** A claimed signature refused for good (preflight, or already processed elsewhere). */
+    private const REFUSED_PREFIX = 'pay-kit:php:charge-refused:';
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -304,6 +306,16 @@ final class SolanaChargeHandler
     {
         [$signed, $signature] = $this->signedTransaction($transactionBase64);
 
+        // Claim the signature and bind it to this challenge before anything
+        // is sent, so a payment that may land always has the record its retry
+        // reconciles. Bound only after an ambiguous send, a store failure
+        // would leave a claim with nothing to reconcile, and every retry would
+        // refuse a payment that may have landed. A failure here sends nothing.
+        if (!$this->consumedSignatures->claim($signature)) {
+            return $this->reconcileOwn($signature, $challengeId);
+        }
+        $this->bindPending($signature, $challengeId);
+
         try {
             $reported = $this->rpc->sendRawTransaction($signed, [
                 'encoding' => 'base64',
@@ -311,17 +323,18 @@ final class SolanaChargeHandler
                 'preflightCommitment' => 'confirmed',
             ]);
         } catch (Throwable $error) {
-            if (!$this->consumedSignatures->claim($signature)) {
-                // An earlier presentation claimed this transaction (an
-                // "already processed" preflight lands here): its outcome is
-                // on chain, not in this send error.
-                return $this->reconcileOwn($signature, $challengeId);
+            if (self::isAlreadyProcessed($error)) {
+                // It landed, yet this store held no claim on it: it was
+                // settled somewhere this store cannot see. A replay.
+                $this->markRefused($signature);
+                throw new RuntimeException("Transaction signature already consumed: $signature", 0, $error);
             }
             if (self::isPreflightRejection($error)) {
-                // Never forwarded, so it cannot land: the charge failed.
+                // Never forwarded, so it cannot land: the charge failed. The
+                // store cannot release the claim, so the refusal is recorded.
+                $this->markRefused($signature);
                 throw new RuntimeException('Transaction rejected by preflight: ' . $error->getMessage(), 0, $error);
             }
-            $this->bindPending($signature, $challengeId);
             throw new SettlementInProgressException(
                 "Broadcast outcome unknown for transaction $signature; retry the same credential: " . $error->getMessage(),
                 0,
@@ -329,10 +342,6 @@ final class SolanaChargeHandler
             );
         }
 
-        if (!$this->consumedSignatures->claim($signature)) {
-            return $this->reconcileOwn($signature, $challengeId);
-        }
-        $this->bindPending($signature, $challengeId);
         if ($reported !== $signature) {
             throw new SettlementInProgressException(
                 "RPC reported signature $reported for transaction $signature; retry the same credential",
@@ -340,6 +349,18 @@ final class SolanaChargeHandler
         }
         $this->awaitConfirmation($signature);
         return $this->authorize($signature);
+    }
+
+    /** Record that `$signature` was refused for good, so no retry reconciles it. */
+    private function markRefused(string $signature): void
+    {
+        $this->replayStore->putIfAbsent(self::REFUSED_PREFIX . $signature, true);
+    }
+
+    /** Whether a send error says the node already processed this transaction. */
+    private static function isAlreadyProcessed(Throwable $error): bool
+    {
+        return preg_match('/already (been )?processed/i', $error->getMessage()) === 1;
     }
 
     /**
@@ -422,6 +443,9 @@ final class SolanaChargeHandler
      */
     private function reconcile(string $signature): string
     {
+        if ($this->replayStore->has(self::REFUSED_PREFIX . $signature)) {
+            throw new RuntimeException("Transaction $signature was refused and cannot settle");
+        }
         $statuses = $this->rpc->getSignatureStatuses([$signature], true);
         $status = $statuses[0] ?? null;
         if (is_array($status)) {

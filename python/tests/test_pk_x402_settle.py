@@ -777,3 +777,29 @@ async def test_already_processed_with_no_record_here_is_a_replay(monkeypatch):
         assert not isinstance(exc.value, SettlementInProgressError)
         assert exc.value.code == "signature_consumed"
     assert await store.get(consumed_signature_key(signature)) is True
+
+
+@pytest.mark.asyncio
+async def test_pending_record_is_claimed_before_sending(monkeypatch):
+    """Recorded only after the send, a store failure would leave a payment
+    that may have landed with nothing to reconcile; the retry would then find
+    it already processed and refuse it. A failed claim sends nothing."""
+
+    class _FailingStore(MemoryStore):
+        fail = True
+
+        async def put_if_absent(self, key, value):
+            if self.fail and key.startswith("solana:consumed-signature:"):
+                raise RuntimeError("injected store outage")
+            return await super().put_if_absent(key, value)
+
+    store = _FailingStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(RuntimeError, match="injected store outage"):
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    store.fail = False
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == await _settlement_signature(header, op_kp)

@@ -736,13 +736,22 @@ func (m *Mpp) verifyTransaction(
 		return m.reconcilePending(ctx, credential, request, details, tx.Signatures[0])
 	}
 	cleanupConsumed := true
+	pendingKey := pendingChargePrefix + finalSignature
 	defer func() {
 		if cleanupConsumed {
 			// Detach cancellation but keep trace/values so rollback still
 			// runs when the caller's context is already canceled.
+			_ = m.store.Delete(context.WithoutCancel(ctx), pendingKey)
 			_ = m.consumed().Release(context.WithoutCancel(ctx), finalSignature)
 		}
 	}()
+	// The pending record a retry reconciles is written with the claim, before
+	// anything is sent. Written after an ambiguous send, a store failure would
+	// leave a claim with no record, and every retry would refuse a payment
+	// that may have landed as consumed. Nothing is sent if it cannot be kept.
+	if err := m.store.Put(ctx, pendingKey, pendingCharge{ChallengeID: credential.Challenge.ID}); err != nil {
+		return core.Receipt{}, err
+	}
 	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "simulate transaction", err)
 	}
@@ -758,7 +767,7 @@ func (m *Mpp) verifyTransaction(
 		// keep the claim and record the locally derived signature as
 		// pending, so a fresh challenge is not paid while it can still land.
 		cleanupConsumed = false
-		return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID, err)
+		return core.Receipt{}, settlementInProgress(finalSignature, err)
 	}
 	// The RPC accepted the broadcast. From here the transaction may land
 	// on-chain even if confirmation polling or the on-chain re-verification
@@ -769,19 +778,29 @@ func (m *Mpp) verifyTransaction(
 	// after broadcast and never deletes it on a confirmation timeout.
 	cleanupConsumed = false
 	if !signature.Equals(tx.Signatures[0]) {
-		return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID,
+		return core.Receipt{}, settlementInProgress(finalSignature,
 			fmt.Errorf("RPC reported signature %s for transaction %s", signature, finalSignature))
 	}
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
 		if ctx.Err() != nil {
 			// Still unconfirmed when the request gave up: outcome unknown.
-			return core.Receipt{}, m.markPending(ctx, finalSignature, credential.Challenge.ID, err)
+			return core.Receipt{}, settlementInProgress(finalSignature, err)
 		}
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
 		return core.Receipt{}, err
 	}
+	// The pending record is visible to concurrent retries, which grant
+	// through the same single-winner token: only one presentation is granted.
+	granted, err := m.store.PutIfAbsent(ctx, resolvedChargePrefix+finalSignature, true)
+	if err != nil {
+		return core.Receipt{}, err
+	}
+	if !granted {
+		return core.Receipt{}, core.NewError(core.ErrCodeSignatureConsumed, "transaction signature already consumed")
+	}
+	_ = m.store.Delete(context.WithoutCancel(ctx), pendingKey)
 	return successReceipt(signature.String(), credential.Challenge.ID, request.ExternalID), nil
 }
 

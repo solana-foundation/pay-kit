@@ -808,6 +808,76 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('expired', $stolen->body['detail']);
     }
 
+    // The claim and its challenge binding are written before anything is
+    // sent: bound only after an ambiguous send, a store failure would strand
+    // a payment that may have landed, with nothing for the retry to
+    // reconcile. A failure there sends nothing.
+    public function testPendingBindingIsWrittenBeforeSending(): void
+    {
+        $inner = new MemoryStore();
+        $store = new class ($inner) implements Store {
+            public bool $fail = true;
+            public function __construct(private readonly Store $inner)
+            {
+            }
+            public function putIfAbsent(string $key, mixed $value): bool
+            {
+                if ($this->fail && str_starts_with($key, 'pay-kit:php:charge-pending:')) {
+                    throw new \RuntimeException('injected store outage');
+                }
+                return $this->inner->putIfAbsent($key, $value);
+            }
+            public function has(string $key): bool
+            {
+                return $this->inner->has($key);
+            }
+        };
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $rpc = new FakeRpcGateway(signature: $signature);
+        $result = $this->handler(
+            challenges: $challenges,
+            verifier: new AlwaysAcceptVerifier(),
+            replayStore: $store,
+            rpcGateway: $rpc,
+        )->handle($authorization, $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame([], $rpc->sentTransactions);
+    }
+
+    // The node already processed this exact transaction, yet this store held
+    // no claim on it: it was settled where this store cannot see. A replay,
+    // and it stays refused on retry.
+    public function testAlreadyProcessedWithAFreshClaimIsAReplay(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        $processed = new RpcException('JSON-RPC error: Transaction error: This transaction has already been processed', 200, -32603);
+        foreach ([$processed, null] as $sendError) {
+            $result = $this->handler(
+                challenges: $challenges,
+                verifier: new AlwaysAcceptVerifier(),
+                replayStore: $store,
+                rpcGateway: new FakeRpcGateway(signature: $signature, sendError: $sendError),
+            )->handle($authorization, $request);
+            self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        }
+        self::assertFalse($store->has('solana:authorized-signature:' . $signature));
+    }
+
     // A signature another SDK already settled on the shared ledger (it claims
     // the ledger key but never writes PHP's authorization key) is a replay.
     // Reconciling it would authorize it a second time, so only this
