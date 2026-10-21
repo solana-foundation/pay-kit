@@ -480,6 +480,22 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The packages and features of the Rust adapter build. They include `pkc`
+/// itself (with `interop`, as `pkc run --tier interop` is built), so cargo
+/// resolves the same features for every shared dependency as the build that
+/// produced `pkc`: when `pkc` and the adapters were built together (CI's
+/// setup-pkc runs exactly this selection), this build compiles nothing.
+pub const RUST_ADAPTER_BUILD: [&str; 8] = [
+    "-p",
+    "paykit-conformance",
+    "--bin",
+    "pkc",
+    "--features",
+    "paykit-conformance/interop",
+    "-p",
+    "paykit-harness-bins",
+];
+
 /// Compile each distinct native target once into `out` (the layout
 /// [`command`] resolves). Targets whose executable already exists are kept
 /// unless `force`.
@@ -496,13 +512,9 @@ pub fn build(root: &Path, targets: &[Native], out: &Path, force: bool) -> Result
         // `pkc` itself was built with (and the cargo cache).
         let target_dir = root.join("rust/target");
         let mut cmd = Command::new("cargo");
-        cmd.current_dir(&harness).args([
-            "build",
-            "--manifest-path",
-            "../rust/Cargo.toml",
-            "-p",
-            "paykit-harness-bins",
-        ]);
+        cmd.current_dir(&harness)
+            .args(["build", "--manifest-path", "../rust/Cargo.toml"]);
+        cmd.args(RUST_ADAPTER_BUILD);
         for t in &rust {
             cmd.args(["--bin", t.product]);
         }
