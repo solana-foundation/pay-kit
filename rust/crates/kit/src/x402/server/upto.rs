@@ -394,9 +394,20 @@ impl X402Upto {
         max_amount: &str,
         route: Option<&str>,
     ) -> Result<UptoRequirements, Error> {
+        let base_units = crate::x402::server::exact::parse_units(max_amount, cc.decimals)?;
+        self.upto_requirements_for_base_units(cc, base_units, route)
+    }
+
+    /// [`Self::upto_requirements_for_route`] with the maximum already in base
+    /// units.
+    fn upto_requirements_for_base_units(
+        &self,
+        cc: &CurrencyConfig,
+        base_units: String,
+        route: Option<&str>,
+    ) -> Result<UptoRequirements, Error> {
         let mint = self.mint_for(cc)?;
         let token_program = self.token_program_for(cc)?;
-        let base_units = crate::x402::server::exact::parse_units(max_amount, cc.decimals)?;
 
         Ok(UptoRequirements {
             scheme: UPTO_SCHEME.to_string(),
@@ -550,47 +561,20 @@ impl X402Upto {
         Ok(envelope)
     }
 
-    /// Verify an `upto` authorization for a route capped at `max_amount`,
-    /// broadcast and confirm the channel `open`, and bind its on-chain state.
-    pub async fn verify_open(
+    /// Every check [`Self::verify_open_for_route`] runs before it co-signs
+    /// and broadcasts the open, at `now`, against the `offered` requirements.
+    fn prepare_open(
         &self,
         header: &str,
-        max_amount: &str,
-    ) -> Result<VerifiedUptoOpen, Error> {
-        self.verify_open_for_route(header, max_amount, None).await
-    }
-
-    /// [`Self::verify_open`] for a challenge bound to `route`: the payer's
-    /// signed open must carry that route's memo, so an authorization issued
-    /// for another route does not verify here.
-    pub async fn verify_open_for_route(
-        &self,
-        header: &str,
-        max_amount: &str,
-        route: Option<&str>,
-    ) -> Result<VerifiedUptoOpen, Error> {
+        offered: &[UptoRequirements],
+        now: i64,
+    ) -> Result<PreparedOpen, Error> {
         let envelope = self.parse_payment_signature(header)?;
         let payload = &envelope.payload;
 
-        // Multi-currency: build one offered requirement per advertised currency
-        // and pick the one the client's `accepted` structurally matches (after
-        // stripping transient blockhash hints, mirroring exact's
-        // `find_matching_requirement`). The chosen asset is therefore guaranteed
-        // to be one we offered; the channel is then bound to THAT currency's
-        // mint + token program below.
-        let offered = self
-            .offered_currencies()
-            .iter()
-            .map(|cc| self.upto_requirements_for_route(cc, max_amount, route))
-            .collect::<Result<Vec<_>, _>>()?;
-        let requirements = match_offered_requirement(&offered, &envelope.accepted)?.clone();
+        let requirements = match_offered_requirement(offered, &envelope.accepted)?.clone();
 
-        verify_upto_payload(
-            payload,
-            &requirements,
-            &self.receiver_authorizer(),
-            now_unix(),
-        )?;
+        verify_upto_payload(payload, &requirements, &self.receiver_authorizer(), now)?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
         // PaymentRequirements), not at the envelope level.
         let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());
@@ -651,7 +635,7 @@ impl X402Upto {
                 "payment-channel asset transfer method requires openTransaction (pull)".to_string(),
             )
         })?;
-        let mut tx = decode_transaction(open_tx_b64)?;
+        let tx = decode_transaction(open_tx_b64)?;
         // SECURITY: the operator co-signs as fee payer, so it must only ever
         // sign the expected channel-open instruction - never an arbitrary
         // operator-authorized instruction (e.g. a SystemProgram transfer that
@@ -671,6 +655,66 @@ impl X402Upto {
                 recipients: &expected_distribution,
             },
         )?;
+        Ok(PreparedOpen {
+            tx,
+            expires_at: payload.expires_at,
+            requirements,
+            payer,
+            channel_id,
+            max,
+            expected_mint,
+            token_program,
+            program_id,
+            expected_payee,
+            expected_distribution,
+            in_flight,
+        })
+    }
+
+    /// Verify an `upto` authorization for a route capped at `max_amount`,
+    /// broadcast and confirm the channel `open`, and bind its on-chain state.
+    pub async fn verify_open(
+        &self,
+        header: &str,
+        max_amount: &str,
+    ) -> Result<VerifiedUptoOpen, Error> {
+        self.verify_open_for_route(header, max_amount, None).await
+    }
+
+    /// [`Self::verify_open`] for a challenge bound to `route`: the payer's
+    /// signed open must carry that route's memo, so an authorization issued
+    /// for another route does not verify here.
+    pub async fn verify_open_for_route(
+        &self,
+        header: &str,
+        max_amount: &str,
+        route: Option<&str>,
+    ) -> Result<VerifiedUptoOpen, Error> {
+        // Multi-currency: build one offered requirement per advertised currency
+        // and pick the one the client's `accepted` structurally matches (after
+        // stripping transient blockhash hints, mirroring exact's
+        // `find_matching_requirement`). The chosen asset is therefore guaranteed
+        // to be one we offered; the channel is then bound to THAT currency's
+        // mint + token program below.
+        let offered = self
+            .offered_currencies()
+            .iter()
+            .map(|cc| self.upto_requirements_for_route(cc, max_amount, route))
+            .collect::<Result<Vec<_>, _>>()?;
+        let PreparedOpen {
+            mut tx,
+            requirements,
+            payer,
+            channel_id,
+            max,
+            expected_mint,
+            token_program,
+            program_id,
+            expected_payee,
+            expected_distribution,
+            expires_at,
+            in_flight,
+        } = self.prepare_open(header, &offered, now_unix())?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
@@ -743,7 +787,7 @@ impl X402Upto {
             program_id,
             deposit: channel.deposit,
             max_amount: max,
-            expires_at: payload.expires_at,
+            expires_at,
             network: requirements.network,
             payee: expected_payee,
             distribution: expected_distribution,
@@ -1085,6 +1129,56 @@ impl X402Upto {
             .get_account_data(channel_id)
             .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
         Channel::from_bytes(&data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+    }
+}
+
+/// What [`X402Upto::prepare_open`] established, carried to the co-sign,
+/// broadcast and on-chain bind of [`X402Upto::verify_open_for_route`].
+struct PreparedOpen {
+    tx: VersionedTransaction,
+    requirements: UptoRequirements,
+    payer: Pubkey,
+    channel_id: Pubkey,
+    max: u64,
+    expected_mint: Pubkey,
+    token_program: Pubkey,
+    program_id: Pubkey,
+    expected_payee: Pubkey,
+    expected_distribution: Vec<pc::Distribution>,
+    expires_at: i64,
+    in_flight: InFlightGuard,
+}
+
+/// Conformance hooks (feature `testkit`). Not a payment verifier: nothing
+/// here co-signs or broadcasts.
+#[cfg(feature = "testkit")]
+pub mod testkit {
+    use super::*;
+
+    /// The checks [`X402Upto::verify_open_for_route`] runs before it
+    /// broadcasts the open, at an explicit `now` (Unix seconds) and with the
+    /// route's maximum already in base units, co-signature included (on a
+    /// local copy). `Ok` means the production path would go on to broadcast.
+    pub async fn verify_open_pre_broadcast(
+        server: &X402Upto,
+        header: &str,
+        max_amount_base_units: &str,
+        route: Option<&str>,
+        now: i64,
+    ) -> Result<(), Error> {
+        let offered = server
+            .offered_currencies()
+            .iter()
+            .map(|cc| {
+                server.upto_requirements_for_base_units(
+                    cc,
+                    max_amount_base_units.to_string(),
+                    route,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut tx = server.prepare_open(header, &offered, now)?.tx;
+        server.cosign_fee_payer(&mut tx).await
     }
 }
 

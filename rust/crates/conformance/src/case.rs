@@ -393,10 +393,20 @@ pub enum RejectCode {
     VoucherExpired,
     VoucherExpiresBeforeSettlement,
     AcceptedMismatch,
+    UnexpectedVoucher,
+    UnexpectedType,
+    ChannelAlreadyOpen,
+    ChannelLifetimeExceeded,
+    ExpiresAtMismatch,
+    NotYetActive,
+    DepositNotCeiling,
+    ReceiverAuthorizerMismatch,
+    ChannelIdMismatch,
+    OpenBindingMismatch,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 18] = [
+    pub const ALL: [RejectCode; 28] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -415,6 +425,16 @@ impl RejectCode {
         RejectCode::VoucherExpired,
         RejectCode::VoucherExpiresBeforeSettlement,
         RejectCode::AcceptedMismatch,
+        RejectCode::UnexpectedVoucher,
+        RejectCode::UnexpectedType,
+        RejectCode::ChannelAlreadyOpen,
+        RejectCode::ChannelLifetimeExceeded,
+        RejectCode::ExpiresAtMismatch,
+        RejectCode::NotYetActive,
+        RejectCode::DepositNotCeiling,
+        RejectCode::ReceiverAuthorizerMismatch,
+        RejectCode::ChannelIdMismatch,
+        RejectCode::OpenBindingMismatch,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -437,6 +457,16 @@ impl RejectCode {
             RejectCode::VoucherExpired => "voucher-expired",
             RejectCode::VoucherExpiresBeforeSettlement => "voucher-expires-before-settlement",
             RejectCode::AcceptedMismatch => "accepted-mismatch",
+            RejectCode::UnexpectedVoucher => "unexpected-voucher",
+            RejectCode::UnexpectedType => "unexpected-type",
+            RejectCode::ChannelAlreadyOpen => "channel-already-open",
+            RejectCode::ChannelLifetimeExceeded => "channel-lifetime-exceeded",
+            RejectCode::ExpiresAtMismatch => "expires-at-mismatch",
+            RejectCode::NotYetActive => "not-yet-active",
+            RejectCode::DepositNotCeiling => "deposit-not-ceiling",
+            RejectCode::ReceiverAuthorizerMismatch => "receiver-authorizer-mismatch",
+            RejectCode::ChannelIdMismatch => "channel-id-mismatch",
+            RejectCode::OpenBindingMismatch => "open-binding-mismatch",
         }
     }
 }

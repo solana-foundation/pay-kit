@@ -154,6 +154,7 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
     let mut refs = Vec::new();
     let input = vector.input();
     let entry = match vector.file.as_str() {
+        f if f.starts_with("x402-upto-") => "rust/crates/conformance/src/cases/x402_upto.rs",
         f if f.ends_with("-policy.json") && f.starts_with("x402") => {
             "rust/crates/conformance/src/cases/x402_policy.rs"
         }
@@ -192,6 +193,16 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             concat_kit("x402/server/exact.rs"),
             "pub async fn verify_payment_signature_for_requirements(",
             "kit x402 verifier",
+        )),
+        ("x402-upto", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/client/upto/payment.rs"),
+            "pub async fn build_upto_payload(",
+            "kit upto client builder",
+        )),
+        ("x402-upto", "verify-transaction") => refs.push(SourceRef::new(
+            concat_kit("x402/server/upto.rs"),
+            "fn prepare_open(",
+            "kit upto pre-broadcast verifier",
         )),
         ("session", "verify-transaction") => refs.push(SourceRef::new(
             concat_kit("core/session.rs"),

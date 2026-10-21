@@ -105,6 +105,36 @@ include”, uses the v1 field name, and is superseded by the network binding's
 normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
 as an explicit stricter policy; default verifiers MUST accept it.
 
+## x402 upto on SVM
+
+**U1. `openSlot` and `recentSlot` are numbers on the wire; verifiers accept the
+decimal-string form too.** The pinned table reads “| openSlot | number | u64
+slot encoded in the open instruction and used as a channel PDA seed. |” and
+“| recentSlot | number | no |”. Every implementation emits decimal strings
+(the session method's convention). Vectors use the string form everywhere
+except `x402-upto-verify-open-slot-number-accept` and
+`x402-upto-build-recent-slot-number`, which pin the spec's number form as
+accepted; a verifier that also accepts the string form is not in breach (the
+table types what a producer emits). Upstream: make the table say decimal
+string, or require both parsers to accept both.
+
+**U2. The read-only verify preflight runs the deposit's static checks, the
+channel-exists read included.** “Facilitator /verify is not part of this
+ordering; it MAY be offered as a read-only preflight of the same static checks
+below without co-signing or broadcasting open.” Step 4 (“Confirm the channel
+account does not already exist.”) is a read, not a write, so a preflight that
+answers valid for an already-opened channel misreports the deposit's outcome.
+`x402-upto-verify-channel-already-open-reject` serves the channel account from
+the fixture RPC.
+
+**U3. Offline verify stops before the broadcast.** Vectors judge everything up
+to and including the fee payer's co-signature (steps 0 to 7 and the acceptance
+policy); settlement readiness (step 8, simulation), the broadcast and the
+on-chain rebind (steps 9 and 10) need a validator and are interop scenarios.
+Open-slot freshness against the challenged slot is program-enforced (“The open
+instruction still enforces the program's slot window.”), so no vector requires
+a verifier to pre-check it.
+
 ## Harness consequences
 
 - Vectors encode these rulings. Runners pass chain state through the fixture
