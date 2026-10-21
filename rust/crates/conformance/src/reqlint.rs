@@ -517,6 +517,8 @@ pub fn toml_name(repo: SpecRepo) -> &'static str {
         SpecRepo::MppSpecs => "mpp",
         SpecRepo::X402 => "x402",
         SpecRepo::MppSpecsSolana => "mpp-solana",
+        SpecRepo::MppSpecsTxV1 => "mpp-txv1",
+        SpecRepo::X402TxV1 => "x402-txv1",
     }
 }
 
