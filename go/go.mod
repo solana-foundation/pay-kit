@@ -1,6 +1,6 @@
 module github.com/solana-foundation/pay-kit/go
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/gagliardetto/binary v0.8.0

@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "httpx>=0.27",
+    # httpx verifies TLS with certifi's bundle; 2026.10.19 drops the
+    # compromised eMudhra intermediates (emudhra.we-have-a-problem.com).
+    "certifi>=2026.10.19",
     "solana-keychain==2.0.0",
     "solders>=0.29,<1",
     "solana>=0.40.2",

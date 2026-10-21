@@ -1,6 +1,6 @@
 module harness/go-server
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/gagliardetto/solana-go v0.0.0-20260403020633-3cb13b392078
