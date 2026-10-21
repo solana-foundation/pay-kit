@@ -35,7 +35,7 @@ from solana_pay_kit import (
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from solana_pay_kit._paycore.store import ConsumedSignatures, consumed_signature_key
 from solana_pay_kit.config import reset
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import InvalidProofError, SettlementInProgressError
 from solana_pay_kit.protocols.x402 import (
     X402_VERSION,
     X402Adapter,
@@ -62,7 +62,7 @@ class _FakeRpc:
     def __init__(
         self,
         *_a,
-        fail: bool = False,
+        fail: bool | Exception = False,
         confirm_error: Exception | None = None,
         **_k,
     ):
@@ -74,6 +74,8 @@ class _FakeRpc:
 
     async def send_raw_transaction(self, _raw):
         self.send_calls += 1
+        if isinstance(self._fail, Exception):
+            raise self._fail
         if self._fail:
             raise RuntimeError("broadcast boom")
 
@@ -117,7 +119,7 @@ def _clean(monkeypatch):
     reset()
 
 
-def _adapter(store=None, fail=False, confirm_error=None, monkeypatch=None, rpcs=None):
+def _adapter(store=None, fail: bool | Exception = False, confirm_error=None, monkeypatch=None, rpcs=None):
     op_kp = Keypair()
     op = Operator(signer=MemorySigner(op_kp), recipient=str(Keypair().pubkey()))
     cfg = configure(
@@ -293,11 +295,53 @@ async def test_pre_ledger_consumed_record_stays_consumed(monkeypatch, legacy_pre
 
 
 @pytest.mark.asyncio
-async def test_broadcast_failure_is_invalid_proof(monkeypatch):
-    adapter, gate, op_kp = _adapter(fail=True, monkeypatch=monkeypatch)
+async def test_preflight_rejection_is_invalid_proof_and_records_nothing(monkeypatch):
+    from solana_pay_kit._paycore.rpc import PreflightRejectedError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store, fail=PreflightRejectedError("simulation failed"), monkeypatch=monkeypatch
+    )
     header = _build_envelope(adapter, gate, op_kp)
-    with pytest.raises(InvalidProofError, match="broadcast failed"):
+    signature = await _settlement_signature(header, op_kp)
+    with pytest.raises(InvalidProofError, match="broadcast failed") as exc:
         await adapter.verify_and_settle(gate, _Req(header))
+    assert not isinstance(exc.value, SettlementInProgressError)
+    # No node was handed it: the payer may present it again.
+    assert await store.get(consumed_signature_key(signature)) is None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_broadcast_failure_keeps_the_payment_pending(monkeypatch):
+    store = MemoryStore()
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
+    adapter, gate, op_kp = _adapter(store=store, fail=True, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    # A lost response: it may have landed. Never a plain rejection.
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    record = await store.get(consumed_signature_key(signature))
+    assert isinstance(record, dict)
+    assert record["state"] == "pending"
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+
+    # Once the lease lapses a retry reconciles it from the chain, without
+    # broadcasting it again, and is granted once.
+    now[0] += 21 * 60 + 1
+    recovered: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc()
+        recovered.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == signature
+    assert recovered[0].send_calls == 0
 
 
 # -- confirmation gate (149-2 BLOCKER) ---------------------------------------
@@ -330,19 +374,17 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     )
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
-    with pytest.raises(InvalidProofError) as exc:
+    with pytest.raises(SettlementInProgressError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
-    assert exc.value.code == "payment_invalid"
-    assert "confirmation failed" in str(exc.value)
+    assert exc.value.code == "settlement_in_progress"
     # Broadcast was accepted, so a timeout is ambiguous: the transaction may
     # still land. Keep the reservation to prevent a later duplicate fulfillment.
     record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
 
-    with pytest.raises(InvalidProofError) as retry_exc:
+    with pytest.raises(SettlementInProgressError):
         await adapter.verify_and_settle(gate, _Req(header))
-    assert retry_exc.value.code == "signature_consumed"
 
     now[0] += 21 * 60 + 1
     recovered_rpcs: list = []
@@ -409,8 +451,10 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
     )
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
-    with pytest.raises(InvalidProofError):
+    with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
+    # It landed and failed: a rejection, not an unresolved settlement.
+    assert not isinstance(exc.value, SettlementInProgressError)
     record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
