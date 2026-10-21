@@ -1,32 +1,40 @@
 name: Build pkc
 description: >-
-  Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) once
-  per job with a cargo cache, and put it on PATH. Language legs then run
-  `pkc run --sdk <lang> --tier offline --require` against their own testee.
+  Build the pay-kit conformance driver (`pkc`, rust/crates/conformance) with a
+  shared cargo cache and put it on PATH. `features: interop` links surfpool for
+  `pkc run --tier interop` (and builds the Rust harness bins in the same
+  target directory, so they share the cached dependencies).
 
 inputs:
-  cache-key:
-    description: Namespace for the cargo cache key (one per job keeps caches small).
+  features:
+    description: Cargo features for pkc (`interop` for the interop tier).
     required: false
-    default: pkc
+    default: ""
 
 runs:
   using: composite
   steps:
     - uses: dtolnay/rust-toolchain@stable
-    - uses: actions/cache@v5
+    # One cache per (OS, feature set), shared by every job that builds pkc.
+    # rust/Cargo.lock is not committed, so rust-cache keys on the manifests
+    # and rotates the cache when they change (a fixed actions/cache key
+    # never updates once written).
+    - uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          rust/target
-        key: ${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
-        restore-keys: ${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}-
+        workspaces: rust
+        shared-key: pkc-${{ inputs.features || 'offline' }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Build pkc
       shell: bash
       working-directory: rust
+      env:
+        FEATURES: ${{ inputs.features }}
       run: |
-        cargo build -q -p paykit-conformance --bin pkc
+        if [ -n "$FEATURES" ]; then
+          cargo build -q -p paykit-conformance --bin pkc --features "$FEATURES"
+        else
+          cargo build -q -p paykit-conformance --bin pkc
+        fi
         mkdir -p "$RUNNER_TEMP/pkc-bin"
         ln -sf "$GITHUB_WORKSPACE/rust/target/debug/pkc" "$RUNNER_TEMP/pkc-bin/pkc"
         echo "$RUNNER_TEMP/pkc-bin" >> "$GITHUB_PATH"

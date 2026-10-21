@@ -35,6 +35,22 @@ pkc run --sdk python --diff-expectations  # newly_passing / newly_failing / stil
 5. Before pushing: `pkc run --sdk <sdk> --tier offline --require` (what CI
    runs) and the SDK's own formatter, linter and tests.
 
+## Interop against the Rust reference
+
+```sh
+pkc run --tier interop --sdk python,rust          # every claimed case pairing python with Rust (build with --features interop)
+pkc run --tier interop --case charge-basic/rust/python
+pkc run --tier interop --shard python --require   # what `Conformance / python` runs
+```
+
+A case is `interop/<scenario>/<client>/<server>`; one side is always Rust.
+A failure prints the assertion, the client's result, every exchange the fault
+proxy saw, and both adapters' stderr. Gaps go in `known_failing` of the toml
+of the side at fault (the client's for client faults, the server's
+otherwise), with a FINDINGS.md section. Scenarios live in
+`rust/crates/conformance/src/interop/scenarios.rs`; never narrow one with
+`Participants::Only` to hide a failing SDK.
+
 ## Rules
 
 - **Never edit a vector to make it pass.** `harness/vectors/` is filled by

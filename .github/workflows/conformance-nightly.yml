@@ -1,0 +1,139 @@
+name: Conformance (nightly)
+
+# Two all-SDK fan-ins kept off the pull-request path:
+#
+# - cross: every client SDK's offline builds verified by every server SDK
+#   (`pkc run --cross --require --check`), each cell reconciled against the
+#   `cross` entries of harness/expectations/<server>.toml. It needs the Swift
+#   client's builds, so it waits on a macOS leg.
+# - seeded: the vector corpus filled with a fresh mutation seed (`pkc run
+#   --seed`); a testee that memorised the committed bytes fails here.
+#   Reported, never gating (DESIGN.md §6.5).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Mutation seed (default: the run number)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  swift-builds:
+    name: builds (swift)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-pkc
+      - name: Offline vectors (pkc), saving the builds
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk swift --tier offline --require
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkc-builds-swift
+          path: harness/results/swift/builds
+          if-no-files-found: error
+
+  cross:
+    name: cross
+    needs: swift-builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: Install SDK dependencies
+        run: |
+          (cd python && uv sync --extra dev)
+          (cd php && composer install --no-interaction --no-progress)
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+          cd lua && mkdir -p lua_modules
+          for rock in luasocket luasodium lua-resty-openssl lua-cjson; do
+            luarocks --lua-version=5.1 install --tree lua_modules "$rock"
+          done
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+      - uses: ./.github/actions/setup-pkc
+      - name: Offline vectors of every Linux client SDK (pkc), saving the builds
+        env:
+          HARNESS_REQUIRE: "1"
+        run: pkc run --sdk typescript,rust,go,python --tier offline --require
+      - name: Download the Swift builds
+        uses: actions/download-artifact@v7
+        with:
+          name: pkc-builds-swift
+          path: harness/results/swift/builds
+      - name: Cross-verify every build on every server (pkc)
+        run: pkc run --cross --require --check
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cross-results
+          path: harness/results/
+          if-no-files-found: ignore
+
+  seeded:
+    name: seeded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: Install SDK dependencies
+        run: |
+          (cd python && uv sync --extra dev)
+          (cd php && composer install --no-interaction --no-progress)
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+          cd lua && mkdir -p lua_modules
+          for rock in luasocket luasodium lua-resty-openssl lua-cjson; do
+            luarocks --lua-version=5.1 install --tree lua_modules "$rock"
+          done
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+      - uses: ./.github/actions/setup-pkc
+      - name: Run every SDK against a seeded corpus
+        continue-on-error: true
+        env:
+          SEED: ${{ inputs.seed || github.run_number }}
+        run: pkc run --sdk typescript,rust,go,python,ruby,php,lua --tier offline --seed "$SEED"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: seeded-conformance-results
+          path: harness/results/
+          if-no-files-found: ignore

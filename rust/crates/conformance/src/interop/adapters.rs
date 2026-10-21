@@ -492,15 +492,17 @@ pub fn build(root: &Path, targets: &[Native], out: &Path, force: bool) -> Result
         .collect();
     let rust: Vec<&&Native> = todo.iter().filter(|t| t.toolchain == "rust").collect();
     if !rust.is_empty() {
-        let target_dir = root.join("rust/target/harness-artifacts");
+        // The workspace target directory, so the bins share the dependencies
+        // `pkc` itself was built with (and the cargo cache).
+        let target_dir = root.join("rust/target");
         let mut cmd = Command::new("cargo");
         cmd.current_dir(&harness).args([
             "build",
             "--manifest-path",
             "../rust/Cargo.toml",
-            "--target-dir",
+            "-p",
+            "paykit-harness-bins",
         ]);
-        cmd.arg(&target_dir).args(["-p", "paykit-harness-bins"]);
         for t in &rust {
             cmd.args(["--bin", t.product]);
         }

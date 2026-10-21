@@ -260,7 +260,7 @@ pub fn render(exps: &BTreeMap<String, Expectations>, plan: &Plan) -> Result<Stri
         lines.push(String::new());
     }
     lines.push(format!(
-        "{} SDK shards, each one `Conformance / <sdk>` job in `harness.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.",
+        "{} SDK shards, each one `Conformance / <sdk>` job in `.github/workflows/conformance.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.",
         plan.shards.len()
     ));
     Ok(lines.join("\n"))

@@ -107,6 +107,43 @@ Phase 4, first part, on `feat/pkc-report`:
 - 42 cases for 37 previously unmapped charge / x402-exact MUSTs
   (`charge_policy.rs`, `x402_policy.rs`); 13 new FINDINGS.md sections.
 
+Phase 3 on `feat/pkc-phase3`:
+
+- `pkc run --tier interop` (`rust/crates/conformance/src/interop/`)
+  replaces `test/e2e.test.ts`, `cross-server-scenarios`, `x402-exact.e2e`,
+  `x402-upto.e2e` and their support code (`src/{ci-matrix,replay,guards,
+  process,implementations}.ts`, `src/intents/`, `emit-ci-matrix.ts`,
+  `interop-coverage.ts`, `mpp-matrix.yml`). The existing process adapters are
+  the testees, driven exactly as `process.ts` did; one offline surfpool per
+  run, fresh keypairs per case, scenario mints fixed (x402 servers price in
+  the network's stablecoin, so fresh mints were not possible).
+- 30 scenarios (the 23 of `src/intents/*.ts`, ids kept, plus 7 faults), each
+  with a verbatim spec quote; structural settlement assertions in Rust.
+- Direction change: **Rust is the only counterparty.** Every case pairs an SDK
+  with the Rust adapter in the opposite role (Rust against Rust as the
+  control); there are no non-Rust pairs and no nightly pairwise matrix.
+  Consequence: the scenarios only the TypeScript client can drive
+  (`charge-compute-budget-over-cap`, `charge-splits-*`, `charge-push`) now run
+  against the Rust server only.
+- Fault proxy: capture/replay (resubmit, cross-server portability),
+  cross-route replay, wrong amount / wrong recipient re-signed with the
+  client key (the negative cases of the deleted `charge_integration.rs`,
+  against every server), expired / wrong-network / over-asking / mis-signed
+  challenge (against every client).
+- `capabilities.interop` claims, exact-set reconciliation across both sides
+  of a pair, `known_failing.ids`. 224 local cases (Kotlin excluded: no JVM):
+  175 pass, 49 known failing (FINDINGS.md "Interop findings").
+- CI: `pkc plan --tier interop` emits one `Conformance / <sdk>` job per SDK
+  (offline + protocol/flow + interop) in `conformance.yml`, path-filtered per
+  SDK; the cross matrix and the seeded corpus moved to
+  `conformance-nightly.yml`. `ci.yml` split into `TypeScript`, `Rust`,
+  `Playground` and `Payment links` workflows; language workflows keep only
+  `test` / `lint`.
+
+Not done in phase 3: harness adapter directories are kept (no single
+per-language testee yet), `settlement_onchain.rs` is not ported (on-chain
+tier, phase 4), `store.dump` and the sequence suite are not implemented.
+
 Done:
 
 - Expectations files with exact-set reconciliation for the vector,

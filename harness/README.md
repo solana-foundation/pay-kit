@@ -26,21 +26,48 @@ It catches three classes of regression:
 
 The harness has **two verification tiers** plus a **conformance-vector** layer.
 
-### 1. Structural cross-language interop (default)
+### 1. Interop against the Rust reference (`pkc run --tier interop`)
 
-`test/e2e.test.ts`, `test/x402-exact.e2e.test.ts`,
-`test/cross-server-scenarios.test.ts`.
+`rust/crates/conformance/src/interop/` (scenarios, adapters, fault proxy,
+settlement assertions), `expectations/*.toml` (`capabilities.interop`).
 
-Each language ships a thin **process adapter** (a client and/or server). The
-Vitest harness boots an in-process Surfpool validator, funds test wallets,
-starts a server adapter, runs a client adapter against it, then **fetches the
-settled transaction from Surfpool and asserts its structure** — the expected SPL
-`transferChecked` instructions, split amounts, idempotent ATA-creation
-instructions, memos, and recipient/split balance deltas — and fails on
-unexpected extra transfers.
+Each language ships a thin **process adapter** (a client and/or server).
+`pkc` starts one local Surfpool per run (surfpool-sdk, offline, clock-driven
+blocks), deploys the scenario mints and the payment-channels program, and for
+every case gives fresh keypairs, starts the server adapter, routes the client
+adapter through a **fault proxy**, then **fetches the settled transaction and
+asserts its structure** in Rust: the expected SPL `transferChecked` set (or
+System transfer), split amounts, idempotent ATA creation, memos, no extra
+transfers, the upto `settle_and_seal` + `distribute` shape, balance deltas,
+canonical codes on every 402, and exactly-once settlement on resubmit.
 
-This tier is fast and broad, but it verifies the **shape of the transaction
-bytes**, not the result of executing the on-chain program.
+Every case pairs an SDK with the Rust reference: its client against the Rust
+server, the Rust client against its server, Rust against Rust as the control.
+Keys are `interop/<scenario>/<client>/<server>`; claims are
+`<protocol>:<scheme>:<role>`, reconciled exactly against both SDKs' files
+(an entry lives on the side the gap belongs to). The proxy also injects the
+faults: idempotent resubmit and cross-server portability (capture and
+replay), cross-route replay (the credential presented to another route),
+wrong amount and wrong recipient (the credential's transaction rewritten and
+re-signed, against every server), and an expired, wrong-network, over-asking
+or mis-signed challenge (against every client).
+
+```bash
+cd rust
+cargo run -q -p paykit-conformance --features interop --bin pkc -- run --tier interop --sdk go,rust --require
+cargo run -q -p paykit-conformance --features interop --bin pkc -- run --tier interop --shard python --require
+cargo run -q -p paykit-conformance --features interop --bin pkc -- run --tier interop --case charge-basic/rust/php
+cargo run -q -p paykit-conformance --bin pkc -- plan --tier interop          # shards; --write regenerates the table
+```
+
+x402 `upto` needs the localnet payment-channels build: `--program-so` or
+`PAYMENT_CHANNELS_PROGRAM_SO` (`.github/actions/build-payment-channels`).
+Native adapters (Rust, Go, Swift, Kotlin) are compiled once per run into
+`rust/target/pkc-adapters` (or `pkc adapters build --shard <sdk> --out DIR`
+plus `--prebuilt DIR`).
+
+This tier verifies transaction structure, not the result of executing the
+payment-channels program on mainnet state; that is the on-chain tier.
 
 ### 2. On-chain settlement E2E
 
@@ -91,7 +118,7 @@ command), `results/junit-<lang>.xml` and `results/<lang>/builds/`. `--require`
 (or `HARNESS_REQUIRE=1`, set in CI) makes a run that skipped any claimed case
 fail; `--discover` (or `HARNESS_EXPECTATIONS_DISCOVER=1`) runs every vector for
 every SDK without judging, to seed an expectations file. `--seed N` fills a
-variant corpus first (the nightly `conformance-seeded.yml` job, reported, not
+variant corpus first (the nightly `conformance-nightly.yml` job, reported, not
 gating). See [`AGENTS.md`](AGENTS.md) for the working loop.
 
 ### Testee ABI
@@ -134,7 +161,7 @@ nothing.
 
 ### Process adapter contract
 
-Each adapter is a standalone process launched by `src/process.ts`. It is
+Each adapter is a standalone process launched by `pkc` (`interop/process.rs`). It is
 configured entirely through environment variables and reports machine-readable
 status on stdout as newline-delimited JSON. **stdout must contain only JSON
 protocol messages; all diagnostics go to stderr** so the harness can parse
@@ -164,17 +191,16 @@ server adapter must not re-encode scenario expectations.
 
 ```
 src/
-  artifacts.ts       native/JVM build targets and prebuilt command resolution
-  ci-matrix.ts       generated MPP charge shards and exact-case coverage checks
-  contracts.ts        canonical scenario values (amounts, splits, expected status)
-  implementations.ts  registry of language adapters (client / server / both)
-  process.ts          process spawning + JSON protocol parsing
-  intents/            scenario definitions (charge, x402-exact, session, …)
+  artifacts.ts        native build targets of the offline conformance runners
+  contracts.ts        the adapter contract types and the TypeScript adapters' fallbacks
+  expectations.ts     the TS twin of the expectations parser (protocol and flow suites)
+  fixtures/typescript the TypeScript process adapters
   onchain/surfnet.ts  mainnet-fork bootstrap for the on-chain tier
-  protocol/           cross-SDK vector drivers + divergence matrix
-test/                 vitest entrypoints (structural, on-chain, protocol/flow conformance)
+  protocol/           mpp-tools protocol and flow drivers
+test/                 vitest: protocol/flow conformance, on-chain, harness unit tests
 runners/<lang>.json   per-SDK conformance testee (`command` one-shot, `serve` ABI v2)
 expectations/         per-SDK claims, unsupported and known_failing (exact-set)
+interop-plan.json     generated by `pkc plan --tier interop --write`
 vectors/              filled by `pkc fill`; never edited by hand
 <lang>-{client,server}/  per-language process adapters
 ```
@@ -183,28 +209,23 @@ vectors/              filled by `pkc fill`; never edited by hand
 
 ## Methodology
 
-- **Scenarios are data.** Canonical values live in `src/contracts.ts` /
-  `src/intents/`; adapters never hard-code them. The harness generates the
-  client×server matrix from the active scenario set and asserts centrally.
-- **Generated MPP charge matrix.** CI runs every eligible charge client/server
-  pair, including same-language pairs. The adapter registry and scenario
-  allowlists determine coverage; job-name filters do not. The matrix planner
-  rejects unknown adapters and missing toolchain mappings. Other intents retain
-  their existing focused jobs.
-- **Replay belongs to the shared runner.** For `charge-idempotent-resubmit`,
-  the runner captures the credential through a loopback proxy while the real
-  client pays the real server, then resubmits it without the client's automatic
-  payment retry. Every charge client can drive this check. The first response
-  must be 200; the replay must be 402 with `signature_consumed`.
-- **Assigned cases must run.** Generated shards set `HARNESS_STRICT_SHARD=1`.
-  A selected scenario with no eligible pair is an error, even if another
-  shard could run it. Local broad selections may still skip ineligible pairs.
-- **Structural first, on-chain for settlement.** The structural tier gives fast,
-  broad interop coverage; the on-chain tier is reserved for the schemes whose
-  correctness depends on program execution.
+- **Scenarios are data.** The interop scenarios live in
+  `rust/crates/conformance/src/interop/scenarios.rs`, each with a verbatim
+  spec quote checked against the pinned specs; adapters never hard-code them.
+- **Rust is the reference counterparty.** No pair between two other SDKs is
+  run; one honest Rust client and server, with the misbehaviour in the proxy,
+  cover every SDK in the opposite role.
+- **Restrictions are stated, not hidden.** A scenario limited to some adapters
+  (`Participants::Only`) carries a reason: a driver knob only one adapter
+  implements, the pivot side of a fault, or a policy that is not a spec rule.
+  A failing SDK is a `known_failing` entry with a FINDINGS.md section, never a
+  restriction.
+- **Assigned cases must run.** `--require` fails a run that skipped a claimed
+  case of its selection; `test/ci-coverage.test.ts` fails when a planned shard
+  has no CI step.
 - **Environment in, JSON out.** Adapters are language-agnostic processes, so a
-  new language joins by implementing the contract, registering its adapter,
-  and declaring its CI toolchain requirements.
+  new language joins by implementing the contract, adding it to
+  `interop/adapters.rs` and claiming its roles in its toml.
 
 ### Shared environment (selected)
 
@@ -212,7 +233,7 @@ vectors/              filled by `pkc fill`; never edited by hand
 `MPP_HARNESS_PRICE`, `MPP_HARNESS_SECRET_KEY`, `MPP_HARNESS_CLIENT_SECRET_KEY`,
 `MPP_HARNESS_FEE_PAYER_SECRET_KEY`, `MPP_HARNESS_PAY_TO`,
 `MPP_HARNESS_TARGET_URL` (client). x402 uses the parallel `X402_HARNESS_*` set.
-Full list and the canonical integer amounts live in `src/contracts.ts`.
+Full list in `environment()` of `rust/crates/conformance/src/interop/runner.rs`.
 
 ---
 
@@ -592,7 +613,7 @@ case is in no scheduled shard.
 | rust | 2 | (control) |
 | swift | 2 |  |
 
-9 SDK shards, each one `Conformance / <sdk>` job in `harness.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.
+9 SDK shards, each one `Conformance / <sdk>` job in `.github/workflows/conformance.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.
 <!-- interop:end -->
 
 ### On-chain settlement
@@ -637,10 +658,12 @@ schemes against the same mainnet-fork bootstrap in `src/onchain/surfnet.ts`.
 - **Treasury owner is pinned to the deployed (mainnet-build) program.** The
   on-chain tier asserts against `ATA(Cs2zdf…, mint)`; a localnet-build program
   with a different `TREASURY_OWNER` would not match.
-- **Coverage follows declared capabilities.** The generated MPP charge matrix
-  covers registered adapters and scenario allowlists, not every public framework
-  integration. Its replay assertion checks HTTP rejection, not application
-  side-effect counts. Other intents still use focused CI matrices.
+- **Coverage follows declared capabilities.** The interop tier covers the
+  registered process adapters and the claims in the expectations files, not
+  every public framework integration, and pairs every SDK with Rust only: a
+  divergence two non-Rust SDKs share, against each other, is not exercised.
+  The resubmit cases assert HTTP rejection and exactly-once settlement, not
+  application side-effect counts.
 - **Surfpool ≠ a real cluster.** Forking approximates mainnet feature flags and
   account state; it is not a substitute for devnet/mainnet integration on the
   real network.
@@ -651,13 +674,13 @@ schemes against the same mainnet-fork bootstrap in `src/onchain/surfnet.ts`.
 
 - Prove cross-SDK protocol agreement (encoders, challenges, credentials, error
   codes) with byte-level vectors.
-- Prove interop: any enabled client can pay any enabled server for a scheme both
-  support.
+- Prove interop: every SDK's client pays the Rust reference server, and the Rust
+  client pays every SDK's server, for every scheme the SDK claims.
 - Prove **on-chain settlement** for program-backed schemes, so a payment that is
   accepted off-chain is one that actually settles.
 - Make adding a language cheap: implement the process-adapter contract, register
   it, done.
-- Keep CI coverage explicit and deterministic (generated shards; pure-JSON adapter I/O).
+- Keep CI coverage explicit and deterministic (planned shards; pure-JSON adapter I/O).
 
 ## Non-goals
 
@@ -678,91 +701,42 @@ From this directory:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test                      # structural + protocol/flow conformance (default matrix)
+pnpm exec vitest run test/protocol-conformance.test.ts   # protocol suite (MPP_CONFORMANCE_LANGUAGES=<sdk>)
 pnpm test:onchain              # on-chain settlement tier (HARNESS_ONCHAIN=1)
 pnpm typecheck                 # base typecheck (excludes the on-chain suite)
 pnpm typecheck:onchain         # on-chain suite typecheck (needs pay-kit built)
 ```
 
-`@solana/mpp` (and, for the on-chain tier, `@solana/pay-kit`) are local `file:`
-dependencies, so build them before installing the harness:
+`@solana/mpp` (and `@solana/pay-kit`, which the TypeScript adapters import) are
+local `file:` dependencies, so build them before installing the harness:
 
 ```bash
-cd ../typescript && pnpm --filter @solana/mpp build   # + pay-kit for on-chain
-cd ../harness && pnpm install --force --frozen-lockfile
+cd ../typescript && pnpm install --frozen-lockfile && pnpm build
+cd ../harness && pnpm install --frozen-lockfile
 ```
 
-Filter the matrix with env vars:
+The offline tier and the interop tier run from `rust/` with `pkc` (above).
 
-```bash
-MPP_HARNESS_CLIENTS=typescript,rust MPP_HARNESS_SERVERS=rust pnpm test
-MPP_HARNESS_INTENTS=charge MPP_HARNESS_SCENARIOS=charge-basic,charge-split-ata pnpm test
-X402_HARNESS_MATRIX=1 pnpm test x402-exact.e2e.test.ts
-X402_HARNESS_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
-SURFPOOL_DATASOURCE_RPC_URL=<mainnet-rpc> pnpm test:onchain
-```
+### CI
 
-### MPP charge CI coverage
-
-`.github/workflows/mpp-matrix.yml` generates its jobs from the adapter registry
-and charge scenarios. Inspect the plan or run the fast planning tests:
-
-```bash
-pnpm exec tsx emit-ci-matrix.ts
-pnpm exec vitest run test/ci-matrix.test.ts test/replay.test.ts test/guards.test.ts
-```
-
-Each shard carries its exact case keys in `MPP_HARNESS_EXPECTED_CASES`. The e2e
-runner checks both registration and execution against that set. CI does not use
-`--testNamePattern`; scenario selection comes from the generated shard.
-
-The workflow uses `fail-fast: false` so one failing SDK does not cancel coverage
-of the others. The final **MPP charge coverage** job requires planning and every
-shard to succeed; use that stable check name for branch protection.
-
-### Build once, execute the artifacts
-
-Each matrix workflow builds `@solana/mpp` once and publishes its portable `dist`.
-Native producers build the union of required adapters once per OS/architecture,
-then publish tar archives that preserve executable permissions. Go protocol aliases
-reuse the same binary; Kotlin artifacts include the installed distribution's JARs.
-The legacy harness also packages its compiled conformance runners.
-
-Test jobs download these outputs and set `HARNESS_PREBUILT_DIR`. They execute the
-binaries directly: no `cargo run`, `go run`, `swift run`, or Gradle payment-adapter
-builds inside a test leg. Missing or unclassified artifacts fail explicitly rather
-than falling back to a compiler. Cargo caches accelerate producers but are never
-treated as evidence that an executable is ready.
-
-Without `HARNESS_PREBUILT_DIR`, local developer commands retain their build-on-demand
-behavior. To exercise packaged Go adapters locally:
-
-```bash
-node --import tsx build-adapters.ts --clients go --servers go --out ../.harness-artifacts
-HARNESS_PREBUILT_DIR="$PWD/../.harness-artifacts" \
-  MPP_HARNESS_CLIENTS=go MPP_HARNESS_SERVERS=go \
-  MPP_HARNESS_SCENARIOS=charge-idempotent-resubmit pnpm test test/e2e.test.ts
-```
-
-Use `--conformance swift,kotlin` to package those runners when their toolchains are
-available. Compilation is shared within each workflow run; independent language
-unit-test workflows retain their own build environments.
-
----
+`.github/workflows/conformance.yml` (`Conformance / <sdk>`): one job per SDK
+from `pkc plan --tier interop` (offline vectors, protocol and flow suites,
+interop against the Rust reference), plus `Conformance / registry` (case
+registry, `pkc fill --check`, `req-lint`, `report --check`, harness unit
+tests) and `Conformance / onchain`. A `changes` job runs only the SDKs a PR
+touches; changes under `harness/`, `rust/crates/{conformance,kit,harness-bins}`
+or `.github/` run every SDK. The offline cross matrix and the seeded corpus run
+nightly (`conformance-nightly.yml`).
 
 ## Adding an implementation
 
 1. Write a process adapter (client and/or server) for the language.
-2. Register it in `src/implementations.ts` (`client`, `server`, or both) under
-   the intents it supports.
-3. Keep the adapter command relative to `harness`; emit only `ready` / `result`
-   JSON on stdout.
-4. Validate a focused slice before enabling by default:
+2. Add it to `ADAPTERS` in `rust/crates/conformance/src/interop/adapters.rs`
+   (id, language, role, intent, reported implementation, launch command).
+3. Claim its roles in `expectations/<language>.toml` (`capabilities.interop`).
+4. Run it against the reference:
    ```bash
-   MPP_HARNESS_CLIENTS=<id> MPP_HARNESS_SERVERS=rust pnpm test
-   MPP_HARNESS_CLIENTS=rust MPP_HARNESS_SERVERS=<id> pnpm test
+   pkc run --tier interop --sdk <language>,rust --require
    ```
-5. Add its toolchain mapping in `src/ci-matrix.ts` and, for a new language, its
-   setup in `.github/workflows/mpp-matrix.yml`. Run the planning tests and inspect
-   the emitted matrix. Registered charge adapters join CI regardless of their
-   local `enabled` default; do not remove failing cases to make a shard green.
+   and record every failing case as `known_failing` with a FINDINGS.md section.
+5. `pkc plan --tier interop --write`; the new shard appears in CI.

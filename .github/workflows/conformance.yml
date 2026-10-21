@@ -1,0 +1,310 @@
+name: Conformance
+
+# One job per SDK, `Conformance / <sdk>`, from `pkc plan --tier interop`
+# (rust/crates/conformance/src/interop/plan.rs): the SDK's offline suites
+# (`pkc run --sdk <sdk> --tier offline`, the vitest protocol and flow
+# suites it claims) and its interop cases against the Rust reference
+# (`pkc run --tier interop --shard <sdk>`: its client against the Rust
+# server, the Rust client against its server; the rust job runs Rust
+# against Rust). harness/test/ci-coverage.test.ts checks that this file
+# runs every claimed suite for every SDK. The offline cross matrix and the
+# seeded corpus run nightly (conformance-nightly.yml).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Which SDKs a PR touches. Changes to the harness, the conformance crate,
+  # the Rust kit (the reference) or CI run every SDK.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      sdks: ${{ steps.pick.outputs.sdks }}
+      registry: ${{ steps.pick.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            all:
+              - 'harness/**'
+              - 'rust/crates/conformance/**'
+              - 'rust/crates/kit/**'
+              - 'rust/crates/harness-bins/**'
+              - 'rust/Cargo.toml'
+              - 'external/**'
+              - 'idl/**'
+              - '.github/**'
+            typescript: ['typescript/**']
+            rust: ['rust/**']
+            go: ['go/**']
+            python: ['python/**']
+            ruby: ['ruby/**']
+            lua: ['lua/**']
+            php: ['php/**']
+            swift: ['swift/**']
+            kotlin: ['kotlin/**']
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          ALL: ${{ steps.filter.outputs.all }}
+          CHANGES: ${{ steps.filter.outputs.changes }}
+        run: |
+          if [ "$EVENT" != "pull_request" ] || [ "$ALL" = "true" ]; then
+            echo "sdks=all" >> "$GITHUB_OUTPUT"
+            echo "registry=true" >> "$GITHUB_OUTPUT"
+          else
+            sdks=$(echo "$CHANGES" | jq -r '[.[] | select(. != "all")] | join(",")')
+            echo "sdks=${sdks:-none}" >> "$GITHUB_OUTPUT"
+            echo "registry=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  plan:
+    name: plan
+    needs: changes
+    if: needs.changes.outputs.sdks != 'none'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-pkc
+      - name: The committed plan and README interop table are current
+        run: pkc plan --tier interop --check
+      - name: Shards for the changed SDKs
+        id: plan
+        env:
+          SDKS: ${{ needs.changes.outputs.sdks }}
+        run: pkc plan --tier interop --github-output --only "$SDKS"
+
+  # The case registry, the corpus, the requirements, and the harness's own
+  # unit tests (expectations parser, CI coverage, artifact contracts).
+  registry:
+    name: registry
+    needs: changes
+    if: needs.changes.outputs.registry == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # pkc req-lint reads the pinned spec repositories
+          # (external/mpp-specs, typescript/external/x402).
+          submodules: true
+      - uses: ./.github/actions/setup-pkc
+        with:
+          features: interop
+      - name: Case and scenario registry (one positive-control test per case)
+        working-directory: rust
+        run: cargo test -q -p paykit-conformance --features interop
+      - name: Vectors are filled from the registry (pkc fill --check)
+        run: pkc fill --check
+      - name: Requirements lint (pkc req-lint)
+        run: pkc req-lint
+      - name: Requirement traceability table is current (pkc report --check)
+        run: pkc report --check
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Build @solana/mpp and install the harness
+        run: |
+          (cd typescript && pnpm install --frozen-lockfile && pnpm --filter @solana/mpp build)
+          (cd harness && pnpm install --frozen-lockfile)
+      - name: Harness unit tests
+        working-directory: harness
+        run: >-
+          pnpm exec vitest run
+          test/expectations.test.ts test/ci-coverage.test.ts test/canonical-codes.test.ts
+          test/artifacts.test.ts test/build-adapters.test.ts test/conformance-runners.test.ts
+          test/canonical-json.test.ts test/compute-budget-caps.test.ts test/charge-client-gc.test.ts
+          test/x402-amount-base-units.test.ts test/x402-v1-exact.test.ts test/protocol-adversarial.test.ts
+      - name: Typecheck the harness
+        working-directory: harness
+        run: pnpm typecheck
+      - name: Generated coverage table is current
+        working-directory: harness
+        run: pnpm coverage:check
+
+  sdk:
+    name: ${{ matrix.sdk }}
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      HARNESS_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      # Toolchains, per shard (the plan lists the SDK's own and its adapters').
+      - uses: pnpm/action-setup@v5
+        if: contains(matrix.toolchains, 'typescript')
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        if: contains(matrix.toolchains, 'typescript')
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Build the TypeScript SDK and install the harness
+        if: contains(matrix.toolchains, 'typescript')
+        run: |
+          (cd typescript && pnpm install --frozen-lockfile && pnpm --filter @solana/mpp build && pnpm --filter @solana/pay-kit build)
+          (cd harness && pnpm install --frozen-lockfile)
+          echo "pnpm_config_verify_deps_before_run=false" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v6
+        if: contains(matrix.toolchains, 'go')
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: |
+            go/go.sum
+            harness/go-client/go.sum
+            harness/go-server/go.sum
+      - uses: actions/setup-java@v5
+        if: contains(matrix.toolchains, 'kotlin')
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        if: contains(matrix.toolchains, 'kotlin')
+        with:
+          gradle-version: "9.5.1"
+      - name: Build the Kotlin conformance runner
+        if: matrix.sdk == 'kotlin'
+        working-directory: harness/kotlin-conformance
+        run: gradle --no-daemon installDist
+      - uses: actions/setup-python@v5
+        if: contains(matrix.toolchains, 'python')
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+        if: contains(matrix.toolchains, 'python')
+      - name: Install the Python SDK
+        if: contains(matrix.toolchains, 'python')
+        working-directory: python
+        run: uv sync --extra dev
+      - uses: ruby/setup-ruby@v1
+        if: contains(matrix.toolchains, 'ruby')
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: shivammathur/setup-php@v2
+        if: contains(matrix.toolchains, 'php')
+        with:
+          php-version: "8.3"
+          extensions: sodium
+      - name: Install the PHP SDK
+        if: contains(matrix.toolchains, 'php')
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Install LuaJIT, LuaRocks, libsodium, openssl
+        if: contains(matrix.toolchains, 'lua')
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+      - name: Cache the rocks tree
+        if: contains(matrix.toolchains, 'lua')
+        id: rocks
+        uses: actions/cache@v4
+        with:
+          path: lua/lua_modules
+          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+      - name: Install runtime rocks
+        if: contains(matrix.toolchains, 'lua') && steps.rocks.outputs.cache-hit != 'true'
+        working-directory: lua
+        run: |
+          mkdir -p lua_modules
+          for rock in luasocket luasodium lua-resty-openssl lua-cjson; do
+            luarocks --lua-version=5.1 install --tree lua_modules "$rock"
+          done
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+      # Swift is supplied by the hosted macOS runner.
+      - name: Payment-channels program (cached by ref and patch)
+        if: matrix.needsProgram
+        id: program
+        uses: ./.github/actions/build-payment-channels
+      - uses: ./.github/actions/setup-pkc
+        with:
+          features: interop
+      - name: Offline vectors (pkc)
+        if: matrix.vector
+        run: pkc run --sdk ${{ matrix.sdk }} --tier offline --require
+      - name: Offline protocol suite
+        if: matrix.protocol
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: ${{ matrix.sdk }}
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+      - name: Offline flow suite
+        if: matrix.flow
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: ${{ matrix.sdk }}
+        run: pnpm exec vitest run test/flow-conformance.test.ts
+      - name: Interop against the Rust reference (pkc)
+        if: matrix.interop
+        env:
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.program.outputs.program-so }}
+        run: pkc run --tier interop --shard ${{ matrix.sdk }} --require
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: conformance-results-${{ matrix.sdk }}
+          path: harness/results/
+          if-no-files-found: ignore
+
+  # Real on-chain settlement: forks mainnet (surfpool 1.4) and executes the
+  # deployed payment-channels program, so a green run proves settlement lands.
+  onchain:
+    name: onchain
+    needs: changes
+    if: needs.changes.outputs.registry == 'true' || contains(needs.changes.outputs.sdks, 'typescript')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Build @solana/mpp and @solana/pay-kit
+        working-directory: typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @solana/mpp build
+          pnpm --filter @solana/pay-kit build
+      - name: Install harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Run on-chain settlement suite
+        working-directory: harness
+        env:
+          # surfpool forks mainnet account state from this datasource RPC; the
+          # helper falls back to public mainnet when the secret is unavailable
+          # (e.g. fork PRs).
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm test:onchain

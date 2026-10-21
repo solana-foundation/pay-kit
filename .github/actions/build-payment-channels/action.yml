@@ -25,7 +25,16 @@ outputs:
 runs:
   using: composite
   steps:
+    # The localnet build only depends on the program ref and the patch in
+    # this file: on a hit, skip the checkout, the Anza CLI and build-sbf.
+    - name: Cache the built program
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: _payment-channels/target/deploy/payment_channels.so
+        key: payment-channels-${{ runner.os }}-${{ inputs.ref }}-${{ hashFiles('.github/actions/build-payment-channels/action.yml') }}
     - name: Checkout payment channels program
+      if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/checkout@v5
       with:
         repository: solana-foundation/payment-channels
@@ -33,11 +42,13 @@ runs:
         path: _payment-channels
         fetch-depth: 1
     - name: Install Anza CLI
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
         echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
     - name: Patch payment channels treasury owner
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: _payment-channels
       run: |
@@ -59,6 +70,7 @@ runs:
           exit 1
         fi
     - name: Build payment channels program
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: _payment-channels/program/payment_channels
       run: cargo build-sbf --tools-version v1.52 --arch v1
