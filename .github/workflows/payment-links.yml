@@ -157,10 +157,10 @@ jobs:
         run: npm install && npx playwright install chromium
       - name: Build Rust test server
         working-directory: rust
-        run: cargo build --example payment_link_server --features axum
+        run: cargo build -p solana-pay-kit --example payment_link_server --features axum
       - name: Start Rust test server
         working-directory: rust
-        run: cargo run --example payment_link_server --features axum > "$RUNNER_TEMP/payment-link-server.log" 2>&1 &
+        run: cargo run -p solana-pay-kit --example payment_link_server --features axum > "$RUNNER_TEMP/payment-link-server.log" 2>&1 &
       - name: Wait for Rust server
         run: |
           for i in $(seq 1 60); do
