@@ -37,10 +37,19 @@ pub enum Suite {
     /// verifying (server) SDK. Case key `cross/<case>/<client>/<server>`;
     /// a cell passes when the server agrees with the Rust judge.
     Cross,
+    /// `pkc run --tier interop`: case ids `<scenario>/<client>/<server>`,
+    /// claims `<protocol>:<scheme>:<role>` (`crate::interop::claims`).
+    Interop,
 }
 
 impl Suite {
-    pub const ALL: [Suite; 4] = [Suite::Vector, Suite::Protocol, Suite::Flow, Suite::Cross];
+    pub const ALL: [Suite; 5] = [
+        Suite::Vector,
+        Suite::Protocol,
+        Suite::Flow,
+        Suite::Cross,
+        Suite::Interop,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -48,6 +57,7 @@ impl Suite {
             Suite::Protocol => "protocol",
             Suite::Flow => "flow",
             Suite::Cross => "cross",
+            Suite::Interop => "interop",
         }
     }
 
@@ -213,7 +223,7 @@ fn suite_of(key: &str, source: &str) -> Result<Suite, String> {
         Some(suite) if key.starts_with(&format!("{prefix}/")) => Ok(suite),
         _ => fail(
             source,
-            format!("\"{key}\" must start with one of vector/, protocol/, flow/, cross/"),
+            format!("\"{key}\" must start with one of vector/, protocol/, flow/, cross/, interop/"),
         ),
     }
 }
@@ -253,7 +263,7 @@ fn string_array(value: &Value, source: &str, field: &str) -> Result<Vec<String>,
 }
 
 const KNOWN_FAILING_SHAPE: &str =
-    "every [[known_failing]] needs a string id and a non-empty reason";
+    "every [[known_failing]] needs exactly one of a string `id` or a non-empty `ids` array, and a non-empty reason";
 
 impl Expectations {
     pub fn parse(text: &str, source: &str) -> Result<Self, String> {
@@ -292,7 +302,26 @@ impl Expectations {
                     return fail(source, format!("unknown capability suite \"{name}\""));
                 };
                 let claimed = capabilities.entry(suite).or_default();
-                if suite == Suite::Vector {
+                if suite == Suite::Interop {
+                    for claim in string_array(value, source, "capabilities.interop")? {
+                        if crate::interop::claims::Claim::parse(&claim).is_none() {
+                            let all: Vec<String> = crate::interop::claims::Claim::all()
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect();
+                            return fail(
+                                source,
+                                format!(
+                                    "unknown interop claim \"{claim}\" (expected <protocol>:<scheme>:<role>, one of {})",
+                                    all.join(", ")
+                                ),
+                            );
+                        }
+                        if !claimed.insert(claim.clone()) {
+                            return fail(source, format!("duplicate interop claim {claim}"));
+                        }
+                    }
+                } else if suite == Suite::Vector {
                     for intent in string_array(value, source, "capabilities.vector")? {
                         if !VECTOR_INTENTS.contains(&intent.as_str()) {
                             return fail(
@@ -388,32 +417,58 @@ impl Expectations {
             .cloned()
             .unwrap_or_default();
         for entry in entries {
-            let id = entry.get("id").and_then(Value::as_str);
-            let reason = entry.get("reason").and_then(Value::as_str);
-            let (Some(id), Some(reason)) = (id, reason) else {
+            let Some(table) = entry.as_table() else {
                 return fail(source, KNOWN_FAILING_SHAPE);
             };
-            if reason.is_empty() {
-                return fail(source, KNOWN_FAILING_SHAPE);
+            for key in table.keys() {
+                if !["id", "ids", "reason", "tracking"].contains(&key.as_str()) {
+                    return fail(source, format!("unknown [[known_failing]] key \"{key}\""));
+                }
             }
-            let tracking = entry.get("tracking").and_then(Value::as_str);
+            // `ids` lists several cases sharing one cause (an interop gap
+            // usually fails every pair of one adapter); each id is still
+            // reconciled, and reported stale, on its own.
+            let ids: Vec<String> = match (table.get("id"), table.get("ids")) {
+                (Some(id), None) => match id.as_str() {
+                    Some(id) => vec![id.to_string()],
+                    None => return fail(source, KNOWN_FAILING_SHAPE),
+                },
+                (None, Some(ids)) => {
+                    let ids = string_array(ids, source, "known_failing.ids")?;
+                    if ids.is_empty() {
+                        return fail(source, KNOWN_FAILING_SHAPE);
+                    }
+                    ids
+                }
+                _ => return fail(source, KNOWN_FAILING_SHAPE),
+            };
+            let reason = match table.get("reason").and_then(Value::as_str) {
+                Some(r) if !r.is_empty() => r,
+                _ => return fail(source, KNOWN_FAILING_SHAPE),
+            };
+            let tracking = table.get("tracking").and_then(Value::as_str);
             let Some(tracking) = tracking.filter(|t| valid_tracking(t)) else {
                 return fail(
                     source,
-                    format!("known_failing {id} needs tracking = a GitHub issue URL or \"FINDINGS.md#<anchor>\""),
+                    format!(
+                        "known_failing {} needs tracking = a GitHub issue URL or \"FINDINGS.md#<anchor>\"",
+                        ids[0]
+                    ),
                 );
             };
-            if known_failing.contains_key(id) {
-                return fail(source, format!("duplicate known_failing {id}"));
+            for id in ids {
+                if known_failing.contains_key(&id) {
+                    return fail(source, format!("duplicate known_failing {id}"));
+                }
+                suite_of(&id, source)?;
+                known_failing.insert(
+                    id,
+                    KnownFailing {
+                        reason: reason.to_string(),
+                        tracking: tracking.to_string(),
+                    },
+                );
             }
-            suite_of(id, source)?;
-            known_failing.insert(
-                id.to_string(),
-                KnownFailing {
-                    reason: reason.to_string(),
-                    tracking: tracking.to_string(),
-                },
-            );
         }
 
         // An entry for a suite the SDK does not claim would never be executed,

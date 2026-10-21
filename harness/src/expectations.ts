@@ -27,13 +27,25 @@ export const FINDINGS_FILE = "harness/expectations/FINDINGS.md";
 
 // `cross`: offline cross-verification cells (`cross/<case>/<client>/<server>`),
 // claimed and reconciled by the verifying SDK; run by `pkc run --cross --require`.
-export type Suite = "vector" | "protocol" | "flow" | "cross";
-export const SUITES: readonly Suite[] = ["vector", "protocol", "flow", "cross"];
+// `interop`: `pkc run --tier interop` cases (`interop/<scenario>/<client>/<server>`).
+export type Suite = "vector" | "protocol" | "flow" | "cross" | "interop";
+export const SUITES: readonly Suite[] = ["vector", "protocol", "flow", "cross", "interop"];
 
 // Vector intents an SDK may claim (ConformanceVector["intent"]). A claim
 // outside this list is a typo that would otherwise silently leave every
 // real vector of the intended intent unclaimed.
 export const VECTOR_INTENTS: readonly string[] = ["charge", "x402-exact", "session"];
+
+// Interop roles an SDK may claim, `<protocol>:<scheme>:<role>`, the twin of
+// `crate::interop::claims::Claim::all()` in rust/crates/conformance. The
+// interop suite itself is run and reconciled by `pkc run --tier interop`;
+// this parser only validates the files.
+export const INTEROP_CLAIMS: readonly string[] = [
+  "mpp:charge",
+  "x402:exact",
+  "x402:upto",
+  "mpp:session",
+].flatMap((intent) => [`${intent}:client`, `${intent}:server`]);
 
 // A case as seen by the reconciler: its suite, id and (for vectors) intent.
 export type CaseRef = {
@@ -124,7 +136,15 @@ export function parseExpectations(text: string, source: string): Expectations {
       continue;
     }
     if (!SUITES.includes(suite as Suite)) fail(source, `unknown capability suite "${suite}"`);
-    if (suite === "vector") {
+    if (suite === "interop") {
+      for (const claim of asStringArray(value, source, "capabilities.interop")) {
+        if (!INTEROP_CLAIMS.includes(claim)) {
+          fail(source, `unknown interop claim "${claim}" (expected <protocol>:<scheme>:<role>, one of ${INTEROP_CLAIMS.join(", ")})`);
+        }
+        if (capabilities.interop.has(claim)) fail(source, `duplicate interop claim ${claim}`);
+        capabilities.interop.add(claim);
+      }
+    } else if (suite === "vector") {
       for (const intent of asStringArray(value, source, "capabilities.vector")) {
         if (!VECTOR_INTENTS.includes(intent)) {
           fail(source, `unknown vector intent "${intent}" (expected one of ${VECTOR_INTENTS.join(", ")})`);
@@ -183,19 +203,35 @@ export function parseExpectations(text: string, source: string): Expectations {
   }
 
   const knownFailing = new Map<string, { reason: string; tracking: string }>();
+  const shape =
+    "every [[known_failing]] needs exactly one of a string `id` or a non-empty `ids` array, and a non-empty reason";
   for (const entry of (raw.known_failing ?? []) as Record<string, unknown>[]) {
-    if (typeof entry.id !== "string" || typeof entry.reason !== "string" || entry.reason === "") {
-      fail(source, "every [[known_failing]] needs a string id and a non-empty reason");
+    for (const key of Object.keys(entry)) {
+      if (!["id", "ids", "reason", "tracking"].includes(key)) fail(source, `unknown [[known_failing]] key "${key}"`);
     }
+    // `ids` lists several cases sharing one cause; each is still reconciled
+    // (and reported stale) on its own.
+    let ids: string[];
+    if (typeof entry.id === "string" && entry.ids === undefined) {
+      ids = [entry.id];
+    } else if (entry.id === undefined && entry.ids !== undefined) {
+      ids = asStringArray(entry.ids, source, "known_failing.ids");
+      if (ids.length === 0) fail(source, shape);
+    } else {
+      fail(source, shape);
+    }
+    if (typeof entry.reason !== "string" || entry.reason === "") fail(source, shape);
     if (typeof entry.tracking !== "string" || !TRACKING.test(entry.tracking)) {
       fail(
         source,
-        `known_failing ${entry.id} needs tracking = a GitHub issue URL or "FINDINGS.md#<anchor>"`,
+        `known_failing ${ids[0]} needs tracking = a GitHub issue URL or "FINDINGS.md#<anchor>"`,
       );
     }
-    if (knownFailing.has(entry.id)) fail(source, `duplicate known_failing ${entry.id}`);
-    suiteOf(entry.id, source);
-    knownFailing.set(entry.id, { reason: entry.reason, tracking: entry.tracking });
+    for (const id of ids) {
+      if (knownFailing.has(id)) fail(source, `duplicate known_failing ${id}`);
+      suiteOf(id, source);
+      knownFailing.set(id, { reason: entry.reason, tracking: entry.tracking });
+    }
   }
 
   // An entry for a suite the SDK does not claim would never be executed by

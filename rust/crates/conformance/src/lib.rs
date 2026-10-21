@@ -9,6 +9,7 @@ pub mod cases;
 pub mod classify;
 pub mod fill;
 pub mod fixture_rpc;
+pub mod interop;
 pub mod keys;
 pub mod mutate;
 pub mod realize;

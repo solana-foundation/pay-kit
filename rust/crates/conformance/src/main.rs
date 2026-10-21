@@ -90,6 +90,8 @@ fn main() -> ExitCode {
         Some("case") => case_cmd(&root, &args[1..]),
         Some("next") => next_cmd(&root, &args[1..]),
         Some("scaffold") => scaffold_cmd(&root, &args[1..]),
+        Some("plan") => plan_cmd(&root, &args[1..]),
+        Some("adapters") => adapters_cmd(&root, &args[1..]),
         Some("help" | "--help" | "-h") => {
             print!("{HELP}");
             ExitCode::SUCCESS
@@ -159,7 +161,7 @@ fn options(root: &Path, args: &[String]) -> Result<Options, String> {
     if let Some(tier) = flag_values(args, "--tier").pop() {
         if tier != "offline" {
             return Err(format!(
-                "--tier {tier}: only the offline tier exists yet (interop and onchain are phase 3)"
+                "--tier {tier}: expected offline or interop (the onchain tier is phase 4)"
             ));
         }
     }
@@ -223,6 +225,9 @@ fn seeded_corpus(opts: &mut Options, seed: &str) -> Result<(), String> {
 }
 
 fn run_cmd(root: &Path, args: &[String]) -> ExitCode {
+    if flag_values(args, "--tier").last().map(String::as_str) == Some("interop") {
+        return interop_run_cmd(root, args);
+    }
     let mut opts = match options(root, args) {
         Ok(o) => o,
         Err(e) => {
@@ -677,6 +682,278 @@ fn fill_cmd(root: &std::path::Path, args: &[String]) -> ExitCode {
             target.display()
         );
         ExitCode::SUCCESS
+    }
+}
+
+fn sdk_list(args: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = flag_values(args, "--sdk")
+        .iter()
+        .flat_map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|s| !s.is_empty() && s != "all")
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(feature = "interop")]
+fn interop_run_cmd(root: &Path, args: &[String]) -> ExitCode {
+    use paykit_conformance::interop::runner;
+    let mut opts = runner::Options::new(root);
+    opts.sdks = sdk_list(args);
+    opts.shard = flag_values(args, "--shard").pop();
+    opts.cases = flag_values(args, "--case");
+    opts.require |= has(args, "--require");
+    opts.discover |= has(args, "--discover");
+    opts.verbose = has(args, "--verbose");
+    if opts.require && !opts.cases.is_empty() {
+        eprintln!("pkc run: --require runs every claimed case; it cannot be combined with --case");
+        return ExitCode::from(2);
+    }
+    if let Some(j) = flag_values(args, "--jobs").pop() {
+        match j.parse::<usize>() {
+            Ok(n) if n > 0 => opts.jobs = n,
+            _ => {
+                eprintln!("pkc run: --jobs {j}: not a positive number");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if let Some(t) = flag_values(args, "--timeout").pop() {
+        match t.parse::<f64>() {
+            Ok(s) => opts.timeout = Duration::from_secs_f64(s),
+            Err(_) => {
+                eprintln!("pkc run: --timeout {t}: not a number of seconds");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if let Some(dir) = flag_values(args, "--prebuilt").pop() {
+        opts.prebuilt = Some(PathBuf::from(dir)).filter(|p| !p.as_os_str().is_empty());
+    }
+    if let Some(so) = flag_values(args, "--program-so").pop() {
+        opts.program_so = Some(PathBuf::from(so));
+    }
+    if let Some(dir) = flag_values(args, "--results").pop() {
+        opts.results_dir = PathBuf::from(dir);
+    }
+    match runner::run(&opts) {
+        Ok(report) => {
+            runner::print(&report);
+            if report.failed() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("pkc run --tier interop: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(feature = "interop"))]
+fn interop_run_cmd(_root: &Path, _args: &[String]) -> ExitCode {
+    eprintln!(
+        "pkc run --tier interop needs the validator: rebuild with `cargo build -p paykit-conformance --features interop`"
+    );
+    ExitCode::from(2)
+}
+
+fn plan_cmd(root: &Path, args: &[String]) -> ExitCode {
+    use paykit_conformance::interop::plan;
+    if flag_values(args, "--tier").last().map(String::as_str) != Some("interop") {
+        eprintln!("pkc plan --tier interop [--matrix | --github-output] [--only <sdk>,..] [--write | --check]");
+        return ExitCode::from(2);
+    }
+    let exps =
+        match paykit_conformance::run::expectations::load_all(&root.join("harness/expectations")) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let p = match plan::plan(&exps) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pkc plan: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if has(args, "--write") || has(args, "--check") {
+        let table = match plan::render(&exps, &p) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("pkc plan: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let readme_path = root.join("harness/README.md");
+        let readme = std::fs::read_to_string(&readme_path).unwrap_or_default();
+        let next_readme = match plan::rewrite(&readme, &table) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("pkc plan: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let plan_path = root.join(plan::PLAN_FILE);
+        let json = p.to_json();
+        if has(args, "--check") {
+            let mut stale = Vec::new();
+            if std::fs::read_to_string(&plan_path).unwrap_or_default() != json {
+                stale.push(plan::PLAN_FILE);
+            }
+            if next_readme != readme {
+                stale.push("harness/README.md (interop table)");
+            }
+            if !stale.is_empty() {
+                eprintln!(
+                    "pkc plan: {} stale; run `pkc plan --tier interop --write`",
+                    stale.join(" and ")
+                );
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "pkc plan: {} and the README interop table are up to date",
+                plan::PLAN_FILE
+            );
+        } else {
+            if let Err(e) = std::fs::write(&plan_path, json)
+                .and_then(|_| std::fs::write(&readme_path, next_readme))
+            {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "pkc plan: wrote {} and the README interop table",
+                plan::PLAN_FILE
+            );
+        }
+    }
+    if has(args, "--matrix") || has(args, "--github-output") {
+        // `--only a,b`: the SDKs whose paths changed (the workflow's
+        // `changes` job); `all` or absent keeps every shard.
+        let only = sdk_list(
+            &flag_values(args, "--only")
+                .iter()
+                .flat_map(|v| ["--sdk".to_string(), v.clone()])
+                .collect::<Vec<_>>(),
+        );
+        let mut p = p;
+        if !only.is_empty() && !flag_values(args, "--only").iter().any(|v| v == "all") {
+            p.shards.retain(|s| only.contains(&s.id));
+        }
+        let matrix = p.matrix().to_string();
+        if has(args, "--github-output") {
+            let Ok(path) = std::env::var("GITHUB_OUTPUT") else {
+                eprintln!("--github-output needs GITHUB_OUTPUT");
+                return ExitCode::FAILURE;
+            };
+            use std::io::Write as _;
+            let any = !p.shards.is_empty();
+            if let Err(e) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(path)
+                .and_then(|mut f| {
+                    writeln!(
+                        f,
+                        "matrix={matrix}
+any={any}"
+                    )
+                })
+            {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("{matrix}");
+    } else if !has(args, "--write") && !has(args, "--check") {
+        for s in &p.shards {
+            println!(
+                "{} ({} interop cases, {}, toolchains {})",
+                s.id,
+                s.case_count,
+                s.runner,
+                s.toolchains.join(",")
+            );
+        }
+        println!("{} claimed interop cases", p.cases.len());
+    }
+    ExitCode::SUCCESS
+}
+
+fn adapters_cmd(root: &Path, args: &[String]) -> ExitCode {
+    use paykit_conformance::interop::{adapters, cases, plan};
+    if args.first().map(String::as_str) != Some("build") {
+        eprintln!("pkc adapters build (--shard <id> | --sdk <lang>[,..]) --out <dir>");
+        return ExitCode::from(2);
+    }
+    let Some(out) = flag_values(args, "--out").pop() else {
+        eprintln!("pkc adapters build: --out <dir> is required");
+        return ExitCode::from(2);
+    };
+    let exps =
+        match paykit_conformance::run::expectations::load_all(&root.join("harness/expectations")) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let claimed = match cases::claimed(&exps) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let selected: Vec<cases::Case> = if let Some(shard) = flag_values(args, "--shard").pop() {
+        let p = match plan::plan(&exps) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let Some(s) = p.find(&shard) else {
+            eprintln!("no interop shard {shard:?}");
+            return ExitCode::FAILURE;
+        };
+        claimed
+            .into_iter()
+            .filter(|c| s.cases.contains(&c.key()))
+            .collect()
+    } else {
+        let sdks = sdk_list(args);
+        claimed
+            .into_iter()
+            .filter(|c| {
+                sdks.is_empty() || c.languages().iter().all(|l| sdks.iter().any(|s| s == l))
+            })
+            .collect()
+    };
+    let targets = adapters::native_targets(selected.iter().flat_map(|c| [c.client, c.server]));
+    match adapters::build(root, &targets, Path::new(&out), true) {
+        Ok(()) => {
+            println!(
+                "pkc adapters: built {} native target(s) into {out}",
+                targets.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("pkc adapters build: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

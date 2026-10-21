@@ -10,8 +10,17 @@ publish = false
 name = "pkc"
 path = "src/main.rs"
 
+[features]
+# `pkc run --tier interop`: embeds surfpool (heavy), the fault proxy (axum)
+# and an HTTP client. The offline tier, `pkc plan` and the registry build
+# without it, so offline CI legs do not compile a validator.
+interop = ["dep:surfpool-sdk", "dep:axum", "dep:reqwest"]
+
 [dependencies]
-solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "client", "server", "testkit"] }
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "30242a4fe3b87557f3d6f1629f548e2515718242", optional = true }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
+reqwest = { version = "0.12.28", optional = true, default-features = false, features = ["json"] }
+solana-pay-kit ={ path = "../kit", features = ["mpp", "x402", "client", "server", "testkit"] }
 base64 = "0.22"
 bs58 = "0.5"
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
