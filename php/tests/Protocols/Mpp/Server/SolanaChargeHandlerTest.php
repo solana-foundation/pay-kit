@@ -808,6 +808,37 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('expired', $stolen->body['detail']);
     }
 
+    // A signature another SDK already settled on the shared ledger (it claims
+    // the ledger key but never writes PHP's authorization key) is a replay.
+    // Reconciling it would authorize it a second time, so only this
+    // challenge's own pending charge is reconciled.
+    public function testSignatureSettledByAnotherSdkIsNotGrantedAgain(): void
+    {
+        $store = new MemoryStore();
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->chargeRequest();
+        $transaction = $this->minimalV0TransactionBase64();
+        $signature = $this->signatureOf($transaction);
+        foreach (['solana-charge:consumed:', 'x402-svm-exact:consumed:', 'solana:consumed-signature:'] as $prefix) {
+            $store->putIfAbsent($prefix . $signature, true);
+        }
+        $authorization = (new Credential(
+            challenge: $challenges->createChallenge($request)->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $transaction],
+        ))->toAuthorizationHeader();
+        foreach ([null, new RpcException('JSON-RPC error: This transaction has already been processed', 200, -32002, ['err' => 'AlreadyProcessed'])] as $sendError) {
+            $result = $this->handler(
+                challenges: $challenges,
+                verifier: new AlwaysAcceptVerifier(),
+                replayStore: $store,
+                rpcGateway: new FakeRpcGateway(signature: $signature, sendError: $sendError),
+            )->handle($authorization, $request);
+            self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+            self::assertStringContainsString('already consumed', $result->body['detail']);
+        }
+        self::assertFalse($store->has('solana:authorized-signature:' . $signature));
+    }
+
     // A missing signature status is not proof the transaction never landed
     // (the node may lag or lack history), so an unconfirmed charge stays
     // pending instead of answering a fresh challenge; only an explicit

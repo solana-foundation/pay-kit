@@ -313,7 +313,7 @@ final class SolanaChargeHandler
                 // An earlier presentation claimed this transaction (an
                 // "already processed" preflight lands here): its outcome is
                 // on chain, not in this send error.
-                return $this->reconcile($signature);
+                return $this->reconcileOwn($signature, $challengeId);
             }
             if (self::isPreflightRejection($error)) {
                 // Never forwarded, so it cannot land: the charge failed.
@@ -328,7 +328,7 @@ final class SolanaChargeHandler
         }
 
         if (!$this->consumedSignatures->claim($signature)) {
-            return $this->reconcile($signature);
+            return $this->reconcileOwn($signature, $challengeId);
         }
         $this->bindPending($signature, $challengeId);
         if ($reported !== $signature) {
@@ -393,6 +393,21 @@ final class SolanaChargeHandler
         }
         if (!$this->replayStore->has(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId)) {
             return null;
+        }
+        return $this->reconcile($signature);
+    }
+
+    /**
+     * Reconcile a signature another presentation already claimed, only when
+     * it is this challenge's own pending charge. Any other claim (a payment
+     * this or another SDK already settled on the shared ledger, or another
+     * challenge's) is a replay: reconciling it would authorize a payment
+     * that already authorized a response.
+     */
+    private function reconcileOwn(string $signature, string $challengeId): string
+    {
+        if (!$this->replayStore->has(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId)) {
+            throw new RuntimeException("Transaction signature already consumed: $signature");
         }
         return $this->reconcile($signature);
     }
