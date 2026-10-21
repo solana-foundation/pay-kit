@@ -171,7 +171,7 @@
     "description": "The same version-1 top_up on a route that accepts only version 0 (no transactionVersions advertised).",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "unsupported-transaction-version"
+      "rejectCode": "unsupported-version"
     },
     "id": "batch-txv1-top-up-v1-not-advertised-reject",
     "input": {
@@ -2155,7 +2155,7 @@
     "description": "A client-mode refund whose request_close is version 1 on a route that accepts only version 0.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "unsupported-transaction-version"
+      "rejectCode": "unsupported-version"
     },
     "id": "batch-txv1-refund-v1-not-advertised-reject",
     "input": {

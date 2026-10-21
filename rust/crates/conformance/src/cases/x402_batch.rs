@@ -1281,7 +1281,7 @@ crate::registry! {
         "batch-build-version-intersection-empty-reject", tx_versions_spec("It MUST fail with `unsupported_transaction_version` when the intersection is empty."), &[TX_CLIENT_EMPTY],
         "The challenge advertises only version 1 and the client's signer signs up to version 0: the intersection is empty.",
         { let mut i = terms_input(requirements_with(&[("transactionVersions", json!([1]))]), TOKEN_PROGRAM); i["batchClient"]["maxTransactionVersion"] = json!(0); i },
-        rej(RejectCode::UnsupportedTransactionVersion),
+        rej(RejectCode::UnsupportedVersion),
     );
 
     // ── corrective 402 (client) ──
@@ -1868,7 +1868,7 @@ crate::registry! {
         "batch-txv1-top-up-v1-not-advertised-reject", tx_versions_spec("The facilitator MUST reject a message whose version is outside the set it accepts, before inspecting any instruction, with `unsupported_transaction_version`."), &[TX_FACILITATOR_REJECTS, TX_ADVERTISED],
         "The same version-1 top_up on a route that accepts only version 0 (no transactionVersions advertised).",
         v1_input(&route(), v1_top_up(fx::v1_budget(), vec![])),
-        rej(RejectCode::UnsupportedTransactionVersion),
+        rej(RejectCode::UnsupportedVersion),
     ).authored(Some(KIT_TX_VERSION_CODE)).build();
     batch_txv1_top_up_v0_on_v1_route => txv1_case(
         "batch-txv1-top-up-v0-on-v1-route", tx_versions_spec("Absent means `[0]`."), &[TX_ADVERTISED],
@@ -1940,7 +1940,7 @@ crate::registry! {
         "batch-txv1-refund-v1-not-advertised-reject", t("4.3 Client PaymentPayload Variants", "Its message version MUST be one advertised in `extra.transactionVersions`."), &[TX_REFUND_VERSION, TX_FACILITATOR_REJECTS],
         "A client-mode refund whose request_close is version 1 on a route that accepts only version 0.",
         refund_input_with(refund_payload(Some(honest_voucher(3_000)), Some(fx::sponsored_v1(vec![fx::request_close_ix(&cfg()), fx::memo_ix(fx::MEMO)], fx::v1_budget()))), ChannelAccount::default()),
-        rej(RejectCode::UnsupportedTransactionVersion),
+        rej(RejectCode::UnsupportedVersion),
     ).authored(Some(KIT_REFUND_VOUCHER)).build();
 }
 

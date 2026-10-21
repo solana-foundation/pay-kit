@@ -156,6 +156,9 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
     let entry = match vector.file.as_str() {
         f if f.starts_with("x402-upto-") => "rust/crates/conformance/src/cases/x402_upto.rs",
         f if f.starts_with("batch-") => "rust/crates/conformance/src/cases/x402_batch.rs",
+        "charge-tx-versions.json" => "rust/crates/conformance/src/cases/charge_tx_versions.rs",
+        "session-tx-versions.json" => "rust/crates/conformance/src/cases/session_tx_versions.rs",
+        "x402-tx-versions.json" => "rust/crates/conformance/src/cases/x402_tx_versions.rs",
         f if f.ends_with("-policy.json") && f.starts_with("x402") => {
             "rust/crates/conformance/src/cases/x402_policy.rs"
         }
@@ -342,13 +345,13 @@ pub fn mutation_words(case: &Case) -> Option<String> {
 
 /// Pinned SHA of a spec submodule, from the superproject's index.
 pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
-    let checkout = if doc.starts_with("mpp-specs/") {
-        "external/mpp-specs"
-    } else if doc.starts_with("mpp-specs-solana/") {
-        "external/mpp-specs-solana"
-    } else {
-        "typescript/external/x402"
-    };
+    let checkout = crate::case::SpecRepo::ALL
+        .into_iter()
+        .find(|repo| {
+            doc.strip_prefix(repo.prefix())
+                .is_some_and(|rest| rest.starts_with('/'))
+        })?
+        .checkout();
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -409,9 +412,10 @@ impl Context {
             .into_iter()
             .map(|c| (c.id.to_string(), c))
             .collect();
-        let shas = ["mpp-specs/", "x402/", "mpp-specs-solana/"]
+        let shas = crate::case::SpecRepo::ALL
             .iter()
-            .filter_map(|d| pinned_sha(root, d).map(|s| (d.to_string(), s)))
+            .map(|repo| format!("{}/", repo.prefix()))
+            .filter_map(|d| pinned_sha(root, &d).map(|s| (d, s)))
             .collect();
         Self {
             root: root.to_path_buf(),

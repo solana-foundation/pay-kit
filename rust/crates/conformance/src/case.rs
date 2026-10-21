@@ -441,11 +441,10 @@ pub enum RejectCode {
     ChannelState,
     RefundTransaction,
     DuplicateSettlement,
-    UnsupportedTransactionVersion,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 58] = [
+    pub const ALL: [RejectCode; 57] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -503,7 +502,6 @@ impl RejectCode {
         RejectCode::ChannelState,
         RejectCode::RefundTransaction,
         RejectCode::DuplicateSettlement,
-        RejectCode::UnsupportedTransactionVersion,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -565,7 +563,6 @@ impl RejectCode {
             RejectCode::ChannelState => "channel-state",
             RejectCode::RefundTransaction => "refund-transaction",
             RejectCode::DuplicateSettlement => "duplicate-settlement",
-            RejectCode::UnsupportedTransactionVersion => "unsupported-transaction-version",
         }
     }
 }
@@ -659,6 +656,21 @@ pub enum Input {
     /// credentials built by the kit's client, then edited). See
     /// `realize/subscription.rs`.
     Subscription(Box<crate::realize::subscription::Recipe>),
+    /// A session verify vector whose `input.sessionOpenVerify.open` is the
+    /// kit client's `open` action for the challenge the kit's session server
+    /// issues under `server` (or under `built_from`, so the server verifies
+    /// an open built for another challenge), optionally mutated.
+    SessionOpen(Box<SessionOpenSpec>),
+}
+
+/// Recipe for a session `open` verify vector (`input.sessionOpenVerify`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionOpenSpec {
+    /// The verifying server's configuration (`sessionOpenVerify.server`).
+    pub server: Value,
+    /// Build the open against the challenge of this configuration instead.
+    pub built_from: Option<Value>,
+    pub mutation: Option<Mutation>,
 }
 
 /// Recipe for an x402 verify vector's payment header.
@@ -683,6 +695,15 @@ pub struct X402HeaderSpec {
     pub mutation: Option<Mutation>,
     /// Extra static input keys (e.g. `x402ServerRequiresPaymentIdentifier`).
     pub extra_input: Vec<(&'static str, Value)>,
+    /// Message format of the static-layout transaction before `mutation`
+    /// (version 1 carries the compute budget in its header, §1.5).
+    pub tx_format: crate::tx::MessageFormat,
+    /// The sponsor's accepted transaction versions
+    /// (`input.x402ServerTransactionVersions`). The route advertises them as
+    /// `extra.transactionVersions` (§1.5: the server copies the facilitator's
+    /// value) and the client echoes them in `accepted`. `None`: the default
+    /// `[0]`, nothing advertised.
+    pub server_transaction_versions: Option<&'static [u8]>,
 }
 
 /// An x402 server route.

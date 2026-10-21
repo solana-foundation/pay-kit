@@ -449,3 +449,165 @@ ids = [
   "vector/batch-build-voucher-first",
   "vector/batch-build-voucher-next",
 ]
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[unsupported]]
+reason = "neither @solana/mpp buildChargeTransaction nor the @solana/pay-kit x402 client takes a highest signable transaction version (input.signerMaxTransactionVersion)"
+ids = [
+  "vector/charge-build-signer-v0-picks-v0",
+  "vector/charge-build-no-buildable-version-reject",
+  "vector/x402-build-signer-v0-picks-v0",
+  "vector/x402-build-no-intersection-reject",
+]
+
+[[unsupported]]
+reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
+ids = [
+  "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v0-with-v1-sponsor-accept",
+  "vector/x402-verify-v1-over-1232-accept",
+  "vector/x402-verify-v0-over-1232-reject",
+  "vector/x402-verify-v1-over-4096-reject",
+  "vector/x402-verify-v1-compute-budget-instruction-reject",
+  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
+  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
+  "vector/x402-verify-v1-compute-limit-at-cap-accept",
+  "vector/x402-verify-v1-compute-limit-over-cap-reject",
+  "vector/x402-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-verify-v1-too-many-instructions-reject",
+  "vector/x402-verify-v1-underpay-reject",
+  "vector/x402-verify-v1-wrong-recipient-reject",
+  "vector/x402-verify-v1-wrong-mint-reject",
+  "vector/x402-verify-v1-decimals-reject",
+  "vector/x402-verify-v1-fee-payer-authority-reject",
+  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
+  "vector/x402-verify-v1-extra-signer-reject",
+]
+
+[[known_failing]]
+ids = [
+  "vector/charge-wire-transaction-versions-both-golden",
+  "vector/charge-wire-transaction-versions-v1-only-golden",
+  "vector/charge-wire-transaction-versions-legacy-reject",
+  "vector/charge-wire-transaction-versions-unknown-reject",
+  "vector/charge-wire-transaction-versions-string-entry-reject",
+  "vector/charge-wire-transaction-versions-not-array-reject",
+  "vector/session-wire-transaction-versions-both-golden",
+  "vector/session-wire-transaction-versions-v1-only-golden",
+  "vector/session-wire-transaction-versions-v0-golden",
+  "vector/session-wire-transaction-versions-legacy-reject",
+  "vector/session-wire-transaction-versions-unknown-reject",
+  "vector/session-wire-transaction-versions-string-entry-reject",
+]
+reason = "@solana/mpp's charge and session request schemas (typescript/packages/mpp/src/Methods.ts) have no methodDetails.transactionVersions: zod strips the field, so the goldens lose it and the legacy/unknown/string/not-array rejects parse (mpp-specs-txv1: \"Servers MUST accept every version they list\")"
+tracking = "FINDINGS.md#txv1-ts-mpp-no-transaction-versions"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-v1-advertised",
+  "vector/charge-build-v1-only-advertised",
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/charge-build-duplicate-advertisement",
+  "vector/charge-build-v1-sponsored",
+  "vector/charge-build-v1-sol",
+  "vector/charge-build-v1-large-memos",
+]
+reason = "the @solana/mpp charge client never reads transactionVersions and always builds a version-0 message with the ComputeBudget prefix (typescript/packages/mpp/src/client/Charge.ts); mpp-specs-txv1: \"Clients MUST build one of the advertised versions\""
+tracking = "FINDINGS.md#txv1-ts-mpp-client-v0-only"
+
+[[known_failing]]
+ids = [
+  "vector/charge-verify-v1-advertised-accept",
+  "vector/charge-verify-v1-only-advertised-accept",
+  "vector/charge-verify-v1-not-advertised-reject",
+  "vector/charge-verify-v1-v0-only-reject",
+  "vector/charge-verify-v0-to-v1-only-reject",
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+  "vector/charge-verify-v0-oversize-reject",
+  "vector/charge-verify-v1-large-memos-accept",
+  "vector/charge-verify-v1-compute-budget-instruction-reject",
+  "vector/charge-verify-v1-missing-compute-unit-limit-reject",
+  "vector/charge-verify-v1-missing-loaded-data-limit-reject",
+  "vector/charge-verify-v1-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-sponsored-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-sponsored-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-reduced-limit-price-reject",
+  "vector/charge-verify-v1-underpay-reject",
+  "vector/charge-verify-v1-wrong-recipient-reject",
+  "vector/charge-verify-v1-wrong-mint-reject",
+  "vector/charge-verify-v1-sol-underpay-reject",
+  "vector/charge-verify-v1-unexpected-instruction-reject",
+  "vector/charge-verify-v1-sponsor-as-authority-reject",
+]
+reason = "verifyChargeTransaction does not admit by advertised version: it throws on a version-1 message (decoded instructions undefined), accepts version 0 for a version-1-only challenge, accepts legacy, and applies no per-version size limit (mpp-specs-txv1 Transaction Versions)"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[known_failing]]
+ids = [
+  "vector/x402-build-v1-advertised",
+  "vector/x402-build-duplicate-advertisement",
+  "vector/x402-build-empty-advertisement-reject",
+  "vector/x402-build-legacy-only-reject",
+  "vector/x402-verify-v1-not-accepted-reject",
+  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
+]
+reason = "the vendored x402 @03b3919b predates x402-foundation/x402 PR 3474: the exact client ignores extra.transactionVersions (always builds version 0, never refuses), and the facilitator has no version gate, so a version-1 transaction fails as signature_invalid instead of unsupported_transaction_version (scheme_exact_svm.md §1.5)"
+tracking = "FINDINGS.md#txv1-ts-x402-pre-3474"
+
+# Cross-verification of the transaction-version builds.
+
+[[known_failing]]
+ids = [
+  "cross/charge-build-duplicate-advertisement/go/typescript",
+  "cross/charge-build-duplicate-advertisement/python/typescript",
+  "cross/charge-build-duplicate-advertisement/swift/typescript",
+  "cross/charge-build-duplicate-advertisement/typescript/typescript",
+  "cross/charge-build-v1-large-memos/go/typescript",
+  "cross/charge-build-v1-large-memos/python/typescript",
+  "cross/charge-build-v1-large-memos/swift/typescript",
+  "cross/charge-build-v1-large-memos/typescript/typescript",
+  "cross/charge-build-v1-only-advertised/go/typescript",
+  "cross/charge-build-v1-only-advertised/python/typescript",
+  "cross/charge-build-v1-only-advertised/swift/typescript",
+  "cross/charge-build-v1-only-advertised/typescript/typescript",
+]
+reason = "accepts a version-0 charge build the Rust verifier refuses: version 0 for a challenge advertising [1] only, or over the 1232-byte version-0 limit (mpp-specs-txv1 Transaction Versions)"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[known_failing]]
+ids = [
+  "cross/charge-build-duplicate-advertisement/rust/typescript",
+  "cross/charge-build-v1-advertised/rust/typescript",
+  "cross/charge-build-v1-large-memos/rust/typescript",
+  "cross/charge-build-v1-only-advertised/rust/typescript",
+  "cross/charge-build-v1-sol/rust/typescript",
+  "cross/charge-build-v1-sponsored/rust/typescript",
+]
+reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK's that the Rust judge accepts): the verifier cannot decode or admit version 1"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[unsupported]]
+reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
+ids = [
+  "cross/x402-build-duplicate-advertisement/go/typescript",
+  "cross/x402-build-duplicate-advertisement/python/typescript",
+  "cross/x402-build-duplicate-advertisement/rust/typescript",
+  "cross/x402-build-duplicate-advertisement/swift/typescript",
+  "cross/x402-build-duplicate-advertisement/typescript/typescript",
+  "cross/x402-build-signer-v0-picks-v0/go/typescript",
+  "cross/x402-build-signer-v0-picks-v0/python/typescript",
+  "cross/x402-build-signer-v0-picks-v0/rust/typescript",
+  "cross/x402-build-signer-v0-picks-v0/swift/typescript",
+  "cross/x402-build-v1-advertised/go/typescript",
+  "cross/x402-build-v1-advertised/python/typescript",
+  "cross/x402-build-v1-advertised/rust/typescript",
+  "cross/x402-build-v1-advertised/swift/typescript",
+  "cross/x402-build-v1-advertised/typescript/typescript",
+]
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
+pattern = "vector/session-open-*"

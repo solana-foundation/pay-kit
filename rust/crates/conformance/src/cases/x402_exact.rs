@@ -131,6 +131,8 @@ pub(super) fn header(route: X402Route) -> X402HeaderSpec {
         memo: None,
         mutation: None,
         extra_input: vec![],
+        tx_format: crate::tx::MessageFormat::V0,
+        server_transaction_versions: None,
     }
 }
 

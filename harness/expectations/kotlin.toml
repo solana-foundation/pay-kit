@@ -63,3 +63,20 @@ ids = [
 ]
 reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
 tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[unsupported]]
+reason = "unsupported-mode: kotlin conformance runner only supports the session voucherPreimage canonical-bytes vector"
+ids = [
+  "vector/session-wire-transaction-versions-both-golden",
+  "vector/session-wire-transaction-versions-v1-only-golden",
+  "vector/session-wire-transaction-versions-v0-golden",
+  "vector/session-wire-transaction-versions-legacy-reject",
+  "vector/session-wire-transaction-versions-unknown-reject",
+  "vector/session-wire-transaction-versions-string-entry-reject",
+]
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session open verify (input.sessionOpenVerify)"
+pattern = "vector/session-open-*"

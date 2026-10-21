@@ -40,7 +40,7 @@ use solana_pay_kit::core::session::accept_voucher;
 use solana_pay_kit::core::store::{
     ChannelState, ChannelStore, MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION,
 };
-use solana_pay_kit::core::tx::TxVersion;
+use solana_pay_kit::core::tx::{accepted_versions, TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
 };
@@ -69,13 +69,11 @@ const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-/// Message versions the verifiers accept: the servers' default (version 0
-/// only until a host opts into version 1).
-const ACCEPTED_TX_VERSIONS: &[TxVersion] = &[TxVersion::V0];
-
 /// Outcome of one vector, rendered as the RunnerResult JSON.
 #[path = "vector_runner/batch.rs"]
 mod batch;
+#[path = "vector_runner/session_open.rs"]
+mod session_open;
 #[path = "vector_runner/subscription.rs"]
 mod subscription;
 #[path = "vector_runner/upto.rs"]
@@ -256,6 +254,9 @@ async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
         ("subscription", mode) => subscription::run(mode, &input).await,
         ("x402-exact", "build-transaction") => x402_build(&input).await,
         ("x402-exact", "verify-transaction") => x402_verify(&input).await,
+        ("session", "verify-transaction") if input.get("sessionOpenVerify").is_some() => {
+            session_open::verify(&input).await
+        }
         ("session", "verify-transaction") => Ok(session_voucher_verify(&input).await?),
         (_, "canonical-bytes") => Ok(Outcome::Accept(canonical_bytes(&input)?)),
         ("charge", "build-transaction") => {
@@ -327,6 +328,7 @@ async fn charge_build(input: &Value) -> Result<String, Rejection> {
 
     let mut options = BuildChargeTransactionOptions {
         external_id: charge.external_id.clone(),
+        max_tx_version: signer_max_version(input)?,
         ..Default::default()
     };
     let mut budget = ComputeBudgetOptions::default();
@@ -375,7 +377,10 @@ async fn charge_verify(input: &Value) -> Result<Outcome, Rejection> {
         None => charge_build(input).await?,
     };
     let tx = decode_transaction(&transaction)?;
-    verify_transaction_pre_broadcast(&tx, &charge, &details, ACCEPTED_TX_VERSIONS)
+    // The server accepts exactly the versions its challenge advertises
+    // (`Mpp` advertises its accepted set; absent means `[0]`).
+    let accepted = accepted_versions(details.transaction_versions.as_deref());
+    verify_transaction_pre_broadcast(&tx, &charge, &details, accepted)
         .map_err(|e| Rejection::from(e.message))?;
     Ok(Outcome::Accept(shape_fields(&transaction)?))
 }
@@ -464,6 +469,17 @@ fn shape_fields(transaction_b64: &str) -> Result<Map<String, Value>, String> {
         }
     }
 
+    // Version 1 carries the budget in the header: the limit as declared, the
+    // price as the total fee per unit (rounded up), as the verifiers read it.
+    if let solana_message::VersionedMessage::V1(message) = &tx.message {
+        limit = message.config.compute_unit_limit;
+        price = match (message.config.priority_fee, limit) {
+            (Some(fee), Some(units)) if units > 0 => {
+                Some((fee as u128 * 1_000_000).div_ceil(units as u128) as u64)
+            }
+            _ => None,
+        };
+    }
     let mut shape = Map::new();
     shape.insert("feePayer".into(), Value::String(keys[0].clone()));
     shape.insert("forbiddenPrograms".into(), json!([]));
@@ -593,9 +609,49 @@ fn canonical_bytes(input: &Value) -> Result<Map<String, Value>, String> {
         exact.insert("base64Url".into(), json!(b64));
     }
 
+    if let Some(cw) = input.get("chargeWire") {
+        // The charge request through the kit's own types (`ChargeRequest`,
+        // its methodDetails as `MethodDetails`), re-encoded.
+        let value = cw.get("value").cloned().unwrap_or(Value::Null);
+        let reencoded = serde_json::from_value::<ChargeRequest>(value)
+            .and_then(|mut charge| {
+                if let Some(md) = charge.method_details.take() {
+                    let details: MethodDetails = serde_json::from_value(md)?;
+                    charge.method_details = Some(serde_json::to_value(details)?);
+                }
+                serde_json::to_value(charge)
+            })
+            .map_err(|e| format!("invalid payload: charge request: {e}"))?;
+        let (json, b64) = canonical_json(&reencoded)?;
+        exact.insert("canonicalJson".into(), json!(json));
+        exact.insert("base64Url".into(), json!(b64));
+    }
+
+    if let Some(xw) = input.get("x402Wire") {
+        // One x402 `accepts[]` entry through the kit's PaymentRequirements.
+        let value = xw.get("value").cloned().unwrap_or(Value::Null);
+        let reencoded = serde_json::from_value::<PaymentRequirements>(value)
+            .and_then(serde_json::to_value)
+            .map_err(|e| format!("invalid payload: payment requirements: {e}"))?;
+        let (json, b64) = canonical_json(&reencoded)?;
+        exact.insert("canonicalJson".into(), json!(json));
+        exact.insert("base64Url".into(), json!(b64));
+    }
+
     let mut out = Map::new();
     out.insert("exactBytes".into(), Value::Object(exact));
     Ok(out)
+}
+
+/// `input.signerMaxTransactionVersion`: the highest message version the
+/// signer can sign, handed to the kit's builders as `max_tx_version`.
+fn signer_max_version(input: &Value) -> Result<Option<TxVersion>, String> {
+    match input.get("signerMaxTransactionVersion") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|e| format!("invalid signerMaxTransactionVersion: {e}")),
+    }
 }
 
 // ── session voucher verify ──────────────────────────────────────────────────
@@ -719,8 +775,9 @@ async fn x402_build(input: &Value) -> Result<Outcome, Rejection> {
     let signer = signer_from(input)?;
     let rpc = fixture_rpc(input)?;
 
+    let max_version = signer_max_version(input)?;
     let header = if input.get("x402Version").and_then(Value::as_u64) == Some(1) {
-        build_payment_header_v1(&signer, &rpc, &requirements, None).await?
+        build_payment_header_v1(&signer, &rpc, &requirements, max_version).await?
     } else {
         // Echo-and-append (x402 v2 §5.1.2) is the caller's job in the Rust
         // SDK: echo the advertised extensions, and fill the id when the server
@@ -738,7 +795,7 @@ async fn x402_build(input: &Value) -> Result<Outcome, Rejection> {
                 .unwrap_or_else(generate_payment_identifier_id);
             extensions = extensions.map(|e| e.with_payment_identifier_id(id));
         }
-        build_payment_header(&signer, &rpc, &requirements, extensions, None).await?
+        build_payment_header(&signer, &rpc, &requirements, extensions, max_version).await?
     };
     let mut fields = envelope_fields(&header)?;
     // The built header itself, so the driver can verify it with the Rust
@@ -794,7 +851,28 @@ async fn x402_verify(input: &Value) -> Result<Outcome, Rejection> {
         payment_identifier,
         ..Default::default()
     };
-    let server = X402::new(config).map_err(|e| format!("server config: {e}"))?;
+    // The sponsor's accepted versions (`[0]` when absent). The kit's server
+    // takes `TxV1Mode::Off` (`[0]`) or `TxV1Mode::On` (`[0, 1]`, no gate
+    // probe); any other set is not configurable.
+    let mut versions: Vec<TxVersion> = match input.get("x402ServerTransactionVersions") {
+        None | Some(Value::Null) => vec![TxVersion::V0],
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|e| format!("invalid x402ServerTransactionVersions: {e}"))?,
+    };
+    versions.sort();
+    versions.dedup();
+    let tx_v1 = match versions.as_slice() {
+        [TxVersion::V0] => TxV1Mode::Off,
+        [TxVersion::V0, TxVersion::V1] => TxV1Mode::On,
+        other => {
+            return Ok(Outcome::Unsupported(format!(
+                "the Rust x402 server cannot accept exactly {other:?} (TxV1Mode is [0] or [0, 1])"
+            )))
+        }
+    };
+    let server = X402::new(config)
+        .map_err(|e| format!("server config: {e}"))?
+        .with_tx_v1(tx_v1);
     // The vector carries the route amount in base units; the server API
     // takes a human decimal price and converts it with `core::parse_units`.
     let base_units = str_field(input, "x402ServerAmount");
@@ -945,7 +1023,25 @@ fn classify_reject(message: &str) -> Option<&'static str> {
     let has = |needle: &str| m.contains(needle);
     // Charge verification policy and client challenge checks (mirrors the
     // block at the top of harness/src/conformance/reject.ts).
-    let code = if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
+    let code = if (has("transaction version") && has("not accepted"))
+        || has("unsupported_transaction_version")
+        || has("signs up to version")
+    {
+        // A message version the server does not accept, or a client whose
+        // signer can build no advertised version.
+        "unsupported-version"
+    } else if has("must not contain computebudget instructions") {
+        // A ComputeBudget instruction in a version-1 charge transaction.
+        "unexpected-instruction"
+    } else if has("must set computeunitlimit")
+        || has("loaded accounts data size limit")
+        || has("-byte limit")
+        || has("address lookup tables")
+    {
+        // Version-1 header config incomplete, over the version's size
+        // limit, or an address lookup table.
+        "invalid-payload"
+    } else if has("fee payer cannot fund") || has("fee payer token account cannot fund") {
         "fee-payer-is-funds-source"
     } else if has("primary amount is zero after splits") || has("split amounts exceed") {
         "splits-exceed-amount"

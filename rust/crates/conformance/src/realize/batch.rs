@@ -118,7 +118,7 @@ fn client_reject(error: &solana_pay_kit::x402::Error) -> Observed {
     let message = error.to_string();
     let code = code_for(scheme::classify(&message)).unwrap_or(
         if message.contains("the server accepts transaction versions") {
-            RejectCode::UnsupportedTransactionVersion
+            RejectCode::UnsupportedVersion
         } else {
             RejectCode::InvalidChallenge
         },

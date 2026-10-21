@@ -133,7 +133,9 @@ pub struct SavedBuild {
     pub intent: String,
     /// `transaction` (charge) or `x402PaymentHeader` (x402).
     pub artifact: String,
-    /// Whether the Rust judge accepted it.
+    /// Whether a server must accept it: the Rust judge accepted it, or it is
+    /// a valid build in another advertised message version
+    /// (`judge::alternative_version_accepted`).
     pub judged: bool,
 }
 
@@ -200,7 +202,12 @@ pub fn run_case(testee: &mut Testee, vector: &Vector, rt: &tokio::runtime::Runti
                         Ok(None) => Ok(Verdict::Pass),
                         Ok(Some(built)) => {
                             let verdict = rt.block_on(judge::judge_build(vector, &built));
-                            artifact = Some((built, verdict.is_ok()));
+                            // What a server must decide on this build: the
+                            // judge's verdict, except that a valid build in
+                            // another advertised version stays an accept.
+                            let must_accept = verdict.is_ok()
+                                || rt.block_on(judge::alternative_version_accepted(vector, &built));
+                            artifact = Some((built, must_accept));
                             verdict.map(|()| Verdict::Pass)
                         }
                     }

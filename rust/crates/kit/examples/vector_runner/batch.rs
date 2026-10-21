@@ -93,13 +93,13 @@ fn kit_reject(error: &solana_pay_kit::x402::Error) -> Outcome {
 }
 
 /// A client refusing a challenge: the version negotiation failure is
-/// `unsupported-transaction-version`, any other refusal of the terms a
+/// `unsupported-version`, any other refusal of the terms a
 /// refused challenge.
 fn client_reject(error: &solana_pay_kit::x402::Error) -> Outcome {
     let message = error.to_string();
     let code = code_for(scheme::classify(&message)).unwrap_or(
         if message.contains("the server accepts transaction versions") {
-            "unsupported-transaction-version"
+            "unsupported-version"
         } else {
             "invalid-challenge"
         },

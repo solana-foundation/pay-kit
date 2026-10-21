@@ -114,6 +114,8 @@ fn check_id(id: &str) -> bool {
 
 /// `<repo>/specs/<path>.md` for any pinned repository (`SpecRepo::ALL`).
 fn check_doc(doc: &str) -> bool {
+    // Any pinned spec checkout (`case::SpecRepo`): mpp-specs/, x402/, and
+    // the unmerged drafts (mpp-specs-solana/, mpp-specs-txv1/, x402-txv1/).
     let rest = crate::case::SpecRepo::ALL.iter().find_map(|repo| {
         doc.strip_prefix(repo.prefix())
             .and_then(|r| r.strip_prefix("/specs/"))

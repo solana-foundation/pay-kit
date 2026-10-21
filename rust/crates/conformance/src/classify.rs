@@ -16,7 +16,15 @@ pub fn classify(message: &str) -> Option<RejectCode> {
     let has = |needle: &str| m.contains(needle);
     // Ordered: specific x402 verifier reasons first, then the reject.ts
     // patterns, then the generic fallback.
-    let code = if has("compute_price_instruction_too_high")
+    let code = if (has("transaction version") && has("not accepted"))
+        || has("unsupported_transaction_version")
+        || has("signs up to version")
+    {
+        // A message version the server does not accept (MPP: before any
+        // instruction is inspected; x402 §1.5 `unsupported_transaction_version`),
+        // or a client whose signer cannot build any advertised version.
+        UnsupportedVersion
+    } else if has("compute_price_instruction_too_high")
         || (has("compute unit price") && (has("exceed") || has("cap") || has("maximum")))
     {
         ComputePriceOverCap
@@ -116,6 +124,18 @@ pub fn classify(message: &str) -> Option<RejectCode> {
         || (has("unexpected") && (has("instruction") || has("transfer")))
     {
         UnexpectedInstruction
+    } else if has("must not contain computebudget instructions") && !has("invalid_exact_svm") {
+        // MPP charge/session: a ComputeBudget instruction in a version-1
+        // message is an instruction outside the allowed set.
+        UnexpectedInstruction
+    } else if has("must set computeunitlimit")
+        || has("loaded accounts data size limit")
+        || has("-byte limit")
+        || has("address lookup tables")
+    {
+        // Version-1 header config incomplete, a size over the version's
+        // limit, a lookup table: the credential's envelope is malformed.
+        InvalidPayload
     } else if has("invalid")
         || has("malformed")
         || has("decode")
@@ -215,6 +235,30 @@ mod tests {
             ),
             (
                 "Missing required ATA creation instruction for split recipient X",
+                RejectCode::InvalidPayload,
+            ),
+            (
+                "transaction version 1 is not accepted; accepted versions: 0",
+                RejectCode::UnsupportedVersion,
+            ),
+            (
+                "Invalid transaction payload: transaction version 1 is not accepted; accepted versions: 0",
+                RejectCode::UnsupportedVersion,
+            ),
+            (
+                "version 1 transactions must not contain ComputeBudget instructions",
+                RejectCode::UnexpectedInstruction,
+            ),
+            (
+                "invalid_exact_svm_payload_transaction: version 1 transactions must not contain ComputeBudget instructions",
+                RejectCode::InvalidPayload,
+            ),
+            (
+                "version 1 transaction config must set computeUnitLimit",
+                RejectCode::InvalidPayload,
+            ),
+            (
+                "version 0 transaction is 1500 bytes, over the 1232-byte limit",
                 RejectCode::InvalidPayload,
             ),
         ];

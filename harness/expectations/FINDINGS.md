@@ -499,6 +499,170 @@ advertises, and its facilitator cannot decode a version-1 message (it throws
 reading the absent lookup-table list), so neither
 `unsupported_transaction_version` nor the version-1 budget rules are reachable.
 Resolved by bumping the vendored x402 packages once PR 3710 lands.
+## txv1-rust-legacy-accepted
+
+**Cases:** `vector/charge-verify-legacy-reject`, `vector/charge-verify-legacy-default-reject`, `vector/session-open-legacy-reject`
+**SDKs:** rust
+
+The MPP txv1 draft (draft-solana-charge-00, Transaction Versions): “Legacy
+messages are not supported: servers MUST NOT advertise "legacy" and MUST
+reject a legacy message.” The kit polices a legacy message as version 0
+(`rust/crates/kit/src/core/tx/version.rs`, `TxVersion::of`) and its charge
+verifier accepts one wherever version 0 is accepted. That reading matches
+x402 (§1.5, a facilitator MAY keep accepting legacy), not MPP. The fix is a
+protocol-aware envelope check: MPP charge and session refuse
+`VersionedMessage::Legacy`; x402 keeps the tolerance.
+
+## txv1-rust-empty-advertisement
+
+**Cases:** `vector/charge-build-empty-advertisement-reject`, `vector/x402-build-empty-advertisement-reject`
+**SDKs:** rust
+
+`transactionVersions: []` is read as the absent default `[0]`
+(`core::tx::accepted_versions`) and the client builds version 0. Only an
+omitted field defaults (RULINGS T2); x402 §1.5: “It MUST fail with
+unsupported_transaction_version when the intersection is empty.”
+
+## txv1-rust-x402-legacy-offer-code
+
+**Case:** `vector/x402-build-legacy-only-reject`
+**SDKs:** rust
+
+An offer whose `extra.transactionVersions` is `["legacy"]` fails to parse
+(`PaymentRequirements` deserialization, `invalid-payload`). §1.5 says the
+client intersects and, legacy never being buildable, fails with
+`unsupported_transaction_version`. The refusal is right; the code is not.
+
+## txv1-rust-x402-budget-codes
+
+**Case:** `vector/x402-verify-v1-missing-loaded-data-limit-reject`
+**SDKs:** rust
+
+`verify_exact_versioned_transaction`
+(`rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs`) maps every
+`check_v1_budget_caps` error to
+`invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high`,
+so a version-1 header without `loadedAccountsDataSizeLimit` (or with a zero
+limit) is reported as a price-cap violation. The transaction is rejected;
+only the reason is wrong.
+
+## txv1-rust-x402-advertisement-fixed
+
+**Cases:** `cross/x402-build-v0-advertised/*/rust`, `cross/x402-build-duplicate-advertisement/*/rust`
+**SDKs:** rust
+
+§1.5: “the server MUST copy that value into
+PaymentRequirements.extra.transactionVersions.” The kit's x402 server
+generates the field itself from `TxV1Mode` (`core::tx::advertised`): `[0, 1]`
+or nothing. Fronting a facilitator that advertises `[0]` (or `[1, 0, 1]`),
+its route carries a different value than the offer the client echoed, and
+the accepted match (“a hint the credential does echo must still equal the
+route's”, `rust/crates/kit/src/x402/server/exact.rs` `drop_hints_not_echoed`)
+refuses a valid payment. The builds verify against a route that copies the
+offer's value (the build judge's sponsor).
+
+## txv1-ts-mpp-no-transaction-versions
+
+**Cases:** `vector/charge-wire-transaction-versions-*`, `vector/session-wire-transaction-versions-*`
+**SDKs:** typescript
+
+`@solana/mpp`'s charge and session request schemas
+(`typescript/packages/mpp/src/Methods.ts`) have no
+`methodDetails.transactionVersions`. zod strips the field, so a server's
+advertisement is lost in a round trip and malformed values (`["legacy"]`,
+`[0, 2]`, `["1"]`, `1`) parse. Tracks the mpp-specs
+feat/solana-transaction-versions draft (`77aa6a1`).
+
+## txv1-ts-mpp-client-v0-only
+
+**Cases:** `vector/charge-build-v1-*`, `vector/charge-build-duplicate-advertisement`, `vector/charge-build-empty-advertisement-reject`
+**SDKs:** typescript
+
+The `@solana/mpp` charge client never reads `transactionVersions` and always
+builds a version-0 message with the ComputeBudget prefix
+(`typescript/packages/mpp/src/client/Charge.ts`). For a `[1]`-only challenge
+the build is a version the server never advertised; for the 1.9 KB
+large-memo charge it exceeds the version-0 limit instead of using version 1.
+
+## txv1-ts-mpp-server-no-version-admission
+
+**Cases:** `vector/charge-verify-v1-*`, `vector/charge-verify-v0-to-v1-only-reject`, `vector/charge-verify-legacy-*`, `vector/charge-verify-v0-oversize-reject`
+**SDKs:** typescript
+
+`verifyChargeTransaction` has no version admission: a version-1 transaction
+throws while decoding (`Cannot read properties of undefined (reading
+'entries')`: the compiled version-1 message has no `instructions` array), a
+version-0 transaction is accepted for a challenge that advertises `[1]` only,
+legacy is accepted, and the version-0 size limit is not applied.
+
+## txv1-ts-x402-pre-3474
+
+**Cases:** `vector/x402-build-v1-advertised`, `vector/x402-build-duplicate-advertisement`, `vector/x402-build-empty-advertisement-reject`, `vector/x402-build-legacy-only-reject`, `vector/x402-verify-v1-not-accepted-reject`, `vector/x402-verify-v1-explicit-v0-sponsor-reject`
+**SDKs:** typescript
+
+The vendored x402 (`typescript/external/x402` @03b3919b) predates
+x402-foundation/x402 PR 3474 (feat/svm-transaction-versions-exact). The exact
+client ignores `extra.transactionVersions` (always version 0, never
+refuses), and the facilitator has no version gate: a version-1 transaction
+fails as `invalid_exact_svm_payload_signature_invalid` instead of
+`unsupported_transaction_version`. PR 3474 adds the gate and the client
+intersection but advertises `[0]` only; version 1 itself is not implemented
+upstream yet, so the version-1 accept and policy vectors stay
+`[[unsupported]]` (no accepted-version set to configure) until it is.
+
+## txv1-go
+
+**Cases:** the charge and x402 transaction-version vectors listed in `go.toml`
+**SDKs:** go
+
+No transaction-version negotiation: the Go SDK builds version 0 only
+(`go/paycore/solanatx/solanatx.go` `NewV0Transaction`), `DecodeTransaction`
+refuses every prefix but legacy and version 0, and no charge or x402 type
+carries `transactionVersions`. Session wire vectors are unsupported (the Go
+session types are on the superseded draft).
+
+## txv1-python
+
+**Cases:** the charge, session and x402 transaction-version vectors listed in `python.toml`
+**SDKs:** python
+
+No transaction-version negotiation: builders emit version 0, solders refuses
+the version-1 prefix (`python/tests/test_server_v0_transactions.py`), and no
+request type carries `transactionVersions`.
+
+## txv1-swift
+
+**Cases:** the charge and x402 transaction-version vectors listed in `swift.toml`
+**SDKs:** swift
+
+`TransactionVersion` models legacy and version 0 only
+(`swift/Sources/SolanaPayKit/PayCore/Transaction.swift`); the client never
+reads `transactionVersions`. Verify and session-wire vectors are unsupported
+(client-only SDK, superseded session draft).
+
+## txv1-php
+
+**Cases:** the charge and x402 verify and wire vectors listed in `php.toml` (builds are unsupported: server-only SDK)
+**SDKs:** php
+
+Server-only SDK without transaction-version support: it decodes legacy and
+version 0 only and reads no `transactionVersions`.
+
+## txv1-ruby
+
+**Cases:** the charge and x402 verify and wire vectors listed in `ruby.toml` (builds are unsupported: server-only SDK)
+**SDKs:** ruby
+
+Server-only SDK without transaction-version support: it decodes legacy and
+version 0 only and reads no `transactionVersions`.
+
+## txv1-lua
+
+**Cases:** the charge and x402 verify and wire vectors listed in `lua.toml` (builds are unsupported: server-only SDK)
+**SDKs:** lua
+
+Server-only SDK without transaction-version support: it decodes legacy and
+version 0 only and reads no `transactionVersions`.
 
 ## Resolved on 2026-10-20
 

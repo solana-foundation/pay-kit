@@ -8,18 +8,21 @@
 //! bytes, never the operator name: other SDKs see only the result.
 //!
 //! Transaction operators decompile the message (`tx.rs`), edit instructions,
-//! recompile as version 0 and re-sign every slot whose key the filler holds,
-//! so a mutation never fails for an unrelated reason such as a stale
-//! signature (except [`Mutation::DropSignature`], whose point that is).
+//! recompile in the message's own format (legacy, version 0 or version 1
+//! with its header compute config) and re-sign every slot whose key the
+//! filler holds, so a mutation never fails for an unrelated reason such as a
+//! stale signature (except [`Mutation::DropSignature`], whose point that
+//! is). Only [`Mutation::ToFormat`] changes the format.
 
 use solana_instruction::{AccountMeta, Instruction};
+use solana_message::{v1::TransactionConfig, VersionedMessage};
 use solana_transaction::versioned::VersionedTransaction;
 
 use crate::case::{RejectCode, Suite};
 use crate::keys::{
     self, ata, pubkey, ATA_PROGRAM, MEMO_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
 };
-use crate::tx::{compile_v0, decompile, sign_slots};
+use crate::tx::{compile_as, decompile, recompile, sign_slots, v1_config, MessageFormat};
 
 /// Selects the n-th (0-based) value transfer: System `Transfer` or SPL
 /// `TransferChecked`, in instruction order.
@@ -121,6 +124,29 @@ pub enum Mutation {
     /// own) and x402 `exact` has no challenge expiry. Kept so the operator
     /// table states it; `expected` returns `None` for every suite.
     ExpireChallenge,
+    /// Recompile the same instructions in another message format, moving the
+    /// compute budget between the ComputeBudget instructions (legacy,
+    /// version 0) and the version-1 header `TransactionConfig` (the kit's
+    /// encoding: total priority fee rounded up, maximum loaded-data limit).
+    /// Whether that is a reject depends on what the server accepts, so
+    /// `expected` is `None`: cases using it are authored.
+    ToFormat { format: MessageFormat },
+    /// Version 1: set the header `computeUnitLimit`.
+    V1ComputeUnitLimit { limit: u32 },
+    /// Version 1: set the header `priorityFee` (total lamports).
+    V1PriorityFee { lamports: u64 },
+    /// Version 1: remove the header `computeUnitLimit` (budgeted zero).
+    V1DropComputeUnitLimit,
+    /// Version 1: remove the header `loadedAccountsDataSizeLimit` (budgeted
+    /// zero bytes).
+    V1DropLoadedAccountsDataSizeLimit,
+    /// Replace the n-th Memo instruction's text with `len` hex characters,
+    /// to move the serialized size across a version's limit. Whether that is
+    /// a reject depends on the format, so `expected` is `None`.
+    PadMemo { memo: usize, len: usize },
+    /// Version 0: resolve transfer #0's destination through an address
+    /// lookup table instead of the static account keys.
+    AddLookupTable,
 }
 
 impl Mutation {
@@ -166,6 +192,19 @@ impl Mutation {
             (ExtraSigner { .. }, Suite::X402Exact) => Some(UnexpectedInstruction),
             (DuplicateMemo { .. }, Suite::X402Exact) => Some(InvalidPayload),
             (Mutation::WrongNetwork { .. }, Suite::X402Exact) => Some(RejectCode::AcceptedMismatch),
+            (V1ComputeUnitLimit { .. }, Suite::Charge | Suite::X402Exact | Suite::Session) => {
+                Some(ComputeLimitOverCap)
+            }
+            (V1PriorityFee { .. }, Suite::Charge | Suite::X402Exact | Suite::Session) => {
+                Some(ComputePriceOverCap)
+            }
+            (
+                V1DropComputeUnitLimit | V1DropLoadedAccountsDataSizeLimit,
+                Suite::Charge | Suite::X402Exact | Suite::Session,
+            ) => Some(InvalidPayload),
+            (AddLookupTable, Suite::Charge | Suite::X402Exact | Suite::Session) => {
+                Some(InvalidPayload)
+            }
             _ => None,
         }
     }
@@ -253,6 +292,33 @@ impl Mutation {
             ),
             Mutation::WrongNetwork { network } => format!("accepted.network set to {network}"),
             Mutation::ExpireChallenge => "challenge expiry moved into the past".into(),
+            Mutation::ToFormat { format } => match format {
+                MessageFormat::Legacy => {
+                    "recompiled as a legacy message (compute budget as instructions)".into()
+                }
+                MessageFormat::V0 => {
+                    "recompiled as a version-0 message (compute budget as instructions)".into()
+                }
+                MessageFormat::V1 => {
+                    "recompiled as a version-1 message (compute budget in the header)".into()
+                }
+            },
+            Mutation::V1ComputeUnitLimit { limit } => {
+                format!("version-1 header computeUnitLimit set to {limit}")
+            }
+            Mutation::V1PriorityFee { lamports } => {
+                format!("version-1 header priorityFee set to {lamports} lamports")
+            }
+            Mutation::V1DropComputeUnitLimit => "version-1 header computeUnitLimit removed".into(),
+            Mutation::V1DropLoadedAccountsDataSizeLimit => {
+                "version-1 header loadedAccountsDataSizeLimit removed".into()
+            }
+            Mutation::PadMemo { memo, len } => {
+                format!("memo #{memo} replaced with {len} hex characters")
+            }
+            Mutation::AddLookupTable => {
+                "transfer #0 destination resolved through an address lookup table".into()
+            }
         }
     }
 
@@ -280,6 +346,29 @@ impl Mutation {
                 .ok_or("client is not a signer of the transaction")?;
             out.signatures[index] = Default::default();
             return Ok(out);
+        }
+        match self {
+            Mutation::ToFormat { format } => return to_format(tx, *format, signers),
+            Mutation::AddLookupTable => return add_lookup_table(tx, signers),
+            Mutation::V1ComputeUnitLimit { .. }
+            | Mutation::V1PriorityFee { .. }
+            | Mutation::V1DropComputeUnitLimit
+            | Mutation::V1DropLoadedAccountsDataSizeLimit => {
+                let mut config = v1_config(&tx.message)
+                    .ok_or_else(|| format!("{self:?} needs a version-1 message"))?;
+                match self {
+                    Mutation::V1ComputeUnitLimit { limit } => {
+                        config.compute_unit_limit = Some(*limit)
+                    }
+                    Mutation::V1PriorityFee { lamports } => config.priority_fee = Some(*lamports),
+                    Mutation::V1DropComputeUnitLimit => config.compute_unit_limit = None,
+                    _ => config.loaded_accounts_data_size_limit = None,
+                }
+                let mut out = compile_as(MessageFormat::V1, &decompile(&tx.message)?, config)?;
+                sign_slots(&mut out, signers);
+                return Ok(out);
+            }
+            _ => {}
         }
         let mut d = decompile(&tx.message)?;
         let transfers: Vec<usize> = d
@@ -523,20 +612,132 @@ impl Mutation {
                 d.instructions[at]
                     .accounts
                     .push(AccountMeta::new_readonly(keys::pubkey_of_seed(*seed), true));
-                let mut out = compile_v0(&d)?;
+                let mut out = recompile(&tx.message, &d)?;
                 let mut seeds = signers.to_vec();
                 seeds.push(*seed);
                 sign_slots(&mut out, &seeds);
                 return Ok(out);
             }
-            Mutation::WrongNetwork { .. } | Mutation::ExpireChallenge | Mutation::DropSignature => {
+            Mutation::PadMemo { memo, len } => {
+                let at = memo_at(*memo)?;
+                d.instructions[at].data = b"0123456789abcdef"
+                    .iter()
+                    .cycle()
+                    .take(*len)
+                    .copied()
+                    .collect();
+            }
+            Mutation::WrongNetwork { .. }
+            | Mutation::ExpireChallenge
+            | Mutation::DropSignature
+            | Mutation::ToFormat { .. }
+            | Mutation::AddLookupTable
+            | Mutation::V1ComputeUnitLimit { .. }
+            | Mutation::V1PriorityFee { .. }
+            | Mutation::V1DropComputeUnitLimit
+            | Mutation::V1DropLoadedAccountsDataSizeLimit => {
                 unreachable!("handled above")
             }
         }
-        let mut out = compile_v0(&d)?;
+        let mut out = recompile(&tx.message, &d)?;
         sign_slots(&mut out, signers);
         Ok(out)
     }
+}
+
+/// [`Mutation::ToFormat`]: the same instructions in `format`. Leaving
+/// version 1, the header budget becomes `SetComputeUnitLimit` +
+/// `SetComputeUnitPrice` (price = priority fee per unit, rounded down);
+/// entering it, the ComputeBudget instructions become the header config the
+/// kit would write for them (an absent limit takes the runtime default).
+fn to_format(
+    tx: &VersionedTransaction,
+    format: MessageFormat,
+    signers: &[[u8; 32]],
+) -> Result<VersionedTransaction, String> {
+    use solana_pay_kit::core::tx::{unit_limit_instruction, unit_price_instruction, ComputeBudget};
+    let from = MessageFormat::of(&tx.message);
+    if from == format {
+        return Err(format!(
+            "the message is already in format {}",
+            format.as_str()
+        ));
+    }
+    let mut d = decompile(&tx.message)?;
+    let mut config = TransactionConfig::default();
+    if from == MessageFormat::V1 {
+        let header = v1_config(&tx.message).unwrap_or_default();
+        if let Some(limit) = header.compute_unit_limit {
+            let price = match header.priority_fee {
+                Some(fee) if limit > 0 => (fee as u128 * 1_000_000 / limit as u128) as u64,
+                _ => 0,
+            };
+            d.instructions.insert(0, unit_price_instruction(price));
+            d.instructions.insert(0, unit_limit_instruction(limit));
+        }
+    } else if format == MessageFormat::V1 {
+        let (mut limit, mut price) = (None, None);
+        d.instructions.retain(|ix| {
+            if ix.program_id != pubkey(keys::COMPUTE_BUDGET_PROGRAM) {
+                return true;
+            }
+            match (ix.data.first(), ix.data.len()) {
+                (Some(2), 5) => limit = Some(u32::from_le_bytes(ix.data[1..5].try_into().unwrap())),
+                (Some(3), 9) => price = Some(u64::from_le_bytes(ix.data[1..9].try_into().unwrap())),
+                _ => {}
+            }
+            false
+        });
+        let limit = limit
+            .unwrap_or_else(|| ComputeBudget::runtime_default(d.instructions.len()).unit_limit);
+        config = ComputeBudget::new(limit, price.unwrap_or(0)).v1_config();
+    }
+    let mut out = compile_as(format, &d, config)?;
+    sign_slots(&mut out, signers);
+    Ok(out)
+}
+
+/// [`Mutation::AddLookupTable`]: recompile a version-0 message with transfer
+/// #0's destination moved out of the static keys into a lookup table.
+fn add_lookup_table(
+    tx: &VersionedTransaction,
+    signers: &[[u8; 32]],
+) -> Result<VersionedTransaction, String> {
+    if MessageFormat::of(&tx.message) != MessageFormat::V0 {
+        return Err("AddLookupTable needs a version-0 message".into());
+    }
+    let d = decompile(&tx.message)?;
+    let transfer = d
+        .instructions
+        .iter()
+        .find(|ix| is_transfer(ix))
+        .ok_or("transaction has no transfer #0")?;
+    let index = if transfer.program_id == pubkey(SYSTEM_PROGRAM) {
+        1
+    } else {
+        2
+    };
+    let table = solana_message::AddressLookupTableAccount {
+        key: solana_pubkey::Pubkey::new_from_array([0x41; 32]),
+        addresses: vec![transfer.accounts[index].pubkey],
+    };
+    let message = solana_message::v0::Message::try_compile(
+        &d.fee_payer,
+        &d.instructions,
+        std::slice::from_ref(&table),
+        d.blockhash,
+    )
+    .map_err(|e| format!("compile v0 message with a lookup table: {e}"))?;
+    if message.address_table_lookups.is_empty() {
+        return Err("the destination did not move into the lookup table".into());
+    }
+    let message = VersionedMessage::V0(message);
+    let mut out = VersionedTransaction {
+        signatures: vec![Default::default(); message.header().num_required_signatures as usize],
+        message,
+    };
+    sign_slots(&mut out, signers);
+    Ok(out)
 }
 
 /// `CreateIdempotent` for `owner`'s ATA of `mint` under `program`, with the
@@ -643,6 +844,127 @@ mod tests {
         let dropped = Mutation::DropSignature.apply(&tx, &[]).unwrap();
         assert_eq!(dropped.message, tx.message);
         assert_ne!(dropped.signatures, tx.signatures);
+    }
+
+    #[test]
+    fn version_operators_change_the_message_and_keep_the_format() {
+        let v0 = layout();
+        let v1 = crate::tx::x402_static_layout_v1(
+            &StaticLayout {
+                fee_payer: keys::X402_SERVER_FEE_PAYER,
+                mint: keys::MINT,
+                pay_to: keys::X402_PAY_TO,
+                amount: 1000,
+                decimals: 6,
+                memo: "0123456789abcdef0123456789abcdef",
+            },
+            crate::tx::x402_static_layout_v1_config(),
+        )
+        .unwrap();
+        assert_eq!(MessageFormat::of(&v1.message), MessageFormat::V1);
+        let cases = [
+            (
+                &v0,
+                Mutation::ToFormat {
+                    format: MessageFormat::V1,
+                },
+                MessageFormat::V1,
+            ),
+            (
+                &v0,
+                Mutation::ToFormat {
+                    format: MessageFormat::Legacy,
+                },
+                MessageFormat::Legacy,
+            ),
+            (
+                &v1,
+                Mutation::ToFormat {
+                    format: MessageFormat::V0,
+                },
+                MessageFormat::V0,
+            ),
+            (
+                &v0,
+                Mutation::PadMemo { memo: 0, len: 1300 },
+                MessageFormat::V0,
+            ),
+            (
+                &v1,
+                Mutation::PadMemo { memo: 0, len: 1300 },
+                MessageFormat::V1,
+            ),
+            (&v0, Mutation::AddLookupTable, MessageFormat::V0),
+            (
+                &v1,
+                Mutation::V1ComputeUnitLimit { limit: 1 },
+                MessageFormat::V1,
+            ),
+            (
+                &v1,
+                Mutation::V1PriorityFee { lamports: 7 },
+                MessageFormat::V1,
+            ),
+            (&v1, Mutation::V1DropComputeUnitLimit, MessageFormat::V1),
+            (
+                &v1,
+                Mutation::V1DropLoadedAccountsDataSizeLimit,
+                MessageFormat::V1,
+            ),
+            // Instruction operators recompile in the message's own format.
+            (
+                &v1,
+                Mutation::BumpAmount {
+                    transfer: 0,
+                    delta: -1,
+                },
+                MessageFormat::V1,
+            ),
+            (
+                &v1,
+                Mutation::ExtraSigner {
+                    memo: 0,
+                    seed: [21; 32],
+                },
+                MessageFormat::V1,
+            ),
+        ];
+        for (tx, op, format) in cases {
+            let out = op.apply(tx, &[keys::CLIENT_SEED]).unwrap();
+            assert_ne!(out.message, tx.message, "{op:?} left the message unchanged");
+            assert_eq!(MessageFormat::of(&out.message), format, "{op:?}");
+            // Every slot the filler holds is re-signed.
+            assert!(crate::tx::signature_slots(&out)
+                .iter()
+                .all(|(_, slot)| *slot != crate::tx::Slot::Invalid));
+        }
+        // v0 -> v1 -> v0: the limit survives; the 1 micro-lamport price
+        // becomes the kit's 1-lamport total (rounded up), i.e. 5
+        // micro-lamports per unit over 200_000 units on the way back.
+        let there = Mutation::ToFormat {
+            format: MessageFormat::V1,
+        }
+        .apply(&v0, &[keys::CLIENT_SEED])
+        .unwrap();
+        let header = crate::tx::v1_config(&there.message).unwrap();
+        assert_eq!(header.compute_unit_limit, Some(200_000));
+        assert_eq!(header.priority_fee, Some(1));
+        let back = Mutation::ToFormat {
+            format: MessageFormat::V0,
+        }
+        .apply(&there, &[keys::CLIENT_SEED])
+        .unwrap();
+        let price = Mutation::SetComputeUnitPrice { micro_lamports: 5 }
+            .apply(&v0, &[keys::CLIENT_SEED])
+            .unwrap();
+        assert_eq!(back.message, price.message);
+        // A v1-only operator refuses other formats.
+        assert!(Mutation::V1DropComputeUnitLimit
+            .apply(&v0, &[keys::CLIENT_SEED])
+            .is_err());
+        assert!(Mutation::AddLookupTable
+            .apply(&v1, &[keys::CLIENT_SEED])
+            .is_err());
     }
 
     #[test]

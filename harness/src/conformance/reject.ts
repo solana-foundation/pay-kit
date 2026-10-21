@@ -37,7 +37,6 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/invalid_batch_settlement_svm_channel_state/, "channel-state"],
   [/invalid_batch_settlement_svm_refund_transaction/, "refund-transaction"],
   [/\bduplicate_settlement\b/, "duplicate-settlement"],
-  [/\bunsupported_transaction_version\b/, "unsupported-transaction-version"],
   [/\bunsupported_scheme\b/, "unsupported-scheme"],
   // @x402/svm batch-settlement client: refusals of a challenge's terms
   // (plain Errors, no reason code).
@@ -45,6 +44,15 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/extra\.paymentFlow must be "authorization"/, "payment-flow"],
   [/extra\.withdrawDelay is outside the allowed range/, "withdraw-delay-out-of-range"],
   [/requires a server-signed channel whose operator|extra\.operator is only valid/, "invalid-challenge"],
+  // Transaction versions (SIMD-0385): a message version the server does
+  // not accept, or a client whose signer builds no advertised version
+  // (x402 §1.5 `unsupported_transaction_version`). Then the version-1
+  // envelope rules: a ComputeBudget instruction in a version-1 charge, an
+  // incomplete header config, a size over the version's limit, a lookup
+  // table. Checked first: the messages also contain generic words.
+  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version/i, "unsupported-version"],
+  [/^(?!.*invalid_exact_svm).*must not contain computebudget instructions/i, "unexpected-instruction"],
+  [/must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables/i, "invalid-payload"],
   // Charge verification policy (split arithmetic, split-recipient ATA
   // creation, fee payer placement, compute budget allowlist) and the client's
   // challenge checks. Checked first: several messages contain generic words.

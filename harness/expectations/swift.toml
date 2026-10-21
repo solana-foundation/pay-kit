@@ -143,3 +143,117 @@ ids = [
 ]
 reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
 tracking = "FINDINGS.md#x402-client-network-not-checked"
+
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[unsupported]]
+reason = "unsupported-mode: swift is a client-only SDK and does not implement verify-transaction"
+ids = [
+  "vector/charge-verify-v1-advertised-accept",
+  "vector/charge-verify-v1-only-advertised-accept",
+  "vector/charge-verify-v1-not-advertised-reject",
+  "vector/charge-verify-v1-v0-only-reject",
+  "vector/charge-verify-v0-to-v1-only-reject",
+  "vector/charge-verify-v0-with-v1-advertised-accept",
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+  "vector/charge-verify-default-v0-accept",
+  "vector/charge-verify-lookup-table-reject",
+  "vector/charge-verify-v0-oversize-reject",
+  "vector/charge-verify-v1-large-memos-accept",
+  "vector/charge-verify-v1-compute-budget-instruction-reject",
+  "vector/charge-verify-v1-missing-compute-unit-limit-reject",
+  "vector/charge-verify-v1-missing-loaded-data-limit-reject",
+  "vector/charge-verify-v1-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-sponsored-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-sponsored-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-reduced-limit-price-reject",
+  "vector/charge-verify-v1-underpay-reject",
+  "vector/charge-verify-v1-wrong-recipient-reject",
+  "vector/charge-verify-v1-wrong-mint-reject",
+  "vector/charge-verify-v1-sol-underpay-reject",
+  "vector/charge-verify-v1-unexpected-instruction-reject",
+  "vector/charge-verify-v1-sponsor-as-authority-reject",
+]
+
+[[unsupported]]
+reason = "unsupported-mode: swift session wire types (SessionTypes.swift) model the superseded draft; the SDK has no parser for the final session wire contract"
+ids = [
+  "vector/session-wire-transaction-versions-both-golden",
+  "vector/session-wire-transaction-versions-v1-only-golden",
+  "vector/session-wire-transaction-versions-v0-golden",
+  "vector/session-wire-transaction-versions-legacy-reject",
+  "vector/session-wire-transaction-versions-unknown-reject",
+  "vector/session-wire-transaction-versions-string-entry-reject",
+]
+
+[[unsupported]]
+reason = "unsupported-mode: swift is a client-only SDK and does not implement x402 verify-transaction"
+ids = [
+  "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-not-accepted-reject",
+  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
+  "vector/x402-verify-v0-with-v1-sponsor-accept",
+  "vector/x402-verify-v1-over-1232-accept",
+  "vector/x402-verify-v0-over-1232-reject",
+  "vector/x402-verify-v1-over-4096-reject",
+  "vector/x402-verify-v1-compute-budget-instruction-reject",
+  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
+  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
+  "vector/x402-verify-v1-compute-limit-at-cap-accept",
+  "vector/x402-verify-v1-compute-limit-over-cap-reject",
+  "vector/x402-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-verify-v1-too-many-instructions-reject",
+  "vector/x402-verify-v1-underpay-reject",
+  "vector/x402-verify-v1-wrong-recipient-reject",
+  "vector/x402-verify-v1-wrong-mint-reject",
+  "vector/x402-verify-v1-decimals-reject",
+  "vector/x402-verify-v1-fee-payer-authority-reject",
+  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
+  "vector/x402-verify-v1-extra-signer-reject",
+]
+
+[[known_failing]]
+ids = [
+  "vector/charge-wire-transaction-versions-both-golden",
+  "vector/charge-wire-transaction-versions-v1-only-golden",
+  "vector/charge-wire-transaction-versions-legacy-reject",
+  "vector/charge-wire-transaction-versions-unknown-reject",
+  "vector/charge-wire-transaction-versions-string-entry-reject",
+  "vector/charge-wire-transaction-versions-not-array-reject",
+  "vector/x402-wire-transaction-versions-golden",
+  "vector/x402-wire-transaction-versions-v1-only-golden",
+]
+reason = "the request types drop or mis-parse methodDetails/extra.transactionVersions (wire golden or reject): the Swift SDK models legacy and version 0 only (swift/Sources/SolanaPayKit/PayCore/Transaction.swift TransactionVersion) and reads no transactionVersions"
+tracking = "FINDINGS.md#txv1-swift"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-v1-advertised",
+  "vector/charge-build-v1-only-advertised",
+  "vector/charge-build-no-buildable-version-reject",
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/charge-build-duplicate-advertisement",
+  "vector/charge-build-v1-sponsored",
+  "vector/charge-build-v1-sol",
+  "vector/charge-build-v1-large-memos",
+]
+reason = "the charge client ignores methodDetails.transactionVersions and builds version 0 (mpp-specs-txv1: \"Clients MUST build one of the advertised versions\"): the Swift SDK models legacy and version 0 only (swift/Sources/SolanaPayKit/PayCore/Transaction.swift TransactionVersion) and reads no transactionVersions"
+tracking = "FINDINGS.md#txv1-swift"
+
+[[known_failing]]
+ids = [
+  "vector/x402-build-v1-advertised",
+  "vector/x402-build-duplicate-advertisement",
+  "vector/x402-build-no-intersection-reject",
+  "vector/x402-build-empty-advertisement-reject",
+  "vector/x402-build-legacy-only-reject",
+]
+reason = "the x402 exact client and sponsor have no transaction-version support (scheme_exact_svm.md §1.5, x402-foundation/x402 PR 3473/3474): the Swift SDK models legacy and version 0 only (swift/Sources/SolanaPayKit/PayCore/Transaction.swift TransactionVersion) and reads no transactionVersions"
+tracking = "FINDINGS.md#txv1-swift"
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionOpenVerify)"
+pattern = "vector/session-open-*"

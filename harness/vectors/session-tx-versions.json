@@ -1,0 +1,1256 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "The session server advertises transactionVersions [0, 1]; the client's open is a version-1 transaction (budget in the header). Servers MUST accept every version they list. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-v1-advertised-accept",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "gQEACQ8AAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQEN6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjMAAAAAAAAAAEANAwAAAAAECw4hAAAADAcKAwECBgQFCQgLAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAHIX16z3Tk5pZF+/8oTXfQT3xJ1S1dmeAL6ANbzUGmR1+TL1gExlXwYIiKmN/nFu2NxHZRCNhj1rlAtST7In2AQ=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5410e1de47",
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction; its message version MUST be one the challenge advertises ({{transaction-versions}}) |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The session server advertises nothing (so [0]); the open is the same client's version-1 transaction, built for a challenge advertising [0, 1]. Rejected before any instruction is inspected. Pair: session-open-v1-advertised-accept. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "version 1 is not advertised"
+    },
+    "id": "session-open-v1-not-advertised-reject",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "gQEACQ8AAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQEN6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjMAAAAAAAAAAEANAwAAAAAECw4hAAAADAcKAwECBgQFCQgLAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAHIX16z3Tk5pZF+/8oTXfQT3xJ1S1dmeAL6ANbzUGmR1+TL1gExlXwYIiKmN/nFu2NxHZRCNhj1rlAtST7In2AQ=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000"
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5410e1de47",
+      "MPPTX-27a6fd4f3f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The session server advertises [0, 1]; the open is a version-0 transaction (the client's build for a [0] challenge). Still accepted. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-v0-with-v1-advertised-accept",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AZ5T7BeLw/hG3HG/ZRZFX49JLXt442fnW8GHFWlRgWwdVJNInkEhq3y1sZo2FmbcGi7vjmyIHWKijC4wS0wrmg2AAQAJDepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdaVA17ax4rK7UXUhnJo/BgEJJByoxPFwzByi1I7ur50IyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZkaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzqnofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrqtOKzMeS086FUK64PlV3V0zA0nHTqHHCpIF7AZVCSIzzEkOkozS44c7s0P8ldozF5ymD02/RsLDbpEpnVXU5rkBCw4AAAwHCgMBAgYEBQkICyEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAA"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5410e1de47",
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction; its message version MUST be one the challenge advertises ({{transaction-versions}}) |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "No transactionVersions and a version-0 open: the default accepted set is [0]. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-default-v0-accept",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AZ5T7BeLw/hG3HG/ZRZFX49JLXt442fnW8GHFWlRgWwdVJNInkEhq3y1sZo2FmbcGi7vjmyIHWKijC4wS0wrmg2AAQAJDepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdaVA17ax4rK7UXUhnJo/BgEJJByoxPFwzByi1I7ur50IyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZkaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzqnofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrqtOKzMeS086FUK64PlV3V0zA0nHTqHHCpIF7AZVCSIzzEkOkozS44c7s0P8ldozF5ymD02/RsLDbpEpnVXU5rkBCw4AAAwHCgMBAgYEBQkICyEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAA"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000"
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5410e1de47"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction; its message version MUST be one the challenge advertises ({{transaction-versions}}) |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A legacy (unversioned) open carrying the kit's version-0 instructions, against a server advertising [0, 1]: servers MUST reject a legacy message. Pair: session-open-v0-with-v1-advertised-accept. Mutation: recompiled as a legacy message (compute budget as instructions). The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "legacy messages are not supported"
+    },
+    "id": "session-open-legacy-reject",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AWAVrgl5oEWveT6ghEEqOMF2ednabSPWuZ5MLiMSf6FkLuaHRQnz3fzb7Rn0VvnitAyqU57yjsnP395HAY0iCQYBAAkN6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQELDgAADAcKAwECBgQFCQgLIQEHAAAAAAAAAOgDAAAAAAAAhAMAAICy5g4AAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-5b29a4494f",
+      "MPPTX-5410e1de47"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A version-1 open that also carries a SetComputeUnitLimit instruction. Pair: session-open-v1-advertised-accept. Mutation: ComputeBudget instruction with data [2, 64, 13, 3, 0] added. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction",
+      "rejectReason": "ComputeBudget instruction in a version-1 message"
+    },
+    "id": "session-open-v1-compute-budget-instruction-reject",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "gQEACg8AAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQIO6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nWlQNe2seKyu1F1IZyaPwYBCSQcqMTxcMwcotSO7q+dCMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WZGiigt0OBWTpNlGlXkgiSavyK2CyIObdkQ1m566mks6p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa6rTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwAAAAAAAAAAQA0DAAAAAAQFAAUADA4hAAJADQMAAAANCAsDAQIHBAYKCQwBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAABtohqZWwjxYI+9cvOFGUiBx3mS4VC1W6JDkx5AkOk/lqSnoCMCe2yJOAXkeA+G/DCjSI0+ItVg3Fwtz1ocuZIM"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-8a036b6610",
+      "MPPTX-46848f6fce"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "the transaction MUST NOT contain Compute Budget program instructions. They have no effect under version 1, and servers MUST reject them;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A version-1 open whose header omits computeUnitLimit. Pair: session-open-v1-advertised-accept. Mutation: version-1 header computeUnitLimit removed. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-v1-missing-compute-unit-limit-reject",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "gQEACQsAAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQEN6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjMAAAAAAAAAAAAAAAQLDiEAAAAMBwoDAQIGBAUJCAsBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAABxzBVzPZaYkV6NHOG6jegETV4bT37telqSP294LVD0ag+rcJBukY4r5xaA27Z2xD2U4QgTG35HThkFhCioB4AN"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d53a9f42dd"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The transaction MUST set computeUnitLimit and loadedAccountsDataSizeLimit; a version-1 transaction that omits either is budgeted zero and cannot execute;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A version-1 open whose header priority fee is 10000000 lamports: at most 1400000 compute units, so more than 7000000 micro-lamports per unit, over the 5000000 per-unit cap of a client-paid open. Pair: session-open-v1-advertised-accept. Mutation: version-1 header priorityFee set to 10000000 lamports. The open is the kit client's open action (payer = the vector signer) for the session challenge of the server it names; the server runs its offline open checks before any co-sign or broadcast.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-price-over-cap"
+    },
+    "id": "session-open-v1-priority-fee-over-cap-reject",
+    "input": {
+      "sessionOpenVerify": {
+        "challengedBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        "open": {
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "gQEACQ8AAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQEN6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjOAlpgAAAAAAEANAwAAAAAECw4hAAAADAcKAwECBgQFCQgLAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAA+sc5/uHmZsXev+fnuDilIT3m8o3flmOCzCL/8ywPGQn19IB7Yv2T25hGF/2XrwO7o3xBidzGJE8/ZNwZc+WwBw=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        }
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a988b0f7a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising transactionVersions [0, 1] for client-submitted open and topUp transactions: the SDK's session request schema parses the field and re-encodes it unchanged, as integers. Pins the canonical JSON; an SDK that drops the field tells its clients the server accepts version 0 only.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfSwibWluaW11bURlcG9zaXQiOiIxMDAwIiwicmVjaXBpZW50IjoiMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJzdWdnZXN0ZWREZXBvc2l0IjoiNTAwMCIsInVuaXRUeXBlIjoicmVxdWVzdCJ9",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-both-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-5410e1de47",
+      "MPPTX-4563533e08"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [1] only: round-trips as written, not widened to the [0] default.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlsxXX0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[1]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-v1-only-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              1
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-5410e1de47"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [0] explicitly: equal in meaning to the omitted default, but present on the wire, so the canonical bytes keep it.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswXX0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0]},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-transaction-versions-v0-golden",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [\"legacy\"]: servers MUST NOT advertise legacy; the SDK's session schema refuses the entry.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "\"legacy\" is not a transactionVersions entry"
+    },
+    "id": "session-wire-transaction-versions-legacy-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "legacy"
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5b29a4494f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [0, 2]: each entry is the integer 0 or 1 (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "2 is not a Solana message version"
+    },
+    "id": "session-wire-transaction-versions-unknown-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              2
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Session challenge advertising [\"0\"]: entries are integers, never strings (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "a string entry"
+    },
+    "id": "session-wire-transaction-versions-string-entry-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "0"
+            ]
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  }
+]

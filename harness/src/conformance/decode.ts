@@ -57,12 +57,47 @@ function readU64Le(data: Uint8Array, offset: number): bigint {
   return view.getBigUint64(offset, true);
 }
 
+// A version-1 (SIMD-0385) compiled message as @solana/kit decodes it:
+// instruction headers and payloads in two arrays, and the compute budget
+// as mask-selected header config values instead of ComputeBudget
+// instructions.
+type CompiledMessageV1 = {
+  version: 1;
+  configMask: number;
+  configValues: Array<{ kind: string; value: bigint | number }>;
+  instructionHeaders: Array<{ programAccountIndex: number }>;
+  instructionPayloads: Array<{ instructionAccountIndices: readonly number[]; instructionData: Uint8Array }>;
+  staticAccounts: readonly string[];
+};
+
+// Header config of a version-1 message: values appear in mask-bit order
+// (priority fee bits 0-1, compute unit limit bit 2, loaded-accounts limit
+// bit 3, heap size bit 4).
+function v1Budget(message: CompiledMessageV1): { limit?: number; priorityFee?: bigint } {
+  const values = [...message.configValues];
+  const out: { limit?: number; priorityFee?: bigint } = {};
+  if ((message.configMask & 0b11) === 0b11) out.priorityFee = BigInt(values.shift()?.value ?? 0);
+  if (message.configMask & 0b100) out.limit = Number(values.shift()?.value ?? 0);
+  return out;
+}
+
+function compiledInstructions(message: CompiledMessage | CompiledMessageV1): readonly CompiledInstruction[] {
+  if ("version" in message && message.version === 1) {
+    return message.instructionHeaders.map((header, i) => ({
+      accountIndices: message.instructionPayloads[i]?.instructionAccountIndices ?? [],
+      data: message.instructionPayloads[i]?.instructionData ?? new Uint8Array(),
+      programAddressIndex: header.programAccountIndex,
+    }));
+  }
+  return (message as CompiledMessage).instructions;
+}
+
 export function decodeTransactionShape(transactionBase64: string): DecodedShape {
   const txBytes = getBase64Codec().encode(transactionBase64);
   const decoded = getTransactionDecoder().decode(txBytes);
   const message = getCompiledTransactionMessageDecoder().decode(
     decoded.messageBytes,
-  ) as unknown as CompiledMessage;
+  ) as unknown as CompiledMessage | CompiledMessageV1;
 
   const accountAt = (index: number): string => String(message.staticAccounts[index]);
   const programs = new Set<string>();
@@ -70,8 +105,18 @@ export function decodeTransactionShape(transactionBase64: string): DecodedShape 
   const memos: string[] = [];
   let computeUnitLimit: number | undefined;
   let computeUnitPrice: string | undefined;
+  if ("version" in message && message.version === 1) {
+    // The verifiers' view: the declared limit, and the total priority fee
+    // per unit, rounded up.
+    const budget = v1Budget(message);
+    computeUnitLimit = budget.limit;
+    if (budget.priorityFee !== undefined && budget.limit) {
+      const units = BigInt(budget.limit);
+      computeUnitPrice = ((budget.priorityFee * 1_000_000n + units - 1n) / units).toString();
+    }
+  }
 
-  for (const ix of message.instructions) {
+  for (const ix of compiledInstructions(message)) {
     const program = accountAt(ix.programAddressIndex);
     programs.add(program);
 

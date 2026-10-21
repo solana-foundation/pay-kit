@@ -72,7 +72,6 @@ const rejectCodeSchema = {
     "channel-state",
     "refund-transaction",
     "duplicate-settlement",
-    "unsupported-transaction-version",
   ],
 } as const;
 

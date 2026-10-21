@@ -11,11 +11,14 @@ use crate::keys;
 pub mod canonical;
 pub mod charge;
 pub mod charge_policy;
+pub mod charge_tx_versions;
 pub mod session;
+pub mod session_tx_versions;
 pub mod subscription;
 pub mod x402_batch;
 pub mod x402_exact;
 pub mod x402_policy;
+pub mod x402_tx_versions;
 pub mod x402_upto;
 
 /// `registry! { name => case_expr; ... }`: one constructor fn per case, the
@@ -66,6 +69,9 @@ pub fn all() -> Vec<crate::case::Case> {
     out.extend(x402_upto::cases());
     out.extend(x402_batch::cases());
     out.extend(subscription::cases());
+    out.extend(charge_tx_versions::cases());
+    out.extend(session_tx_versions::cases());
+    out.extend(x402_tx_versions::cases());
     out
 }
 

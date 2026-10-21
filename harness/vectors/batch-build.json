@@ -2896,7 +2896,7 @@
     "description": "The challenge advertises only version 1 and the client's signer signs up to version 0: the intersection is empty.",
     "expect": {
       "outcome": "reject",
-      "rejectCode": "unsupported-transaction-version"
+      "rejectCode": "unsupported-version"
     },
     "id": "batch-build-version-intersection-empty-reject",
     "input": {
