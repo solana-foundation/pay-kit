@@ -385,9 +385,7 @@ final class SolanaChargeHandler
         // node refuses it without a preflight result, the charge is kept as
         // possibly sent, and a retry would reconcile on the status of
         // whatever landed transaction owns that signature.
-        if (!$tx->verifySignatures()) {
-            throw new InvalidArgumentException('transaction signature verification failed');
-        }
+        $tx->assertSignaturesVerify();
         $signed = $tx->serialize();
         return [$signed, self::firstSignature($signed)];
     }

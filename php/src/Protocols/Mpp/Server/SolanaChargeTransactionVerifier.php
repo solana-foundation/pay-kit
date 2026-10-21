@@ -161,7 +161,24 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             throw new InvalidArgumentException('invalid transaction payload');
         }
 
-        $decoded = $this->decodeTransaction($wire);
+        $transaction = TransactionWire::deserialize($wire);
+        $feePayer = $this->verifyTransactionShape($transaction, $request, $onChain);
+        if (!$onChain) {
+            // Refuse a client signature that does not verify before the
+            // handler claims, co-signs or sends (RULINGS SIG1). Only the
+            // server's own fee-payer slot may still be empty. A landed
+            // transaction (onChain) was already verified by the cluster.
+            $transaction->assertSignaturesVerify($feePayer);
+        }
+    }
+
+    /**
+     * The charge's instruction-level checks; returns the sponsoring fee
+     * payer the request names, or null when the client pays its own fees.
+     */
+    private function verifyTransactionShape(TransactionWire $transaction, ChargeRequest $request, bool $onChain): ?PublicKey
+    {
+        $decoded = $this->decodeTransaction($transaction);
         $methodDetails = $this->methodDetails($request);
         $splits = $this->splits($methodDetails);
         if (count($splits) > 8) {
@@ -216,7 +233,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             if (!$onChain) {
                 $this->verifyRequiredSigners($decoded, $matched);
             }
-            return;
+            return $feePayer;
         }
 
         $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet');
@@ -288,14 +305,15 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         if (!$onChain) {
             $this->verifyRequiredSigners($decoded, $matched);
         }
+
+        return $feePayer;
     }
 
     /**
      * @return array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>}
      */
-    private function decodeTransaction(string $wire): array
+    private function decodeTransaction(TransactionWire $transaction): array
     {
-        $transaction = TransactionWire::deserialize($wire);
         if ($transaction->addressTableLookups() !== []) {
             throw new InvalidArgumentException('v0 address lookup tables are not supported');
         }

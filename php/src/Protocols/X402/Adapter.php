@@ -271,6 +271,15 @@ final class Adapter
         }
         $kp = Keypair::fromSecretKey($signer->secretKey());
         $tx->partialSign($kp);
+        // Every slot, the facilitator's included, must verify before the
+        // transaction is sent (RULINGS SIG1).
+        try {
+            $tx->assertSignaturesVerify();
+        } catch (Throwable $error) {
+            throw new InvalidProofException(
+                'invalid_exact_svm_payload_transaction_signature: ' . $error->getMessage(),
+            );
+        }
         $cosignedWire = $tx->serialize(verifySignatures: false);
 
         return $this->broadcastAndConfirm($header, $envelope, $payload, $version, $cosignedWire);
