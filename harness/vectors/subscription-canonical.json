@@ -1,0 +1,836 @@
+[
+  {
+    "bugType": "wire",
+    "description": "Bearer-proof preimage: the JCS object {domain: \"mpp-subscription-auth-v1\", payer, subscriptionChallengeId, subscriptionDelegation}, UTF-8, keys sorted, no whitespace. Frozen byte for byte: a renamed key, a different domain string or a non-canonical serialization signs different bytes, and a proof from one SDK stops verifying in another.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJkb21haW4iOiJtcHAtc3Vic2NyaXB0aW9uLWF1dGgtdjEiLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwic3Vic2NyaXB0aW9uQ2hhbGxlbmdlSWQiOiJxVDh3RXJZdUkzb1BsS2pINmdGZFNhIiwic3Vic2NyaXB0aW9uRGVsZWdhdGlvbiI6IkF3Q3RpWExoQ0x4WXl0SjlHejVxUUJkOEd4WTZHcndmUmRlZXZQeXNFZ0p5In0",
+        "canonicalJson": "{\"domain\":\"mpp-subscription-auth-v1\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"subscriptionChallengeId\":\"qT8wErYuI3oPlKjH6gFdSa\",\"subscriptionDelegation\":\"AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-auth-message-frozen",
+    "input": {
+      "subscriptionAuthenticationMessage": {
+        "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ef1bb057fc"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The client signs the UTF-8 bytes of the JCS serialization with the Ed25519 private key corresponding to payer.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Bearer-proof preimage for another activation challenge id and delegation: the challenge id is signed as subscriptionChallengeId (not challengeId), so a proof for one activation never verifies for another.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJkb21haW4iOiJtcHAtc3Vic2NyaXB0aW9uLWF1dGgtdjEiLCJwYXllciI6IjRNZnlSNEczTldmVlJEV282aU5BSERCWnFXTWd3Wlg2Rk50TXFFVzNhOUpUIiwic3Vic2NyaXB0aW9uQ2hhbGxlbmdlSWQiOiJjM1ZpWDNOdmJHRnVZVjh3TVEiLCJzdWJzY3JpcHRpb25EZWxlZ2F0aW9uIjoiOE1hMTduN1BiNG5wZ2FkcW1aeUd5b0Zwbm9iSEphNHQ5bVhhdU42RlRwbkEifQ",
+        "canonicalJson": "{\"domain\":\"mpp-subscription-auth-v1\",\"payer\":\"4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT\",\"subscriptionChallengeId\":\"c3ViX3NvbGFuYV8wMQ\",\"subscriptionDelegation\":\"8Ma17n7Pb4npgadqmZyGyoFpnobHJa4t9mXauN6FTpnA\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-auth-message-other-challenge",
+    "input": {
+      "subscriptionAuthenticationMessage": {
+        "challengeId": "c3ViX3NvbGFuYV8wMQ",
+        "payer": "4MfyR4G3NWfVRDWo6iNAHDBZqWMgwZX6FNtMqEW3a9JT",
+        "subscriptionDelegation": "8Ma17n7Pb4npgadqmZyGyoFpnobHJa4t9mXauN6FTpnA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ef1bb057fc"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The client signs the UTF-8 bytes of the JCS serialization with the Ed25519 private key corresponding to payer.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=day, periodCount=1 maps to 24 period_hours (periodCount * 24).",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJwZXJpb2RIb3VycyI6MjR9",
+        "canonicalJson": "{\"periodHours\":24}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-period-day-1",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "1",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=day, periodCount=30 maps to 720 period_hours.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJwZXJpb2RIb3VycyI6NzIwfQ",
+        "canonicalJson": "{\"periodHours\":720}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-period-day-30",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "30",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=day, periodCount=365 maps to 8760 period_hours, the largest interval the profile accepts.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJwZXJpb2RIb3VycyI6ODc2MH0",
+        "canonicalJson": "{\"periodHours\":8760}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-period-day-365-upper-bound",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "365",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=week, periodCount=1 maps to 168 period_hours (periodCount * 168).",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJwZXJpb2RIb3VycyI6MTY4fQ",
+        "canonicalJson": "{\"periodHours\":168}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-period-week-1",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "1",
+        "periodUnit": "week"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=week, periodCount=52 maps to 8736 period_hours, the largest week count within 8760 hours.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJwZXJpb2RIb3VycyI6ODczNn0",
+        "canonicalJson": "{\"periodHours\":8736}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-period-week-52",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "52",
+        "periodUnit": "week"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=day, periodCount=366 maps to 8784 hours, over the 8760-hour limit: the request must be rejected, not clamped.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "mapped interval exceeds 8760 hours"
+    },
+    "id": "subscription-period-day-366-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "366",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=week, periodCount=53 maps to 8904 hours, over the 8760-hour limit.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "mapped interval exceeds 8760 hours"
+    },
+    "id": "subscription-period-week-53-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "53",
+        "periodUnit": "week"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodCount=0 is not a positive integer (and maps to a zero interval).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "periodCount must be positive"
+    },
+    "id": "subscription-period-count-zero-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "0",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aadffadc90",
+      "MPP-58828c88cd"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "periodUnit=month cannot be represented by fixed elapsed-time delegations; the Solana profile rejects it rather than approximating 30 or 31 days.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "month is not representable"
+    },
+    "id": "subscription-period-month-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "1",
+        "periodUnit": "month"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d063521350",
+      "MPP-cdbcb3a843"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Servers MUST reject periodUnit=\"month\".",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "periodCount=\"030\" uses a leading zero, which the profile forbids. Accepting it makes two encodings of one cadence, so a challenge's canonical bytes (and HMAC) are no longer unique for its terms.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "leading zero in periodCount"
+    },
+    "id": "subscription-period-count-leading-zero-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "030",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-aadffadc90",
+      "MPP-95dab3a64d"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "periodCount=\"+30\" carries a sign, which the profile forbids.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "sign in periodCount"
+    },
+    "id": "subscription-period-count-sign-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "+30",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "MPP-aadffadc90"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "periodCount=\"30.0\" carries a decimal point, which the profile forbids.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "decimal point in periodCount"
+    },
+    "id": "subscription-period-count-decimal-point-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "30.0",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aadffadc90"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "periodCount=\"3e1\" uses an exponent, which the profile forbids (a lenient numeric parse reads it as 30).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "exponent in periodCount"
+    },
+    "id": "subscription-period-count-exponent-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": "3e1",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aadffadc90"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "periodCount=\" 30\" has surrounding whitespace, which the profile forbids.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "whitespace in periodCount"
+    },
+    "id": "subscription-period-count-whitespace-reject",
+    "input": {
+      "subscriptionPeriod": {
+        "periodCount": " 30",
+        "periodUnit": "day"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aadffadc90"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace.",
+      "section": "Optional Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "SubscriptionDelegation PDA [\"subscription\", plan, subscriber] under the canonical subscriptions program. The bearer proof signs this address and the server re-derives it, so every SDK must derive the same one.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhZGRyZXNzIjoiQXdDdGlYTGhDTHhZeXRKOUd6NXFRQmQ4R3hZNkdyd2ZSZGVldlB5c0VnSnkifQ",
+        "canonicalJson": "{\"address\":\"AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-pda-delegation",
+    "input": {
+      "subscriptionPda": {
+        "kind": "delegation",
+        "planAddress": "HwAK86K8LTVqmactps2Dro8oCqBvJyPwVWiZo4FiT6dK",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ef1bb057fc"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Derived from [\"subscription\", plan_pda, subscriber].",
+      "section": "Terminology"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "SubscriptionDelegation PDA for the plan and recipient addresses of the spec's request example (seed order is plan, then subscriber).",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhZGRyZXNzIjoiNFd3NW1YSHJHbnh2VENMdktaaldDZ1BoZWZncmhQNnhkcFQ3V1NXcUpHMnkifQ",
+        "canonicalJson": "{\"address\":\"4Ww5mXHrGnxvTCLvKZjWCgPhefgrhP6xdpT7WSWqJG2y\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-pda-delegation-spec-example",
+    "input": {
+      "subscriptionPda": {
+        "kind": "delegation",
+        "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+        "subscriber": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ef1bb057fc"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Derived from [\"subscription\", plan_pda, subscriber].",
+      "section": "Terminology"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "SubscriptionAuthority PDA [\"SubscriptionAuthority\", subscriber, mint]: the account whose init_id a server compares with the delegation's before granting access.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhZGRyZXNzIjoiSERmZE01VkhOM3pEOTRaVXA5Sjd0c1BLR2k4a2Zzb296ZkJHR2JjQWdMa1kifQ",
+        "canonicalJson": "{\"address\":\"HDfdM5VHN3zD94ZUp9J7tsPKGi8kfsoozfBGGbcAgLkY\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-pda-authority",
+    "input": {
+      "subscriptionPda": {
+        "kind": "authority",
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Derived from [\"SubscriptionAuthority\", subscriber, mint].",
+      "section": "Terminology"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "SubscriptionAuthority PDA for a Token-2022 mint: one authority per (subscriber, mint), whatever the token program.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhZGRyZXNzIjoiQmlFWXdRaGM1NVBlWDRCN3prU1F6em9ub204cjVqd1NqR3daSERoYlZOaEEifQ",
+        "canonicalJson": "{\"address\":\"BiEYwQhc55PeX4B7zkSQzzonom8r5jwSjGwZHDhbVNhA\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-pda-authority-token-2022",
+    "input": {
+      "subscriptionPda": {
+        "kind": "authority",
+        "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "subscriber": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0a7c7d7791"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "Derived from [\"SubscriptionAuthority\", subscriber, mint].",
+      "section": "Terminology"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "subscribe instruction data: discriminator 11, then plan_id u64 LE, plan_bump u8, expected mint (32), expected amount u64 LE, expected period_hours u64 LE, expected created_at i64 LE, expected authority init_id i64 LE (74 bytes). The program refuses a subscribe whose expected terms differ from the live plan.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "CwcAAAAAAAAA_TtELLORIVfxOpM9ATQoLQMrX_7NAaLb8bd5BgjfAC6ngJaYAAAAAADQAgAAAAAAAADxU2UAAAAATQAAAAAAAAA",
+        "bytes": [
+          11,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          253,
+          59,
+          68,
+          44,
+          179,
+          145,
+          33,
+          87,
+          241,
+          58,
+          147,
+          61,
+          1,
+          52,
+          40,
+          45,
+          3,
+          43,
+          95,
+          254,
+          205,
+          1,
+          162,
+          219,
+          241,
+          183,
+          121,
+          6,
+          8,
+          223,
+          0,
+          46,
+          167,
+          128,
+          150,
+          152,
+          0,
+          0,
+          0,
+          0,
+          0,
+          208,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          241,
+          83,
+          101,
+          0,
+          0,
+          0,
+          0,
+          77,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-instruction-subscribe-data",
+    "input": {
+      "subscriptionInstruction": {
+        "amount": "10000000",
+        "authorityInitId": 77,
+        "createdAt": 1700000000,
+        "kind": "subscribe",
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "periodHours": 720,
+        "planBump": 253,
+        "planId": 7
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11cddfe4f2"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The subscriber-signed activation transaction MUST:",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "transfer_subscription instruction data: discriminator 10, amount u64 LE, delegator (32), mint (32), 73 bytes. Servers read the amount, delegator and mint from these bytes.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "CoCWmAAAAAAA6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw7RCyzkSFX8TqTPQE0KC0DK1_-zQGi2_G3eQYI3wAupw",
+        "bytes": [
+          10,
+          128,
+          150,
+          152,
+          0,
+          0,
+          0,
+          0,
+          0,
+          234,
+          74,
+          108,
+          99,
+          226,
+          156,
+          82,
+          10,
+          190,
+          245,
+          80,
+          123,
+          19,
+          46,
+          197,
+          249,
+          149,
+          71,
+          118,
+          174,
+          190,
+          190,
+          123,
+          146,
+          66,
+          30,
+          234,
+          105,
+          20,
+          70,
+          210,
+          44,
+          59,
+          68,
+          44,
+          179,
+          145,
+          33,
+          87,
+          241,
+          58,
+          147,
+          61,
+          1,
+          52,
+          40,
+          45,
+          3,
+          43,
+          95,
+          254,
+          205,
+          1,
+          162,
+          219,
+          241,
+          183,
+          121,
+          6,
+          8,
+          223,
+          0,
+          46,
+          167
+        ]
+      },
+      "outcome": "accept"
+    },
+    "id": "subscription-instruction-transfer-data",
+    "input": {
+      "subscriptionInstruction": {
+        "amount": "10000000",
+        "delegator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "kind": "transfer",
+        "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+      }
+    },
+    "intent": "subscription",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11cddfe4f2"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "The subscriber-signed activation transaction MUST:",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  }
+]

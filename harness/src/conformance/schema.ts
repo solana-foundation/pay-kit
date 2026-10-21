@@ -243,7 +243,25 @@ export type RejectCode =
   // x402-upto verify: the PDA rederived from the open differs from the open's channel account or payload.channelId.
   | "channel-id-mismatch"
   // x402-upto verify: an open account, privilege or argument violates its required binding (payer, rent payer, payee, mint, token accounts, programs, salt, deposit, grace period, open slot, distribution, 14 accounts, no trailing bytes).
-  | "open-binding-mismatch";
+  | "open-binding-mismatch"
+  // subscription server: the echoed challenge was not issued by this server or does not match the route (HMAC id, realm, method, intent, plan, program, terms).
+  | "challenge-mismatch"
+  // subscription server: the activation challenge's `expires` is at or before now.
+  | "challenge-expired"
+  // subscription server: `subscriptionExpires` is at or before now.
+  | "subscription-expired"
+  // subscription: the bearer proof is missing, bound to another challenge, payer or delegation, or its Ed25519 signature does not verify.
+  | "authentication-invalid"
+  // subscription server: the first-period charge goes to a receiver ATA not owned by `recipient`.
+  | "recipient-mismatch"
+  // subscription server: the subscribe / transfer_subscription pair is missing, misordered, or binds another plan, puller, subscriber, amount or mint than the challenge.
+  | "activation-scope"
+  // subscription server: the activation fee payer is not `feePayerKey` (sponsored) or the subscriber (unsponsored).
+  | "fee-payer-mismatch"
+  // subscription server: the on-chain delegation is not usable at now (missing, foreign, cancelled, unpaid period, authority invalidated).
+  | "subscription-inactive"
+  // subscription server: the credential `source` is not the did:pkh:solana of the activation subscriber.
+  | "source-mismatch";
 
 export type VectorInput = {
   // build-transaction / verify-transaction
@@ -433,6 +451,70 @@ export type VectorInput = {
     salt: string;
     openSlot: string;
   };
+  // ── subscription inputs (rust/crates/conformance/src/realize/subscription.rs)
+  // (time-dependent subscription verdicts use nowSeconds above)
+  // canonical-bytes: the bearer-proof message the subscriber signs (JCS of
+  // {domain, payer, subscriptionChallengeId, subscriptionDelegation}).
+  subscriptionAuthenticationMessage?: {
+    challengeId: string;
+    payer: string;
+    subscriptionDelegation: string;
+  };
+  // canonical-bytes: a billing period mapped to period_hours, emitted as
+  // the JCS of {"periodHours": n}.
+  subscriptionPeriod?: { periodUnit: string; periodCount: string };
+  // canonical-bytes: the SubscriptionDelegation / SubscriptionAuthority PDA,
+  // emitted as the JCS of {"address": base58}.
+  subscriptionPda?: {
+    kind: "delegation" | "authority";
+    subscriber: string;
+    subscriptionProgram: string;
+    planAddress?: string;
+    mint?: string;
+  };
+  // canonical-bytes: subscribe / transfer_subscription instruction data.
+  subscriptionInstruction?: Record<string, unknown>;
+  // canonical-bytes: a request ("request") or credential payload
+  // ("activation", "access") through the SDK's wire types, re-encoded as JCS.
+  subscriptionWire?: { shape: "request" | "activation" | "access"; value: unknown };
+  // build-transaction: the challenge the client signs an activation for
+  // (request decoded); chain state (Plan, SubscriptionAuthority) comes from
+  // rpcFixtures.accounts.
+  subscriptionChallenge?: {
+    id: string;
+    realm: string;
+    method: string;
+    intent: string;
+    expires?: string;
+    request: Record<string, unknown>;
+  };
+  // verify-transaction: the server route.
+  subscriptionServer?: {
+    realm: string;
+    secretKey: string;
+    planAddress: string;
+    mint: string;
+    decimals: number;
+    tokenProgram: string;
+    puller: string;
+    recipient: string;
+    periodUnit: string;
+    periodCount: number;
+    amount: string;
+    network: string;
+    subscriptionProgram: string;
+    feePayerKey?: string;
+  };
+  // verify-transaction: the sponsor's key when the route pays fees.
+  subscriptionServerFeePayerSecretKey?: number[];
+  // verify-transaction: the activation credential, an Authorization header
+  // value ("Payment <base64url JCS credential>"), verified up to broadcast.
+  subscriptionAuthorization?: string;
+  // verify-transaction: check the on-chain delegation of `subscriber` at
+  // nowSeconds against the route.
+  subscriptionActive?: { subscriber: string; amount: string };
+  // verify-transaction: a bearer proof against a delegation address.
+  subscriptionProof?: { authentication: unknown; subscriptionDelegation: string };
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a

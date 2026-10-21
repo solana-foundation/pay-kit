@@ -3,7 +3,7 @@ language = "typescript"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session", "x402-upto"]
+vector = ["charge", "x402-exact", "session", "x402-upto", "subscription"]
 protocol = true
 flow = true
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -162,3 +162,121 @@ ids = [
 ]
 reason = "the vendored @x402/svm 2.26.0 predates transaction-version negotiation (x402-foundation/x402 PR 3710): the client ignores extra.transactionVersions and the facilitator cannot decode a version-1 message"
 tracking = "FINDINGS.md#ts-upto-no-transaction-versions"
+# subscription (draft-solana-subscription-00) vectors
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-activation",
+  "vector/subscription-build-sponsored",
+  "vector/subscription-build-external-id-memo",
+  "vector/subscription-build-week-period",
+  "vector/subscription-build-token-2022",
+  "vector/subscription-build-plan-puller-listed",
+  "vector/subscription-build-spec-request",
+]
+reason = "the activation also creates the recipient's ATA (typescript/packages/mpp/src/client/Subscription.ts:353, :407), which the Rust server's activation scope check refuses (\"Only one idempotent subscriber ATA creation is allowed\") and the spec's instruction list does not allow"
+tracking = "FINDINGS.md#subscription-ts-recipient-ata"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-untrusted-program-reject",
+]
+reason = "buildSubscriptionActivationTransaction signs for whatever methodDetails.subscriptionProgram names; nothing pins the deployment (typescript/packages/mpp/src/client/Subscription.ts:297)"
+tracking = "FINDINGS.md#subscription-ts-program-not-pinned"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-currency-not-mint-reject",
+]
+reason = "the client builds from methodDetails.mint and never compares it with currency (typescript/packages/mpp/src/client/Subscription.ts:264)"
+tracking = "FINDINGS.md#subscription-ts-currency-not-mint"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-amount-leading-zero-reject",
+  "vector/subscription-build-zero-amount-reject",
+  "vector/subscription-build-period-count-leading-zero-reject",
+  "vector/subscription-build-token-program-not-spl-reject",
+  "vector/subscription-period-count-leading-zero-reject",
+  "vector/subscription-period-count-sign-reject",
+  "vector/subscription-period-count-decimal-point-reject",
+  "vector/subscription-period-count-exponent-reject",
+  "vector/subscription-period-count-whitespace-reject",
+]
+reason = "amount and periodCount are read with BigInt()/Number() (typescript/packages/mpp/src/client/Subscription.ts:273, :331), which accept leading zeros, a sign, a decimal point, an exponent and whitespace, and the client accepts any tokenProgram"
+tracking = "FINDINGS.md#subscription-ts-request-format"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-plan-puller-unauthorized-reject",
+  "vector/subscription-build-plan-no-destination-reject",
+  "vector/subscription-build-plan-two-destinations-reject",
+  "vector/subscription-build-plan-other-destination-reject",
+]
+reason = "the client checks the plan's mint, amount and period (typescript/packages/mpp/src/client/Subscription.ts:329) but not plan.owner / plan.pullers against the puller nor plan.destinations against the recipient"
+tracking = "FINDINGS.md#subscription-ts-plan-pullers-destinations"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-forged-challenge-id-reject",
+  "vector/subscription-verify-other-method-reject",
+  "vector/subscription-verify-charge-intent-reject",
+  "vector/subscription-verify-other-realm-reject",
+  "vector/subscription-verify-cheaper-route-reject",
+  "vector/subscription-verify-shorter-period-route-reject",
+  "vector/subscription-verify-other-plan-reject",
+  "vector/subscription-verify-other-recipient-reject",
+  "vector/subscription-verify-other-currency-reject",
+  "vector/subscription-verify-other-network-reject",
+  "vector/subscription-verify-no-network-on-devnet-reject",
+]
+reason = "subscription().verify trusts the echoed challenge (typescript/packages/mpp/src/server/Subscription.ts:230); the HMAC and route binding live in mppx's Mppx.create handler, which reports a generic error the testee cannot classify"
+tracking = "FINDINGS.md#subscription-ts-route-binding-in-mppx"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-push-mode-reject",
+]
+reason = "the server accepts push-mode (type=\"signature\") activations and fetches the transaction (typescript/packages/mpp/src/server/Subscription.ts:485); the profile defines type=\"transaction\" only"
+tracking = "FINDINGS.md#subscription-ts-push-mode"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-source-other-address-reject",
+  "vector/subscription-verify-source-other-method-reject",
+]
+reason = "verify never reads credential.source (typescript/packages/mpp/src/server/Subscription.ts:230)"
+tracking = "FINDINGS.md#subscription-source-not-verified"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-subscribe-other-plan-reject",
+  "vector/subscription-verify-unrelated-authority-init-reject",
+]
+reason = "validateActivationInstructions checks transfer_subscription's receiver and data but not subscribe's accounts, and accepts any initialize_subscription_authority (typescript/packages/mpp/src/server/Subscription.ts:793-797)"
+tracking = "FINDINGS.md#subscription-ts-scope-accounts"
+
+[[unsupported]]
+ids = [
+  "vector/subscription-active-live",
+  "vector/subscription-active-cancellation-scheduled",
+  "vector/subscription-active-cancelled-now-reject",
+  "vector/subscription-active-last-second-of-period",
+  "vector/subscription-active-period-ended-reject",
+  "vector/subscription-active-unpaid-period-reject",
+  "vector/subscription-active-authority-reinitialized-reject",
+  "vector/subscription-active-authority-missing-reject",
+  "vector/subscription-active-authority-foreign-owner-reject",
+  "vector/subscription-active-delegation-missing-reject",
+  "vector/subscription-active-delegation-foreign-owner-reject",
+  "vector/subscription-active-delegation-other-plan-reject",
+  "vector/subscription-active-delegation-wrong-version-reject",
+]
+reason = "@solana/mpp has no stateless active-subscription check: delegation usability is only re-checked inside verify of a type=\"proof\" credential bound in the server's store by a confirmed activation"
+
+[[unsupported]]
+ids = [
+  "vector/subscription-instruction-subscribe-data",
+  "vector/subscription-instruction-transfer-data",
+]
+reason = "@solana/mpp exposes no subscriptions instruction-data encoder (it builds instructions with @solana/subscriptions); the layouts are judged through the build vectors' instruction multiset"

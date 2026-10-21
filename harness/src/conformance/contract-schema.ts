@@ -43,6 +43,15 @@ const rejectCodeSchema = {
     "receiver-authorizer-mismatch",
     "channel-id-mismatch",
     "open-binding-mismatch",
+    "challenge-mismatch",
+    "challenge-expired",
+    "subscription-expired",
+    "authentication-invalid",
+    "recipient-mismatch",
+    "activation-scope",
+    "fee-payer-mismatch",
+    "subscription-inactive",
+    "source-mismatch",
   ],
 } as const;
 

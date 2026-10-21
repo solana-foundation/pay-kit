@@ -403,10 +403,28 @@ pub enum RejectCode {
     ReceiverAuthorizerMismatch,
     ChannelIdMismatch,
     OpenBindingMismatch,
+    /// subscription server: the echoed challenge was not issued by this server or does not match the route (HMAC id, realm, method, intent, plan, program, terms).
+    ChallengeMismatch,
+    /// subscription server: the activation challenge's `expires` is at or before now.
+    ChallengeExpired,
+    /// subscription server: `subscriptionExpires` is at or before now.
+    SubscriptionExpired,
+    /// subscription: the bearer proof is missing, bound to another challenge, payer or delegation, or its Ed25519 signature does not verify.
+    AuthenticationInvalid,
+    /// subscription server: the first-period charge goes to a receiver ATA not owned by `recipient`.
+    RecipientMismatch,
+    /// subscription server: the subscribe / transfer_subscription pair is missing, misordered, or binds another plan, puller, subscriber, amount or mint than the challenge.
+    ActivationScope,
+    /// subscription server: the activation fee payer is not `feePayerKey` (sponsored) or the subscriber (unsponsored).
+    FeePayerMismatch,
+    /// subscription server: the on-chain delegation is not usable at now (missing, foreign, cancelled, unpaid period, authority invalidated).
+    SubscriptionInactive,
+    /// subscription server: the credential `source` is not the did:pkh:solana of the activation subscriber.
+    SourceMismatch,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 28] = [
+    pub const ALL: [RejectCode; 37] = [
         RejectCode::ComputePriceOverCap,
         RejectCode::ComputeLimitOverCap,
         RejectCode::FeePayerNotAuthority,
@@ -435,6 +453,15 @@ impl RejectCode {
         RejectCode::ReceiverAuthorizerMismatch,
         RejectCode::ChannelIdMismatch,
         RejectCode::OpenBindingMismatch,
+        RejectCode::ChallengeMismatch,
+        RejectCode::ChallengeExpired,
+        RejectCode::SubscriptionExpired,
+        RejectCode::AuthenticationInvalid,
+        RejectCode::RecipientMismatch,
+        RejectCode::ActivationScope,
+        RejectCode::FeePayerMismatch,
+        RejectCode::SubscriptionInactive,
+        RejectCode::SourceMismatch,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -467,6 +494,15 @@ impl RejectCode {
             RejectCode::ReceiverAuthorizerMismatch => "receiver-authorizer-mismatch",
             RejectCode::ChannelIdMismatch => "channel-id-mismatch",
             RejectCode::OpenBindingMismatch => "open-binding-mismatch",
+            RejectCode::ChallengeMismatch => "challenge-mismatch",
+            RejectCode::ChallengeExpired => "challenge-expired",
+            RejectCode::SubscriptionExpired => "subscription-expired",
+            RejectCode::AuthenticationInvalid => "authentication-invalid",
+            RejectCode::RecipientMismatch => "recipient-mismatch",
+            RejectCode::ActivationScope => "activation-scope",
+            RejectCode::FeePayerMismatch => "fee-payer-mismatch",
+            RejectCode::SubscriptionInactive => "subscription-inactive",
+            RejectCode::SourceMismatch => "source-mismatch",
         }
     }
 }
@@ -556,6 +592,10 @@ pub enum Input {
     /// transaction in the scheme_exact_svm §3.1 static layout (see
     /// `x402tx.rs`), optionally mutated, wrapped in an envelope.
     X402Header(Box<X402HeaderSpec>),
+    /// A `subscription` vector whose input the kit materializes (activation
+    /// credentials built by the kit's client, then edited). See
+    /// `realize/subscription.rs`.
+    Subscription(Box<crate::realize::subscription::Recipe>),
 }
 
 /// Recipe for an x402 verify vector's payment header.

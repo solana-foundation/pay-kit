@@ -134,6 +134,41 @@ on-chain rebind (steps 9 and 10) need a validator and are interop scenarios.
 Open-slot freshness against the challenged slot is program-enforced (“The open
 instruction still enforces the program's slot window.”), so no vector requires
 a verifier to pre-check it.
+## MPP subscription (Solana)
+
+Pinned as the submodule `external/mpp-specs-solana` at `5c4a528`
+(solana-foundation/mpp-specs `feat/solana-subscriptions`):
+`specs/methods/solana/draft-solana-subscription-00.md`.
+
+**SUB1. The subscriber's own idempotent ATA creation is tolerated; no other
+ATA creation is.** The client list says the activation must “contain no
+instructions other than those above plus optional compute-budget and memo
+instructions.”, while the server's scope check forbids only “no other
+subscriptions-program, system-program, or token-program instructions;
+compute-budget and memo instructions are permitted.” Neither names the
+Associated Token program. Both SDK clients prepend a `CreateIdempotent` of the
+subscriber's own ATA so a first-time wallet can activate; it moves no tokens.
+Until the draft lists it, vectors accept that one instruction and reject any
+other ATA creation (the recipient's, a third party's) as
+`unexpected-instruction`: “MUST NOT reference writable accounts that could
+redirect funds away from recipient.” Upstream: list the subscriber's
+idempotent ATA creation explicitly.
+
+**SUB2. Activation is `type="transaction"` only.** “Solana subscription
+activation uses type="transaction".” and “Solana transactions containing
+standalone SPL Token Approve instructions and push-mode hash credentials do
+not provide the per-period enforcement required for this intent.” A
+`type="signature"` (push-mode) activation is rejected (`invalid-payload`).
+
+**SUB3. Expiry boundaries are inclusive at `now`.** “The activation
+challenge's expires auth-param limits creation of the binding” and “Servers
+MUST NOT treat activation as successful if subscriptionExpires is present and
+the activation transaction settles at or after that timestamp.” Vectors pin
+`nowSeconds`: an `expires` or `subscriptionExpires` equal to it rejects
+(`challenge-expired`, `subscription-expired`), one second later accepts. A
+cancellation (`delegation.expires_at_ts`) equal to `now` has taken effect:
+“a non-zero timestamp only blocks renewal once the current time is at or
+after that timestamp.”
 
 ## Harness consequences
 

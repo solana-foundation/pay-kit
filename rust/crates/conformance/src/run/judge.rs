@@ -799,6 +799,9 @@ mod tests {
             let output = match rt.block_on(realize::run(intent, Mode::BuildTransaction, v.input()))
             {
                 Observed::Accept(o) => o,
+                // An authored accept the kit cannot build records that
+                // divergence; there is no kit build to judge.
+                _ if v.raw["provenance"] == "authored" => continue,
                 other => panic!("{}: {}", v.id, other.summary()),
             };
             let artifact = output.transaction.or(output.header).unwrap();
