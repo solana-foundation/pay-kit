@@ -25,6 +25,8 @@ const NO_EXTRA_SIGNERS: &str = "X402-9b240d95a0";
 const EXTRA_SIGNATURES_NOT_REQUIRED: &str = "X402-27bff260c3";
 const USE_EXTRA_MEMO: &str = "X402-d5f1ded529";
 const SPONSORSHIP_ABUSE: &str = "X402-fc2225a882";
+const PAYMENT_BINDING: &str = "X402-8fcdf05fbf";
+const ONCHAIN_EFFECTS: &str = "X402-d844c67736";
 
 const LIGHTHOUSE: &str = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 /// A program on neither the static layout nor the smart-wallet allowlist.
@@ -140,6 +142,24 @@ crate::registry! {
         &[SPONSORSHIP_ABUSE],
         "The static layout's 200,000 compute unit limit paired with a 5,000,000 micro-lamport unit price: each is within its own cap, but the sponsor would pay a 1,000,000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6). Differs from x402-exact-v2-verify-accept only in the price.",
         mutated(devnet_route(), Mutation::SetComputeUnitPrice { micro_lamports: 5_000_000 }),
+    );
+    // RULINGS SIG1: the client's signature verifies over this message
+    // before the sponsor claims, co-signs or sends it.
+    x402_exact_verify_forged_client_signature_reject => reject_case(
+        "x402-exact-verify-forged-client-signature-reject",
+        BugType::AuthBypass,
+        spec(SVM, "3.4 Post-Settlement Verification (TOCTOU defense)", "Settlement success MUST reflect actual on-chain effects, not simulation alone."),
+        &[ONCHAIN_EFFECTS, PAYMENT_BINDING],
+        "The client's slot holds its signature of another transaction, as a copied landed signature would. A sponsor that keys its replay or pending record on that signature and reconciles by its on-chain status grants the resource for a payment that never happened (RULINGS SIG1). Differs from x402-exact-v2-verify-accept only in that signature.",
+        mutated(devnet_route(), Mutation::ForgeSignature),
+    );
+    x402_exact_verify_truncated_signatures_reject => reject_case(
+        "x402-exact-verify-truncated-signatures-reject",
+        BugType::AuthBypass,
+        spec(SVM, "3.4 Post-Settlement Verification (TOCTOU defense)", "Settlement success MUST reflect actual on-chain effects, not simulation alone."),
+        &[ONCHAIN_EFFECTS, PAYMENT_BINDING],
+        "The signature list stops after the sponsor's empty slot: the message requires the client's signature and the payload carries none, so checking only the signatures present verifies nothing (RULINGS SIG1). Differs from x402-exact-v2-verify-accept only in the signature list.",
+        mutated(devnet_route(), Mutation::TruncateSignatures { keep: 1 }),
     );
     x402_exact_build_uses_extra_memo => build_case(
         "x402-exact-build-uses-extra-memo",

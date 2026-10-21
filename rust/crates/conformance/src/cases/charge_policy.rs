@@ -38,6 +38,14 @@ const SECOND_AUTHORITY_SEED: [u8; 32] = [14; 32];
 const UNUSED_SIGNER_SEED: [u8; 32] = [15; 32];
 
 /// The fee-sponsorship step that fixes the signer set of a sponsored payment.
+fn client_signature_spec() -> SpecRef {
+    spec(
+        CHARGE,
+        "Pull Mode Verification",
+        "the transfer authority is signed by the client;",
+    )
+}
+
 fn client_signs_only(quote: &'static str) -> SpecRef {
     spec(CHARGE, "Server-Paid Fees", quote)
 }
@@ -472,6 +480,73 @@ crate::registry! {
         Some(Mutation::UnusedSigner { seed: UNUSED_SIGNER_SEED }),
         Pin::Outcome,
         Some("a required signer is neither the fee payer nor the funding authority"),
+    )
+    .build();
+    // RULINGS SIG1: every client signature verifies over the message
+    // before the server claims, co-signs or sends it.
+    charge_verify_client_signature_accept => verify_case(
+        "charge-verify-client-signature-accept",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING],
+        "Client-paid SPL charge signed by the client over this message. Pair: charge-verify-forged-client-signature-reject.",
+        input(spl_request("1000", json!({}))),
+        None,
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_forged_client_signature_reject => verify_case(
+        "charge-verify-forged-client-signature-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING],
+        "Client-paid SPL charge whose signature slot holds the client's signature of another transaction, as a copied landed signature would. A server that keys its replay or pending record on that signature and reconciles by its on-chain status serves the resource for a payment that never happened (RULINGS SIG1).",
+        input(spl_request("1000", json!({}))),
+        Some(Mutation::ForgeSignature),
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_client_signature_accept => verify_case(
+        "charge-verify-sponsored-client-signature-accept",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge: the client signs as transfer authority, the fee payer slot is empty for the server. Pair: charge-verify-sponsored-forged-client-signature-reject, charge-verify-sponsored-truncated-signatures-reject.",
+        sponsored_spl(json!({})),
+        None,
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_forged_client_signature_reject => verify_case(
+        "charge-verify-sponsored-forged-client-signature-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge whose transfer authority slot holds the client's signature of another transaction (RULINGS SIG1).",
+        sponsored_spl(json!({})),
+        Some(Mutation::ForgeSignature),
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_truncated_signatures_reject => verify_case(
+        "charge-verify-sponsored-truncated-signatures-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge whose signature list stops after the fee payer slot: the message requires two signatures and carries one, so checking only the signatures present verifies nothing of the client's (RULINGS SIG1).",
+        sponsored_spl(json!({})),
+        Some(Mutation::TruncateSignatures { keep: 1 }),
+        Pin::Outcome,
+        None,
     )
     .build();
     charge_verify_compute_budget_heap_frame_reject => verify_case(

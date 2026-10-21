@@ -14,6 +14,7 @@
 //! stale signature (except [`Mutation::DropSignature`], whose point that
 //! is). Only [`Mutation::ToFormat`] changes the format.
 
+use ed25519_dalek::Signer;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_message::{v1::TransactionConfig, VersionedMessage};
 use solana_signature::Signature;
@@ -75,6 +76,13 @@ pub enum Mutation {
     SetComputeUnitPrice { micro_lamports: u64 },
     /// Zero the client's signature and do not re-sign.
     DropSignature,
+    /// Replace the client's signature with its valid signature over another
+    /// message, as a server sees a landed transaction's signature copied in:
+    /// well-formed bytes that do not verify over this message.
+    ForgeSignature,
+    /// Keep only the first `keep` signatures; the message still requires
+    /// all of them.
+    TruncateSignatures { keep: usize },
     /// Remove the n-th transfer (zero matching transfers).
     DropTransfer { transfer: TransferIndex },
     /// Duplicate the n-th transfer right after itself.
@@ -184,7 +192,10 @@ impl Mutation {
             (SetComputeUnitPrice { .. }, Suite::Charge | Suite::X402Exact) => {
                 Some(ComputePriceOverCap)
             }
-            (DropSignature, Suite::Charge | Suite::X402Exact) => Some(InvalidPayload),
+            (
+                DropSignature | ForgeSignature | TruncateSignatures { .. },
+                Suite::Charge | Suite::X402Exact,
+            ) => Some(InvalidPayload),
             (DropTransfer { .. }, Suite::Charge | Suite::X402Exact) => Some(NoMatchingTransfer),
             (ExtraTransfer { .. }, Suite::Charge | Suite::X402Exact) => Some(UnexpectedInstruction),
             (DuplicateLegReuse { .. }, Suite::Charge) => Some(NoMatchingTransfer),
@@ -259,6 +270,12 @@ impl Mutation {
                 format!("compute unit price set to {micro_lamports} micro-lamports")
             }
             Mutation::DropSignature => "client signature zeroed".into(),
+            Mutation::ForgeSignature => {
+                "client signature replaced with its signature over another message".into()
+            }
+            Mutation::TruncateSignatures { keep } => {
+                format!("signatures cut to the first {keep}")
+            }
             Mutation::DropTransfer { transfer } => format!("transfer #{transfer} removed"),
             Mutation::ExtraTransfer { transfer } => format!("transfer #{transfer} duplicated"),
             Mutation::DuplicateLegReuse { transfer } => {
@@ -376,6 +393,28 @@ impl Mutation {
                 .position(|k| *k == client)
                 .ok_or("client is not a signer of the transaction")?;
             out.signatures[index] = Default::default();
+            return Ok(out);
+        }
+        if let Mutation::ForgeSignature = self {
+            let mut out = tx.clone();
+            let client = keys::pubkey_of_seed(keys::CLIENT_SEED);
+            let index = out
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == client)
+                .ok_or("client is not a signer of the transaction")?;
+            let other =
+                keys::signing_key(keys::CLIENT_SEED).sign(b"a transaction that already landed");
+            out.signatures[index] = Signature::from(other.to_bytes());
+            return Ok(out);
+        }
+        if let Mutation::TruncateSignatures { keep } = self {
+            let mut out = tx.clone();
+            if *keep >= out.signatures.len() {
+                return Err(format!("{self:?} keeps every signature"));
+            }
+            out.signatures.truncate(*keep);
             return Ok(out);
         }
         match self {
@@ -715,6 +754,8 @@ impl Mutation {
             Mutation::WrongNetwork { .. }
             | Mutation::ExpireChallenge
             | Mutation::DropSignature
+            | Mutation::ForgeSignature
+            | Mutation::TruncateSignatures { .. }
             | Mutation::ToFormat { .. }
             | Mutation::AddLookupTable
             | Mutation::V1ComputeUnitLimit { .. }
@@ -930,6 +971,17 @@ mod tests {
         let dropped = Mutation::DropSignature.apply(&tx, &[]).unwrap();
         assert_eq!(dropped.message, tx.message);
         assert_ne!(dropped.signatures, tx.signatures);
+        let forged = Mutation::ForgeSignature.apply(&tx, &[]).unwrap();
+        assert_eq!(forged.message, tx.message);
+        assert!(forged
+            .signatures
+            .iter()
+            .all(|s| *s != Signature::default() || tx.signatures.contains(s)));
+        assert_ne!(forged.signatures, tx.signatures);
+        let cut = Mutation::TruncateSignatures { keep: 1 }
+            .apply(&tx, &[])
+            .unwrap();
+        assert_eq!(cut.signatures.len(), 1);
     }
 
     #[test]

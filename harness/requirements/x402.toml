@@ -897,3 +897,15 @@ id = "X402-fc2225a882"
 doc = "specs/schemes/exact/scheme_exact.md"
 text = "While implementation details vary by network, facilitators MUST enforce security constraints that prevent sponsorship abuse."
 required = true
+
+[[requirement]]
+id = "X402-8fcdf05fbf"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "A method MUST bind the payment to the requirements by one of: an instrument unique to this request; a server-issued nonce carried in the payment; a payer signature over the requirements; or a payee commitment to the requirements embedded in the instrument."
+required = true
+
+[[requirement]]
+id = "X402-d844c67736"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Settlement success MUST reflect actual on-chain effects, not simulation alone."
+required = true

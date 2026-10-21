@@ -268,6 +268,27 @@ own configured set (`input.x402ServerTransactionVersions`), since “The
 sponsor enforces its own accepted set; it does not read
 `PaymentRequirements.extra.transactionVersions`.”
 
+## Signatures (both protocols)
+
+**SIG1. A server verifies every client signature over the message before it
+claims, co-signs or sends it.** Neither text says so in one sentence, but both
+assume it. MPP charge pull-mode verification lists “the transfer authority is
+signed by the client;” before the server signs, and x402 requires that
+“Settlement success MUST reflect actual on-chain effects, not simulation
+alone.” A signature that does not verify over this message names some other
+transaction: a server that claims it as the payment's id, keeps it as pending
+when the send fails without preflight data (the node's signature-failure
+reply), and later reconciles it by its on-chain status serves the resource for
+a payment that never happened. So the signature list must have exactly
+`num_required_signatures` entries, every slot but the server's own must verify,
+and a failure is a definite refusal: nothing is claimed, nothing is sent.
+Vectors: `charge-verify-forged-client-signature-reject`,
+`charge-verify-sponsored-forged-client-signature-reject`,
+`charge-verify-sponsored-truncated-signatures-reject`,
+`x402-exact-verify-forged-client-signature-reject`,
+`x402-exact-verify-truncated-signatures-reject`. Upstream: state the check in
+both specs' verification steps.
+
 ## Harness consequences
 
 - Vectors encode these rulings. Runners pass chain state through the fixture
