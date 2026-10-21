@@ -121,10 +121,16 @@ class PermissionedPaymentTransport(httpx.AsyncBaseTransport):
             if requirement is not None:
                 try:
                     network = _network(requirement.get("network"), self._network)
-                    # The same v2 fields build_payment signs (RULINGS X1): a
-                    # legacy alias such as maxAmountRequired or recipient is
-                    # ignored, so the approval covers what the transfer pays.
-                    amount = _amount(requirement.get("amount"))
+                    # The same fields build_payment signs (RULINGS X1): payTo
+                    # and asset come from their x402 fields only, so a legacy
+                    # alias such as recipient is ignored. The amount alone
+                    # falls back to the v1 maxAmountRequired, exactly as the
+                    # builder reads it, so approval and transfer agree.
+                    terms = cast("dict[str, object]", requirement)
+                    raw_amount = terms.get("amount")
+                    if raw_amount is None:
+                        raw_amount = terms.get("maxAmountRequired")
+                    amount = _amount(raw_amount)
                     asset = requirement.get("asset")
                     destinations = (PaymentDestination(x402_exact_pay_to(requirement), amount),)
                     self._permissions.authorize(

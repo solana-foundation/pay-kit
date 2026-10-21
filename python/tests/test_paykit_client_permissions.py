@@ -494,3 +494,48 @@ async def test_x402_recipient_alias_is_ignored_by_the_approval(monkeypatch: pyte
     allowed, _ = transport(PAYEE)
     response = await allowed.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("amount_field", "cap_allows"),
+    [("amount", True), ("maxAmountRequired", True), ("maxAmountRequired", False)],
+)
+async def test_x402_v1_offer_is_approved_on_max_amount_required(
+    monkeypatch: pytest.MonkeyPatch, amount_field: str, cap_allows: bool
+) -> None:
+    # RULINGS X1: the amount falls back to the v1 `maxAmountRequired`, the same
+    # value the legacy builder signs, so the approval covers that amount.
+    mint = resolve_stablecoin_mint("USDC", "mainnet")
+    amount = "1000" if cap_allows else "2000000"
+    offer: dict[str, object] = {
+        "scheme": "exact",
+        "network": SOLANA_MAINNET_CAIP2,
+        "asset": mint,
+        amount_field: amount,
+        "payTo": PAYEE,
+    }
+    monkeypatch.setattr("solana_pay_kit.client.client.parse_x402_challenge_with_version", lambda *_args: (offer, 1))
+
+    async def x402_credential(*_args: object, **_kwargs: object) -> str:
+        return "x402 credential"
+
+    monkeypatch.setattr("solana_pay_kit.client.client.build_payment_header_legacy", x402_credential)
+    inner = MockTransport([httpx.Response(402, headers={"payment-required": "e30="}), httpx.Response(200)])
+    transport = PermissionedPaymentTransport(
+        MagicMock(),
+        MagicMock(),
+        network="mainnet",
+        permissions=ClientPermissions.builder().build(),
+        protocols=("x402",),
+        base_transport=inner,
+    )
+
+    if cap_allows:
+        response = await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+        assert response.status_code == 200
+        assert inner.requests[1].headers["x-payment"] == "x402 credential"
+    else:
+        with pytest.raises(PermissionDeniedError) as raised:
+            await transport.handle_async_request(httpx.Request("GET", "https://api.example/paid"))
+        assert raised.value.rejections[0].code != "invalid_challenge_terms"
+        assert len(inner.requests) == 1
