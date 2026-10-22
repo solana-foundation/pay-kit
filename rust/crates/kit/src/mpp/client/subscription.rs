@@ -15,6 +15,7 @@
 use std::str::FromStr;
 
 use crate::core::tx::TxVersion;
+use solana_commitment_config::CommitmentConfig;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_pubkey::Pubkey;
@@ -330,16 +331,27 @@ pub async fn build_subscription_activation_transaction_with_options(
     // we must read its `init_id`) before signing the activation tx. When
     // missing, broadcast a one-off init tx as the subscriber, paid by the
     // subscriber (~0.002 SOL rent + ~5k lamports fee).
-    let blockhash_str = method_details.recent_blockhash.as_deref().ok_or_else(|| {
-        Error::Other(
-            "Challenge is missing methodDetails.recentBlockhash — the server failed \
-             to pre-fetch one. Check the server's operator.rpc_url config."
-                .into(),
-        )
-    })?;
-    let blockhash: solana_hash::Hash = blockhash_str
-        .parse()
-        .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?;
+    // A supplied blockhash avoids an RPC roundtrip; only absence triggers
+    // the fallback, so malformed server values remain errors. The activation
+    // server uses confirmed preflight, so fetch at least confirmed while
+    // preserving a caller's stricter finalized commitment.
+    let blockhash: solana_hash::Hash = match method_details.recent_blockhash.as_deref() {
+        Some(value) => value
+            .parse()
+            .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?,
+        None => {
+            let commitment = if rpc.commitment().is_processed() {
+                CommitmentConfig::confirmed()
+            } else {
+                rpc.commitment()
+            };
+            rpc.get_inner_client()
+                .get_latest_blockhash_with_commitment(commitment)
+                .await
+                .map(|(hash, _last_valid_block_height)| hash)
+                .map_err(|e| Error::Rpc(e.to_string()))?
+        }
+    };
 
     let expected_subscription_authority_init_id = match options.subscription_authority_init_id {
         Some(id) => id,
@@ -599,8 +611,16 @@ mod tests {
     use super::*;
     use crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID;
     use async_trait::async_trait;
+    use solana_commitment_config::CommitmentConfig;
+    use solana_hash::Hash;
     use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
+    use solana_rpc_client::rpc_client::RpcClientConfig;
+    use solana_rpc_client_api::request::RpcRequest;
     use solana_signature::Signature;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     #[test]
     fn method_details_parse_required_fields() {
@@ -716,6 +736,295 @@ mod tests {
         BuildSubscriptionActivationOptions {
             subscription_authority_init_id: Some(0),
             ..extras
+        }
+    }
+
+    type RpcRequests = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
+    struct BlockhashRpc {
+        blockhash: Option<Hash>,
+        requests: RpcRequests,
+    }
+
+    #[async_trait]
+    impl solana_rpc_client::rpc_sender::RpcSender for BlockhashRpc {
+        async fn send(
+            &self,
+            request: RpcRequest,
+            params: serde_json::Value,
+        ) -> solana_rpc_client_api::client_error::Result<serde_json::Value> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((request.to_string(), params));
+            assert!(
+                matches!(request, RpcRequest::GetLatestBlockhash),
+                "unexpected subscription RPC request: {request:?}"
+            );
+            match self.blockhash {
+                Some(blockhash) => Ok(serde_json::json!({
+                    "context": { "slot": 42 },
+                    "value": {
+                        "blockhash": blockhash.to_string(),
+                        "lastValidBlockHeight": 100,
+                    },
+                })),
+                None => Err(solana_rpc_client_api::client_error::ErrorKind::Custom(
+                    "blockhash RPC unavailable".into(),
+                )
+                .into()),
+            }
+        }
+
+        fn get_transport_stats(&self) -> solana_rpc_client::rpc_sender::RpcTransportStats {
+            Default::default()
+        }
+
+        fn url(&self) -> String {
+            "http://subscription-test.invalid".into()
+        }
+    }
+
+    fn blockhash_rpc(
+        blockhash: Option<Hash>,
+        commitment: CommitmentConfig,
+    ) -> (RpcClient, RpcRequests) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let rpc = RpcClient::new_sender(
+            BlockhashRpc {
+                blockhash,
+                requests: Arc::clone(&requests),
+            },
+            RpcClientConfig {
+                commitment_config: commitment,
+                ..Default::default()
+            },
+        );
+        (rpc, requests)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn supplied_recent_blockhash_skips_rpc() {
+        let signer = make_signer();
+        let (rpc, requests) = blockhash_rpc(None, CommitmentConfig::default());
+        let mut md = make_method_details(false, None);
+        let supplied = Hash::new_from_array([7; 32]);
+        md.recent_blockhash = Some(supplied.to_string());
+        let payload = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            pinned_options(BuildSubscriptionActivationOptions::default()),
+        )
+        .await
+        .expect("activation with supplied blockhash");
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected Transaction payload");
+        };
+        let tx = crate::core::tx::decode(&transaction).unwrap();
+        assert_eq!(*tx.message.recent_blockhash(), supplied);
+        assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_recent_blockhash_uses_at_least_confirmed_on_current_thread() {
+        let signer = make_signer();
+        let fetched = Hash::new_from_array([9; 32]);
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        for (commitment, expected) in [
+            (CommitmentConfig::processed(), CommitmentConfig::confirmed()),
+            (CommitmentConfig::confirmed(), CommitmentConfig::confirmed()),
+            (CommitmentConfig::finalized(), CommitmentConfig::finalized()),
+        ] {
+            let (rpc, requests) = blockhash_rpc(Some(fetched), commitment);
+            let payload = build_subscription_activation_transaction_with_options(
+                &*signer,
+                &rpc,
+                &md,
+                pinned_options(BuildSubscriptionActivationOptions::default()),
+            )
+            .await
+            .expect("activation with RPC blockhash");
+            let CredentialPayload::Transaction { transaction } = payload else {
+                panic!("expected Transaction payload");
+            };
+            let tx = crate::core::tx::decode(&transaction).unwrap();
+            assert_eq!(*tx.message.recent_blockhash(), fetched);
+            assert_eq!(
+                *requests.lock().unwrap(),
+                vec![("getLatestBlockhash".into(), serde_json::json!([expected]))]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_recent_blockhash_propagates_rpc_failure() {
+        let signer = make_signer();
+        let (rpc, requests) = blockhash_rpc(None, CommitmentConfig::default());
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            BuildSubscriptionActivationOptions::default(),
+        )
+        .await
+        .expect_err("blockhash RPC failure");
+        assert!(
+            matches!(err, Error::Rpc(message) if message.contains("blockhash RPC unavailable"))
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    struct AuthorityInitRpc {
+        blockhash: Hash,
+        preflight_commitment: CommitmentConfig,
+        account_reads: AtomicUsize,
+        requests: RpcRequests,
+    }
+
+    #[async_trait]
+    impl solana_rpc_client::rpc_sender::RpcSender for AuthorityInitRpc {
+        async fn send(
+            &self,
+            request: RpcRequest,
+            params: serde_json::Value,
+        ) -> solana_rpc_client_api::client_error::Result<serde_json::Value> {
+            use serde_json::json;
+            self.requests
+                .lock()
+                .unwrap()
+                .push((request.to_string(), params.clone()));
+            Ok(match request {
+                RpcRequest::GetLatestBlockhash => json!({
+                    "context": { "slot": 42 },
+                    "value": {
+                        "blockhash": self.blockhash.to_string(),
+                        "lastValidBlockHeight": 100,
+                    },
+                }),
+                RpcRequest::GetAccountInfo => {
+                    if self.account_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                        json!({ "context": { "slot": 42 }, "value": null })
+                    } else {
+                        let mut data = [0; SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN];
+                        data[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..]
+                            .copy_from_slice(&77i64.to_le_bytes());
+                        let encoded = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            data,
+                        );
+                        json!({ "context": { "slot": 42 }, "value": {
+                            "data": [encoded, "base64"],
+                            "executable": false,
+                            "lamports": 1,
+                            "owner": SUBSCRIPTIONS_PROGRAM_ID,
+                            "rentEpoch": 0,
+                        } })
+                    }
+                }
+                RpcRequest::SendTransaction => {
+                    // Initialization preserves the caller's preflight policy;
+                    // a confirmed hash is also known to a processed bank.
+                    assert_eq!(
+                        params[1]["preflightCommitment"],
+                        serde_json::json!(self.preflight_commitment.commitment)
+                    );
+                    let tx = crate::core::tx::decode(params[0].as_str().unwrap()).unwrap();
+                    assert_eq!(*tx.message.recent_blockhash(), self.blockhash);
+                    tx.verify_and_hash_message().unwrap();
+                    json!(tx.signatures[0].to_string())
+                }
+                RpcRequest::GetSignatureStatuses => json!({
+                    "context": { "slot": 42 },
+                    "value": [{
+                        "slot": 42, "confirmations": null, "err": null,
+                        "status": { "Ok": null }, "confirmationStatus": "finalized",
+                    }],
+                }),
+                _ => panic!("unexpected authority initialization RPC request: {request:?}"),
+            })
+        }
+
+        fn get_transport_stats(&self) -> solana_rpc_client::rpc_sender::RpcTransportStats {
+            Default::default()
+        }
+
+        fn url(&self) -> String {
+            "http://subscription-test.invalid".into()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_recent_blockhash_initializes_authority_at_client_commitment() {
+        let signer = make_signer();
+        let fetched = Hash::new_from_array([9; 32]);
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        for (commitment, expected) in [
+            (CommitmentConfig::processed(), CommitmentConfig::confirmed()),
+            (CommitmentConfig::confirmed(), CommitmentConfig::confirmed()),
+            (CommitmentConfig::finalized(), CommitmentConfig::finalized()),
+        ] {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let rpc = RpcClient::new_sender(
+                AuthorityInitRpc {
+                    blockhash: fetched,
+                    preflight_commitment: commitment,
+                    account_reads: AtomicUsize::new(0),
+                    requests: Arc::clone(&requests),
+                },
+                RpcClientConfig {
+                    commitment_config: commitment,
+                    ..Default::default()
+                },
+            );
+            let payload = build_subscription_activation_transaction_with_options(
+                &*signer,
+                &rpc,
+                &md,
+                BuildSubscriptionActivationOptions::default(),
+            )
+            .await
+            .expect("initialize authority and build activation");
+            let CredentialPayload::Transaction { transaction } = payload else {
+                panic!("expected Transaction payload");
+            };
+            let tx = crate::core::tx::decode(&transaction).unwrap();
+            assert_eq!(*tx.message.recent_blockhash(), fetched);
+            let subscribe = tx
+                .message
+                .instructions()
+                .iter()
+                .find(|ix| {
+                    tx.message.static_account_keys()[ix.program_id_index as usize].to_string()
+                        == SUBSCRIPTIONS_PROGRAM_ID
+                        && ix.data.first() == Some(&11)
+                })
+                .expect("subscribe instruction");
+            let args: crate::generated::subscriptions::generated::instructions::SubscribeInstructionArgs =
+                borsh::from_slice(&subscribe.data[1..]).unwrap();
+            assert_eq!(
+                args.subscribe_data.expected_subscription_authority_init_id,
+                77
+            );
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests[0].1, serde_json::json!([expected]));
+            assert_eq!(
+                requests
+                    .iter()
+                    .map(|(method, _)| method.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "getLatestBlockhash",
+                    "getAccountInfo",
+                    "sendTransaction",
+                    "getSignatureStatuses",
+                    "getAccountInfo",
+                ]
+            );
         }
     }
 
@@ -875,18 +1184,26 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn invalid_recent_blockhash_in_method_details_errors() {
         let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let mut md = make_method_details(false, None);
-        md.recent_blockhash = Some("not-a-valid-blockhash".into());
-        let err = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect_err("bad blockhash");
-        assert!(format!("{err}").contains("blockhash") || format!("{err}").contains("Invalid"));
+        for value in ["not-a-valid-blockhash", "", "1111"] {
+            let (rpc, requests) = blockhash_rpc(
+                Some(Hash::new_from_array([9; 32])),
+                CommitmentConfig::default(),
+            );
+            let mut md = make_method_details(false, None);
+            md.recent_blockhash = Some(value.into());
+            let err = build_subscription_activation_transaction_with_options(
+                &*signer,
+                &rpc,
+                &md,
+                pinned_options(BuildSubscriptionActivationOptions::default()),
+            )
+            .await
+            .expect_err("bad blockhash");
+            assert!(
+                matches!(err, Error::Other(message) if message.starts_with("Invalid recentBlockhash:"))
+            );
+            assert!(requests.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
