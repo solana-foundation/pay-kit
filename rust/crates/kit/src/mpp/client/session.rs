@@ -450,6 +450,7 @@ pub fn derive_payment_channel_open(
 ) -> Result<PaymentChannelOpen> {
     let request = params.request;
     let details = &request.method_details;
+    validate_challenge(request)?;
     let network = Some(details.network.as_str());
     let mint = parse_pubkey(
         crate::mpp::protocol::solana::try_resolve_stablecoin_mint(&request.currency, network)?
@@ -771,6 +772,43 @@ pub async fn create_payment_channel_session_opener(
     })
 }
 
+/// The method-details rules a client checks before it signs an open
+/// (draft-solana-session-00 §Method Details): `network` is one of the three
+/// clusters, `decimals` is present (session currencies are always mints) and
+/// within 0 through 9, `tokenProgram` (when present) is SPL Token or
+/// Token-2022, and `gracePeriodSeconds` is greater than zero.
+fn validate_challenge(request: &SessionRequest) -> Result<()> {
+    let details = &request.method_details;
+    crate::mpp::protocol::solana::validate_network(&details.network)?;
+    match details.decimals {
+        None => {
+            return Err(Error::Other(
+                "session challenge is missing decimals for its mint".to_string(),
+            ))
+        }
+        Some(decimals) if decimals > 9 => {
+            return Err(Error::Other(format!(
+                "session challenge decimals {decimals} is outside 0 through 9"
+            )))
+        }
+        Some(_) => {}
+    }
+    if let Some(program) = details.token_program.as_deref() {
+        use crate::mpp::protocol::solana::programs::{TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
+        if program != TOKEN_PROGRAM && program != TOKEN_2022_PROGRAM {
+            return Err(Error::Other(format!(
+                "session challenge tokenProgram {program} is neither SPL Token nor Token-2022"
+            )));
+        }
+    }
+    if details.grace_period_seconds == Some(0) {
+        return Err(Error::Other(
+            "session challenge gracePeriodSeconds must be greater than zero".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn configure_session(
     session: &mut ActiveSession,
     cumulative: Option<u64>,
@@ -904,6 +942,43 @@ mod tests {
                 distribution_splits: vec![],
                 transaction_versions: None,
             },
+        }
+    }
+
+    /// draft-solana-session-00 §Method Details: a client refuses a challenge
+    /// whose network is not one of the three clusters, whose mint has no
+    /// decimals (or out-of-range ones), whose tokenProgram is neither SPL
+    /// Token nor Token-2022, or whose grace period is zero, before it
+    /// derives or signs an open.
+    #[test]
+    fn open_refuses_out_of_spec_method_details() {
+        let derive = |request: &SessionRequest| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request,
+                payer: Pubkey::new_unique(),
+                authorized_signer: Pubkey::new_unique(),
+                options: PaymentChannelOpenOptions {
+                    salt: Some(7),
+                    ..Default::default()
+                },
+            })
+        };
+        assert!(derive(&request(Pubkey::new_unique())).is_ok());
+        type Edit = fn(&mut SessionMethodDetails);
+        let cases: [(&str, Edit); 5] = [
+            ("network", |d| d.network = "testnet".into()),
+            ("decimals", |d| d.decimals = None),
+            ("decimals", |d| d.decimals = Some(10)),
+            ("tokenProgram", |d| {
+                d.token_program = Some(crate::mpp::program::payment_channels::SYSTEM_PROGRAM.into())
+            }),
+            ("gracePeriodSeconds", |d| d.grace_period_seconds = Some(0)),
+        ];
+        for (field, edit) in cases {
+            let mut bad = request(Pubkey::new_unique());
+            edit(&mut bad.method_details);
+            let error = derive(&bad).unwrap_err().to_string();
+            assert!(error.contains(field), "{field}: {error}");
         }
     }
 

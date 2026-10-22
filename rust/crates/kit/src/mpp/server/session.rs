@@ -109,11 +109,23 @@ pub struct OpenAcceptance {
     pub transaction_signature: String,
 }
 
+const OPERATOR_VOUCHER_ERROR: &str =
+    "a voucher does not authenticate an operator-signed session; present the session bearer proof (use)";
 const OPEN_INTENT_KEY: &str = "mppSessionOpenIntent";
 const OPEN_TERMINAL_KEY: &str = "mppSessionOpenTerminal";
 const OPEN_TERMINAL_ERROR: &str = "session open expired without funding; request a new channel";
 const OPENED_ELSEWHERE_ERROR: &str =
     "channel was opened outside this server's ledger and cannot be adopted; open a new channel";
+
+/// Index of the channel PDA among the `open` instruction's accounts.
+const OPEN_CHANNEL_ACCOUNT: usize = 5;
+
+/// An open credential that passed the credential checks.
+struct ValidatedOpen {
+    deposit: u64,
+    effective_idle_timeout: u32,
+    params: payment_channels::OpenChannelParams,
+}
 
 /// Outcome of broadcasting a verified open.
 enum OpenSubmission {
@@ -1118,11 +1130,18 @@ impl<S: ChannelStore> SessionServer<S> {
         .await
     }
 
-    async fn process_open_inner(
+    /// The credential half of `process_open`'s checks, before it reads the
+    /// store: the challenge expiry, the deposit and idle-timeout selection,
+    /// the open parameters against the challenge
+    /// ([`Self::payment_channel_open_params`]), the `openSlot` window against
+    /// the challenged `recentSlot`, and the voucher-signer mode and bearer
+    /// proof. [`Self::prepare_open`] is the transaction half; the conformance
+    /// hook ([`testkit::verify_open_pre_broadcast`]) runs both.
+    fn validate_open_request(
         &self,
         payload: &OpenPayload,
         context: SessionOpenContext<'_>,
-    ) -> Result<OpenAcceptance> {
+    ) -> Result<ValidatedOpen> {
         context.ensure_not_expired()?;
         let session_id = payload.session_id();
         let deposit = payload.deposit_amount()?;
@@ -1198,6 +1217,47 @@ impl<S: ChannelStore> SessionServer<S> {
             ));
         }
 
+        Ok(ValidatedOpen {
+            deposit,
+            effective_idle_timeout,
+            params,
+        })
+    }
+
+    /// The transaction half of `process_open`'s checks
+    /// (`prepare_open_transaction`): accepted version and budget, the
+    /// challenged blockhash, the fee payer, exactly the declared open
+    /// instruction with matching privileges, and the client's signatures.
+    /// Co-signs a sponsored open; never broadcasts.
+    async fn prepare_open(
+        &self,
+        payload: &OpenPayload,
+        params: &payment_channels::OpenChannelParams,
+        context: SessionOpenContext<'_>,
+    ) -> Result<(solana_transaction::versioned::VersionedTransaction, String)> {
+        prepare_open_transaction(
+            payload,
+            params,
+            context.recent_blockhash,
+            self.config.fee_payer_signer.as_deref(),
+            &self.accepted_versions,
+            &self.config,
+        )
+        .await
+    }
+
+    async fn process_open_inner(
+        &self,
+        payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
+    ) -> Result<OpenAcceptance> {
+        let ValidatedOpen {
+            deposit,
+            effective_idle_timeout,
+            params,
+        } = self.validate_open_request(payload, context)?;
+        let session_id = payload.session_id();
+
         let existing = self
             .store
             .inner
@@ -1220,15 +1280,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let pipeline = self.transaction_pipeline().await?;
         #[cfg(not(feature = "server"))]
         let pipeline = ();
-        let prepared = prepare_open_transaction(
-            payload,
-            &params,
-            context.recent_blockhash,
-            self.config.fee_payer_signer.as_deref(),
-            &self.accepted_versions,
-            &self.config,
-        )
-        .await?;
+        let prepared = self.prepare_open(payload, &params, context).await?;
         // A fresh open's own broadcast lands after this observed slot; one that
         // landed at or before it was opened elsewhere and has no ledger here.
         #[cfg(feature = "server")]
@@ -1626,6 +1678,13 @@ impl<S: ChannelStore> SessionServer<S> {
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
+        // draft-solana-session-00: "In operator mode, vouchers are
+        // operator-generated settlement artifacts and MUST NOT authenticate
+        // the caller." Operator-signed vouchers are public settlement data, so
+        // presenting one proves nothing; the caller authenticates with `use`.
+        if self.config.voucher_signer == VoucherSigner::Operator {
+            return Err(Error::Other(OPERATOR_VOUCHER_ERROR.to_string()));
+        }
         // The top-level channelId is the routing key; it must never diverge
         // from the signed voucher's inner channelId (spec: servers MUST
         // reject the action when the two differ).
@@ -1643,6 +1702,9 @@ impl<S: ChannelStore> SessionServer<S> {
             .ok_or_else(|| {
                 Error::Other(format!("Channel {} not found", voucher.data.channel_id))
             })?;
+        if state.voucher_signer == "operator" {
+            return Err(Error::Other(OPERATOR_VOUCHER_ERROR.to_string()));
+        }
         if voucher.signer != state.authorized_signer {
             return Err(Error::Other(
                 "voucher signer does not match the channel authorized signer".to_string(),
@@ -1875,11 +1937,9 @@ impl<S: ChannelStore> SessionServer<S> {
         Ok(self.process_topup_with_outcome(payload).await?.state)
     }
 
-    /// Process a `topup` action and return its post-co-sign transaction ID.
-    pub async fn process_topup_with_outcome(
-        &self,
-        payload: &TopUpPayload,
-    ) -> Result<TopUpAcceptance> {
+    /// The request half of a top-up: a positive `additionalAmount` for a
+    /// known channel that is still `Open` (no close requested, not sealed).
+    async fn topup_channel(&self, payload: &TopUpPayload) -> Result<(u64, ChannelState)> {
         let additional_amount: u64 = payload
             .additional_amount
             .parse()
@@ -1900,6 +1960,15 @@ impl<S: ChannelStore> SessionServer<S> {
                 "Channel is closed or close is pending".to_string(),
             ));
         }
+        Ok((additional_amount, existing))
+    }
+
+    /// Process a `topup` action and return its post-co-sign transaction ID.
+    pub async fn process_topup_with_outcome(
+        &self,
+        payload: &TopUpPayload,
+    ) -> Result<TopUpAcceptance> {
+        let (additional_amount, existing) = self.topup_channel(payload).await?;
         // The transaction id is the fee-payer signature. In sponsored mode
         // that slot is intentionally empty in the submitted payload, so only
         // the server can derive the stable dedupe key after validation and
@@ -2722,9 +2791,18 @@ async fn prepare_open_transaction(
         if *program == compute_budget {
             continue;
         }
-        if found_open || *program != expected.program_id || ix.data != expected.data {
+        if found_open || *program != expected.program_id || ix.data.first() != expected.data.first()
+        {
             return Err(Error::Other(
                 "open transaction contains an unexpected instruction".to_string(),
+            ));
+        }
+        // The open the credential declares, decoded from the transaction:
+        // its arguments, then its accounts (the channel PDA first, which the
+        // declared channelId must name).
+        if ix.data != expected.data {
+            return Err(Error::Other(
+                "open instruction arguments do not match the credential".to_string(),
             ));
         }
         let accounts = ix
@@ -2741,12 +2819,17 @@ async fn prepare_open_transaction(
             .iter()
             .map(|account| account.pubkey)
             .collect::<Vec<_>>();
+        if accounts.get(OPEN_CHANNEL_ACCOUNT) != expected_accounts.get(OPEN_CHANNEL_ACCOUNT) {
+            return Err(Error::Other(
+                "open transaction channel account does not match the derived channel PDA"
+                    .to_string(),
+            ));
+        }
         if accounts != expected_accounts {
             return Err(Error::Other(
                 "open transaction accounts do not match the declared channel".to_string(),
             ));
         }
-        verify_channel_privileges(&tx, &expected, params.rent_payer)?;
         found_open = true;
     }
     if !found_open {
@@ -2754,6 +2837,9 @@ async fn prepare_open_transaction(
             "open transaction does not contain the expected open instruction".to_string(),
         ));
     }
+    // Privileges after the instruction allowlist, so an unexpected
+    // instruction is reported as one rather than by the accounts it adds.
+    verify_channel_privileges(&tx, &expected, params.rent_payer)?;
 
     verify_client_transaction_signatures(&tx, fee_payer_signer.map(|signer| signer.pubkey()))?;
     if let Some(signer) = fee_payer_signer {
@@ -2802,6 +2888,42 @@ pub mod testkit {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Every check [`SessionServer::process_open`] makes on an `open`
+    /// credential before it persists the open intent or broadcasts, in its
+    /// order: the credential (`validate_open_request`: challenge expiry,
+    /// deposit and idle-timeout selection, the open parameters against the
+    /// challenge, the `openSlot` window against `context.recent_slot`, the
+    /// voucher-signer mode and bearer proof), then the decoded transaction
+    /// (`prepare_open`, co-signed in memory when the server sponsors fees).
+    /// The window against the live cluster slot needs RPC and is not part
+    /// of it.
+    pub async fn verify_open_pre_broadcast<S: ChannelStore>(
+        server: &SessionServer<S>,
+        open: &OpenPayload,
+        context: SessionOpenContext<'_>,
+    ) -> Result<()> {
+        let validated = server.validate_open_request(open, context)?;
+        server
+            .prepare_open(open, &validated.params, context)
+            .await
+            .map(|_| ())
+    }
+
+    /// Every check [`SessionServer::process_topup`] makes on a `topUp`
+    /// credential before it broadcasts: a positive `additionalAmount` for a
+    /// stored channel that is still `Open`, then the decoded transaction
+    /// (`prepare_topup_transaction`, co-signed in memory when the channel's
+    /// rent payer is the configured sponsor).
+    pub async fn verify_topup_pre_broadcast<S: ChannelStore>(
+        server: &SessionServer<S>,
+        topup: &TopUpPayload,
+    ) -> Result<()> {
+        let (_, state) = server.topup_channel(topup).await?;
+        prepare_topup_transaction(topup, &state, &server.config, &server.accepted_versions)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -2958,14 +3080,29 @@ async fn fetch_and_match_open_channel(
     Ok(channel.settlement.settled)
 }
 
+/// A top-up transaction that passed every offline check, co-signed when the
+/// channel's rent payer is the configured sponsor.
 #[cfg(feature = "server")]
-async fn verify_submit_and_fetch_topup(
+struct PreparedTopUp {
+    tx: solana_transaction::versioned::VersionedTransaction,
+    amount: u64,
+    channel: Pubkey,
+    program_id: Pubkey,
+    deployment: crate::core::payment_channels_v2::Deployment,
+}
+
+/// The offline checks on a client's `topUp` transaction: accepted message
+/// version and budget, the fee payer the channel's recorded rent payer
+/// implies, exactly one top-up instruction for this channel, mint, token
+/// program and `additionalAmount`, matching privileges and the client's
+/// signatures. Co-signs a sponsored top-up; never broadcasts.
+#[cfg(feature = "server")]
+async fn prepare_topup_transaction(
     payload: &TopUpPayload,
     state: &ChannelState,
     config: &SessionConfig,
-    pipeline: &crate::core::tx_pipeline::TxPipeline,
     accepted_versions: &[TxVersion],
-) -> Result<String> {
+) -> Result<PreparedTopUp> {
     let amount = payload
         .additional_amount
         .parse::<u64>()
@@ -3079,25 +3216,55 @@ async fn verify_submit_and_fetch_topup(
             .iter()
             .map(|account| account.pubkey)
             .collect::<Vec<_>>();
-        if found
-            || *program != expected.program_id
-            || ix.data != expected.data
-            || accounts != expected_accounts
-        {
+        if found || *program != expected.program_id || ix.data.first() != expected.data.first() {
             return Err(Error::Other(
-                "top-up transaction does not match channel and additionalAmount".to_string(),
+                "top-up transaction contains an unexpected instruction".to_string(),
             ));
         }
-        verify_channel_privileges(&tx, &expected, expected_fee_payer)?;
+        if accounts != expected_accounts {
+            return Err(Error::Other(
+                "top-up transaction accounts do not match the stored channel".to_string(),
+            ));
+        }
+        if ix.data != expected.data {
+            return Err(Error::Other(
+                "top-up transaction amount does not match additionalAmount".to_string(),
+            ));
+        }
         found = true;
     }
     if !found {
         return Err(Error::Other("top-up instruction not found".to_string()));
     }
+    verify_channel_privileges(&tx, &expected, expected_fee_payer)?;
     verify_client_transaction_signatures(&tx, fee_payer_signer.map(|signer| signer.pubkey()))?;
     if let Some(signer) = fee_payer_signer {
         payment_channels::cosign_fee_payer(signer, &expected_fee_payer, &mut tx).await?;
     }
+    Ok(PreparedTopUp {
+        tx,
+        amount,
+        channel,
+        program_id,
+        deployment,
+    })
+}
+
+#[cfg(feature = "server")]
+async fn verify_submit_and_fetch_topup(
+    payload: &TopUpPayload,
+    state: &ChannelState,
+    config: &SessionConfig,
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
+    accepted_versions: &[TxVersion],
+) -> Result<String> {
+    let PreparedTopUp {
+        tx,
+        amount,
+        channel,
+        program_id,
+        deployment,
+    } = prepare_topup_transaction(payload, state, config, accepted_versions).await?;
     let signature = tx
         .signatures
         .first()
@@ -6989,6 +7156,116 @@ mod tests {
             })
             .await
             .is_err());
+    }
+
+    /// draft-solana-session-00 §Action "voucher": "In operator mode,
+    /// vouchers are operator-generated settlement artifacts and MUST NOT
+    /// authenticate the caller." A valid operator-signed voucher (public
+    /// settlement data) presented as a voucher action is refused, and the
+    /// watermark does not move.
+    #[tokio::test]
+    async fn operator_session_refuses_a_voucher_action() {
+        use ed25519_dalek::Signer;
+        let cfg = config(VoucherSigner::Operator);
+        let channel = Pubkey::new_unique().to_string();
+        let mut operated = state(channel.clone(), cfg.operator.clone());
+        operated.voucher_signer = "operator".into();
+        let server = seeded_server(cfg, operated).await;
+        let data = VoucherData {
+            channel_id: channel.clone(),
+            cumulative_amount: "25".into(),
+            expires_at: None,
+        };
+        let signature = key(9).sign(&data.message_bytes().unwrap());
+        let voucher = SignedVoucher {
+            data,
+            signer: server.config.operator.clone(),
+            signature: bs58::encode(signature.to_bytes()).into_string(),
+            signature_type: VoucherSignatureType::Ed25519,
+        };
+        let payload = VoucherPayload {
+            channel_id: channel.clone(),
+            voucher,
+        };
+        for result in [
+            server.verify_voucher(&payload).await,
+            server.verify_voucher_for_amount(&payload, 25).await,
+        ] {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("does not authenticate an operator-signed session"));
+        }
+        assert_eq!(stored(&server, &channel).await.cumulative, 0);
+    }
+
+    /// The open transaction checks name what disagrees: an argument, the
+    /// channel account, or an instruction outside the open.
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn channel_transaction_errors_name_the_disagreeing_part() {
+        let server = SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let open = valid_open(&server);
+        let params = server.payment_channel_open_params(&open).unwrap();
+        let blockhash = solana_hash::Hash::new_from_array([7; 32]);
+        let check = |instructions: Vec<solana_instruction::Instruction>| {
+            let message = solana_message::v0::Message::try_compile(
+                &params.rent_payer,
+                &instructions,
+                &[],
+                blockhash,
+            )
+            .unwrap();
+            let tx = solana_transaction::versioned::VersionedTransaction {
+                signatures: vec![
+                    Signature::default();
+                    usize::from(message.header.num_required_signatures)
+                ],
+                message: solana_message::VersionedMessage::V0(message),
+            };
+            let mut open = open.clone();
+            open.transaction = crate::core::tx::encode(&tx).unwrap();
+            let server = &server;
+            let params = params.clone();
+            async move {
+                server
+                    .prepare_open(
+                        &open,
+                        &params,
+                        SessionOpenContext {
+                            challenge_id: "opening",
+                            expires: None,
+                            recent_blockhash: &blockhash.to_string(),
+                            recent_slot: params.open_slot,
+                        },
+                    )
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            }
+        };
+        let honest = payment_channels::build_open_instruction(&params);
+        let mut argument = honest.clone();
+        argument.data[9] ^= 1;
+        assert!(check(vec![argument])
+            .await
+            .contains("open instruction arguments do not match the credential"));
+        let mut channel = honest.clone();
+        channel.accounts[OPEN_CHANNEL_ACCOUNT].pubkey = Pubkey::new_unique();
+        assert!(check(vec![channel])
+            .await
+            .contains("channel account does not match the derived channel PDA"));
+        let memo = solana_instruction::Instruction {
+            program_id: payment_channels::memo_program_id(),
+            accounts: vec![solana_instruction::AccountMeta::new(
+                Pubkey::new_unique(),
+                false,
+            )],
+            data: b"x".to_vec(),
+        };
+        assert!(check(vec![honest, memo])
+            .await
+            .contains("open transaction contains an unexpected instruction"));
     }
 
     #[tokio::test]
