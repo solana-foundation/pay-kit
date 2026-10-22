@@ -2,10 +2,12 @@
 //! process boundary exactly like `runnerResultSchema` in
 //! `harness/src/conformance/contract-schema.ts` (`additionalProperties:
 //! false` everywhere, so an over-typed result is a contract drift), plus the
-//! two additive fields the Rust judge needs to verify builds:
+//! additive fields the Rust judge needs to verify builds:
 //!
 //! - `transaction`: the built base64 wire transaction (charge builds);
-//! - `x402PaymentHeader`: the built base64 payment header (x402 builds).
+//! - `x402PaymentHeader`: the built base64 payment header (x402 builds);
+//! - `sessionCredential`: the built session `open` action as JSON text
+//!   (session builds).
 
 use serde_json::{Map, Value};
 
@@ -102,6 +104,7 @@ pub fn validate(result: &Value) -> Result<(), String> {
             ("rejectCode", is_string),
             ("transaction", is_string),
             ("x402PaymentHeader", is_string),
+            ("sessionCredential", is_string),
         ],
         &mut errors,
     ) else {

@@ -1,0 +1,983 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "A 500 top-up of the open channel, signed and fee-paid by the payer. The baseline every top-up reject pairs with. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-topup-client-paid-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "ASLRQEtluAdmil/rac9w4sGEIiU/uhuCHEn4JUamv6SFX3JPyR5dsWDZx46eHMygafqnikXRAtZh9F9X5QDYYgmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4d3fa28dc4",
+      "MPP-dfaa074bfa",
+      "MPP-3e70e39f13"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A sponsored channel (rentPayer is the operator): the client partially signs, the operator is fee payer and co-signs. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-topup-sponsored-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARuGymW0QDbQN+kaY9XVP6O/7Gc/1AiSqtSonaH5gwYjDQw2bTwGUE0RzsveDAFSSsRg7pEN3Ty9nRojwjjqQEgAIABAlmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAgGAQQCAwcGCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dfaa074bfa",
+      "MPP-3e70e39f13"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The envelope claims additionalAmount 400 while the signed top-up adds 500. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: credential /additionalAmount set to \"400\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-topup-amount-mismatch-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "400",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "ASLRQEtluAdmil/rac9w4sGEIiU/uhuCHEn4JUamv6SFX3JPyR5dsWDZx46eHMygafqnikXRAtZh9F9X5QDYYgmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3e70e39f13"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| additionalAmount | string | REQUIRED | Amount to add in base units |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The signed top-up adds 600 while the envelope says 500. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: top-up amount argument set to 600.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-topup-amount-argument-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AZno/w7aIGX2E8gebaE6LiTZ3xe7Y1n/MqGx6o6VrJdhOAYHYkhYpdBIOzIqNEYWLGB2w4IWD69grIYBYLh6wwKAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQNYAgAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3e70e39f13",
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| additionalAmount | string | REQUIRED | Amount to add in base units |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A top-up of 0. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-topup-zero-amount-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "0",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AeLQ/EZcPXeiZTErgJ52lcE6I5gSeB3+ICXpxt10XUvDRYHY0VRa7EDeGm3cYHMKwBOrDhK59nT3RE6IqxQgwA6AAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQMAAAAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-8ea927661c"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| amount | u64 | Amount to add in base units; MUST be non-zero |",
+      "section": "topUp"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The signed top-up funds another channel (and its escrow) than the one the action names. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: top-up channel account set to 4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-topup-other-channel-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AfoCT19/ZSDVIh1pI97j2PyWMKB8Xx23J1tIqRd2JkR2ICJW27L9mlohJ8WlF19oeQt4+20JA/4kFBhuQH2NuwSAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsOMGwfUGdepA8aZuO4GZzx5l67eKS+rVI+rCYzCHcXdpPCZEtVcXaQ1No0+Z895IbP8w2ZvpeIpSQvK8z5w8Rc2uE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAEDAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The action names a channel the server never opened. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: credential /channelId set to \"4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-state"
+    },
+    "id": "session-topup-unknown-channel-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ",
+          "transaction": "ASLRQEtluAdmil/rac9w4sGEIiU/uhuCHEn4JUamv6SFX3JPyR5dsWDZx46eHMygafqnikXRAtZh9F9X5QDYYgmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-632d3435dd"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "topUp requires status == Open and MUST be rejected when status == Closing.",
+      "section": "topUp"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The channel has a pending forced close. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-closing"
+    },
+    "id": "session-topup-close-pending-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "closureStartedAt": 1800000000,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "ASLRQEtluAdmil/rac9w4sGEIiU/uhuCHEn4JUamv6SFX3JPyR5dsWDZx46eHMygafqnikXRAtZh9F9X5QDYYgmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-632d3435dd",
+      "MPP-cb6b8e2000"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "topUp requires status == Open and MUST be rejected when status == Closing.",
+      "section": "topUp"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A Memo instruction after the top-up. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: instruction of program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr with data [105, 110, 118, 111, 105, 99, 101, 45, 55] added.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-topup-extra-instruction-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AcUSpeuINsfevHzlUoZzrRMEdjnRcr4U1HYaqhOSrmqwI+Z369oXb0MhuZzPAz/GtGbHtDE5S5i8gqMLRoPLvgeAAQAFCepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqenofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrsxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5BAQABQJADQMABAAJAwEAAAAAAAAACAYAAwECBwYJA/QBAAAAAAAABQAJaW52b2ljZS03AA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A client-paid channel whose top-up is fee-paid by a third key (which signs). Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: transaction fee payer set to FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-mismatch"
+    },
+    "id": "session-topup-fee-payer-swapped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AviSE0PFuW2owDZrqCDt3FLDvoAEH+N6mHMD+4T+9drHeIGa+0mbVeJ5XzBkHDLTWhOqP3so0R/MxfLNZuapcgx6EOVmWE/CMIRvgoMY479t/sGNPPYEBjhUmlJ8Wq/prKXUH37a6HeC6HGPUi7aBIDlZFRA1Ts4J84tt2b19/QKgAIABAnVQgfaGUl33PRq2/7CvC51tS1aikIYT+39wAAk8OPo2upKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAgGAQQCAwcGCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the top-up transaction targets the expected channel PDA and channel program and only increases deposit for that channel.",
+      "section": "TopUp"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The payer's signature slot is zeroed. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: client signature zeroed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-topup-payer-signature-missing-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-16faa7304f",
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The payer MUST be a signer.",
+      "section": "topUp"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "additionalAmount \"5e2\". Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: credential /additionalAmount set to \"5e2\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-topup-additional-amount-not-decimal-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "5e2",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "ASLRQEtluAdmil/rac9w4sGEIiU/uhuCHEn4JUamv6SFX3JPyR5dsWDZx46eHMygafqnikXRAtZh9F9X5QDYYgmAAQAECOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMEAAUCQA0DAAQACQMBAAAAAAAAAAcGAAMBAgYFCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3e70e39f13"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| additionalAmount | string | REQUIRED | Amount to add in base units |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The topUp action has no transaction. Pair: session-topup-client-paid-accept. The top-up is a client-signed transaction for the stored channel; the server runs every check it makes before broadcasting. Mutation: credential /transaction removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-topup-missing-transaction-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dfaa074bfa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  }
+]

@@ -95,9 +95,11 @@ pub async fn generate(cases: &[Case]) -> Result<Files, Vec<String>> {
         match realize(case).await {
             Ok(realized) => {
                 let reference = match (&realized.observed, case.intent, case.mode) {
-                    (Observed::Accept(output), Intent::Charge, Mode::BuildTransaction) => {
-                        output.transaction.clone()
-                    }
+                    (
+                        Observed::Accept(output),
+                        Intent::Charge | Intent::Session,
+                        Mode::BuildTransaction,
+                    ) => output.transaction.clone(),
                     _ => None,
                 };
                 let vector = render(case, realized.input, realized.expect);

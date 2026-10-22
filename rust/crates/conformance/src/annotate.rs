@@ -426,6 +426,29 @@ pub fn vector(vector: &Value, reference_tx: Option<&str>) -> Option<String> {
             }
         }
     }
+    if let Some(credential) = input.pointer("/sessionServerVerify/credential") {
+        let mut shown = credential.clone();
+        let tx = credential
+            .get("transaction")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if tx.is_some() {
+            shown["transaction"] = Value::String("<below>".into());
+        }
+        let _ = writeln!(
+            out,
+            "session credential ({})\n{}\n",
+            credential["action"].as_str().unwrap_or("?"),
+            serde_json::to_string_pretty(&shown).unwrap_or_default()
+        );
+        any = true;
+        if let Some(tx) = tx {
+            out.push_str(&match decode_b64(&tx) {
+                Ok(tx) => transaction(&tx),
+                Err(e) => format!("credential.transaction does not decode: {e}\n"),
+            });
+        }
+    }
     if let Some(tx) = input.get("transaction").and_then(Value::as_str) {
         any = true;
         out.push_str(&match decode_b64(tx) {

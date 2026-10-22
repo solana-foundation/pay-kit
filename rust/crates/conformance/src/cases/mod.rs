@@ -13,6 +13,7 @@ pub mod charge;
 pub mod charge_policy;
 pub mod charge_tx_versions;
 pub mod session;
+pub mod session_server;
 pub mod session_tx_versions;
 pub mod subscription;
 pub mod x402_batch;
@@ -71,6 +72,7 @@ pub fn all() -> Vec<crate::case::Case> {
     out.extend(subscription::cases());
     out.extend(charge_tx_versions::cases());
     out.extend(session_tx_versions::cases());
+    out.extend(session_server::cases());
     out.extend(x402_tx_versions::cases());
     out
 }

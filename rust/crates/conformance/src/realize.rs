@@ -16,6 +16,7 @@
 //! check is the positive control and the filler.
 
 pub mod batch;
+pub mod session;
 pub mod session_open;
 pub mod subscription;
 pub mod upto;
@@ -201,6 +202,20 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
         }
         Input::Subscription(recipe) => subscription::materialize(case, recipe).await,
         Input::SessionOpen(spec) => session_open::materialize(case, spec).await,
+        Input::Session(recipe) => {
+            if let (Provenance::Generated, Expect::Reject { code, .. }, Some(want)) =
+                (&case.provenance, &case.expect, recipe.expected())
+            {
+                if want != *code {
+                    return Err(format!(
+                        "{:?} is paired with {want}, but the case declares {code}",
+                        recipe.tx
+                    ));
+                }
+            }
+            session::materialize(recipe).await
+        }
+        Input::SessionBuild(recipe) => session::build_input(recipe),
     }
 }
 
@@ -419,6 +434,7 @@ pub fn suite_build_artifact_field(intent: &str) -> Option<&'static str> {
         "x402-upto" => Some(upto::BUILD_ARTIFACT),
         "x402-batch-settlement" => Some(batch::BUILD_ARTIFACT),
         "subscription" => Some(subscription::BUILD_ARTIFACT),
+        "session" => Some(session::BUILD_ARTIFACT),
         _ => None,
     }
 }
@@ -441,15 +457,16 @@ pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
         (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input).await,
         (Intent::X402Exact, Mode::BuildTransaction) => x402_build(input).await,
         (Intent::X402Exact, Mode::VerifyTransaction) => x402_verify(input).await,
+        (Intent::Session, Mode::VerifyTransaction)
+            if input.get("sessionServerVerify").is_some() =>
+        {
+            session::verify(input).await
+        }
+        (Intent::Session, Mode::BuildTransaction) => session::build(input).await,
         (Intent::Session, Mode::VerifyTransaction) if input.get("sessionOpenVerify").is_some() => {
             session_open::verify(input).await
         }
         (Intent::Session, Mode::VerifyTransaction) => session_verify(input).await,
-        (intent, mode) => Ok(Observed::NotExpressible(format!(
-            "no kit path for {} {}",
-            intent.as_str(),
-            mode.as_str()
-        ))),
     };
     result.unwrap_or_else(|setup| Observed::NotExpressible(format!("case setup failed: {setup}")))
 }
@@ -875,6 +892,24 @@ pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
             Ok(bytes) => set_bytes(&mut exact, &bytes),
             Err(e) => return Ok(Observed::reject(format!("invalid payload: {e}"))),
         }
+    }
+    if let Some(sam) = input.get("sessionAuthenticationMessage") {
+        // The bearer-proof message bytes the payer signs (JCS of channelId,
+        // domain, payer, sessionChallengeId).
+        let auth = solana_pay_kit::mpp::protocol::intents::session::SessionAuthentication {
+            kind: solana_pay_kit::mpp::protocol::intents::session::SessionAuthenticationType::Proof,
+            challenge_id: str_field(sam, "challengeId").to_string(),
+            payer: str_field(sam, "payer").to_string(),
+            signature: String::new(),
+        };
+        let bytes = auth
+            .message_bytes(str_field(sam, "channelId"))
+            .map_err(|e| e.to_string())?;
+        exact.insert(
+            "canonicalJson".into(),
+            json!(String::from_utf8(bytes.clone()).map_err(|e| e.to_string())?),
+        );
+        exact.insert("base64Url".into(), json!(base64url_encode(&bytes)));
     }
     if let Some(sw) = input.get("sessionWire") {
         let value = sw.get("value").cloned().unwrap_or(Value::Null);

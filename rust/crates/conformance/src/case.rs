@@ -667,6 +667,14 @@ pub enum Input {
     /// issues under `server` (or under `built_from`, so the server verifies
     /// an open built for another challenge), optionally mutated.
     SessionOpen(Box<SessionOpenSpec>),
+    /// A session server vector (`input.sessionServerVerify`): the kit
+    /// server configured from the recipe, and the client's `open`,
+    /// `voucher`, `topUp` or `close` credential built and signed by the
+    /// filler, then edited. See `realize/session.rs`.
+    Session(Box<crate::realize::session::Recipe>),
+    /// A session client build vector (`input.sessionOpenBuild`): the kit
+    /// server's challenge for the recipe's server, then edited.
+    SessionBuild(Box<crate::realize::session::BuildRecipe>),
 }
 
 /// Recipe for a session `open` verify vector (`input.sessionOpenVerify`).

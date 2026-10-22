@@ -72,6 +72,8 @@ const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 /// Outcome of one vector, rendered as the RunnerResult JSON.
 #[path = "vector_runner/batch.rs"]
 mod batch;
+#[path = "vector_runner/session.rs"]
+mod session;
 #[path = "vector_runner/session_open.rs"]
 mod session_open;
 #[path = "vector_runner/subscription.rs"]
@@ -254,6 +256,10 @@ async fn run_vector(vector: &Value) -> Result<Outcome, Rejection> {
         ("subscription", mode) => subscription::run(mode, &input).await,
         ("x402-exact", "build-transaction") => x402_build(&input).await,
         ("x402-exact", "verify-transaction") => x402_verify(&input).await,
+        ("session", "verify-transaction") if input.get("sessionServerVerify").is_some() => {
+            session::run(mode, &input).await
+        }
+        ("session", "build-transaction") => session::run(mode, &input).await,
         ("session", "verify-transaction") if input.get("sessionOpenVerify").is_some() => {
             session_open::verify(&input).await
         }

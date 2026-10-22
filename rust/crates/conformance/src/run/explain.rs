@@ -148,6 +148,7 @@ impl SourceRef {
 }
 
 const KIT: &str = "rust/crates/kit/src";
+const FILLER: &str = "rust/crates/conformance/src/realize.rs";
 
 /// The Rust code that decides a vector's expected value.
 pub fn references(vector: &Vector) -> Vec<SourceRef> {
@@ -158,6 +159,12 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
         f if f.starts_with("batch-") => "rust/crates/conformance/src/cases/x402_batch.rs",
         "charge-tx-versions.json" => "rust/crates/conformance/src/cases/charge_tx_versions.rs",
         "session-tx-versions.json" => "rust/crates/conformance/src/cases/session_tx_versions.rs",
+        f if f.starts_with("session-server-")
+            || f == "session-build.json"
+            || f == "session-wire-strict.json" =>
+        {
+            "rust/crates/conformance/src/cases/session_server.rs"
+        }
         "x402-tx-versions.json" => "rust/crates/conformance/src/cases/x402_tx_versions.rs",
         f if f.ends_with("-policy.json") && f.starts_with("x402") => {
             "rust/crates/conformance/src/cases/x402_policy.rs"
@@ -224,10 +231,29 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             "fn canonical(input: &Value)",
             "kit batch-settlement encoders and wire types",
         )),
+        ("session", "verify-transaction") if input.get("sessionServerVerify").is_some() => refs
+            .push(SourceRef::new(
+                concat_kit("mpp/server/session.rs"),
+                match input
+                    .pointer("/sessionServerVerify/credential/action")
+                    .and_then(Value::as_str)
+                {
+                    Some("open") => "fn validate_open_request(",
+                    Some("topUp") => "async fn prepare_topup_transaction(",
+                    Some("close") => "pub async fn process_close(",
+                    _ => "async fn verify_voucher_priced(",
+                },
+                "kit session server",
+            )),
         ("session", "verify-transaction") => refs.push(SourceRef::new(
             concat_kit("core/session.rs"),
             "pub async fn accept_voucher(",
             "kit voucher verifier",
+        )),
+        ("session", "build-transaction") => refs.push(SourceRef::new(
+            concat_kit("mpp/client/session.rs"),
+            "pub async fn create_payment_channel_session_opener(",
+            "kit session client opener",
         )),
         ("subscription", "build-transaction") => refs.push(SourceRef::new(
             concat_kit("mpp/client/subscription.rs"),
@@ -286,16 +312,22 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
             }
         }
     }
+    let session = "rust/crates/conformance/src/realize/session.rs";
+    let (file, needle) = match (vector.intent.as_str(), vector.mode.as_str()) {
+        ("charge", "build-transaction") => (FILLER, "async fn charge_build("),
+        ("charge", "verify-transaction") => (FILLER, "async fn charge_verify("),
+        ("x402-exact", "build-transaction") => (FILLER, "async fn x402_build("),
+        ("x402-exact", "verify-transaction") => (FILLER, "async fn x402_verify("),
+        ("session", "verify-transaction") if input.get("sessionServerVerify").is_some() => {
+            (session, "pub async fn verify(input: &Value)")
+        }
+        ("session", "build-transaction") => (session, "pub async fn build(input: &Value)"),
+        ("session", "verify-transaction") => (FILLER, "async fn session_verify("),
+        _ => (FILLER, "fn canonical_bytes("),
+    };
     refs.push(SourceRef::new(
-        "rust/crates/conformance/src/realize.rs",
-        match (vector.intent.as_str(), vector.mode.as_str()) {
-            ("charge", "build-transaction") => "async fn charge_build(",
-            ("charge", "verify-transaction") => "async fn charge_verify(",
-            ("x402-exact", "build-transaction") => "async fn x402_build(",
-            ("x402-exact", "verify-transaction") => "async fn x402_verify(",
-            ("session", "verify-transaction") => "async fn session_verify(",
-            _ => "fn canonical_bytes(",
-        },
+        file,
+        needle,
         "how the filler drives the kit for this vector",
     ));
     refs
@@ -339,6 +371,16 @@ pub fn mutation_words(case: &Case) -> Option<String> {
                 )
             })
         }
+        Input::Session(recipe) => recipe
+            .describe()
+            .map(|what| format!("valid kit-built session credential, then {what}{code}")),
+        Input::SessionBuild(recipe) => (!recipe.edits.is_empty()).then(|| {
+            let edits: Vec<String> = recipe.edits.iter().map(|e| e.describe()).collect();
+            format!(
+                "the kit server's challenge, then {}{code}",
+                edits.join("; ").replace("credential ", "challenge ")
+            )
+        }),
         _ => None,
     }
 }

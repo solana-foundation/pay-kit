@@ -589,6 +589,70 @@ export type VectorInput = {
     challengedBlockhash: string;
     open: Record<string, unknown>;
   };
+  // verify-transaction (session): one client credential against a session
+  // server (rust/crates/conformance/src/realize/session.rs). The runner
+  // configures its SDK's session server from `server`, seeds its channel
+  // store with `channel` (the server's per-channel state, named as in the
+  // spec's "Per-Channel State" table), parses `credential` with the SDK's
+  // session action schema and hands it to the server: `open` checked against
+  // `challenge` before any co-sign or broadcast, `voucher` accepted for one
+  // request at the challenged `amount`, `topUp` checked before broadcast,
+  // `close` processed. Accept means the server would act on it.
+  sessionServerVerify?: {
+    server: {
+      operator: string;
+      recipient: string;
+      currency: string;
+      decimals: number;
+      network: string;
+      amount: string;
+      minimumDeposit?: string;
+      suggestedDeposit?: string;
+      gracePeriodSeconds: number;
+      idleTimeoutSeconds: number;
+      voucherSigner: "client" | "operator";
+      // The sponsor (fee payer and rent payer); its key is
+      // `sessionServerFeePayerSecretKey`.
+      feePayer?: string;
+      idleTimeoutOptionsSeconds?: number[];
+      distributionSplits?: Array<{ recipient: string; shareBps: number }>;
+      tokenProgram?: string;
+      transactionVersions?: Array<0 | 1>;
+    };
+    challenge?: { id: string; recentBlockhash: string; recentSlot: string };
+    channel?: {
+      channelId: string;
+      openSlot: string;
+      status: "open" | "closed";
+      payer: string;
+      rentPayer: string;
+      voucherSigner: "client" | "operator";
+      authorizedSigner: string;
+      escrowedAmount: string;
+      acceptedCumulative: string;
+      spentAmount: string;
+      settledOnChain: string;
+      idleTimeoutSeconds: number;
+      openingChallengeId: string;
+      highestVoucher?: Record<string, unknown>;
+      closureStartedAt?: number;
+      authentication?: Record<string, unknown>;
+    };
+    credential: Record<string, unknown>;
+  };
+  sessionServerFeePayerSecretKey?: number[];
+  // build-transaction (session): the client's `open` for `request` (the
+  // challenge's SessionRequest) with the channel `salt` its builder takes;
+  // `signerSecretKey` is the payer, `sessionSignerSecretKey` the voucher key
+  // it authorizes. `server` / `challenge` are for the judge only. An
+  // accepted build returns the open action as `sessionCredential`.
+  sessionOpenBuild?: {
+    request: Record<string, unknown>;
+    salt: string;
+    server: Record<string, unknown>;
+    challenge: { id: string; recentBlockhash: string; recentSlot: string };
+  };
+  sessionSignerSecretKey?: number[];
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a
@@ -662,4 +726,8 @@ export type RunnerResult = {
   // Present on an accepted x402 build: the built base64 payment header,
   // judged the same way.
   x402PaymentHeader?: string;
+  // Present on an accepted session build: the built `open` action as JSON
+  // text, run through the Rust kit's session server and compared with the
+  // kit's own build.
+  sessionCredential?: string;
 };

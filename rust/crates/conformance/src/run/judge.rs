@@ -754,6 +754,7 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             return crate::realize::batch::judge_build(vector, artifact).await
         }
         "subscription" => return crate::realize::subscription::judge_build(vector, artifact).await,
+        "session" => return crate::realize::session::judge_build(vector, artifact).await,
         _ => return Ok(()),
     };
     let verify_input = verify_input_for_build(vector, artifact).map_err(Failure::new)?;
@@ -936,7 +937,14 @@ mod tests {
                 _ if v.raw["provenance"] == "authored" => continue,
                 other => panic!("{}: {}", v.id, other.summary()),
             };
-            let artifact = output.transaction.or(output.header).unwrap();
+            // A session build's artifact is the open action (its header
+            // field); the transaction field is the annotation reference.
+            let artifact = if v.intent == "session" {
+                output.header
+            } else {
+                output.transaction.or(output.header)
+            }
+            .unwrap();
             rt.block_on(judge_build(v, &artifact))
                 .unwrap_or_else(|f| panic!("{}: {}", v.id, f.message));
             judged += 1;
