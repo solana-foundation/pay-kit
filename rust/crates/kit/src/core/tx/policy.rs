@@ -104,6 +104,46 @@ pub fn check_v1_budget_caps(
     max_unit_limit: u32,
     max_unit_price_micro_lamports: u64,
 ) -> Result<Option<DeclaredBudget>> {
+    v1_budget_caps(
+        message,
+        max_unit_limit,
+        max_unit_price_micro_lamports,
+        LoadedDataLimit::Maximum,
+    )
+}
+
+/// [`check_v1_budget_caps`] for a policy that only requires
+/// `loadedAccountsDataSizeLimit` to be present (x402-txv1 "MUST be present"):
+/// any positive value up to the runtime maximum is accepted rather than
+/// exactly the maximum. Used by the x402 `batch-settlement` sponsor.
+pub fn check_v1_budget_caps_loaded_limit_present(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+) -> Result<Option<DeclaredBudget>> {
+    v1_budget_caps(
+        message,
+        max_unit_limit,
+        max_unit_price_micro_lamports,
+        LoadedDataLimit::Present,
+    )
+}
+
+/// What a version-1 `loadedAccountsDataSizeLimit` must be.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadedDataLimit {
+    /// Exactly the runtime maximum.
+    Maximum,
+    /// Present, positive, and at most the runtime maximum.
+    Present,
+}
+
+fn v1_budget_caps(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+    loaded: LoadedDataLimit,
+) -> Result<Option<DeclaredBudget>> {
     if TxVersion::of(message)? != TxVersion::V1 {
         return Ok(None);
     }
@@ -128,10 +168,21 @@ pub fn check_v1_budget_caps(
     }
     // An absent or smaller loaded-data limit can fail the transaction at
     // load time, after fees are charged; version 0 always gets the maximum.
-    if declared.loaded_accounts_data_size_limit != Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES) {
-        return Err(Error::Other(format!(
-            "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
-        )));
+    match (loaded, declared.loaded_accounts_data_size_limit) {
+        (LoadedDataLimit::Maximum, Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES)) => {}
+        (LoadedDataLimit::Maximum, _) => {
+            return Err(Error::Other(format!(
+                "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            )))
+        }
+        (LoadedDataLimit::Present, Some(limit))
+            if limit > 0 && limit <= MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES => {}
+        (LoadedDataLimit::Present, _) => {
+            return Err(Error::Other(format!(
+                "version 1 loaded accounts data size limit must be present, positive and at \
+                 most {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            )))
+        }
     }
     Ok(Some(declared))
 }
@@ -525,7 +576,12 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("loaded accounts data size"));
+            // The present-only rule admits a smaller positive limit and
+            // nothing else.
+            let present = check_v1_budget_caps_loaded_limit_present(&msg, 200_000, 5_000_000);
+            assert_eq!(present.is_ok(), loaded == Some(1), "{loaded:?}");
         }
+        assert!(check_v1_budget_caps_loaded_limit_present(&tx.message, 200_000, 5_000_000).is_ok());
         let zero = ComputeBudget::new(0, 0);
         let tx = build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), Some(&zero)).unwrap();
         assert!(check_v1_budget_caps(&tx.message, 200_000, 5_000_000)

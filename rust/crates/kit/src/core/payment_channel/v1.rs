@@ -1209,10 +1209,9 @@ fn memo_text<'d>(data: &'d [u8], label: &str) -> Result<&'d str> {
 fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
     let expected = match memo {
         MemoPolicy::Optional => return Ok(()),
-        MemoPolicy::Required(expected)
-        | MemoPolicy::RequiredWithBinding {
-            memo: expected, ..
-        } => expected,
+        MemoPolicy::Required(expected) | MemoPolicy::RequiredWithBinding { memo: expected, .. } => {
+            expected
+        }
     };
     let text = memo_text(data, label)?;
     match expected {

@@ -84,6 +84,9 @@ pub fn code_for(wire: &str) -> Option<RejectCode> {
         codes::INVALID_CHANNEL_STATE => ChannelState,
         codes::INVALID_REFUND_TRANSACTION => RefundTransaction,
         codes::INVALID_CHANNEL_CLOSING => ChannelClosing,
+        codes::INVALID_RECEIVER_BINDING_UNAVAILABLE => ReceiverBindingUnavailable,
+        codes::INVALID_X402_VERSION | codes::UNSUPPORTED_TRANSACTION_VERSION => UnsupportedVersion,
+        codes::INVALID_PAYMENT_REQUIREMENTS => AcceptedMismatch,
         codes::DUPLICATE_SETTLEMENT => DuplicateSettlement,
         _ => return None,
     })
@@ -204,10 +207,44 @@ fn canonical(input: &Value) -> Result<Observed, String> {
             },
         );
     }
-    if input.get("batchCloseAuthorizationDigest").is_some() {
-        return Ok(Observed::NotExpressible(
-            "the Rust kit has no CloseAuthorization encoder: it refuses cooperative closes".into(),
-        ));
+    if let Some(cd) = input.get("batchCloseAuthorizationDigest") {
+        let key = |k: &str| pc::parse_pubkey(super::str_field(cd, k));
+        let (program_id, fee_payer, channel_id) =
+            match (key("programId"), key("feePayer"), key("channelId")) {
+                (Ok(p), Ok(f), Ok(c)) => (p, f, c),
+                _ => {
+                    return Ok(invalid(
+                        "close authorization addresses must be base58 pubkeys",
+                    ))
+                }
+            };
+        let Ok(max_claimable_amount) = super::str_field(cd, "maxClaimableAmount").parse::<u64>()
+        else {
+            return Ok(invalid("maxClaimableAmount must be a decimal u64"));
+        };
+        let (Some(voucher_expires_at), Some(valid_before)) = (
+            cd.get("voucherExpiresAt").and_then(Value::as_i64),
+            cd.get("validBefore").and_then(Value::as_i64),
+        ) else {
+            return Ok(invalid("voucherExpiresAt and validBefore must be integers"));
+        };
+        let scope = scheme::CloseAuthorizationScope {
+            network: super::str_field(cd, "network"),
+            program_id: &program_id,
+            fee_payer: &fee_payer,
+            channel_id: &channel_id,
+            max_claimable_amount,
+            voucher_expires_at,
+        };
+        return Ok(
+            match scheme::close_authorization_digest(&scope, valid_before) {
+                Ok(digest) => {
+                    set_bytes(&mut exact, &digest);
+                    accept_exact(exact)
+                }
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
     if let Some(binding) = input.get("batchReceiverBindingMemo") {
         return Ok(
@@ -440,7 +477,14 @@ async fn client_build(input: &Value) -> Result<Observed, String> {
     let c = input.get("batchClient").ok_or("batchClient missing")?;
     let requirements: BatchRequirements = match serde_json::from_value(c["requirements"].clone()) {
         Ok(r) => r,
-        Err(e) => return Ok(reject(Some(RejectCode::InvalidChallenge), e.to_string())),
+        // A requirement that does not parse is a refused challenge, unless
+        // the kit tagged the refusal with a spec code (a non-integer
+        // withdrawDelay is out of range).
+        Err(e) => {
+            return Ok(client_reject(&solana_pay_kit::x402::Error::Other(
+                e.to_string(),
+            )))
+        }
     };
     let payer = signer(c, "secretKey")?;
     let fixtures = Fixtures::from_input(input)?;
@@ -487,7 +531,7 @@ async fn client_build(input: &Value) -> Result<Observed, String> {
         }
         "refund" => {
             let channel = tracker(&c["channel"], &requirements)?;
-            client::build_refund(&payer, &channel, &terms, blockhash()?).await
+            client::build_refund(&payer, &channel, &terms).await
         }
         other => return Err(format!("unknown batchClient.operation {other:?}")),
     };

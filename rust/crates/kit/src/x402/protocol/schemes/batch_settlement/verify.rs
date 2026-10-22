@@ -17,9 +17,9 @@ use crate::x402::protocol::schemes::exact::programs;
 
 use super::errors::{self, BatchError};
 use super::types::{
-    BatchChannelConfig, BatchPayload, BatchRequirements, BatchVoucher, VoucherState,
-    MAX_WITHDRAW_DELAY_SECONDS, MIN_WITHDRAW_DELAY_SECONDS, PAYMENT_FLOW_AUTHORIZATION,
-    VOUCHER_EXPIRES_AT,
+    BatchChannelConfig, BatchPayload, BatchRefund, BatchRequirements, BatchVoucher,
+    CloseAuthorization, RefundSigner, VoucherState, MAX_WITHDRAW_DELAY_SECONDS,
+    MIN_WITHDRAW_DELAY_SECONDS, PAYMENT_FLOW_AUTHORIZATION, VOUCHER_EXPIRES_AT,
 };
 
 type Result<T> = std::result::Result<T, BatchError>;
@@ -254,7 +254,17 @@ pub fn check_client_signed_payload(payload: &BatchPayload) -> Result<()> {
             voucher,
             ..
         } => authorization.is_some() || voucher.is_none(),
-        BatchPayload::Voucher { .. } | BatchPayload::Refund { .. } => false,
+        // A server-mode refund carries the payer's close-intent proof and
+        // needs the operator's stored voucher, which this server never signs.
+        BatchPayload::Refund(BatchRefund {
+            signer: RefundSigner::Server(_),
+            ..
+        }) => true,
+        BatchPayload::Voucher { .. }
+        | BatchPayload::Refund(BatchRefund {
+            signer: RefundSigner::Client(_),
+            ..
+        }) => false,
     };
     if refused {
         return Err(BatchError::new(
@@ -275,10 +285,10 @@ pub fn check_client_signed_payload(payload: &BatchPayload) -> Result<()> {
 /// partial refund cannot be honored; the request is refused with the dedicated
 /// code rather than silently returning the full remainder (spec §4.3).
 pub fn check_no_refund_amount(payload: &BatchPayload) -> Result<()> {
-    if let BatchPayload::Refund {
+    if let BatchPayload::Refund(BatchRefund {
         amount: Some(amount),
         ..
-    } = payload
+    }) = payload
     {
         return Err(BatchError::new(
             errors::INVALID_CLOSE_AMOUNT_UNSUPPORTED,
@@ -423,33 +433,150 @@ fn verify_voucher_signature(
     .map_err(|e| BatchError::new(errors::INVALID_VOUCHER_SIGNATURE, e.to_string()))
 }
 
-/// Reject the immediate cooperative-close shortcut.
+/// Refuse a client-authored refund that already carries a
+/// `closeAuthorization`.
 ///
-/// The shortcut is optional in the spec, and honoring it safely requires a
-/// facilitator-local trusted binding between a receiver-authorizer key and the
-/// server that owns `payTo` — established out of band, no later than the
-/// channel's first deposit. This SDK has no such registry, and a key that
-/// merely appears in a request is not a trust anchor, so a supplied voucher or
-/// authorization is refused rather than silently ignored. The interoperable
-/// path is the payer-signed `request_close` below.
-pub fn check_no_cooperative_close(payload: &BatchPayload) -> Result<()> {
-    let BatchPayload::Refund {
-        voucher,
-        close_authorization,
+/// The close authorization is the receiver authorizer's: the resource server
+/// adds it before forwarding (spec §4.5, "Added by the server"). A client
+/// holds no receiver-authorizer key, so one on the client payload is either
+/// replayed from another close or forged; it is refused rather than ignored.
+pub fn check_no_client_close_authorization(payload: &BatchPayload) -> Result<()> {
+    if let BatchPayload::Refund(BatchRefund {
+        close_authorization: Some(_),
         ..
-    } = payload
-    else {
-        return Ok(());
-    };
-    if voucher.is_some() || close_authorization.is_some() {
+    }) = payload
+    {
         return Err(BatchError::new(
             errors::INVALID_CLOSE_AUTHORIZATION,
-            "immediate cooperative close requires a trusted server binding, \
-             which this implementation does not provide; omit voucher and \
-             closeAuthorization and use the payer-signed request_close path",
+            "a client-authored refund must not carry closeAuthorization; the server adds it",
         ));
     }
     Ok(())
+}
+
+/// Domain separator of the CloseAuthorization digest (spec §4.2).
+pub const CLOSE_AUTHORIZATION_DOMAIN: &[u8] = b"x402:batch-settlement:svm:close:v1";
+
+/// What one cooperative close authorizes: every field the receiver
+/// authorizer's signature binds (spec §4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseAuthorizationScope<'a> {
+    /// Canonical CAIP-2 network from `PaymentRequirements`.
+    pub network: &'a str,
+    /// Canonical payment-channels program id for `network`.
+    pub program_id: &'a Pubkey,
+    /// `extra.feePayer`.
+    pub fee_payer: &'a Pubkey,
+    /// The channel PDA.
+    pub channel_id: &'a Pubkey,
+    /// The final watermark, `voucher.maxClaimableAmount`.
+    pub max_claimable_amount: u64,
+    /// `voucher.expiresAt` (`0` in this scheme).
+    pub voucher_expires_at: i64,
+}
+
+/// The SHA-256 digest a receiver authorizer signs to authorize one close:
+///
+/// ```text
+/// SHA-256( UTF8("x402:batch-settlement:svm:close:v1") || 0x00 ||
+///          u16(len(network)).le || UTF8(network) || programId[32] ||
+///          feePayer[32] || channelId[32] || u64(maxClaimableAmount).le ||
+///          i64(voucherExpiresAt).le || i64(validBefore).le )
+/// ```
+///
+/// The domain, length-prefixed network, program, facilitator, channel,
+/// watermark and expiry are all bound, so a signature cannot authorize any
+/// other close. Fails only for a network longer than `u16::MAX` bytes.
+pub fn close_authorization_digest(
+    scope: &CloseAuthorizationScope<'_>,
+    valid_before: i64,
+) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let network = scope.network.as_bytes();
+    let network_len = u16::try_from(network.len()).map_err(|_| {
+        BatchError::new(
+            errors::INVALID_CLOSE_AUTHORIZATION,
+            "network identifier is longer than 65535 bytes",
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(CLOSE_AUTHORIZATION_DOMAIN);
+    hasher.update([0u8]);
+    hasher.update(network_len.to_le_bytes());
+    hasher.update(network);
+    hasher.update(scope.program_id.as_ref());
+    hasher.update(scope.fee_payer.as_ref());
+    hasher.update(scope.channel_id.as_ref());
+    hasher.update(scope.max_claimable_amount.to_le_bytes());
+    hasher.update(scope.voucher_expires_at.to_le_bytes());
+    hasher.update(valid_before.to_le_bytes());
+    Ok(hasher.finalize().into())
+}
+
+/// Sign a [`CloseAuthorization`] for `scope`, valid until `valid_before`, with
+/// the channel's receiver authorizer.
+pub async fn sign_close_authorization(
+    receiver_authorizer: &dyn solana_keychain::SolanaSigner,
+    scope: &CloseAuthorizationScope<'_>,
+    valid_before: i64,
+) -> Result<CloseAuthorization> {
+    let digest = close_authorization_digest(scope, valid_before)?;
+    let signature: [u8; 64] = receiver_authorizer
+        .sign_message(&digest)
+        .await
+        .map_err(|e| {
+            BatchError::new(
+                errors::INVALID_CLOSE_AUTHORIZATION,
+                format!("close authorization signing failed: {e}"),
+            )
+        })?
+        .into();
+    Ok(CloseAuthorization {
+        valid_before,
+        signature: crate::core::base58::encode_64(&signature),
+    })
+}
+
+/// Verify a [`CloseAuthorization`] against the channel's *bound* receiver
+/// authorizer (never a key taken from the request), requiring
+/// `now < validBefore <= now + maxTimeoutSeconds` (spec §4.2).
+pub fn verify_close_authorization(
+    authorization: &CloseAuthorization,
+    bound_receiver_authorizer: &Pubkey,
+    scope: &CloseAuthorizationScope<'_>,
+    now: i64,
+    max_timeout_seconds: u64,
+) -> Result<()> {
+    let err = |detail: String| BatchError::new(errors::INVALID_CLOSE_AUTHORIZATION, detail);
+    let horizon = now.saturating_add(i64::try_from(max_timeout_seconds).unwrap_or(i64::MAX));
+    if authorization.valid_before <= now {
+        return Err(err(format!(
+            "closeAuthorization expired at {} (now {now})",
+            authorization.valid_before
+        )));
+    }
+    if authorization.valid_before > horizon {
+        return Err(err(format!(
+            "closeAuthorization validBefore {} is beyond now + maxTimeoutSeconds ({horizon})",
+            authorization.valid_before
+        )));
+    }
+    let digest = close_authorization_digest(scope, authorization.valid_before)?;
+    let signature = bs58::decode(&authorization.signature)
+        .into_vec()
+        .ok()
+        .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
+        .ok_or_else(|| err("closeAuthorization signature is not 64 base58 bytes".into()))?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&bound_receiver_authorizer.to_bytes())
+        .map_err(|e| {
+            err(format!(
+                "bound receiver authorizer is not an Ed25519 key: {e}"
+            ))
+        })?;
+    key.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
+        .map_err(|_| {
+            err("closeAuthorization is not signed by the bound receiver authorizer".into())
+        })
 }
 
 /// Client-side check before adopting a corrective 402's channel snapshot.
@@ -564,9 +691,17 @@ mod tests {
         let memo = receiver_binding_memo(&key);
         assert_eq!(
             memo,
-            format!("x402:batch-settlement:svm:rcvauth:v1:{}", pc::pubkey_string(&key))
+            format!(
+                "x402:batch-settlement:svm:rcvauth:v1:{}",
+                pc::pubkey_string(&key)
+            )
         );
-        assert_eq!(parse_receiver_binding_memo(memo.as_bytes()).unwrap().unwrap(), key);
+        assert_eq!(
+            parse_receiver_binding_memo(memo.as_bytes())
+                .unwrap()
+                .unwrap(),
+            key
+        );
         assert!(parse_receiver_binding_memo(b"invoice-1").is_none());
         let err = parse_receiver_binding_memo(b"x402:batch-settlement:svm:rcvauth:v1:zz")
             .unwrap()
@@ -815,25 +950,53 @@ mod tests {
         };
         assert!(check_client_signed_payload(&voucher).is_ok());
 
-        let partial = BatchPayload::Refund {
-            channel_config: config.clone(),
-            transaction: "b64".to_string(),
-            voucher: None,
-            close_authorization: None,
-            amount: Some("1500".to_string()),
+        let refund_voucher = BatchVoucher {
+            channel_id: PAY_TO.to_string(),
+            max_claimable_amount: "1".to_string(),
+            expires_at: 0,
+            signature: "sig".to_string(),
         };
+        let partial = BatchPayload::Refund(BatchRefund {
+            amount: Some("1500".to_string()),
+            ..BatchRefund::client(config.clone(), refund_voucher.clone())
+        });
         assert_eq!(
             check_no_refund_amount(&partial).unwrap_err().code,
             errors::INVALID_CLOSE_AMOUNT_UNSUPPORTED
         );
-        let full = BatchPayload::Refund {
-            channel_config: config,
-            transaction: "b64".to_string(),
-            voucher: None,
-            close_authorization: None,
-            amount: None,
-        };
+        let full = BatchPayload::Refund(BatchRefund::client(config.clone(), refund_voucher));
         assert!(check_no_refund_amount(&full).is_ok());
+        assert!(check_client_signed_payload(&full).is_ok());
+        // A server-mode refund (close-intent proof) belongs to server-signed
+        // channels, which this implementation does not offer.
+        let server_mode = BatchPayload::Refund(BatchRefund {
+            signer: RefundSigner::Server(proof_for_refund(&config)),
+            ..BatchRefund::client(
+                config,
+                BatchVoucher {
+                    channel_id: PAY_TO.to_string(),
+                    max_claimable_amount: "0".to_string(),
+                    expires_at: 0,
+                    signature: "sig".to_string(),
+                },
+            )
+        });
+        assert_eq!(
+            check_client_signed_payload(&server_mode).unwrap_err().code,
+            errors::INVALID_PAYLOAD_TYPE
+        );
+    }
+
+    fn proof_for_refund(config: &BatchChannelConfig) -> BatchAuthorization {
+        BatchAuthorization {
+            kind: "proof".to_string(),
+            channel_id: PAY_TO.to_string(),
+            payer: config.payer.clone(),
+            request_id: "refund-1".to_string(),
+            authorized_amount: "0".to_string(),
+            expires_at: 1_758_215_100,
+            signature: "sig".to_string(),
+        }
     }
 
     #[test]
@@ -897,51 +1060,118 @@ mod tests {
     }
 
     #[test]
-    fn cooperative_close_hints_are_refused_but_plain_refunds_pass() {
+    fn a_client_refund_may_not_carry_a_close_authorization() {
         let (_, config) = requirements(&key_b58(&key(1)));
-        let plain = BatchPayload::Refund {
-            channel_config: config.clone(),
-            transaction: "b64".to_string(),
-            voucher: None,
-            close_authorization: None,
-            amount: None,
+        let voucher = BatchVoucher {
+            channel_id: PAY_TO.to_string(),
+            max_claimable_amount: "1".to_string(),
+            expires_at: 0,
+            signature: "sig".to_string(),
         };
-        assert!(check_no_cooperative_close(&plain).is_ok());
-
-        let with_voucher = BatchPayload::Refund {
-            channel_config: config.clone(),
-            transaction: "b64".to_string(),
-            voucher: Some(BatchVoucher {
-                channel_id: PAY_TO.to_string(),
-                max_claimable_amount: "1".to_string(),
-                expires_at: 0,
+        let cooperative =
+            BatchPayload::Refund(BatchRefund::client(config.clone(), voucher.clone()));
+        assert!(check_no_client_close_authorization(&cooperative).is_ok());
+        let forged = BatchPayload::Refund(BatchRefund {
+            close_authorization: Some(CloseAuthorization {
+                valid_before: 1,
                 signature: "sig".to_string(),
             }),
-            close_authorization: None,
-            amount: None,
-        };
+            ..BatchRefund::client(config, voucher)
+        });
         assert_eq!(
-            check_no_cooperative_close(&with_voucher).unwrap_err().code,
+            check_no_client_close_authorization(&forged)
+                .unwrap_err()
+                .code,
             errors::INVALID_CLOSE_AUTHORIZATION
         );
+    }
 
-        // Paid-request payloads are unaffected.
-        let deposit = BatchPayload::Deposit {
-            channel_config: config,
-            voucher: Some(BatchVoucher {
-                channel_id: PAY_TO.to_string(),
-                max_claimable_amount: "1".to_string(),
-                expires_at: 0,
-                signature: "sig".to_string(),
-            }),
-            deposit: BatchDeposit {
-                amount: "1".to_string(),
-                transaction: "b64".to_string(),
-            },
-            authorization: None,
+    #[tokio::test]
+    async fn close_authorization_binds_its_whole_scope_and_window() {
+        use solana_keychain::SolanaSigner;
+        struct Key(SigningKey);
+        #[async_trait::async_trait]
+        impl SolanaSigner for Key {
+            fn pubkey(&self) -> Pubkey {
+                Pubkey::from(self.0.verifying_key().to_bytes())
+            }
+            async fn sign_message(
+                &self,
+                message: &[u8],
+            ) -> std::result::Result<solana_signature::Signature, solana_keychain::SignerError>
+            {
+                Ok(solana_signature::Signature::from(
+                    self.0.sign(message).to_bytes(),
+                ))
+            }
+            async fn is_available(&self) -> bool {
+                true
+            }
+        }
+        let authorizer = Key(key(11));
+        let program_id = pc::default_program_id();
+        let fee_payer = pc::parse_pubkey(FEE_PAYER).unwrap();
+        let channel = Pubkey::new_from_array([5; 32]);
+        let scope = CloseAuthorizationScope {
+            network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            program_id: &program_id,
+            fee_payer: &fee_payer,
+            channel_id: &channel,
+            max_claimable_amount: 5_000,
+            voucher_expires_at: 0,
         };
-        assert!(check_no_cooperative_close(&deposit).is_ok());
-        assert!(check_client_signed_payload(&deposit).is_ok());
+
+        // The digest is SHA-256 over the exact layout of spec 4.2.
+        use sha2::{Digest, Sha256};
+        let mut preimage = CLOSE_AUTHORIZATION_DOMAIN.to_vec();
+        preimage.push(0);
+        preimage.extend_from_slice(&(scope.network.len() as u16).to_le_bytes());
+        preimage.extend_from_slice(scope.network.as_bytes());
+        preimage.extend_from_slice(program_id.as_ref());
+        preimage.extend_from_slice(fee_payer.as_ref());
+        preimage.extend_from_slice(channel.as_ref());
+        preimage.extend_from_slice(&5_000u64.to_le_bytes());
+        preimage.extend_from_slice(&0i64.to_le_bytes());
+        preimage.extend_from_slice(&1_000_100i64.to_le_bytes());
+        let want: [u8; 32] = Sha256::digest(&preimage).into();
+        assert_eq!(close_authorization_digest(&scope, 1_000_100).unwrap(), want);
+
+        let now = 1_000_000;
+        let signed = sign_close_authorization(&authorizer, &scope, now + 100)
+            .await
+            .unwrap();
+        let bound = authorizer.pubkey();
+        verify_close_authorization(&signed, &bound, &scope, now, 300).unwrap();
+
+        let code = |r: Result<()>| r.unwrap_err().code;
+        // Expired, or valid beyond the HTTP completion window.
+        assert_eq!(
+            code(verify_close_authorization(
+                &signed,
+                &bound,
+                &scope,
+                now + 100,
+                300
+            )),
+            errors::INVALID_CLOSE_AUTHORIZATION
+        );
+        assert_eq!(
+            code(verify_close_authorization(&signed, &bound, &scope, now, 99)),
+            errors::INVALID_CLOSE_AUTHORIZATION
+        );
+        // Another watermark, network or signer.
+        let older = CloseAuthorizationScope {
+            max_claimable_amount: 4_999,
+            ..scope.clone()
+        };
+        assert!(verify_close_authorization(&signed, &bound, &older, now, 300).is_err());
+        let mainnet = CloseAuthorizationScope {
+            network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            ..scope.clone()
+        };
+        assert!(verify_close_authorization(&signed, &bound, &mainnet, now, 300).is_err());
+        let stranger = Pubkey::from(key(12).verifying_key().to_bytes());
+        assert!(verify_close_authorization(&signed, &stranger, &scope, now, 300).is_err());
     }
 
     #[test]

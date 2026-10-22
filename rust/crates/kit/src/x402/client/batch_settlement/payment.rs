@@ -27,9 +27,10 @@ use crate::core::payment_channels as pc;
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
     check_corrective_voucher_state, check_token_program, check_voucher, check_withdraw_delay,
-    derive_channel_id, errors as codes, receiver_binding_memo, BatchAuthorization, BatchChannelConfig, BatchDeposit,
-    BatchError, BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements,
-    BatchSettlementResponse, BatchVoucher, BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
+    derive_channel_id, errors as codes, receiver_binding_memo, BatchAuthorization,
+    BatchChannelConfig, BatchDeposit, BatchError, BatchPayload, BatchPaymentPayload, BatchRefund,
+    BatchRequiredEnvelope, BatchRequirements, BatchSettlementResponse, BatchVoucher, RefundSigner,
+    BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
@@ -1061,19 +1062,68 @@ pub async fn build_top_up(
     })
 }
 
-/// Build a `refund` payload: a payer-signed `request_close`.
+/// Build the default, cooperative `refund` payload (spec §3, §4.3).
 ///
-/// This starts the forced close. It carries no voucher and no close
-/// authorization: the interoperable path does not need the server's
-/// cooperation, and a facilitator must not apply a voucher supplied in an
-/// untrusted request. After the grace period the unused escrow returns to the
-/// payer; the channel cannot be reused.
+/// In client mode it carries the server's accepted cumulative as a voucher
+/// signed by the channel's `payerAuthorizer` (the server refuses any other
+/// amount); in server mode, the payer's close-intent proof
+/// (`authorizedAmount` `"0"`). No transaction: the facilitator applies the
+/// voucher with `settle_and_seal` and a sealed `distribute`, returning
+/// `deposit - settled` at once. When the server answers
+/// `invalid_batch_settlement_svm_receiver_binding_unavailable`, retry once
+/// with [`build_refund_request_close`]. The channel cannot be reused.
 pub async fn build_refund(
+    signer: &dyn SolanaSigner,
+    channel: &BatchChannel,
+    terms: &BatchTerms,
+) -> Result<BatchPayload, Error> {
+    let signer_proof = match terms.operator {
+        Some(operator) => RefundSigner::Server(
+            sign_authorization(
+                signer,
+                &channel.channel_id,
+                &operator,
+                &random_hex_nonce(),
+                // A close intent authorizes no charge.
+                0,
+                authorization_expires_at(terms.authorization_ttl_seconds)?,
+            )
+            .await?,
+        ),
+        None => RefundSigner::Client(
+            sign_voucher(
+                signer,
+                &channel.channel_id,
+                channel.charged_cumulative_amount,
+            )
+            .await?,
+        ),
+    };
+    Ok(BatchPayload::Refund(BatchRefund {
+        channel_config: channel.config.clone(),
+        signer: signer_proof,
+        transaction: None,
+        close_authorization: None,
+        amount: None,
+    }))
+}
+
+/// Build the `refund` retry after
+/// `invalid_batch_settlement_svm_receiver_binding_unavailable`: the
+/// cooperative payload of [`build_refund`] plus a payer-signed
+/// `request_close` with `extra.feePayer` as the Solana fee payer.
+///
+/// This starts the forced close: the facilitator co-signs and broadcasts it,
+/// and the unused escrow returns to the payer after the grace period.
+pub async fn build_refund_request_close(
     signer: &dyn TransactionSigner,
     channel: &BatchChannel,
     terms: &BatchTerms,
     blockhash: Hash,
 ) -> Result<BatchPayload, Error> {
+    let BatchPayload::Refund(mut refund) = build_refund(signer, channel, terms).await? else {
+        unreachable!("build_refund builds a refund");
+    };
     let instructions = vec![
         pc::build_request_close_instruction(
             &signer.pubkey(),
@@ -1082,9 +1132,8 @@ pub async fn build_refund(
         ),
         memo_instruction(&terms.continuation_memo),
     ];
-    Ok(BatchPayload::Refund {
-        channel_config: channel.config.clone(),
-        transaction: sign_sponsored(
+    refund.transaction = Some(
+        sign_sponsored(
             signer,
             terms.tx_version,
             &terms.fee_payer,
@@ -1092,10 +1141,8 @@ pub async fn build_refund(
             blockhash,
         )
         .await?,
-        voucher: None,
-        close_authorization: None,
-        amount: None,
-    })
+    );
+    Ok(BatchPayload::Refund(refund))
 }
 
 fn memo_instruction(memo: &str) -> Instruction {
@@ -1830,24 +1877,41 @@ mod tests {
         )
         .expect("client top_up passes the sponsor policy");
 
-        let refund = build_refund(&signer, &channel, &terms, Hash::new_unique())
-            .await
-            .unwrap();
-        let BatchPayload::Refund {
-            transaction,
-            voucher,
-            close_authorization,
-            ..
-        } = &refund
-        else {
+        // The default refund is cooperative: the accepted cumulative as a
+        // voucher, no transaction and no amount.
+        let refund = build_refund(&signer, &channel, &terms).await.unwrap();
+        let BatchPayload::Refund(refund) = &refund else {
             panic!("expected a refund payload");
         };
-        // The interoperable close carries neither a voucher nor an
-        // authorization: it needs no server cooperation.
-        assert!(voucher.is_none());
-        assert!(close_authorization.is_none());
-        validate_request_close_transaction(transaction, &expectations)
-            .expect("client request_close passes the sponsor policy");
+        let voucher = refund
+            .voucher()
+            .expect("client-mode refunds carry the voucher");
+        assert_eq!(voucher.max_claimable_amount, "1000");
+        assert_eq!(
+            check_voucher(voucher, channel.config(), channel.channel_id()).unwrap(),
+            1_000
+        );
+        assert!(refund.transaction.is_none());
+        assert!(refund.close_authorization.is_none());
+        assert!(refund.amount.is_none());
+
+        // The retry after receiver_binding_unavailable adds a request_close
+        // the sponsor policy accepts, with the same voucher.
+        let retry = build_refund_request_close(&signer, &channel, &terms, Hash::new_unique())
+            .await
+            .unwrap();
+        let BatchPayload::Refund(retry) = &retry else {
+            panic!("expected a refund payload");
+        };
+        assert_eq!(retry.voucher(), Some(voucher));
+        validate_request_close_transaction(
+            retry
+                .transaction
+                .as_deref()
+                .expect("retry carries request_close"),
+            &expectations,
+        )
+        .expect("client request_close passes the sponsor policy");
     }
 
     #[tokio::test]

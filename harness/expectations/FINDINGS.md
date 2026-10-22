@@ -977,6 +977,20 @@ and the server refuses any refund carrying a voucher with `close_authorization`
 therefore unreachable with a conforming payload; the vectors pin the spec's
 retry path (voucher plus transaction, binding unavailable).
 
+**Resolved in Rust:** `BatchPayload::Refund` carries a `BatchRefund` whose
+`RefundSigner` is exactly one of the client-mode voucher or the server-mode
+proof (a refund with neither does not parse, under `payload_type`), with the
+`request_close` transaction optional. `build_refund` builds the cooperative
+refund (the accepted cumulative as a voucher) and `build_refund_request_close`
+the retry. The server refuses a voucher other than its accepted cumulative
+(`close_state`), a client-supplied `closeAuthorization`, a server-mode refund
+(`payload_type`) and, without a transaction, a channel whose recorded
+receiver binding is absent (`receiver_binding_unavailable`) or foreign;
+otherwise it fences the record and closes cooperatively with
+`settle_and_seal` plus the sealed `distribute`. The kit exposes
+`close_authorization_digest`, `sign_close_authorization` and
+`verify_close_authorization`.
+
 ## batch-claims-unbounded
 
 **Cases:** `batch-wire-redemption-claim-empty-reject`,
@@ -1009,6 +1023,15 @@ An unadvertised message version comes back as `setup_transaction`; x402-txv1
 requires the facilitator to reject it “before inspecting any instruction,
 with `unsupported_transaction_version`”.
 
+**Resolved in Rust:** an `accepted` mismatch is `invalid_payment_requirements`
+and a non-v2 envelope `invalid_x402_version` (the x402 v2 §9 standard codes;
+the shared vocabulary maps them to `accepted-mismatch` and
+`unsupported-version`, RULINGS B3), an unusable settlement ATA is
+`settlement_simulation`, an unadvertised message version
+`unsupported_transaction_version` (setup and `request_close` alike), and a
+non-integer `extra.withdrawDelay` fails parsing with
+`withdraw_delay_out_of_range`.
+
 ## batch-v1-loaded-limit-pinned
 
 **Cases:** `batch-txv1-top-up-v1-loaded-limit-below-max` (rust)
@@ -1018,6 +1041,12 @@ x402-txv1: “`loadedAccountsDataSizeLimit` MUST be present”. The kit's
 runtime maximum (67108864), refusing a version-1 setup transaction that
 declares a smaller limit. The spec sets presence, not a value, and lets a
 sponsor tighten only the caps it names.
+
+**Resolved in Rust (batch only):** the batch sponsor policy uses
+`core::tx::check_v1_budget_caps_loaded_limit_present` (present, positive, at
+most 67108864). `check_v1_budget_caps`, shared with MPP session and x402
+`upto`, still pins the maximum
+([upto-v1-loaded-limit-strict](#upto-v1-loaded-limit-strict)).
 
 ## batch-voucher-onchain-bindings
 
