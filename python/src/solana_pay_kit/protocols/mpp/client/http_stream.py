@@ -12,6 +12,7 @@ amount, and it may lower only the committed amount, never the ``deliveryId``.
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import json
 from collections.abc import Iterable, Iterator
@@ -56,17 +57,20 @@ class SseDecoder:
 
     Feed raw HTTP chunks with :meth:`push_chunk`. It returns all complete
     events decoded from that chunk and retains partial data internally.
+    Incomplete UTF-8 characters are buffered until the next chunk; invalid
+    UTF-8, including an incomplete character at EOF, raises ``ValueError``.
     """
 
     def __init__(self) -> None:
         """Create an empty decoder."""
         self._buffer = ""
         self._current = SseEvent()
+        self._utf8_decoder = codecs.getincrementaldecoder("utf-8")()
 
     def push_chunk(self, chunk: bytes) -> list[SseEvent]:
         """Decode a raw chunk, returning every event completed by it."""
         try:
-            text = chunk.decode("utf-8")
+            text = self._utf8_decoder.decode(chunk)
         except UnicodeDecodeError as exc:
             raise ValueError(f"SSE chunk is not valid UTF-8: {exc}") from exc
         self._buffer += text
@@ -87,6 +91,10 @@ class SseDecoder:
 
     def finish(self) -> list[SseEvent]:
         """Flush an incomplete final event, if any, at EOF."""
+        try:
+            self._buffer += self._utf8_decoder.decode(b"", final=True)
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"SSE stream is not valid UTF-8: {exc}") from exc
         events: list[SseEvent] = []
         if self._buffer:
             line = self._buffer

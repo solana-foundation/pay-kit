@@ -44,6 +44,8 @@ type SseEvent struct {
 //
 // Feed raw HTTP chunks with PushChunk. It returns all complete events decoded
 // from that chunk and retains partial data internally.
+// Incomplete UTF-8 characters are buffered until the next chunk; invalid UTF-8,
+// including an incomplete character at EOF, returns an error.
 type SseDecoder struct {
 	// buffer holds the undecoded tail of the stream: bytes pushed but not
 	// yet terminated by a newline.
@@ -52,14 +54,37 @@ type SseDecoder struct {
 	// current accumulates the fields of the in-progress event until a blank
 	// line dispatches it.
 	current SseEvent
+
+	// utf8Tail holds at most three bytes of an incomplete UTF-8 character.
+	utf8Tail []byte
 }
 
 // PushChunk decodes the events completed by a raw chunk of the stream body.
 func (d *SseDecoder) PushChunk(chunk []byte) ([]SseEvent, error) {
-	if !utf8.Valid(chunk) {
+	if len(d.utf8Tail) > 0 {
+		combined := make([]byte, len(d.utf8Tail)+len(chunk))
+		copy(combined, d.utf8Tail)
+		copy(combined[len(d.utf8Tail):], chunk)
+		chunk = combined
+	}
+
+	// Only an incomplete final rune can span chunks. FullRune also reports
+	// malformed encodings as complete, so they still fail validation below.
+	end := len(chunk)
+	if end > 0 {
+		start := end - 1
+		for start > 0 && end-start < utf8.UTFMax && !utf8.RuneStart(chunk[start]) {
+			start--
+		}
+		if !utf8.FullRune(chunk[start:]) {
+			end = start
+		}
+	}
+	if !utf8.Valid(chunk[:end]) {
 		return nil, fmt.Errorf("SSE chunk is not valid UTF-8")
 	}
-	d.buffer += string(chunk)
+	d.buffer += string(chunk[:end])
+	d.utf8Tail = append(d.utf8Tail[:0], chunk[end:]...)
 
 	var events []SseEvent
 	for {
@@ -79,6 +104,9 @@ func (d *SseDecoder) PushChunk(chunk []byte) ([]SseEvent, error) {
 
 // Finish flushes an incomplete final event, if any, at EOF.
 func (d *SseDecoder) Finish() ([]SseEvent, error) {
+	if len(d.utf8Tail) > 0 {
+		return nil, fmt.Errorf("SSE stream is not valid UTF-8")
+	}
 	var events []SseEvent
 	if d.buffer != "" {
 		line := strings.TrimSuffix(d.buffer, "\r")

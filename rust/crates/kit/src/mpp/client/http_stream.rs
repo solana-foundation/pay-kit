@@ -39,9 +39,12 @@ struct PartialSseEvent {
 ///
 /// Feed raw HTTP chunks with [`push_chunk`](Self::push_chunk). It returns all
 /// complete events decoded from that chunk and retains partial data internally.
+/// Incomplete UTF-8 characters wait for the next chunk; invalid UTF-8 and
+/// incomplete characters at EOF are rejected.
 #[derive(Default)]
 pub struct SseDecoder {
     buffer: String,
+    pending_utf8: Vec<u8>,
     current: PartialSseEvent,
 }
 
@@ -51,9 +54,30 @@ impl SseDecoder {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>> {
-        let text = std::str::from_utf8(chunk)
-            .map_err(|e| Error::Other(format!("SSE chunk is not valid UTF-8: {e}")))?;
+        let mut combined = Vec::new();
+        let bytes = if self.pending_utf8.is_empty() {
+            chunk
+        } else {
+            combined.extend_from_slice(&self.pending_utf8);
+            combined.extend_from_slice(chunk);
+            &combined
+        };
+        let (text, pending_utf8) = match std::str::from_utf8(bytes) {
+            Ok(text) => (text, &[][..]),
+            Err(error) => {
+                if error.error_len().is_some() {
+                    return Err(Error::Other(format!(
+                        "SSE chunk is not valid UTF-8: {error}"
+                    )));
+                }
+                let (valid, incomplete) = bytes.split_at(error.valid_up_to());
+                let text = std::str::from_utf8(valid)
+                    .map_err(|e| Error::Other(format!("SSE chunk is not valid UTF-8: {e}")))?;
+                (text, incomplete)
+            }
+        };
         self.buffer.push_str(text);
+        self.pending_utf8 = pending_utf8.to_vec();
 
         let mut events = vec![];
         while let Some(index) = self.buffer.find('\n') {
@@ -73,6 +97,11 @@ impl SseDecoder {
 
     /// Flush an incomplete final event, if any, at EOF.
     pub fn finish(&mut self) -> Result<Vec<SseEvent>> {
+        if !self.pending_utf8.is_empty() {
+            return Err(Error::Other(
+                "SSE stream is not valid UTF-8: incomplete character at EOF".to_string(),
+            ));
+        }
         let mut events = vec![];
         if !self.buffer.is_empty() {
             let line = std::mem::take(&mut self.buffer);
@@ -576,6 +605,58 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event.as_deref(), Some("message"));
         assert_eq!(events[0].data, r#"{"delta":"hi"}"#);
+    }
+
+    #[test]
+    fn sse_decoder_handles_utf8_at_every_chunk_boundary() {
+        let raw = "event: message\r\nid: café\r\ndata: {\"delta\":\"€你🙂\"}\r\n\r\n".as_bytes();
+        let expected = vec![SseEvent {
+            event: Some("message".to_string()),
+            data: r#"{"delta":"€你🙂"}"#.to_string(),
+            id: Some("café".to_string()),
+            retry: None,
+        }];
+        for cut in 0..=raw.len() {
+            let mut decoder = SseDecoder::new();
+            let mut events = decoder.push_chunk(&raw[..cut]).unwrap();
+            events.extend(decoder.push_chunk(&[]).unwrap());
+            events.extend(decoder.push_chunk(&raw[cut..]).unwrap());
+            events.extend(decoder.finish().unwrap());
+            assert_eq!(events, expected, "split at byte {cut}");
+        }
+
+        let mut decoder = SseDecoder::new();
+        let mut events = vec![];
+        for byte in raw {
+            events.extend(decoder.push_chunk(&[*byte]).unwrap());
+        }
+        events.extend(decoder.finish().unwrap());
+        assert_eq!(events, expected);
+    }
+
+    #[test]
+    fn sse_decoder_rejects_truncated_utf8_at_eof() {
+        for character in ["é", "你", "🙂"] {
+            let encoded = character.as_bytes();
+            for cut in 1..encoded.len() {
+                let mut decoder = SseDecoder::new();
+                assert!(decoder.push_chunk(b"data: tail").unwrap().is_empty());
+                assert!(decoder.push_chunk(&encoded[..cut]).unwrap().is_empty());
+                assert!(decoder
+                    .finish()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("valid UTF-8"));
+            }
+        }
+    }
+
+    #[test]
+    fn sse_decoder_rejects_invalid_utf8_continuation() {
+        let mut decoder = SseDecoder::new();
+        assert!(decoder.push_chunk(b"data: \xe4").unwrap().is_empty());
+        let error = decoder.push_chunk(b"x").unwrap_err();
+        assert!(error.to_string().contains("valid UTF-8"));
     }
 
     #[test]

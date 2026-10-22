@@ -13,6 +13,8 @@ chunk-iterator stream wrapper.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import closing
 
 import httpx
 import pytest
@@ -84,6 +86,57 @@ def test_sse_decoder_handles_split_chunks() -> None:
     assert decoder.push_chunk(b'event: message\ndata: {"delta"') == []
     events = decoder.push_chunk(b':"hi"}\n\n')
     assert events == [SseEvent(event="message", data='{"delta":"hi"}')]
+
+
+def test_sse_decoder_handles_utf8_at_every_chunk_boundary() -> None:
+    raw = 'event: message\r\nid: café\r\ndata: {"delta":"€你🙂"}\r\n\r\n'.encode()
+    expected = [SseEvent(event="message", id="café", data='{"delta":"€你🙂"}')]
+    for cut in range(len(raw) + 1):
+        decoder = SseDecoder()
+        events = decoder.push_chunk(raw[:cut])
+        events.extend(decoder.push_chunk(b""))
+        events.extend(decoder.push_chunk(raw[cut:]))
+        events.extend(decoder.finish())
+        assert events == expected, f"split at byte {cut}"
+
+    decoder = SseDecoder()
+    events = []
+    for byte in raw:
+        events.extend(decoder.push_chunk(bytes([byte])))
+    events.extend(decoder.finish())
+    assert events == expected
+
+
+@pytest.mark.parametrize("character", ["é", "你", "🙂"])
+def test_sse_decoder_rejects_truncated_utf8_at_eof(character: str) -> None:
+    encoded = character.encode()
+    for cut in range(1, len(encoded)):
+        decoder = SseDecoder()
+        assert decoder.push_chunk(b"data: tail" + encoded[:cut]) == []
+        with pytest.raises(ValueError, match="valid UTF-8"):
+            decoder.finish()
+
+
+def test_sse_decoder_rejects_invalid_utf8_continuation() -> None:
+    decoder = SseDecoder()
+    assert decoder.push_chunk(b"data: \xe4") == []
+    with pytest.raises(ValueError, match="valid UTF-8"):
+        decoder.push_chunk(b"x")
+
+
+def test_sse_decoder_handles_utf8_from_httpx_response() -> None:
+    class ChunkedStream(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            for byte in 'data: {"delta":"你🙂"}\n\n'.encode():
+                yield bytes([byte])
+
+    with closing(httpx.Response(200, stream=ChunkedStream())) as response:
+        decoder = SseDecoder()
+        events = []
+        for chunk in response.iter_bytes():
+            events.extend(decoder.push_chunk(chunk))
+        events.extend(decoder.finish())
+    assert events == [SseEvent(data='{"delta":"你🙂"}')]
 
 
 def test_sse_decoder_handles_metadata_crlf_comments_and_finish() -> None:
