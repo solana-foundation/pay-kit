@@ -25,12 +25,24 @@ import {
 import * as Methods from '../Methods.js';
 import {
     assertReportedTransactionVersion,
+    assertTransactionSignaturesVerify,
     coSignBase64Transaction,
     transactionSignatureFromBase64,
 } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { checkNetworkBlockhash } from './network-check.js';
-import { claimReplayKey, consumeReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
+import {
+    beginGrantReplayKey,
+    claimConsumedSignature,
+    claimReplayKey,
+    confirmLegacyForGrant,
+    consumedBeforeLedger,
+    consumedSignatureKey,
+    consumeReplayKey,
+    inspectReplayKey,
+    legacyConsumedSignatureKey,
+    ownsConfirmedLegacy,
+} from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -336,9 +348,17 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
 // cap: ceil(10_000 × 200_000 / 1_000_000) = 2_000 lamports (~20% of base fee) —
 // enough headroom for honest clients to bump priority during congestion.
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000n;
+// Total priority fee a sponsor pays for one co-signed transaction:
+// 200_000 CU × 10_000 µL/CU. The per-field caps alone do not bound it when the
+// client omits SetComputeUnitLimit, since the runtime then budgets 200_000 CU
+// per instruction. Mirrors Rust `core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS`.
+const MAX_SPONSORED_PRIORITY_FEE_LAMPORTS = 2_000n;
+const RUNTIME_UNITS_PER_INSTRUCTION = 200_000n;
+const RUNTIME_MAX_UNITS = 1_400_000n;
 
 type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
+    header: { numSignerAccounts: number };
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
 };
@@ -352,7 +372,9 @@ type CompiledInstruction = {
 /**
  * RPC-free pre-broadcast verification of a base64-encoded charge transaction
  * against the challenge it answers: split-count, address-lookup-table,
- * compute-budget, transfer, memo, and instruction-allowlist checks, up to the
+ * compute-budget, transfer, memo, and instruction-allowlist checks, then the
+ * client's signatures (one slot per required signer, each verifying over the
+ * message; only a sponsoring server's fee-payer slot may be empty), up to the
  * simulate/send boundary. This is the deterministic half of the charge server
  * verify path; it runs no HMAC challenge step and reaches no live RPC.
  *
@@ -361,6 +383,18 @@ type CompiledInstruction = {
  * the transaction conforms; a rejected promise carries the rejection reason.
  */
 export async function verifyChargeTransaction(clientTxBase64: string, challenge: ChallengeRequest) {
+    await verifyChargeTransactionShape(clientTxBase64, challenge);
+    // A signature that does not verify over this message names some other
+    // transaction (RULINGS SIG1): the slots must match the required signers
+    // and every client signature must verify. Only the server's own fee-payer
+    // slot may still be empty, since it co-signs after this step;
+    // verifyChargeTransactionShape has already pinned that key to slot zero.
+    await assertTransactionSignaturesVerify(clientTxBase64, {
+        unsignedSigner: challenge.methodDetails.feePayer ? challenge.methodDetails.feePayerKey : undefined,
+    });
+}
+
+async function verifyChargeTransactionShape(clientTxBase64: string, challenge: ChallengeRequest) {
     let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
@@ -597,14 +631,16 @@ async function validateInstructionAllowlist(
     if (!txFeePayer) {
         throw new Error('Transaction has no fee payer');
     }
+    verifyRequiredSigners(message, matchedPaymentInstructionIndexes);
     const expectedAtaPayer = options.feePayer ?? txFeePayer;
     const createdAtaOwners = new Set<string>();
+    const budget: ComputeBudgetSeen = { budgetInstructions: 0 };
 
     for (const [index, ix] of message.instructions.entries()) {
         const program = programAddress(message, ix);
 
         if (program === COMPUTE_BUDGET_PROGRAM) {
-            validateComputeBudgetInstruction(ix, options.feePayer !== undefined);
+            validateComputeBudgetInstruction(ix, options.feePayer !== undefined, budget);
             continue;
         }
 
@@ -644,9 +680,64 @@ async function validateInstructionAllowlist(
             throw new Error(`Missing required ATA creation instruction for split recipient ${owner}`);
         }
     }
+
+    if (options.feePayer !== undefined) {
+        validateSponsoredPriorityFee(budget, message.instructions.length);
+    }
 }
 
-function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored: boolean) {
+/**
+ * Every required signer must be the fee payer or the one authority that funds
+ * every matched payment transfer. Any other signer authorizes nothing and only
+ * adds a signature fee, which a sponsor would pay; letting each leg of a split
+ * name its own authority would let a payer multiply those fees.
+ */
+function verifyRequiredSigners(message: CompiledMessage, matchedPaymentInstructionIndexes: Set<number>) {
+    let fundingAuthority: string | undefined;
+    for (const index of matchedPaymentInstructionIndexes) {
+        const ix = message.instructions[index];
+        if (!ix) continue;
+        const program = programAddress(message, ix);
+        const authorityPosition =
+            program === SYSTEM_PROGRAM
+                ? 0
+                : program === TOKEN_PROGRAM || program === TOKEN_2022_PROGRAM
+                  ? 3
+                  : undefined;
+        if (authorityPosition === undefined) continue;
+        const authority = accountAddress(message, ix.accountIndices[authorityPosition], 'authority');
+        if (fundingAuthority !== undefined && fundingAuthority !== authority) {
+            throw new Error('Payment transfers must share one funding authority');
+        }
+        fundingAuthority = authority;
+    }
+    const allowed = new Set([message.staticAccounts[0], fundingAuthority]);
+    const signers = message.staticAccounts.slice(0, message.header.numSignerAccounts);
+    if (signers.some(signer => !allowed.has(signer))) {
+        throw new Error('Unexpected signer in payment transaction');
+    }
+}
+
+type ComputeBudgetSeen = { budgetInstructions: number; unitLimit?: bigint; unitPrice?: bigint };
+
+/**
+ * The server pays the priority fee it co-signs: bound limit × price, using the
+ * runtime's per-instruction default when no limit is declared.
+ */
+function validateSponsoredPriorityFee(budget: ComputeBudgetSeen, instructionCount: number) {
+    const price = budget.unitPrice ?? 0n;
+    if (price === 0n) return;
+    const implicit = RUNTIME_UNITS_PER_INSTRUCTION * BigInt(instructionCount - budget.budgetInstructions);
+    const limit = budget.unitLimit ?? (implicit < RUNTIME_MAX_UNITS ? implicit : RUNTIME_MAX_UNITS);
+    const fee = (limit * price + 999_999n) / 1_000_000n;
+    if (fee > MAX_SPONSORED_PRIORITY_FEE_LAMPORTS) {
+        throw new Error(
+            `Priority fee ${fee} lamports exceeds the sponsored maximum ${MAX_SPONSORED_PRIORITY_FEE_LAMPORTS}`,
+        );
+    }
+}
+
+function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored: boolean, budget: ComputeBudgetSeen) {
     if ((ix.accountIndices ?? []).length !== 0) {
         throw new Error('Compute budget instruction must not have accounts');
     }
@@ -656,6 +747,9 @@ function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored:
         if (units > MAX_COMPUTE_UNIT_LIMIT) {
             throw new Error(`Compute unit limit ${units} exceeds maximum ${MAX_COMPUTE_UNIT_LIMIT}`);
         }
+        if (budget.unitLimit !== undefined) throw new Error('Duplicate SetComputeUnitLimit instruction');
+        budget.unitLimit = BigInt(units);
+        budget.budgetInstructions += 1;
         return;
     }
 
@@ -669,6 +763,9 @@ function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored:
         if (price > cap) {
             throw new Error(`Compute unit price ${price} exceeds maximum ${cap}`);
         }
+        if (budget.unitPrice !== undefined) throw new Error('Duplicate SetComputeUnitPrice instruction');
+        budget.unitPrice = price;
+        budget.budgetInstructions += 1;
         return;
     }
 
@@ -795,8 +892,21 @@ async function verifyTransaction(
         txToSend = await coSignBase64Transaction(signer, clientTxBase64);
     }
 
+    // Every signature must verify before the signature is claimed or the
+    // transaction sent. A forged one would otherwise name the charge: the node
+    // refuses it without a preflight result, it stays pending, and recovery
+    // would confirm the status of whatever landed transaction owns that
+    // signature.
+    await assertTransactionSignaturesVerify(txToSend);
     const signature = transactionSignatureFromBase64(txToSend);
-    const replayKey = `solana-charge:consumed:${signature}`;
+    if (await consumedBeforeLedger(store, signature)) {
+        throw new Error('Transaction signature already consumed');
+    }
+    const replayKey = consumedSignatureKey(signature);
+    // The same record under the previous release's key, so a replica still on
+    // that release sees this settlement (and settles an identical retry the
+    // same way) during a rolling upgrade.
+    const legacyKey = legacyConsumedSignatureKey(signature);
     const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
     const replayStatus = await inspectReplayKey(store, replayKey, replayBinding);
     if (replayStatus === 'conflict' || replayStatus === 'retry') {
@@ -816,6 +926,20 @@ async function verifyTransaction(
         if (recoveryClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
+        const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
+        // A confirmed legacy key is this grant's own unfinished step when the
+        // ledger record says a grant began: the retry finishes it.
+        // A confirmed legacy key is this grant's own unfinished step only when
+        // it carries the id of the grant the ledger record has in progress; a
+        // previous-release replica confirms it without one.
+        const ownUnfinishedGrant =
+            legacyClaim === 'retry' && (await ownsConfirmedLegacy(store, replayKey, legacyKey, replayBinding));
+        if (legacyClaim === 'conflict' || (legacyClaim === 'retry' && !ownUnfinishedGrant)) {
+            throw new Error('Transaction signature already consumed');
+        }
+        if (legacyClaim === 'pending') {
+            throw new Error('Transaction settlement is already in progress; retry shortly');
+        }
     } else if (replayStatus === 'available') {
         // Only a transaction with no prior settlement state reaches preflight
         // and broadcast. Exact-wire retries recover by signature above, even
@@ -828,6 +952,17 @@ async function verifyTransaction(
         if (replayClaim === 'pending') {
             throw new Error('Transaction settlement is already in progress; retry shortly');
         }
+        // Nothing is sent until the previous release's key is held too: a
+        // replica on that release that claimed it first owns the payment, and
+        // the ledger key is given back.
+        const legacyClaim = await claimReplayKey(store, legacyKey, replayBinding);
+        if (legacyClaim !== 'reserved') {
+            await store.delete(replayKey);
+            if (legacyClaim === 'pending') {
+                throw new Error('Transaction settlement is already in progress; retry shortly');
+            }
+            throw new Error('Transaction signature already consumed');
+        }
         // Retain pending state if the RPC accepted the send but lost its response.
         await broadcastTransaction(rpcUrl, txToSend);
     }
@@ -836,6 +971,18 @@ async function verifyTransaction(
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
+    // One grant per payment across both releases. The ledger record is
+    // marked as granting under a grant id first. The previous release's key
+    // is then confirmed with that id in one atomic step: the single-winner
+    // transition a replica on that release takes too, so whichever confirms
+    // it first owns the payment, and a confirmed legacy key without this id
+    // is someone else's grant. A failure before the ledger key below leaves a
+    // state the retry can finish; the ledger transition picks one winner
+    // among this release's requests.
+    const grant = await beginGrantReplayKey(store, replayKey, replayBinding);
+    if (!grant || !(await confirmLegacyForGrant(store, legacyKey, replayBinding, grant))) {
+        throw new Error('Transaction signature already consumed');
+    }
     if (!(await consumeReplayKey(store, replayKey, replayBinding))) {
         throw new Error('Transaction signature already consumed');
     }
@@ -864,11 +1011,11 @@ async function verifySignature(
         throw new Error('Missing signature in credential payload');
     }
 
-    const consumedKey = `solana-charge:consumed:${signature}`;
+    const consumedKey = consumedSignatureKey(signature);
 
     // Reject obvious replays before RPC work. The authoritative atomic
     // check-and-consume below also coordinates with transaction credentials.
-    if (await store.get(consumedKey)) {
+    if ((await store.get(consumedKey)) || (await consumedBeforeLedger(store, signature))) {
         throw new Error('Transaction signature already consumed');
     }
 
@@ -876,7 +1023,7 @@ async function verifySignature(
 
     // Failed verification must not burn a valid payment. Shared stores with
     // update() coordinate replicas; legacy stores are single-process only.
-    if (!(await reserveReplayKey(store, consumedKey))) {
+    if (!(await claimConsumedSignature(store, signature))) {
         throw new Error('Transaction signature already consumed');
     }
 

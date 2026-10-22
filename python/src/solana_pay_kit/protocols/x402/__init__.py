@@ -3,7 +3,8 @@
 Self-hosted x402 ``exact`` scheme for the Solana SVM. ``X402Adapter`` (this
 module) issues 402 challenges, runs the structural 11-rule verifier on
 submitted credentials, cosigns as the facilitator fee payer, broadcasts via
-the configured RPC, and namespaces the consumed signature in the replay store.
+the configured RPC, and reserves the consumed signature in the replay store
+under the ledger key it shares with MPP charge.
 The verifier, module constants, and ``X402*`` wire TypedDicts live under
 :mod:`solana_pay_kit.protocols.x402.exact`; the client builder lives under
 :mod:`solana_pay_kit.protocols.x402.client`.
@@ -27,9 +28,21 @@ from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
-from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store
-from solana_pay_kit.errors import ConfigurationError, InvalidProofError
+from solana_pay_kit._paycore.rpc import (
+    PreflightRejectedError,
+    SolanaRpc,
+    _RpcError,  # pyright: ignore[reportPrivateUsage]
+    proves_settlement_failed,
+)
+from solana_pay_kit._paycore.store import (
+    ConsumedSignatures,
+    MemoryStore,
+    Store,
+    consumed_before_ledger,
+    consumed_signature_key,
+)
+from solana_pay_kit._paycore.transaction import SignatureCheckError, verify_required_signatures
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError, SettlementInProgressError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.extensions import PaymentIdentifierError, verify_payment_identifier
 from solana_pay_kit.protocols.x402.exact.legacy import (
@@ -66,7 +79,6 @@ _RESPONSE_HEADER = "payment-response"
 # server must echo it there when it accepted a v1 credential (rust
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
-_REPLAY_PREFIX = "x402-svm-exact:consumed:"
 # `SolanaRpc.await_confirmation` performs at most 40 requests, each with the
 # client's 30-second timeout, plus polling delays. Keep the recovery lease past
 # that complete worst-case window so a takeover cannot overlap the original
@@ -190,7 +202,9 @@ class X402Adapter:
                 check_network_blockhash(self._config.network.mints_label(), blockhash)
 
         signature = _transaction_signature(cosigned_wire)
-        replay_key = _REPLAY_PREFIX + signature
+        # The ledger shared with MPP charge, so a payment settled through either
+        # protocol cannot authorize a second request through the other.
+        replay_key = consumed_signature_key(signature)
         binding = hashlib.sha256(cosigned_wire).hexdigest()
         now = time.time()
         replay_record: dict[str, object] = {
@@ -199,6 +213,8 @@ class X402Adapter:
             "state": "pending",
         }
 
+        if await consumed_before_ledger(self._store, signature):
+            raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
         current = await self._store.get(replay_key)
         should_broadcast = current is None
         skip_confirmation = False
@@ -208,25 +224,54 @@ class X402Adapter:
             )
 
         rpc: SolanaRpc | None = None
+        sent_here = False
         try:
             if should_broadcast:
-                rpc = SolanaRpc(rpc_url)
-                try:
-                    response = await rpc.send_raw_transaction(cosigned_wire)
-                    broadcast_signature = str(response.value if hasattr(response, "value") else response)
-                except Exception as exc:  # noqa: BLE001
-                    raise InvalidProofError(
-                        f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
-                    ) from exc
-                if not broadcast_signature:
-                    raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
-
-                inserted = await self._store.put_if_absent(replay_key, replay_record)
-                if not inserted:
+                ledger = ConsumedSignatures(self._store)
+                # Record the pending settlement with the claim, before anything
+                # is sent. Written only after the send, a store failure would
+                # leave a payment that may have landed with no record, and the
+                # retry would find it already processed and refuse it.
+                if not await ledger.claim(signature, replay_record):
                     current = await self._store.get(replay_key)
                     skip_confirmation = await _recover_replay_record(
                         self._store, replay_key, binding, replay_record, current, now
                     )
+                else:
+                    rpc = SolanaRpc(rpc_url)
+                    try:
+                        response = await rpc.send_raw_transaction(cosigned_wire)
+                        broadcast_signature = str(response.value if hasattr(response, "value") else response)
+                    except PreflightRejectedError as exc:
+                        # The one send failure that proves no node was handed
+                        # the transaction: the claim is given back, the payer
+                        # may retry.
+                        await ledger.release(signature)
+                        raise InvalidProofError(
+                            f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
+                        ) from exc
+                    except _RpcError as exc:
+                        if exc.code != "signature_consumed":
+                            raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+                        # The node already processed this exact transaction,
+                        # yet this store held no settlement of it: it was
+                        # settled somewhere this store cannot see (another
+                        # instance or store, or before a restart). Serving it
+                        # again would grant one payment twice: refuse it, and
+                        # keep it consumed here.
+                        await self._store.put(replay_key, True)
+                        raise InvalidProofError(
+                            "solana_pay_kit: signature_consumed: the transaction was already processed",
+                            code="signature_consumed",
+                        ) from exc
+                    except Exception as exc:  # noqa: BLE001
+                        # A lost response, a timeout, a refusal other than a
+                        # preflight rejection: the transaction may still land,
+                        # and its pending record is already kept.
+                        raise _settlement_in_progress(signature, f"broadcast outcome unknown: {exc}") from exc
+                    if not broadcast_signature:
+                        raise _settlement_in_progress(signature, "empty broadcast result")
+                    sent_here = True
 
             # Await on-chain confirmation BEFORE returning success. Without this
             # the adapter returned a settlement header for a transaction that
@@ -239,19 +284,26 @@ class X402Adapter:
                 if rpc is None:
                     rpc = SolanaRpc(rpc_url)
                 try:
-                    await rpc.await_confirmation(signature)
+                    # A request that did not send it is reconciling a payment
+                    # an earlier one sent, which may have left the node's
+                    # recent status cache: search the history.
+                    await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
                     await self._store.put(
                         replay_key,
                         {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
                     )
                 except Exception as exc:  # noqa: BLE001
-                    # Keep the pending lease after an ambiguous failure. A retry
-                    # can atomically take over after expiry and determine whether
+                    # Keep the pending lease after a failure. A retry can
+                    # atomically take over after expiry and determine whether
                     # the transaction landed, without permitting two concurrent
                     # requests to return successful fulfillment.
-                    raise InvalidProofError(
-                        f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
-                    ) from exc
+                    if proves_settlement_failed(exc):
+                        # It landed and failed: it moved nothing.
+                        raise InvalidProofError(
+                            f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
+                        ) from exc
+                    # No status yet is never proof it did not execute.
+                    raise _settlement_in_progress(signature, f"not confirmed yet: {exc}") from exc
         finally:
             if rpc is not None:
                 await rpc.aclose()
@@ -506,7 +558,18 @@ async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
         raise InvalidProofError("solana_pay_kit: fee payer is not a required signer", code="payment_invalid")
 
     signed = await signer.sign_transaction(vtx)
-    return bytes(signed.transaction)
+    cosigned = bytes(signed.transaction)
+    # Every required signer, the payer included, must have signed before the
+    # signature is claimed or the transaction sent: a landed multi-signer
+    # transaction cut down to its first signature would otherwise be claimed
+    # and reconciled on the landed transaction's status.
+    try:
+        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+    except SignatureCheckError as exc:
+        raise InvalidProofError(
+            f"solana_pay_kit: transaction signature verification failed: {exc}", code="payment_invalid"
+        ) from exc
+    return cosigned
 
 
 def _transaction_parse_error(message: str) -> InvalidProofError:
@@ -525,6 +588,14 @@ def _transaction_signature(transaction_wire: bytes) -> str:
     if not signatures:
         raise InvalidProofError("solana_pay_kit: transaction has no signature", code="payment_invalid")
     return str(signatures[0])
+
+
+def _settlement_in_progress(signature: str, detail: str) -> SettlementInProgressError:
+    """The payment may already be broadcast: retry it, never pay again."""
+    return SettlementInProgressError(
+        f"solana_pay_kit: settlement of transaction {signature} is in progress ({detail}); "
+        "retry the same payment, do not pay again"
+    )
 
 
 async def _recover_replay_record(
@@ -547,17 +618,12 @@ async def _recover_replay_record(
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
     lease_until = float(cast("int | float", current_record["leaseUntil"]))
+    signature = replay_key.rsplit(":", 1)[-1]
     if lease_until > now:
-        raise InvalidProofError(
-            "solana_pay_kit: signature_consumed: settlement confirmation is pending",
-            code="signature_consumed",
-        )
+        raise _settlement_in_progress(signature, "settlement confirmation is pending")
     recovery_key = f"{replay_key}:recovery:{lease_until}"
     if not await store.put_if_absent(recovery_key, True):
-        raise InvalidProofError(
-            "solana_pay_kit: signature_consumed: settlement recovery is in progress",
-            code="signature_consumed",
-        )
+        raise _settlement_in_progress(signature, "settlement recovery is in progress")
 
     latest = await store.get(replay_key)
     if not isinstance(latest, dict):

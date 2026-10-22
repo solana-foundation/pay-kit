@@ -739,6 +739,31 @@ describe('session() verify() close monotonicity', () => {
     });
 });
 
+describe('session() close does not bill unauthenticated reservations', () => {
+    // Reservations come only from POST /__402/session/deliveries, which checks
+    // no credential: they prove neither the payer's request nor a delivery.
+    async function withForeignReservation() {
+        const fixture = await watermarkedFixture();
+        await fixture.f.store.updateChannel(fixture.f.channel.address, current => ({
+            ...current!,
+            // Reserved by anyone who knows the channel id, never committed.
+            pendingDeliveries: [{ amount: 100n, deliveryId: 'delivery-1', expiresAt: 1n, sequence: 1n }],
+        }));
+        return fixture;
+    }
+
+    test('a reservation neither blocks the close nor raises what it settles', async () => {
+        const { f, method, sent, voucher } = await withForeignReservation();
+        const before = await f.store.getChannel(f.channel.address);
+        const receipt = await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.settledOnChain).toBe(before!.cumulative);
+        expect(state?.spentAmount).toBe(before!.spentAmount);
+    });
+});
+
 /** Decode a sent wire transaction into program / account addresses / data per instruction. */
 function decodeSent(wire: string): { accounts: string[]; data: Uint8Array; program: string }[] {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(wire));

@@ -107,3 +107,27 @@ final class ProtocolNotSupportedException extends RuntimeException implements Pa
         return 406;
     }
 }
+
+/**
+ * Thrown when a payment was (or may have been) broadcast and its outcome is
+ * not yet known. It must not be answered with a fresh challenge, which would
+ * let a client that already paid pay again: framework adapters render it as
+ * a retryable 409 and the client retries the same credential.
+ */
+final class SettlementInProgressException extends RuntimeException implements PayKitException
+{
+    public function httpStatus(): int
+    {
+        return 409;
+    }
+}
+
+/**
+ * Thrown when the chain reports that a broadcast transaction executed and
+ * failed. The one confirmation outcome that rejects the payment: a status
+ * that cannot be read, or is not confirmed yet, is
+ * {@see SettlementInProgressException} instead.
+ */
+final class TransactionFailedException extends RuntimeException implements PayKitException
+{
+}

@@ -8,7 +8,7 @@ known stablecoins, mainnet only, any HTTP(S) origin, and USD 1 per payment.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Self
 from urllib.parse import urlsplit
@@ -25,6 +25,7 @@ PermissionDeniedCode = Literal[
     "invalid_challenge_terms",
     "network_not_allowed",
     "origin_not_allowed",
+    "recipient_not_allowed",
 ]
 
 _NETWORKS = frozenset({"mainnet", "devnet", "localnet"})
@@ -141,13 +142,28 @@ class OriginPermissionOverrideBuilder:
 
 
 @dataclass(frozen=True)
+class PaymentDestination:
+    """One account a payment transfers to, with its share in atomic units."""
+
+    #: Wallet that receives the transfer (the owner of its token account).
+    recipient: str
+    #: Amount in the asset's atomic units.
+    amount: int
+
+
+@dataclass(frozen=True)
 class PaymentCandidate:
-    """Normalized immutable payment terms derived from a server challenge."""
+    """Normalized immutable payment terms derived from a server challenge.
+
+    ``destinations`` lists every transfer leg the signer will pay (primary
+    recipient first, then splits) and must add up to ``amount``.
+    """
 
     amount: int
     mint: str
     network: SolanaNetwork
     origin: str
+    destinations: tuple[PaymentDestination, ...] = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -169,11 +185,13 @@ class ClientPermissions:
         allowed_origins: frozenset[str] | None,
         max_amount_per_payment: UsdAmount | None,
         origin_overrides: dict[str, OriginPermissionOverride],
+        allowed_recipients: frozenset[str] | None = None,
     ) -> None:
         self._allow_any_asset = allow_any_asset
         self._allowed_assets = allowed_assets
         self._allowed_networks = allowed_networks
         self._allowed_origins = allowed_origins
+        self._allowed_recipients = allowed_recipients
         self._max_amount_per_payment = max_amount_per_payment
         self._origin_overrides = MappingProxyType(dict(origin_overrides))
 
@@ -203,6 +221,7 @@ class ClientPermissions:
             raise _denial("network_not_allowed", f"network {candidate.network} is not allowed")
         if candidate.amount < 0:
             raise _denial("invalid_challenge_terms", "challenge amount is not a non-negative integer")
+        self._authorize_destinations(candidate)
         try:
             mint = _mint(candidate.network, candidate.mint)
         except PermissionConfigurationError as exc:
@@ -240,6 +259,25 @@ class ClientPermissions:
             )
         return AuthorizedPayment(cap)
 
+    def _authorize_destinations(self, candidate: PaymentCandidate) -> None:
+        if not candidate.destinations:
+            raise _denial("invalid_challenge_terms", "payment names no recipient")
+        paid = 0
+        for destination in candidate.destinations:
+            if destination.amount < 0:
+                raise _denial("invalid_challenge_terms", "payment destination amount is negative")
+            try:
+                _recipient(destination.recipient)
+            except PermissionConfigurationError as exc:
+                raise _denial("invalid_challenge_terms", str(exc)) from exc
+            paid += destination.amount
+        if paid != candidate.amount:
+            raise _denial("invalid_challenge_terms", "payment destinations do not add up to the payment amount")
+        if self._allowed_recipients is not None:
+            for destination in candidate.destinations:
+                if destination.recipient not in self._allowed_recipients:
+                    raise _denial("recipient_not_allowed", f"recipient {destination.recipient} is not allowed")
+
 
 class ClientPermissionsBuilder:
     """Fluent builder for :class:`ClientPermissions`."""
@@ -249,6 +287,7 @@ class ClientPermissionsBuilder:
         self._allowed_assets: list[AssetPermission] = []
         self._allowed_networks: set[SolanaNetwork] = {"mainnet"}
         self._allowed_origins: set[str] | None = None
+        self._allowed_recipients: set[str] | None = None
         self._max: UsdAmount | None = usd("1")
         self._origin_overrides: dict[str, OriginPermissionOverride] = {}
 
@@ -262,6 +301,22 @@ class ClientPermissionsBuilder:
     def allow_any_origin(self) -> Self:
         """Permit challenges from any HTTP(S) origin."""
         self._allowed_origins = None
+        return self
+
+    def allow_recipient(self, recipient: str) -> Self:
+        """Restrict payments to destinations owned by ``recipient``.
+
+        The first call changes the default from any recipient to an allowlist,
+        which then covers the primary recipient and every split of a payment.
+        """
+        if self._allowed_recipients is None:
+            self._allowed_recipients = set()
+        self._allowed_recipients.add(_recipient(recipient))
+        return self
+
+    def allow_any_recipient(self) -> Self:
+        """Permit payments to any recipient."""
+        self._allowed_recipients = None
         return self
 
     def allow_network(self, network: SolanaNetwork) -> Self:
@@ -308,6 +363,7 @@ class ClientPermissionsBuilder:
             allowed_origins=None if self._allowed_origins is None else frozenset(self._allowed_origins),
             max_amount_per_payment=self._max,
             origin_overrides=self._origin_overrides,
+            allowed_recipients=None if self._allowed_recipients is None else frozenset(self._allowed_recipients),
         )
 
 
@@ -342,6 +398,13 @@ def _mint(network: SolanaNetwork, asset: str) -> str:
         raise PermissionConfigurationError(f"invalid Solana asset: {asset}") from exc
 
 
+def _recipient(value: str) -> str:
+    try:
+        return str(Pubkey.from_string(value))
+    except ValueError as exc:
+        raise PermissionConfigurationError(f"invalid Solana recipient: {value}") from exc
+
+
 def _matches(permission: AssetPermission, network: SolanaNetwork, mint: str) -> bool:
     return permission.network == network and permission.mint == mint
 
@@ -363,6 +426,7 @@ __all__ = [
     "OriginPermissionOverride",
     "OriginPermissionOverrideBuilder",
     "PaymentCandidate",
+    "PaymentDestination",
     "PermissionConfigurationError",
     "PermissionDeniedCode",
     "PermissionDeniedError",

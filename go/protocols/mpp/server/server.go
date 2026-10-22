@@ -24,7 +24,6 @@ import (
 
 const (
 	secretKeyEnvVar = "MPP_SECRET_KEY"
-	consumedPrefix  = "solana-charge:consumed:"
 
 	// minSecretKeyBytes is the minimum length of the HMAC-SHA256 secret
 	// that binds challenge IDs. 32 bytes matches NIST SP 800-107 guidance
@@ -440,29 +439,25 @@ func (m *Mpp) VerifyCredentialWithExpected(
 	credential core.PaymentCredential,
 	expected intents.ChargeRequest,
 ) (core.Receipt, error) {
-	credRequest, _, payload, err := m.verifyChallengeAndDecode(credential)
+	credRequest, _, payload, expired, err := m.verifyChallengeAndDecode(credential)
 	if err != nil {
 		return core.Receipt{}, err
 	}
-	if credRequest.Amount != expected.Amount {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeAmountMismatch,
-			fmt.Sprintf("amount mismatch: credential has %s but endpoint expects %s",
-				credRequest.Amount, expected.Amount),
-		)
+	if expired != nil {
+		// An expired challenge never starts a payment. It may only finish
+		// one this same challenge already broadcast and left pending, so a
+		// retry after a lost response still reconciles.
+		if err := checkExpected(credRequest, expected); err != nil {
+			return core.Receipt{}, expired
+		}
+		expectedDetails, err := decodeMethodDetails(expected.MethodDetails)
+		if err != nil {
+			return core.Receipt{}, expired
+		}
+		return m.reconcileExpired(ctx, credential, expected, expectedDetails, payload, expired)
 	}
-	if credRequest.Currency != expected.Currency {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeChallengeRouteMismatch,
-			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
-				credRequest.Currency, expected.Currency),
-		)
-	}
-	if credRequest.Recipient != expected.Recipient {
-		return core.Receipt{}, core.NewError(
-			core.ErrCodeRecipientMismatch,
-			"recipient mismatch: credential was issued for a different recipient",
-		)
+	if err := checkExpected(credRequest, expected); err != nil {
+		return core.Receipt{}, err
 	}
 	expectedDetails, err := decodeMethodDetails(expected.MethodDetails)
 	if err != nil {
@@ -471,12 +466,85 @@ func (m *Mpp) VerifyCredentialWithExpected(
 	return m.verifyPayload(ctx, credential, expected, expectedDetails, payload)
 }
 
+// checkExpected binds the credential's charge to the route's expected one.
+func checkExpected(credRequest, expected intents.ChargeRequest) error {
+	if credRequest.Amount != expected.Amount {
+		return core.NewError(
+			core.ErrCodeAmountMismatch,
+			fmt.Sprintf("amount mismatch: credential has %s but endpoint expects %s",
+				credRequest.Amount, expected.Amount),
+		)
+	}
+	if credRequest.Currency != expected.Currency {
+		return core.NewError(
+			core.ErrCodeChallengeRouteMismatch,
+			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
+				credRequest.Currency, expected.Currency),
+		)
+	}
+	if credRequest.Recipient != expected.Recipient {
+		return core.NewError(
+			core.ErrCodeRecipientMismatch,
+			"recipient mismatch: credential was issued for a different recipient",
+		)
+	}
+	return nil
+}
+
+// reconcileExpired reconciles the pending charge an expired credential left
+// behind, or refuses it as expired. Only a pull credential whose transaction
+// (as this server co-signs it) is recorded pending under this same challenge
+// gets past here; it is then settled from the chain only, never broadcast.
+func (m *Mpp) reconcileExpired(
+	ctx context.Context,
+	credential core.PaymentCredential,
+	request intents.ChargeRequest,
+	details paycore.MethodDetails,
+	payload paycore.CredentialPayload,
+	expired error,
+) (core.Receipt, error) {
+	if payload.Type != "transaction" || payload.Transaction == "" {
+		return core.Receipt{}, expired
+	}
+	tx, err := decodeCredentialTransaction(payload.Transaction)
+	if err != nil {
+		return core.Receipt{}, expired
+	}
+	if m.feePayerSigner != nil {
+		if err := solanatx.SignTransaction(tx, m.feePayerSigner); err != nil {
+			return core.Receipt{}, expired
+		}
+	}
+	signature, err := solanatx.VerifiedSignature(tx)
+	if err != nil {
+		return core.Receipt{}, expired
+	}
+	raw, ok, err := m.store.Get(ctx, pendingChargePrefix+signature.String())
+	if err != nil {
+		return core.Receipt{}, err
+	}
+	var record pendingCharge
+	if !ok || json.Unmarshal(raw, &record) != nil || record.ChallengeID != credential.Challenge.ID {
+		return core.Receipt{}, expired
+	}
+	return m.reconcilePending(ctx, credential, request, details, signature)
+}
+
+// now is the clock challenge expiry is judged against; tests move it.
+var now = time.Now
+
 // verifyChallengeAndDecode runs Tier-1 (HMAC + expiry) and Tier-2 (pinned-field
 // backstop) checks, then returns the credential-decoded request, method
 // details, and payload for downstream settlement.
+//
+// An expired challenge is not an error here: it comes back as the expiry
+// error in its own result, alongside everything else, so the caller can
+// reconcile a charge that challenge already left pending. The caller must
+// never start a payment for it. Any other failure on an expired challenge
+// reports the expiry, as it always has.
 func (m *Mpp) verifyChallengeAndDecode(
 	credential core.PaymentCredential,
-) (intents.ChargeRequest, paycore.MethodDetails, paycore.CredentialPayload, error) {
+) (request intents.ChargeRequest, details paycore.MethodDetails, payload paycore.CredentialPayload, expired error, err error) {
 	challenge := core.PaymentChallenge{
 		ID:      credential.Challenge.ID,
 		Realm:   credential.Challenge.Realm,
@@ -488,29 +556,32 @@ func (m *Mpp) verifyChallengeAndDecode(
 		Opaque:  credential.Challenge.Opaque,
 	}
 	if !challenge.Verify(m.secretKey) {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{},
+		return request, details, payload, nil,
 			core.NewError(core.ErrCodeChallengeMismatch, "challenge ID mismatch")
 	}
-	if challenge.IsExpired(time.Now()) {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{},
-			core.NewError(core.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
+	if challenge.IsExpired(now()) {
+		expired = core.NewError(core.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
 	}
-	var request intents.ChargeRequest
+	fail := func(err error) (intents.ChargeRequest, paycore.MethodDetails, paycore.CredentialPayload, error, error) {
+		if expired != nil {
+			err = expired
+		}
+		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, nil, err
+	}
 	if err := challenge.Request.Decode(&request); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
 	if err := m.verifyPinnedFields(credential, request); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	details, err := decodeMethodDetails(request.MethodDetails)
+	details, err = decodeMethodDetails(request.MethodDetails)
 	if err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	var payload paycore.CredentialPayload
 	if err := credential.PayloadAs(&payload); err != nil {
-		return intents.ChargeRequest{}, paycore.MethodDetails{}, paycore.CredentialPayload{}, err
+		return fail(err)
 	}
-	return request, details, payload, nil
+	return request, details, payload, expired, nil
 }
 
 // verifyPinnedFields is the Tier-2 backstop. After Tier-1 (HMAC) confirms the
@@ -648,6 +719,17 @@ func (m *Mpp) verifyTransaction(
 	if err := verifyTransfersAgainstChallenge(tx, amount, request.Currency, m.recipient, request.ExternalID, details); err != nil {
 		return core.Receipt{}, err
 	}
+	// The client's signatures must verify over this message before anything
+	// is co-signed, claimed or sent; only the server's own fee-payer slot
+	// (account zero, which it overwrites) is left unchecked.
+	var serverFeePayer *solana.PublicKey
+	if feeSponsored {
+		key := m.feePayerSigner.PublicKey()
+		serverFeePayer = &key
+	}
+	if err := verifyClientSignatures(tx, serverFeePayer); err != nil {
+		return core.Receipt{}, err
+	}
 	if m.feePayerSigner != nil {
 		if err := solanatx.SignTransaction(tx, m.feePayerSigner); err != nil {
 			return core.Receipt{}, err
@@ -656,28 +738,58 @@ func (m *Mpp) verifyTransaction(
 	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
 		return core.Receipt{}, core.NewError(core.ErrCodeMissingSignature, "transaction is missing a primary signature")
 	}
-	consumedKey := consumedPrefix + tx.Signatures[0].String()
-	inserted, err := m.store.PutIfAbsent(ctx, consumedKey, true)
+	// Every signature must verify against the exact message before its
+	// signature is claimed, recorded pending or sent. Simulation's sigVerify
+	// runs only after the pending record is written, so a forged slot-0
+	// signature copied from a landed transaction would otherwise name this
+	// charge: a concurrent copy would reconcile on that other transaction's
+	// status. The claim key comes only from VerifiedSignature; a refusal
+	// here claims and sends nothing.
+	primary, err := solanatx.VerifiedSignature(tx)
+	if err != nil {
+		return core.Receipt{}, core.WrapError(core.ErrCodeInvalidPayload, "verify transaction signatures", err)
+	}
+	finalSignature := primary.String()
+	inserted, err := m.consumed().Claim(ctx, finalSignature)
 	if err != nil {
 		return core.Receipt{}, err
 	}
 	if !inserted {
-		return core.Receipt{}, core.NewError(core.ErrCodeSignatureConsumed, "transaction signature already consumed")
+		return m.reconcilePending(ctx, credential, request, details, primary)
 	}
 	cleanupConsumed := true
+	pendingKey := pendingChargePrefix + finalSignature
 	defer func() {
 		if cleanupConsumed {
 			// Detach cancellation but keep trace/values so rollback still
 			// runs when the caller's context is already canceled.
-			_ = m.store.Delete(context.WithoutCancel(ctx), consumedKey)
+			_ = m.store.Delete(context.WithoutCancel(ctx), pendingKey)
+			_ = m.consumed().Release(context.WithoutCancel(ctx), finalSignature)
 		}
 	}()
+	// The pending record a retry reconciles is written with the claim, before
+	// anything is sent. Written after an ambiguous send, a store failure would
+	// leave a claim with no record, and every retry would refuse a payment
+	// that may have landed as consumed. Nothing is sent if it cannot be kept.
+	if err := m.store.Put(ctx, pendingKey, pendingCharge{ChallengeID: credential.Challenge.ID}); err != nil {
+		return core.Receipt{}, err
+	}
 	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "simulate transaction", err)
 	}
 	signature, err := solanatx.SendTransaction(ctx, m.rpc, tx)
 	if err != nil {
-		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
+		// Only a preflight rejection proves the node did not forward the
+		// transaction, so only then is the claim released for a retry.
+		if solanatx.IsPreflightRejection(err) {
+			return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "send transaction", err)
+		}
+		// Any other send error (a lost response, a timeout, a 5xx from a
+		// proxy that already forwarded it) leaves the outcome unknown:
+		// keep the claim and record the locally derived signature as
+		// pending, so a fresh challenge is not paid while it can still land.
+		cleanupConsumed = false
+		return core.Receipt{}, settlementInProgress(finalSignature, err)
 	}
 	// The RPC accepted the broadcast. From here the transaction may land
 	// on-chain even if confirmation polling or the on-chain re-verification
@@ -687,13 +799,38 @@ func (m *Mpp) verifyTransaction(
 	// double-pays. Mirrors the rust reference, which consumes the signature
 	// after broadcast and never deletes it on a confirmation timeout.
 	cleanupConsumed = false
+	if !signature.Equals(tx.Signatures[0]) {
+		return core.Receipt{}, settlementInProgress(finalSignature,
+			fmt.Errorf("RPC reported signature %s for transaction %s", signature, finalSignature))
+	}
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
+		if ctx.Err() != nil {
+			// Still unconfirmed when the request gave up: outcome unknown.
+			return core.Receipt{}, settlementInProgress(finalSignature, err)
+		}
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
 		return core.Receipt{}, err
 	}
+	// The pending record is visible to concurrent retries, which grant
+	// through the same single-winner token: only one presentation is granted.
+	granted, err := m.store.PutIfAbsent(ctx, resolvedChargePrefix+finalSignature, true)
+	if err != nil {
+		return core.Receipt{}, err
+	}
+	if !granted {
+		return core.Receipt{}, core.NewError(core.ErrCodeSignatureConsumed, "transaction signature already consumed")
+	}
+	_ = m.store.Delete(context.WithoutCancel(ctx), pendingKey)
 	return successReceipt(signature.String(), credential.Challenge.ID, request.ExternalID), nil
+}
+
+// consumed is the consumed-signature ledger shared with x402 exact, so a
+// payment settled through either protocol cannot authorize a second request
+// through the other on a gate sharing the store.
+func (m *Mpp) consumed() paycore.ConsumedSignatures {
+	return paycore.NewConsumedSignatures(m.store)
 }
 
 func (m *Mpp) verifySignature(
@@ -719,7 +856,7 @@ func (m *Mpp) verifySignature(
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
 		return core.Receipt{}, err
 	}
-	inserted, err := m.store.PutIfAbsent(ctx, consumedPrefix+payload.Signature, true)
+	inserted, err := m.consumed().Claim(ctx, payload.Signature)
 	if err != nil {
 		return core.Receipt{}, err
 	}
@@ -797,6 +934,9 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 			}
 		}
 		if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
+			return err
+		}
+		if err := verifyRequiredSigners(tx, matched); err != nil {
 			return err
 		}
 		// Native SOL payments never carry a token mint, so ATA-create
@@ -935,6 +1075,9 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 	if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
 		return err
 	}
+	if err := verifyRequiredSigners(tx, matched); err != nil {
+		return err
+	}
 	allowedOwners := make([]solana.PublicKey, 0, len(tokenExpected))
 	for _, want := range tokenExpected {
 		allowedOwners = append(allowedOwners, want.recipient)
@@ -946,6 +1089,53 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 		feePayer:             feePayerKey(details),
 		requiredATAOwners:    requiredOwners,
 	})
+}
+
+// verifyRequiredSigners requires every required signer to be the fee payer
+// or the one authority that funds every matched payment transfer. Any other
+// signer authorizes nothing and only adds a signature fee, which a sponsor
+// would pay; letting each leg of a split name its own authority would let a
+// payer multiply those fees. Mirrors the rust verify_required_signers.
+func verifyRequiredSigners(tx *solana.Transaction, matched []bool) error {
+	token2022Program := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	var fundingAuthority *solana.PublicKey
+	for index, compiled := range tx.Message.Instructions {
+		if !matched[index] {
+			continue
+		}
+		programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+		if err != nil {
+			return err
+		}
+		var position int
+		switch {
+		case programID.Equals(solana.SystemProgramID):
+			position = 0
+		case programID.Equals(solana.TokenProgramID), programID.Equals(token2022Program):
+			position = 3
+		default:
+			continue
+		}
+		if position >= len(compiled.Accounts) || int(compiled.Accounts[position]) >= len(tx.Message.AccountKeys) {
+			continue
+		}
+		authority := tx.Message.AccountKeys[compiled.Accounts[position]]
+		if fundingAuthority != nil && !fundingAuthority.Equals(authority) {
+			return core.NewError(core.ErrCodeInvalidPayload, "payment transfers must share one funding authority")
+		}
+		fundingAuthority = &authority
+	}
+	required := int(tx.Message.Header.NumRequiredSignatures)
+	for i, signer := range tx.Message.AccountKeys {
+		if i >= required {
+			break
+		}
+		if i == 0 || (fundingAuthority != nil && signer.Equals(*fundingAuthority)) {
+			continue
+		}
+		return core.NewError(core.ErrCodeInvalidPayload, "unexpected signer in payment transaction")
+	}
+	return nil
 }
 
 // requiredATAOwners returns the split recipients whose challenge pinned

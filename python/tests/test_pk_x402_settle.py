@@ -13,6 +13,7 @@ import base64
 import json
 import struct
 
+import httpx
 import pytest
 from solana_keychain import MemorySigner, SignedTransaction
 from solders.hash import Hash
@@ -20,6 +21,7 @@ from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.message import MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 import solana_pay_kit.protocols.x402 as xmod
@@ -32,9 +34,12 @@ from solana_pay_kit import (
     Stablecoin,
     configure,
 )
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.rpc import _RpcError
+from solana_pay_kit._paycore.store import ConsumedSignatures, consumed_signature_key
 from solana_pay_kit.config import reset
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import InvalidProofError, SettlementInProgressError
 from solana_pay_kit.protocols.x402 import (
     X402_VERSION,
     X402Adapter,
@@ -61,18 +66,21 @@ class _FakeRpc:
     def __init__(
         self,
         *_a,
-        fail: bool = False,
+        fail: bool | Exception = False,
         confirm_error: Exception | None = None,
         **_k,
     ):
         self._fail = fail
         self._confirm_error = confirm_error
         self.confirm_calls = 0
+        self.confirm_history: list[bool] = []
         self.send_calls = 0
         self.aclose_calls = 0
 
     async def send_raw_transaction(self, _raw):
         self.send_calls += 1
+        if isinstance(self._fail, Exception):
+            raise self._fail
         if self._fail:
             raise RuntimeError("broadcast boom")
 
@@ -82,8 +90,9 @@ class _FakeRpc:
         _Resp.value = _transaction_signature(bytes(_raw))
         return _Resp()
 
-    async def await_confirmation(self, _signature, *_a, **_k):
+    async def await_confirmation(self, _signature, *_a, search_transaction_history: bool = False, **_k):
         self.confirm_calls += 1
+        self.confirm_history.append(search_transaction_history)
         if self._confirm_error is not None:
             raise self._confirm_error
         return None
@@ -116,7 +125,7 @@ def _clean(monkeypatch):
     reset()
 
 
-def _adapter(store=None, fail=False, confirm_error=None, monkeypatch=None, rpcs=None):
+def _adapter(store=None, fail: bool | Exception = False, confirm_error=None, monkeypatch=None, rpcs=None):
     op_kp = Keypair()
     op = Operator(signer=MemorySigner(op_kp), recipient=str(Keypair().pubkey()))
     cfg = configure(
@@ -164,13 +173,15 @@ def _build_envelope(adapter, gate, op_kp, *, amount_override=None, memo_override
     memo_text = memo_override if memo_override is not None else offer["extra"]["memo"]
     memo = Instruction(Pubkey.from_string(MEMO_PROGRAM), memo_text.encode(), [])
     msg = MessageV0.try_compile(op_kp.pubkey(), [cl, cp, transfer, memo], [], Hash.from_string(BH))
-    # Unsigned v0 wire form: zeroed sig slots, then the 0x80-prefixed message.
+    # The v0 wire form a client sends: the transfer authority's slot signed,
+    # the fee payer's slot left as a zero placeholder for the server to co-sign.
     num = int(msg.header.num_required_signatures)
-    wire = bytearray()
-    wire.append(num)
-    wire.extend(bytes(64) * num)
-    wire.extend(bytes(to_bytes_versioned(msg)))
-    tx_b64 = base64.b64encode(bytes(wire)).decode()
+    signed_bytes = bytes(to_bytes_versioned(msg))
+    sigs = [
+        authority.sign_message(signed_bytes) if key == authority.pubkey() else Signature.default()
+        for key in msg.account_keys[:num]
+    ]
+    tx_b64 = base64.b64encode(bytes(VersionedTransaction.populate(msg, sigs))).decode()
     envelope = {
         "x402Version": X402_VERSION,
         "accepted": offer,
@@ -227,7 +238,7 @@ async def test_replay_same_signature_with_different_transaction_rejected(monkeyp
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
     await store.put(
-        f"x402-svm-exact:consumed:{signature}",
+        consumed_signature_key(signature),
         {"binding": "different-wire", "leaseUntil": 0, "state": "confirmed"},
     )
     with pytest.raises(InvalidProofError) as exc:
@@ -236,11 +247,164 @@ async def test_replay_same_signature_with_different_transaction_rejected(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_broadcast_failure_is_invalid_proof(monkeypatch):
-    adapter, gate, op_kp = _adapter(fail=True, monkeypatch=monkeypatch)
+async def test_signature_settled_through_mpp_is_rejected_by_x402(monkeypatch):
+    """MPP charge and x402 share one consumed-signature ledger: a transaction
+    already settled through MPP cannot be presented again as an x402 proof."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
     header = _build_envelope(adapter, gate, op_kp)
-    with pytest.raises(InvalidProofError, match="broadcast failed"):
+    signature = await _settlement_signature(header, op_kp)
+    assert await ConsumedSignatures(store).claim(signature) is True  # MPP settled it
+
+    with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
+    assert not rpcs or rpcs[0].send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_signature_settled_through_x402_is_consumed_for_mpp(monkeypatch):
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    # The claim MPP charge makes before granting a receipt now fails.
+    assert await ConsumedSignatures(store).claim(payment.transaction) is False
+    # An unrelated payment is still accepted.
+    assert await ConsumedSignatures(store).claim("other-signature") is True
+
+
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+@pytest.mark.asyncio
+async def test_pre_ledger_consumed_record_stays_consumed(monkeypatch, legacy_prefix):
+    """A signature claimed under a pre-ledger MPP or x402 key (by an older
+    replica, or just before an upgrade) stays consumed for both protocols; the
+    legacy record is only read, never rewritten."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    await store.put(legacy_prefix + signature, True)
+
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
+    assert not rpcs or rpcs[0].send_calls == 0
+    assert await ConsumedSignatures(store).claim(signature) is False
+    assert await store.get(consumed_signature_key(signature)) is None
+    assert await store.get(legacy_prefix + signature) is True
+
+    # Signatures without a legacy record settle normally.
+    await store.delete(legacy_prefix + signature)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == signature
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejection_is_invalid_proof_and_records_nothing(monkeypatch):
+    from solana_pay_kit._paycore.rpc import PreflightRejectedError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store, fail=PreflightRejectedError("simulation failed"), monkeypatch=monkeypatch
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    with pytest.raises(InvalidProofError, match="broadcast failed") as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert not isinstance(exc.value, SettlementInProgressError)
+    # No node was handed it: the payer may present it again.
+    assert await store.get(consumed_signature_key(signature)) is None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_broadcast_failure_keeps_the_payment_pending(monkeypatch):
+    store = MemoryStore()
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
+    adapter, gate, op_kp = _adapter(store=store, fail=True, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    # A lost response: it may have landed. Never a plain rejection.
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    record = await store.get(consumed_signature_key(signature))
+    assert isinstance(record, dict)
+    assert record["state"] == "pending"
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+
+    # Once the lease lapses a retry reconciles it from the chain, without
+    # broadcasting it again, and is granted once.
+    now[0] += 21 * 60 + 1
+    recovered: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc()
+        recovered.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == signature
+    assert recovered[0].send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_the_lease_reads_status_with_history(monkeypatch):
+    """A retry long after the broadcast reconciles a payment that may have
+    left the node's recent status cache: its confirmation read searches the
+    transaction history. The first confirmation, right after the send, does
+    not need to."""
+    store = MemoryStore()
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
+    first: list = []
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        confirm_error=PaymentError("timed out", code="transaction-not-found"),
+        monkeypatch=monkeypatch,
+        rpcs=first,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert first[0].confirm_history == [False]
+
+    now[0] += 21 * 60 + 1
+    recovered: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc()
+        recovered.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    await adapter.verify_and_settle(gate, _Req(header))
+    assert recovered[0].send_calls == 0
+    assert recovered[0].confirm_history == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        _RpcError("Node is unhealthy", code="payment_invalid"),
+        httpx.ConnectError("connection refused"),
+    ],
+)
+async def test_failed_status_read_after_the_send_keeps_the_payment_pending(monkeypatch, error):
+    """A node outage while confirming is never proof the payment did not land."""
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, confirm_error=error, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    with pytest.raises(SettlementInProgressError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    record = await store.get(consumed_signature_key(signature))
+    assert isinstance(record, dict) and record["state"] == "pending"
 
 
 # -- confirmation gate (149-2 BLOCKER) ---------------------------------------
@@ -273,19 +437,17 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     )
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
-    with pytest.raises(InvalidProofError) as exc:
+    with pytest.raises(SettlementInProgressError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
-    assert exc.value.code == "payment_invalid"
-    assert "confirmation failed" in str(exc.value)
+    assert exc.value.code == "settlement_in_progress"
     # Broadcast was accepted, so a timeout is ambiguous: the transaction may
     # still land. Keep the reservation to prevent a later duplicate fulfillment.
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
 
-    with pytest.raises(InvalidProofError) as retry_exc:
+    with pytest.raises(SettlementInProgressError):
         await adapter.verify_and_settle(gate, _Req(header))
-    assert retry_exc.value.code == "signature_consumed"
 
     now[0] += 21 * 60 + 1
     recovered_rpcs: list = []
@@ -300,7 +462,7 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     assert payment.transaction == signature
     assert recovered_rpcs[0].confirm_calls == 1
     assert recovered_rpcs[0].send_calls == 0
-    confirmed_record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    confirmed_record = await store.get(consumed_signature_key(signature))
     assert isinstance(confirmed_record, dict)
     assert confirmed_record["state"] == "confirmed"
 
@@ -335,7 +497,7 @@ async def test_recovery_does_not_replace_concurrently_confirmed_state(monkeypatc
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == signature
     assert recovery_rpcs == []
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "confirmed"
 
@@ -352,9 +514,11 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
     )
     header = _build_envelope(adapter, gate, op_kp)
     signature = await _settlement_signature(header, op_kp)
-    with pytest.raises(InvalidProofError):
+    with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header))
-    record = await store.get(f"x402-svm-exact:consumed:{signature}")
+    # It landed and failed: a rejection, not an unresolved settlement.
+    assert not isinstance(exc.value, SettlementInProgressError)
+    record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
     assert record["state"] == "pending"
 
@@ -625,3 +789,148 @@ async def test_cosign_preserves_client_signature_and_uses_returned_transaction(s
     assert signed.message == partial.message
     assert signed.signatures[1] == client_signature
     assert signed.verify_with_results() == [True, True]
+
+
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+@pytest.mark.asyncio
+async def test_settled_payment_is_visible_to_replicas_on_the_previous_release(monkeypatch, legacy_prefix):
+    """Rolling upgrade: a replica on the previous release claims and checks only
+    its own legacy key. Every claim takes those keys too, so such a replica
+    refuses a payment this release accepted; a release gives them back."""
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert await store.put_if_absent(legacy_prefix + payment.transaction, True) is False
+
+    ledger = ConsumedSignatures(store)
+    assert await ledger.claim("sig-released") is True
+    await ledger.release("sig-released")
+    assert await store.get(legacy_prefix + "sig-released") is None
+    assert await ledger.claim("sig-released") is True
+
+
+@pytest.mark.asyncio
+async def test_refused_claim_gives_back_the_legacy_keys_it_took():
+    store = MemoryStore()
+    await store.put("x402-svm-exact:consumed:sig-held", True)
+    assert await ConsumedSignatures(store).claim("sig-held") is False
+    assert await store.get("solana-charge:consumed:sig-held") is None
+    assert await store.get(consumed_signature_key("sig-held")) is None
+
+
+@pytest.mark.asyncio
+async def test_already_processed_with_no_record_here_is_a_replay(monkeypatch):
+    """A payment settled by another instance (its own store) lands first; the
+    node then refuses this broadcast as already processed. That is a replay,
+    never a pending settlement, and it stays consumed here."""
+    from solana_pay_kit._paycore.rpc import _RpcError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        fail=_RpcError("Transaction error: This transaction has already been processed", code="signature_consumed"),
+        monkeypatch=monkeypatch,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    for _ in range(2):
+        with pytest.raises(InvalidProofError) as exc:
+            await adapter.verify_and_settle(gate, _Req(header))
+        assert not isinstance(exc.value, SettlementInProgressError)
+        assert exc.value.code == "signature_consumed"
+    assert await store.get(consumed_signature_key(signature)) is True
+
+
+@pytest.mark.asyncio
+async def test_pending_record_is_claimed_before_sending(monkeypatch):
+    """Recorded only after the send, a store failure would leave a payment
+    that may have landed with nothing to reconcile; the retry would then find
+    it already processed and refuse it. A failed claim sends nothing."""
+
+    class _FailingStore(MemoryStore):
+        fail = True
+
+        async def put_if_absent(self, key, value):
+            if self.fail and key.startswith("solana:consumed-signature:"):
+                raise RuntimeError("injected store outage")
+            return await super().put_if_absent(key, value)
+
+    store = _FailingStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(RuntimeError, match="injected store outage"):
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    store.fail = False
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == await _settlement_signature(header, op_kp)
+
+
+# -- every required signer must have signed ------------------------------------
+
+
+def _with_client_signatures(header: str, op_kp: Keypair, build) -> tuple[str, VersionedTransaction]:
+    """Re-sign the envelope's transaction as a landed payment would carry it
+    (fee payer and transfer authority both signed), then hand ``build`` that
+    landed transaction to derive the wire the client actually submits."""
+    envelope = json.loads(base64.b64decode(header))
+    vtx = VersionedTransaction.from_bytes(base64.b64decode(envelope["payload"]["transaction"]))
+    signed_bytes = bytes(to_bytes_versioned(vtx.message))
+    landed = VersionedTransaction.populate(vtx.message, [op_kp.sign_message(signed_bytes), *list(vtx.signatures)[1:]])
+    assert all(landed.verify_with_results())
+    submitted = build(landed)
+    envelope["payload"]["transaction"] = base64.b64encode(bytes(submitted)).decode()
+    return base64.b64encode(json.dumps(envelope).encode()).decode(), landed
+
+
+@pytest.mark.asyncio
+async def test_landed_two_signer_payment_truncated_to_its_first_signature_is_refused_before_it_is_claimed(
+    monkeypatch,
+):
+    """Every present signature verifies, but the message requires two: the
+    truncated wire names the landed transaction without the payer's
+    authorization. It is refused before any claim or send."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header, landed = _with_client_signatures(
+        _build_envelope(adapter, gate, op_kp),
+        op_kp,
+        lambda tx: VersionedTransaction.populate(tx.message, [tx.signatures[0]]),
+    )
+    for _ in range(2):
+        with pytest.raises(InvalidProofError) as exc:
+            await adapter.verify_and_settle(gate, _Req(header))
+        assert exc.value.code == "payment_invalid"
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+
+@pytest.mark.asyncio
+async def test_unsigned_transfer_authority_is_refused_before_it_is_claimed(monkeypatch):
+    """The server co-signs only the fee payer: a transfer authority slot left
+    empty authorizes nothing and is refused before any claim or send."""
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
+    header, landed = _with_client_signatures(
+        _build_envelope(adapter, gate, op_kp),
+        op_kp,
+        lambda tx: VersionedTransaction.populate(tx.message, [Signature.default()] * len(tx.signatures)),
+    )
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "payment_invalid"
+    assert all(rpc.send_calls == 0 for rpc in rpcs)
+    assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+
+@pytest.mark.asyncio
+async def test_fully_signed_two_signer_payment_settles(monkeypatch):
+    """Positive control: the landed shape, both slots signed, settles once."""
+    adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch)
+    header, landed = _with_client_signatures(_build_envelope(adapter, gate, op_kp), op_kp, lambda tx: tx)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == str(landed.signatures[0])

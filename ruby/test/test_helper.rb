@@ -76,17 +76,41 @@ module RubyMppTestHelpers
 
   # Build a v0 transaction wire (0x80 version prefix, empty address-table
   # lookup vector): the wire every pay-kit client emits.
-  def v0_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil)
+  def v0_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil, signer: nil)
     sigs = signatures || ["\x00".b * 64]
     message = [0x80].pack("C") + message_body(account_keys, instructions, recent_blockhash, sigs.length) + compact_u16(0)
+    sign_slots(sigs, message, signer)
+  end
+
+  # Sign `message` into the slots `signer` names (a byte signs slot 0, a
+  # `{slot => byte}` hash signs each listed slot) and return the wire.
+  def sign_slots(sigs, message, signer)
+    slots =
+      if signer.is_a?(Hash) then signer
+      elsif signer then {0 => signer}
+      else {}
+      end
+    sigs = sigs.dup
+    slots.each { |slot, byte| sigs[slot] = fixture_signing_key(byte).sign(message) }
     compact_u16(sigs.length) + sigs.join + message
+  end
+
+  # Deterministic Ed25519 test signer for `byte`, and its base58 public key:
+  # pass the key as account 0 and `signer: byte` to sign slot 0 for real.
+  def fixture_signing_key(byte)
+    ::Ed25519::SigningKey.new(([byte] * 32).pack("C*"))
+  end
+
+  def signer_pubkey(byte)
+    base58(fixture_signing_key(byte).verify_key.to_bytes.bytes)
   end
 
   # Build a legacy (unprefixed) transaction wire, as a pre-cutover client
   # sends; servers still accept it.
-  def legacy_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil)
+  def legacy_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil, signer: nil)
     sigs = signatures || ["\x00".b * 64]
-    compact_u16(sigs.length) + sigs.join + message_body(account_keys, instructions, recent_blockhash, sigs.length)
+    message = message_body(account_keys, instructions, recent_blockhash, sigs.length)
+    sign_slots(sigs, message, signer)
   end
 
   def message_body(account_keys, instructions, recent_blockhash, required_signatures)

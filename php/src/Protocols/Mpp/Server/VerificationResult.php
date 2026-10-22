@@ -26,6 +26,7 @@ final class VerificationResult
         public readonly string $externalId = '',
         public readonly ?Challenge $challenge = null,
         public readonly ?Credential $credential = null,
+        public readonly bool $expired = false,
     ) {
     }
 
@@ -46,6 +47,18 @@ final class VerificationResult
     }
 
     /**
+     * A failed result for an authentic credential whose challenge expired.
+     *
+     * Every other check passed, and the challenge and credential are attached
+     * so the caller can reconcile a charge that challenge already left
+     * pending. It never authorizes starting a new payment.
+     */
+    public static function expiredFor(Challenge $challenge, Credential $credential): self
+    {
+        return new self(ok: false, reason: 'challenge expired', challenge: $challenge, credential: $credential, expired: true);
+    }
+
+    /**
      * Return a copy with the verified challenge and credential attached.
      *
      * Intended for internal use by {@see ChargeServer} after a verifier
@@ -61,6 +74,7 @@ final class VerificationResult
             externalId: $this->externalId,
             challenge: $challenge,
             credential: $credential,
+            expired: $this->expired,
         );
     }
 }

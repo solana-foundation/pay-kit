@@ -5,6 +5,10 @@ files = [
   "specs/schemes/exact/scheme_exact.md",
   "specs/schemes/exact/scheme_exact_svm.md",
   "specs/extensions/payment_identifier.md",
+  "specs/schemes/upto/scheme_upto.md",
+  "specs/schemes/upto/scheme_upto_svm.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement.md",
+  "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
 ]
 
 # Requirements the vectors cover. id = prefix + sha256(normalised text)[:10];
@@ -122,6 +126,258 @@ required = true
 
 # Noise: normative sentences that do not apply to SVM, with the reason.
 
+[[requirement]]
+id = "X402-005b043052"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Outside the canonical open account positions defined below, extra.feePayer MUST NOT appear in any instruction's account list or as an invoked program."
+required = true
+
+[[requirement]]
+id = "X402-076bb2bdc3"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Deposit settle MUST open the channel itself for this authorization; out-of-band opens, prior deposits, and replay of an already-opened channelId MUST NOT succeed."
+required = true
+
+[[requirement]]
+id = "X402-11bbb0287f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "If both are present, SetComputeUnitLimit MUST precede SetComputeUnitPrice."
+required = true
+
+[[requirement]]
+id = "X402-14b8b2b598"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Therefore a read-only role at position 2 or 4 MAY be effectively writable and/or a signer when it equals another requirements-bound role (as payee == rent_payer always does in this profile); that expected privilege union MUST NOT itself cause rejection."
+required = true
+
+[[requirement]]
+id = "X402-1c7e99f632"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "| authorizedSigner | string | MUST equal extra.receiverAuthorizer; included for explicit payload validation."
+required = true
+
+[[requirement]]
+id = "X402-233dcf8a3e"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST set a compute-unit price no greater than 5000000 microlamports per compute unit (5 lamports per compute unit)."
+required = true
+
+[[requirement]]
+id = "X402-2cb22aa0de"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The channel distribution for upto MUST NOT assign any portion of the settled amount away from payTo."
+required = true
+
+[[requirement]]
+id = "X402-3b5914a7c5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The verifier MUST enforce the Phase 3 openTransaction acceptance policy so the client-signed transaction cannot debit feePayer beyond fees and the intended channel/escrow rent."
+required = true
+
+[[requirement]]
+id = "X402-443a167ea1"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."
+required = true
+
+[[requirement]]
+id = "X402-4504985ded"
+doc = "specs/schemes/upto/scheme_upto.md"
+text = "The authorization MUST cryptographically bind the recipient address."
+required = true
+
+[[requirement]]
+id = "X402-4c364688fc"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "type is per-settle and not part of the client authorization; presence on the client payload MUST fail with invalid_upto_svm_payload_type."
+required = true
+
+[[requirement]]
+id = "X402-521ba9b673"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST equal maxAmount. |"
+required = true
+
+[[requirement]]
+id = "X402-52c9f1e405"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Before signing, it MUST statically inspect the complete message and enforce the rules in this section."
+required = true
+
+[[requirement]]
+id = "X402-683361bbae"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST use only discriminator 2 (SetComputeUnitLimit, exactly 5 data bytes) or discriminator 3 (SetComputeUnitPrice, exactly 9 data bytes);"
+required = true
+
+[[requirement]]
+id = "X402-6a72109261"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The facilitator MUST always verify against the client-signed ceiling, never against the settlement-time amount."
+required = true
+
+[[requirement]]
+id = "X402-77ee69c328"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Although the program supports expires_at == 0 as no expiry, SVM upto MUST reject expiresAt == 0."
+required = true
+
+[[requirement]]
+id = "X402-7cd3ca69a6"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "A sponsor MAY apply a stricter local policy, including rejecting all optional instructions, but MUST NOT admit instructions outside this allowlist or relax the absolute compute-budget ceilings above."
+required = true
+
+[[requirement]]
+id = "X402-865b05c15d"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Deposit settle MUST open that channel itself and MUST reject if the channel account already exists."
+required = true
+
+[[requirement]]
+id = "X402-8969786085"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The explicit single-entry distribution is REQUIRED in all cases, including when payTo equals extra.receiverAuthorizer or extra.feePayer: the payee implicit remainder MUST be zero so that the facilitator in the payee seat has no claim on settled funds."
+required = true
+
+[[requirement]]
+id = "X402-99f2a389e8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST equal verification-phase amount. |"
+required = true
+
+[[requirement]]
+id = "X402-9af8f33cd6"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The complete required-signer set MUST equal the distinct addresses in { payload.from, extra.feePayer }."
+required = true
+
+[[requirement]]
+id = "X402-9d68660de5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The transaction fee payer MUST equal extra.feePayer."
+required = true
+
+[[requirement]]
+id = "X402-aaee5a4f5b"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "voucherSignature is claim-only and server-owned; presence on the client payload (including an empty string or undefined value) MUST fail with invalid_upto_svm_payload_unexpected_voucher."
+required = true
+
+[[requirement]]
+id = "X402-aec23b2308"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The facilitator MUST fully decode the canonical open instruction data, reject truncated data or trailing bytes, and enforce every field binding defined in section 4.2, including the exact deposit, salt, open slot, grace period, distribution, and rederived channel PDA."
+required = true
+
+[[requirement]]
+id = "X402-b2b604a864"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "If extra.memo is present, the facilitator MUST verify that exactly one Memo instruction exists in the suffix and that its data matches extra.memo encoded as UTF-8."
+required = true
+
+[[requirement]]
+id = "X402-b4167aad45"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST set a compute-unit limit no greater than 400000; and"
+required = true
+
+[[requirement]]
+id = "X402-bcbf7025e5"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The payload.from signature MUST be present and valid before the facilitator signs."
+required = true
+
+[[requirement]]
+id = "X402-c1174b72d8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."
+required = true
+
+[[requirement]]
+id = "X402-c8544c0fdd"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "In particular, another payment-channels instruction, an arbitrary wallet program, or a duplicate open MUST cause rejection."
+required = true
+
+[[requirement]]
+id = "X402-ce3692afe0"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The top-level instructions MUST consist only of the following ordered regions:"
+required = true
+
+[[requirement]]
+id = "X402-cf373442ff"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The server/facilitator MUST rederive the PDA from the decoded openTransaction and reject the payload if it differs from either the decoded channel account or payload.channelId."
+required = true
+
+[[requirement]]
+id = "X402-d0ce5e5325"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Lighthouse and Memo instructions are allowed only in the optional suffix and MUST NOT reference extra.feePayer as an account or as the invoked program."
+required = true
+
+[[requirement]]
+id = "X402-d46a6b2b3b"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The suffix MUST contain at most three Lighthouse instructions."
+required = true
+
+[[requirement]]
+id = "X402-d75fb10a6f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The open instruction MUST encode:"
+required = true
+
+[[requirement]]
+id = "X402-d851126afb"
+doc = "specs/schemes/upto/scheme_upto.md"
+text = "Each authorization MUST have explicit validity time constraints:"
+required = true
+
+[[requirement]]
+id = "X402-d90b7dc5de"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The client MUST encode this exact value in open; the facilitator MUST reject any other value."
+required = true
+
+[[requirement]]
+id = "X402-e4509fb732"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The server/facilitator MUST, in order:"
+required = true
+
+[[requirement]]
+id = "X402-e829ad118e"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The open instruction MUST invoke the canonical payment-channels program for the selected network, use discriminator 1, contain exactly the following 14 account positions in order, and contain no remaining accounts:"
+required = true
+
+[[requirement]]
+id = "X402-eace5aece9"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The client MUST derive channelId before signing openTransaction, include the same PDA as the writable channel account in the open instruction, and set payload.channelId to that address."
+required = true
+
+[[requirement]]
+id = "X402-edc9de017f"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "Implementations MUST target the canonical payment-channels program id for the selected network and MUST NOT trust or negotiate a channelProgram value from extra."
+required = true
+
+[[requirement]]
+id = "X402-f747c74e76"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "The deposit settle (Phase 3) MUST NOT include payload.voucherSignature."
+required = true
+
+[[requirement]]
+id = "X402-ffe188aee8"
+doc = "specs/schemes/upto/scheme_upto_svm.md"
+text = "MUST be an integer greater than zero."
+required = true
+
 [[ignore]]
 id = "X402-07a28e5b57"
 reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Facilitator safety: the facilitator's address MUST NOT appea..."
@@ -201,3 +457,455 @@ reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet 
 [[ignore]]
 id = "X402-84cdebd3a5"
 reason = "scheme_exact.md binding for a non-SVM network (Stellar, TON, Starknet or Hedera): Outcome from the record (transferExecutor): settlement succe..."
+
+# x402 batch-settlement (SVM)
+
+[[requirement]]
+id = "X402-04b1c68ba2"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The scheme resolves to the protocol-default authorization payment flow, so extra.paymentFlow is normally omitted; when either party emits it, the value MUST be \"authorization\"."
+required = true
+
+[[requirement]]
+id = "X402-063b58b983"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The key MUST equal extra.receiverAuthorizer."
+required = true
+
+[[requirement]]
+id = "X402-06bb8f3a9e"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator MUST confirm the decoded amount equals payload.deposit.amount; the channel is Open; and every immutable channel field and the committed distribution match the payload and requirements."
+required = true
+
+[[requirement]]
+id = "X402-1230bb35a3"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The client and facilitator MUST verify it against the onchain mint owner. |"
+required = true
+
+[[requirement]]
+id = "X402-129e295f0c"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For top_up, it MUST NOT appear in the payment-channel instruction's account list."
+required = true
+
+[[requirement]]
+id = "X402-13c8fefbbf"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "channelConfig.payer and channelConfig.payerAuthorizer MUST NOT equal extra.feePayer."
+required = true
+
+[[requirement]]
+id = "X402-15a1a9834e"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "In particular, a top-level associated-token-account instruction, arbitrary wallet program, second payment-channel instruction, or duplicate setup instruction MUST cause rejection."
+required = true
+
+[[requirement]]
+id = "X402-171a57666e"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The client MUST reject the snapshot when the signature does not verify or when channelState.chargedCumulativeAmount exceeds voucherState.signedMaxClaimable."
+required = true
+
+[[requirement]]
+id = "X402-176a26e5b6"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator MUST fully decode the instruction data, reject truncated data or trailing bytes, and enforce the exact salt, deposit, grace period, open slot, single-recipient distribution, and PDA derivation specified in sections 4.1 and 4.2."
+required = true
+
+[[requirement]]
+id = "X402-180abaa115"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The payment-channels program accepts any positive grace_period; this range is an x402 conformance bound, so verifying facilitators MUST enforce it and reject out-of-range requirements. |"
+required = true
+
+[[requirement]]
+id = "X402-2073737c58"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "No voucher expiry. The client MUST sign expiresAt = 0, and the server and facilitator MUST reject any voucher with nonzero expiresAt."
+required = true
+
+[[requirement]]
+id = "X402-22712c36e1"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Omitted or \"client\" selects client mode; \"server\" selects server mode and MUST equal extra.voucherSigner. |"
+required = true
+
+[[requirement]]
+id = "X402-23747f44c3"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The client and facilitator MUST confirm extra.tokenProgram equals the onchain owner of channelConfig.token; neither role may trust the server-provided value without that check."
+required = true
+
+[[requirement]]
+id = "X402-24cd5fed02"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| voucher | BatchVoucher | REQUIRED in client mode and absent in server mode."
+required = true
+
+[[requirement]]
+id = "X402-2ae0fdc5c6"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For authorization, and for a deposit whose channelConfig selects server mode, it MUST also verify the BatchAuthorization itself: the payer signature over the section 4.2 message, channelId equal to the derived PDA, payer equal to channelConfig.payer, authorizedAmount equal to PaymentRequirements.amount, a non-empty requestId, and now < expiresAt."
+required = true
+
+[[requirement]]
+id = "X402-2f8ea170e2"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST NOT equal feePayer. |"
+required = true
+
+[[requirement]]
+id = "X402-3485cafa46"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "paymentPayload.payload MUST be one of the client-authored deposit, voucher, authorization, or refund variants in section 4.3."
+required = true
+
+[[requirement]]
+id = "X402-3679bfc55e"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "In client mode it MUST reject a voucher whose maxClaimableAmount differs from its accepted cumulative amount."
+required = true
+
+[[requirement]]
+id = "X402-3ed2ac9962"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Lighthouse and Memo instructions are allowed only in the final suffix and MUST NOT reference extra.feePayer as an account or as the invoked program."
+required = true
+
+[[requirement]]
+id = "X402-45c411d301"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| Seal | closeAuthorization | CloseAuthorization | REQUIRED (section 3)."
+required = true
+
+[[requirement]]
+id = "X402-492eabbfab"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| authorization | BatchAuthorization | REQUIRED in server mode and absent in client mode."
+required = true
+
+[[requirement]]
+id = "X402-4cedb5114b"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MAY use a facilitator-built composite simulation or targeted account checks in addition to the setup simulation, but it MUST reject before escrowing when a settlement account is missing, frozen, has the wrong owner or mint, or is otherwise unusable under the program rules."
+required = true
+
+[[requirement]]
+id = "X402-4ea8d1b0d9"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Before signing, it MUST statically validate the complete compiled message under the acceptance policy below."
+required = true
+
+[[requirement]]
+id = "X402-5276aee847"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The suffix uses the same program and fee-payer-isolation rules as setup transactions; when extra.memo is present, a supplied Memo MUST match it."
+required = true
+
+[[requirement]]
+id = "X402-536163eb05"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "If extra.memo is present, the facilitator MUST require exactly one Memo besides the binding Memo and an exact UTF-8 data match."
+required = true
+
+[[requirement]]
+id = "X402-556df29ac2"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The server MUST reject an open whose binding Memo is not its own key before forwarding the deposit."
+required = true
+
+[[requirement]]
+id = "X402-55d34e173c"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The payer signature MUST be present and valid before the sponsor signs."
+required = true
+
+[[requirement]]
+id = "X402-5b328b9a73"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "In both modes the payer authorizer MUST equal the channel authorized_signer."
+required = true
+
+[[requirement]]
+id = "X402-5ebca343d1"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| extra.commitmentId | string | no | MUST be non-empty for voucher acceptance, e.g."
+required = true
+
+[[requirement]]
+id = "X402-62a1b36ba4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| channelConfig | ChannelConfig | MUST select server mode. |"
+required = true
+
+[[requirement]]
+id = "X402-638126c26b"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Before adopting the corrective state, the client MUST verify voucherState.signature against its own payerAuthorizer key as an Ed25519 signature over the 50-byte voucher message of section 4.2, reconstructed from the derived channelId, maxClaimableAmount = voucherState.signedMaxClaimable, and expiresAt = voucherState.expiresAt."
+required = true
+
+[[requirement]]
+id = "X402-6ac6583e77"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "channelConfig.receiverAuthorizer and extra.receiverAuthorizer MUST both be present and equal (section 3)."
+required = true
+
+[[requirement]]
+id = "X402-7556a4ec7c"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "MUST be an integer from 900 through 2592000 (15 minutes through 30 days), MUST be >= maxTimeoutSeconds, and MUST be encoded exactly as the program grace_period."
+required = true
+
+[[requirement]]
+id = "X402-7f4ee54a73"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "claims[] MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables."
+required = true
+
+[[requirement]]
+id = "X402-84916fe051"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Server mode is opt-in per operator, never per 402. A client MUST NOT open or pay into a server-mode channel because a PaymentRequired advertised voucherSigner: \"server\"."
+required = true
+
+[[requirement]]
+id = "X402-87c5fe8803"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For a new channel, the open instruction MUST encode:"
+required = true
+
+[[requirement]]
+id = "X402-897add7b39"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "A sponsor MAY reject all optional Lighthouse instructions, but MUST NOT reject the required Memo or admit instructions outside this allowlist."
+required = true
+
+[[requirement]]
+id = "X402-91ecad3faa"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "channelConfig.receiverAuthorizer MUST equal extra.receiverAuthorizer (section 3)."
+required = true
+
+[[requirement]]
+id = "X402-9ca40ae469"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "In this form extra.feePayer authorizes only the bounded transaction fee and MUST NOT be an instruction account, authority, source, or delegate."
+required = true
+
+[[requirement]]
+id = "X402-a2dd2eb911"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| receiver | string | MUST equal payTo. |"
+required = true
+
+[[requirement]]
+id = "X402-a6092f0a02"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The refund transaction MUST contain exactly one canonical payment-channels request_close instruction for the PDA derived from channelConfig."
+required = true
+
+[[requirement]]
+id = "X402-a6efa8062a"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For every paid request, the server MUST:"
+required = true
+
+[[requirement]]
+id = "X402-a8645e7833"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "When the binding is unavailable, the facilitator MUST validate and co-sign the client's request_close transaction with extra.feePayer, broadcast it, and confirm that the channel entered Closing."
+required = true
+
+[[requirement]]
+id = "X402-a93234f1d7"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "MUST set a compute-unit price no greater than 5000000 microlamports per compute unit."
+required = true
+
+[[requirement]]
+id = "X402-ae18578132"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "If both are present, the limit MUST precede the price."
+required = true
+
+[[requirement]]
+id = "X402-ae5ee4f564"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| token | string | MUST equal asset; maps to channel mint. |"
+required = true
+
+[[requirement]]
+id = "X402-bde1322bb3"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| paymentFlow | string | no | When present, MUST be \"authorization\"."
+required = true
+
+[[requirement]]
+id = "X402-be2f5b7ea4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The top_up instruction MUST invoke the canonical payment-channels program, use discriminator 3, contain exactly these six accounts in order, and contain no remaining accounts:"
+required = true
+
+[[requirement]]
+id = "X402-c0dd3bd5b3"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Self-managed closes MUST carry a valid CloseAuthorization from that key."
+required = true
+
+[[requirement]]
+id = "X402-c3d9b43d25"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| x402Version | number | yes | MUST be 2. |"
+required = true
+
+[[requirement]]
+id = "X402-c88cc9c766"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The transaction MUST contain the payer signature and extra.feePayer as fee payer; no other signer or address lookup table is permitted."
+required = true
+
+[[requirement]]
+id = "X402-cee6662254"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "authorizedAmount MUST be \"0\" (close intent)."
+required = true
+
+[[requirement]]
+id = "X402-d167f9a958"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Once the payer has broadcast request_close, the channel is Closing and program settle is unavailable: a claim for that channel, and a voucher or authorization verification against it, MUST fail with invalid_batch_settlement_svm_channel_closing."
+required = true
+
+[[requirement]]
+id = "X402-d16b3abbab"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For open, the client MUST set payee = extra.feePayer, authorized_signer = channelConfig.payerAuthorizer, rent_payer = extra.feePayer, mint = channelConfig.token, grace_period = channelConfig.withdrawDelay, open_slot = channelConfig.openSlot, and deposit = payload.deposit.amount."
+required = true
+
+[[requirement]]
+id = "X402-d171becfd9"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "MUST NOT equal feePayer, because the program requires distinct payer and payee accounts. |"
+required = true
+
+[[requirement]]
+id = "X402-d29d49ebde"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For every request, paymentPayload.accepted MUST equal paymentRequirements."
+required = true
+
+[[requirement]]
+id = "X402-d450762477"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The instruction MUST use discriminator 5, contain exactly these two accounts in order, and contain no remaining accounts:"
+required = true
+
+[[requirement]]
+id = "X402-d71a021041"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| voucher.expiresAt | VoucherArgs.expires_at; MUST be 0 in this scheme |"
+required = true
+
+[[requirement]]
+id = "X402-dcd8fcf77b"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "For this unilateral path, the server MUST mark the channel close-pending and reject further paid requests."
+required = true
+
+[[requirement]]
+id = "X402-df15443ca9"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "REQUIRED when voucherSigner == \"server\"; MUST be absent in client mode. |"
+required = true
+
+[[requirement]]
+id = "X402-e98b9b9bec"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It is not a paid resource request, so the resource handler MUST be bypassed, and the payload MUST NOT contain an amount."
+required = true
+
+[[requirement]]
+id = "X402-ebd20058fd"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The Memo data MUST be extra.memo as UTF-8 when supplied, or otherwise a random nonce of at least 16 bytes encoded as hexadecimal text."
+required = true
+
+[[requirement]]
+id = "X402-f0a4201d93"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| withdrawDelay | number | MUST equal extra.withdrawDelay; maps to channel grace_period. |"
+required = true
+
+[[requirement]]
+id = "X402-f0d0755fc9"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The facilitator MUST reject an expired transaction blockhash and an openSlot outside the program's accepted window."
+required = true
+
+[[requirement]]
+id = "X402-f265c321e3"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The channel distribution for this scheme MUST NOT assign any portion of settled funds away from payTo."
+required = true
+
+[[requirement]]
+id = "X402-f5205e3932"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "When the binding in section 3 is available, the facilitator MUST validate closeAuthorization and the voucher against the channel."
+required = true
+
+[[requirement]]
+id = "X402-f729304bf1"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The complete required-signer set MUST equal the distinct addresses in { channelConfig.payer, extra.feePayer }."
+required = true
+
+[[requirement]]
+id = "X402-f882f2074a"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Absent a grant the client MUST refuse the server-mode accept and SHOULD pay a client-mode accept for the same resource, network, and asset at no more than the refused amount when one is offered; servers advertising server mode SHOULD therefore also offer the same resource in client mode, typically at the request ceiling as a fixed price."
+required = true
+
+[[requirement]]
+id = "X402-fa34804f1b"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "| voucher | BatchVoucher | REQUIRED in client mode."
+required = true
+
+[[requirement]]
+id = "X402-fb76d46cb8"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "Each decoded address MUST be exactly 32 bytes, and requestId MUST encode to 1 through 256 UTF-8 bytes."
+required = true
+
+[[requirement]]
+id = "X402-fbdea947ae"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The channel MUST be Open or still within its Closing grace period, and the payer's canonical return ATA MUST be healthy."
+required = true
+
+[[requirement]]
+id = "X402-46d0a12f84"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "A missing or stale snapshot MUST fall through to facilitator verification, and a successful verification MUST refresh the stored snapshot timestamp."
+required = true
+
+[[requirement]]
+id = "X402-fc2225a882"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "While implementation details vary by network, facilitators MUST enforce security constraints that prevent sponsorship abuse."
+required = true
+
+[[requirement]]
+id = "X402-8fcdf05fbf"
+doc = "specs/schemes/exact/scheme_exact.md"
+text = "A method MUST bind the payment to the requirements by one of: an instrument unique to this request; a server-issued nonce carried in the payment; a payer signature over the requirements; or a payee commitment to the requirements embedded in the instrument."
+required = true
+
+[[requirement]]
+id = "X402-d844c67736"
+doc = "specs/schemes/exact/scheme_exact_svm.md"
+text = "Settlement success MUST reflect actual on-chain effects, not simulation alone."
+required = true

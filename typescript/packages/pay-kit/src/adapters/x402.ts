@@ -1,4 +1,5 @@
 import { createSolanaRpc } from '@solana/kit';
+import { claimConsumedSignature } from '@solana/mpp/server';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -163,6 +164,13 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             const settlement = await facilitator.settle(payload, requirements);
             if (!settlement.success) {
                 throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
+            }
+            // One on-chain payment authorizes one request across protocols.
+            // The facilitator re-sends without preflight, so a transaction
+            // already settled through MPP "settles" again here under the same
+            // signature; the shared ledger is what refuses it.
+            if (!(await claimConsumedSignature(config.replayStore, settlement.transaction))) {
+                throw new InvalidProofError('signature_consumed', 'Transaction signature already consumed');
             }
 
             return {

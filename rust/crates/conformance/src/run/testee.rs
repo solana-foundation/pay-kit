@@ -334,10 +334,20 @@ impl Testee {
             log.get(mark..).unwrap_or_default().to_string()
         };
         if let Err(e) = writeln!(serving.stdin, "{request}").and_then(|_| serving.stdin.flush()) {
+            // A testee that crashed before reading the request breaks the
+            // pipe; report its exit and let its last stderr drain first,
+            // as the disconnected-stdout path below does.
+            std::thread::sleep(Duration::from_millis(50));
             let stderr = stderr_since(serving);
+            let status = serving.child.try_wait().ok().flatten();
             self.restart();
             return Exchange {
-                result: Err(format!("testee closed its stdin: {e}")),
+                result: Err(match status {
+                    Some(status) => {
+                        format!("testee exited ({status}) before reading the request: {e}")
+                    }
+                    None => format!("testee closed its stdin: {e}"),
+                }),
                 stderr,
                 duration: started.elapsed(),
                 request,

@@ -128,7 +128,7 @@ type VectorInput struct {
 	SessionWire          json.RawMessage       `json:"sessionWire"`
 
 	// x402-exact inputs.
-	X402Offer *X402Offer `json:"x402Offer"`
+	X402Offer json.RawMessage `json:"x402Offer"`
 	// X402Version is the x402Version the build path should produce:
 	// 1 builds the legacy top-level scheme/network envelope, 2 the
 	// accepted-echo envelope, and 0 (absent) exercises the default
@@ -342,7 +342,7 @@ var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)primary amount is zero after splits|split amounts exceed`), "splits-exceed-amount"},
 	{regexp.MustCompile(`(?i)splits exceed maximum`), "too-many-splits"},
 	{regexp.MustCompile(`(?i)ata creation owner is not authorized|unsupported compute budget|unexpected_signer|x402: unexpected instruction`), "unexpected-instruction"},
-	{regexp.MustCompile(`(?i)atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey`), "invalid-challenge"},
+	{regexp.MustCompile(`(?i)atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey|invalid payment requirement: missing`), "invalid-challenge"},
 	{regexp.MustCompile(`(?i)ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed|is not a computebudget|exactly one memo`), "invalid-payload"},
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
 	{regexp.MustCompile(`(?i)compute unit limit .* exceeds (maximum|cap)`), "compute-limit-over-cap"},
@@ -359,6 +359,8 @@ var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)no matching (spl )?(token )?(transfer|transferchecked|sol transfer)`), "no-matching-transfer"},
 	{regexp.MustCompile(`(?i)unexpected .* (instruction|transfer)`), "unexpected-instruction"},
 	{regexp.MustCompile(`(?i)amount .* (mismatch|does not match)`), "amount-mismatch"},
+	{regexp.MustCompile(`(?i)share one funding authority`), "mixed-funding-authority"},
+	{regexp.MustCompile(`(?i)unexpected signer`), "unexpected-signer"},
 	// x402-exact reject categories. `unsupported x402 version` must be
 	// checked before the generic invalid/payload fallback (the message is
 	// "invalid payload: unsupported x402 version: N"). `network mismatch`

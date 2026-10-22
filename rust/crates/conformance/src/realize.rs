@@ -15,6 +15,11 @@
 //! Every registry case's `#[test]` calls [`realize_blocking`], so the same
 //! check is the positive control and the filler.
 
+pub mod batch;
+pub mod session_open;
+pub mod subscription;
+pub mod upto;
+
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -46,7 +51,11 @@ use crate::case::{Case, Expect, Input, Intent, Mode, Pin, Provenance, RejectCode
 use crate::classify::classify;
 use crate::fixture_rpc::{self, Fixtures, HttpFixture};
 use crate::keys::{self, ata, TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
-use crate::tx::{decode_b64, encode_b64, memo_nonce, x402_static_layout, StaticLayout};
+use crate::tx::{
+    decode_b64, encode_b64, memo_nonce, x402_static_layout, x402_static_layout_v1,
+    x402_static_layout_v1_config, MessageFormat, StaticLayout,
+};
+use solana_pay_kit::core::tx::{accepted_versions, TxV1Mode, TxVersion, DEFAULT_ACCEPTED_VERSIONS};
 
 static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
@@ -190,6 +199,8 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
             }
             x402_header_input(case.id.as_str(), spec)
         }
+        Input::Subscription(recipe) => subscription::materialize(case, recipe).await,
+        Input::SessionOpen(spec) => session_open::materialize(case, spec).await,
     }
 }
 
@@ -214,6 +225,11 @@ struct AcceptedExtra {
     fee_payer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     memo: Option<String>,
+    #[serde(
+        rename = "transactionVersions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    transaction_versions: Option<Vec<u8>>,
 }
 
 #[derive(Serialize)]
@@ -281,14 +297,28 @@ fn x402_header_input(id: &str, spec: &crate::case::X402HeaderSpec) -> Result<Val
         .clone()
         .or_else(|| route.memo.map(str::to_string))
         .unwrap_or_else(|| seeded_memo(id));
-    let mut tx = x402_static_layout(&StaticLayout {
+    let layout = StaticLayout {
         fee_payer: keys::X402_SERVER_FEE_PAYER,
         mint: pays.mint,
         pay_to: pays.recipient,
         amount: pays.amount.parse().map_err(|_| "invalid amount")?,
         decimals: 6,
         memo: &memo,
-    })?;
+    };
+    let mut tx = match spec.tx_format {
+        MessageFormat::V0 => x402_static_layout(&layout)?,
+        MessageFormat::V1 => x402_static_layout_v1(&layout, x402_static_layout_v1_config())?,
+        MessageFormat::Legacy => crate::mutate::Mutation::ToFormat {
+            format: MessageFormat::Legacy,
+        }
+        .apply(&x402_static_layout(&layout)?, &[keys::CLIENT_SEED])?,
+    };
+    // What the route advertises (and an honest client echoes): nothing for
+    // the default `[0]`, the kit's `advertised` rule.
+    let advertised = spec
+        .server_transaction_versions
+        .filter(|versions| *versions != [0])
+        .map(<[u8]>::to_vec);
     let mut accepted = Accepted {
         scheme: "exact",
         network: caip2_network_for_cluster(route.network).to_string(),
@@ -299,6 +329,7 @@ fn x402_header_input(id: &str, spec: &crate::case::X402HeaderSpec) -> Result<Val
         extra: AcceptedExtra {
             fee_payer: keys::X402_SERVER_FEE_PAYER.to_string(),
             memo: route.memo.map(str::to_string),
+            transaction_versions: advertised,
         },
     };
     for (key, value) in &spec.accepted_overrides {
@@ -348,16 +379,57 @@ fn x402_header_input(id: &str, spec: &crate::case::X402HeaderSpec) -> Result<Val
     if let Some(memo) = route.memo {
         input["x402ServerMemo"] = json!(memo);
     }
+    if let Some(versions) = spec.server_transaction_versions {
+        input["x402ServerTransactionVersions"] = json!(versions);
+    }
     for (key, value) in &spec.extra_input {
         input[*key] = value.clone();
     }
     Ok(input)
 }
 
+/// `input.signerMaxTransactionVersion`: the highest message version the
+/// client's signer can sign (a hardware wallet may sign version 0 only).
+/// Absent: no limit below what the counterparty accepts.
+pub fn signer_max_version(input: &Value) -> Result<Option<TxVersion>, String> {
+    match input.get("signerMaxTransactionVersion") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|e| format!("invalid signerMaxTransactionVersion: {e}")),
+    }
+}
+
+/// `input.x402ServerTransactionVersions`: the versions the x402 sponsor
+/// accepts (§1.5: it enforces its own set). Absent: the default `[0]`.
+pub fn x402_server_versions(input: &Value) -> Result<Vec<TxVersion>, String> {
+    match input.get("x402ServerTransactionVersions") {
+        None | Some(Value::Null) => Ok(DEFAULT_ACCEPTED_VERSIONS.to_vec()),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|e| format!("invalid x402ServerTransactionVersions: {e}")),
+    }
+}
+
 // ── kit drivers ────────────────────────────────────────────────────────────
+
+/// The result field an accepted build of a per-suite intent carries
+/// (`charge` and `x402-exact` are handled by the judge directly).
+pub fn suite_build_artifact_field(intent: &str) -> Option<&'static str> {
+    match intent {
+        "x402-upto" => Some(upto::BUILD_ARTIFACT),
+        "x402-batch-settlement" => Some(batch::BUILD_ARTIFACT),
+        "subscription" => Some(subscription::BUILD_ARTIFACT),
+        _ => None,
+    }
+}
 
 pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
     let result = match (intent, mode) {
+        // Per-suite modules own every mode, canonical bytes included (they
+        // fall back to `canonical_bytes` for the generic keys).
+        (Intent::X402Upto, mode) => upto::run(mode, input).await,
+        (Intent::X402BatchSettlement, mode) => batch::run(mode, input).await,
+        (Intent::Subscription, mode) => subscription::run(mode, input).await,
         (_, Mode::CanonicalBytes) => canonical_bytes(input),
         (Intent::Charge, Mode::BuildTransaction) => match charge_build(input).await {
             Ok(transaction) => Ok(Observed::Accept(Output {
@@ -369,6 +441,9 @@ pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
         (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input).await,
         (Intent::X402Exact, Mode::BuildTransaction) => x402_build(input).await,
         (Intent::X402Exact, Mode::VerifyTransaction) => x402_verify(input).await,
+        (Intent::Session, Mode::VerifyTransaction) if input.get("sessionOpenVerify").is_some() => {
+            session_open::verify(input).await
+        }
         (Intent::Session, Mode::VerifyTransaction) => session_verify(input).await,
         (intent, mode) => Ok(Observed::NotExpressible(format!(
             "no kit path for {} {}",
@@ -428,6 +503,7 @@ async fn charge_build(input: &Value) -> Result<String, String> {
     let options = BuildChargeTransactionOptions {
         external_id: charge.external_id.clone(),
         compute_budget: budget,
+        max_tx_version: signer_max_version(input)?,
         ..Default::default()
     };
     let recipient = charge
@@ -458,8 +534,10 @@ async fn charge_build(input: &Value) -> Result<String, String> {
 /// The kit's charge pre-broadcast checks
 /// (`mpp::server::charge::testkit::verify_transaction_pre_broadcast`): the
 /// offline half of `Mpp::verify` (envelope and compute caps, fee-payer
-/// isolation, the exact transfer set), with the server's default accepted
-/// message versions.
+/// isolation, the exact transfer set). The server accepts exactly the message
+/// versions its challenge advertises (`methodDetails.transactionVersions`,
+/// `[0]` when absent): "Servers MUST accept every version they list, MUST
+/// reject any other version".
 async fn charge_verify(input: &Value) -> Result<Observed, String> {
     let (charge, details) = charge_request(input)?;
     let Some(transaction) = input.get("transaction").and_then(Value::as_str) else {
@@ -476,7 +554,7 @@ async fn charge_verify(input: &Value) -> Result<Observed, String> {
             &tx,
             &charge,
             &details,
-            solana_pay_kit::core::tx::DEFAULT_ACCEPTED_VERSIONS,
+            accepted_versions(details.transaction_versions.as_deref()),
         ) {
             Ok(()) => Observed::Accept(Output {
                 transaction: Some(transaction.to_string()),
@@ -489,12 +567,21 @@ async fn charge_verify(input: &Value) -> Result<Observed, String> {
 
 async fn x402_build(input: &Value) -> Result<Observed, String> {
     let offer = input.get("x402Offer").ok_or("input.x402Offer missing")?;
-    let requirements: PaymentRequirements = serde_json::from_value(offer.clone())
-        .map_err(|e| format!("invalid payload: x402Offer: {e}"))?;
+    // An offer the client cannot read is a refused challenge, not a setup
+    // failure: the client must not sign for it.
+    let requirements: PaymentRequirements = match serde_json::from_value(offer.clone()) {
+        Ok(requirements) => requirements,
+        Err(e) => {
+            return Ok(Observed::reject(format!(
+                "invalid challenge: x402Offer: {e}"
+            )))
+        }
+    };
     let signer = signer_from(input, "signerSecretKey")?;
     let (rpc, _log) = fixture_rpc::rpc_client(&Fixtures::from_input(input)?);
+    let max_version = signer_max_version(input)?;
     let header = if input.get("x402Version").and_then(Value::as_u64) == Some(1) {
-        build_payment_header_v1(&signer, &rpc, &requirements, None).await
+        build_payment_header_v1(&signer, &rpc, &requirements, max_version).await
     } else {
         let mut extensions = match PaymentExtensions::echoing(input.get("x402AdvertisedExtensions"))
         {
@@ -516,7 +603,7 @@ async fn x402_build(input: &Value) -> Result<Observed, String> {
                 .unwrap_or_else(generate_payment_identifier_id);
             extensions = extensions.map(|e| e.with_payment_identifier_id(id));
         }
-        build_payment_header(&signer, &rpc, &requirements, extensions, None).await
+        build_payment_header(&signer, &rpc, &requirements, extensions, max_version).await
     };
     Ok(match header {
         Ok(header) => Observed::Accept(Output {
@@ -553,6 +640,21 @@ async fn x402_verify(input: &Value) -> Result<Observed, String> {
         .get(currency)
         .map(|m| m.decimals)
         .ok_or_else(|| format!("rpcFixtures has no mint for {currency}"))?;
+    // The kit's sponsor accepts `[0]` (`TxV1Mode::Off`) or `[0, 1]`
+    // (`TxV1Mode::On`, no gate probe); any other set is not configurable.
+    let versions = x402_server_versions(input)?;
+    let mut set = versions.clone();
+    set.sort();
+    set.dedup();
+    let tx_v1 = match set.as_slice() {
+        [TxVersion::V0] => TxV1Mode::Off,
+        [TxVersion::V0, TxVersion::V1] => TxV1Mode::On,
+        other => {
+            return Ok(Observed::NotExpressible(format!(
+                "the kit's x402 server cannot accept exactly {other:?}"
+            )))
+        }
+    };
     let fixture = HttpFixture::start(&fixtures).map_err(|e| e.to_string())?;
     let server = X402::new(X402Config {
         recipient: recipient.to_string(),
@@ -567,11 +669,16 @@ async fn x402_verify(input: &Value) -> Result<Observed, String> {
         payment_identifier,
         ..Default::default()
     })
-    .map_err(|e| format!("server config: {e}"))?;
-    let mut requirements: PaymentRequirements = serde_json::from_value(route_accepted(
-        network, recipient, currency, amount, fee_payer, memo,
-    ))
-    .map_err(|e| format!("route requirements: {e}"))?;
+    .map_err(|e| format!("server config: {e}"))?
+    .with_tx_v1(tx_v1);
+    let mut route = route_accepted(network, recipient, currency, amount, fee_payer, memo);
+    // §1.5: the server copies the facilitator's value into
+    // `extra.transactionVersions` as given; absent stays absent.
+    if input.get("x402ServerTransactionVersions").is_some() {
+        route["extra"]["transactionVersions"] = json!(versions);
+    }
+    let mut requirements: PaymentRequirements =
+        serde_json::from_value(route).map_err(|e| format!("route requirements: {e}"))?;
     requirements.decimals = Some(decimals);
     Ok(
         match server
@@ -715,7 +822,7 @@ fn canonical_json(value: &Value) -> Result<(String, String), String> {
     Ok((json, encoded.raw().to_string()))
 }
 
-fn canonical_bytes(input: &Value) -> Result<Observed, String> {
+pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
     let mut exact = Map::new();
     let set_bytes = |exact: &mut Map<String, Value>, bytes: &[u8]| {
         exact.insert("bytes".into(), json!(bytes));
@@ -790,6 +897,49 @@ fn canonical_bytes(input: &Value) -> Result<Observed, String> {
                 return Ok(Observed::Reject {
                     code: Some(RejectCode::InvalidPayload),
                     message: format!("invalid session payload: {e}"),
+                })
+            }
+        }
+    }
+    if let Some(cw) = input.get("chargeWire") {
+        // A charge request through the kit's own types: `ChargeRequest`,
+        // its `methodDetails` as `MethodDetails`, re-encoded.
+        let value = cw.get("value").cloned().unwrap_or(Value::Null);
+        let reencoded = serde_json::from_value::<ChargeRequest>(value).and_then(|mut charge| {
+            if let Some(md) = charge.method_details.take() {
+                let details: MethodDetails = serde_json::from_value(md)?;
+                charge.method_details = Some(serde_json::to_value(details)?);
+            }
+            serde_json::to_value(charge)
+        });
+        match reencoded {
+            Ok(reencoded) => {
+                let (json, b64) = canonical_json(&reencoded)?;
+                exact.insert("canonicalJson".into(), json!(json));
+                exact.insert("base64Url".into(), json!(b64));
+            }
+            Err(e) => {
+                return Ok(Observed::Reject {
+                    code: Some(RejectCode::InvalidPayload),
+                    message: format!("invalid charge request: {e}"),
+                })
+            }
+        }
+    }
+    if let Some(xw) = input.get("x402Wire") {
+        // An x402 `PaymentRequirements` (one `accepts[]` entry) through the
+        // kit's parser and serializer.
+        let value = xw.get("value").cloned().unwrap_or(Value::Null);
+        match serde_json::from_value::<PaymentRequirements>(value).and_then(serde_json::to_value) {
+            Ok(reencoded) => {
+                let (json, b64) = canonical_json(&reencoded)?;
+                exact.insert("canonicalJson".into(), json!(json));
+                exact.insert("base64Url".into(), json!(b64));
+            }
+            Err(e) => {
+                return Ok(Observed::Reject {
+                    code: Some(RejectCode::InvalidPayload),
+                    message: format!("invalid payment requirements: {e}"),
                 })
             }
         }
@@ -1051,6 +1201,10 @@ pub fn transaction_shape(transaction: &str, input: &Value) -> Result<Value, Stri
             }
             _ => {}
         }
+    }
+    // Version 1 carries the limit in the header, not in an instruction.
+    if let Some(header) = crate::tx::v1_config(&tx.message) {
+        limit = header.compute_unit_limit;
     }
     let mut shape = json!({
         "feePayer": keys.first().map(|k| k.to_string()).unwrap_or_default(),

@@ -161,7 +161,24 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             throw new InvalidArgumentException('invalid transaction payload');
         }
 
-        $decoded = $this->decodeTransaction($wire);
+        $transaction = TransactionWire::deserialize($wire);
+        $feePayer = $this->verifyTransactionShape($transaction, $request, $onChain);
+        if (!$onChain) {
+            // Refuse a client signature that does not verify before the
+            // handler claims, co-signs or sends (RULINGS SIG1). Only the
+            // server's own fee-payer slot may still be empty. A landed
+            // transaction (onChain) was already verified by the cluster.
+            $transaction->assertSignaturesVerify($feePayer);
+        }
+    }
+
+    /**
+     * The charge's instruction-level checks; returns the sponsoring fee
+     * payer the request names, or null when the client pays its own fees.
+     */
+    private function verifyTransactionShape(TransactionWire $transaction, ChargeRequest $request, bool $onChain): ?PublicKey
+    {
+        $decoded = $this->decodeTransaction($transaction);
         $methodDetails = $this->methodDetails($request);
         $splits = $this->splits($methodDetails);
         if (count($splits) > 8) {
@@ -213,7 +230,10 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 onChain: $onChain,
                 feeSponsored: $feePayer !== null,
             );
-            return;
+            if (!$onChain) {
+                $this->verifyRequiredSigners($decoded, $matched);
+            }
+            return $feePayer;
         }
 
         $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet');
@@ -282,20 +302,25 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             onChain: $onChain,
             feeSponsored: $feePayer !== null,
         );
+        if (!$onChain) {
+            $this->verifyRequiredSigners($decoded, $matched);
+        }
+
+        return $feePayer;
     }
 
     /**
-     * @return array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>}
+     * @return array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>}
      */
-    private function decodeTransaction(string $wire): array
+    private function decodeTransaction(TransactionWire $transaction): array
     {
-        $transaction = TransactionWire::deserialize($wire);
         if ($transaction->addressTableLookups() !== []) {
             throw new InvalidArgumentException('v0 address lookup tables are not supported');
         }
 
         return [
             'accountKeys' => $transaction->staticAccountKeys(),
+            'numRequiredSignatures' => $transaction->numRequiredSignatures(),
             'instructions' => array_map(
                 static fn (object $instruction): array => [
                     'programIdIndex' => $instruction->programIdIndex,
@@ -360,7 +385,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array<int, bool> $matched
      */
     private function matchSolTransfer(array $decoded, string $recipient, int $amount, ?PublicKey $feePayer, array &$matched): void
@@ -392,7 +417,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array<int, bool> $matched
      */
     private function matchSplTransfer(
@@ -448,7 +473,49 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * Every required signer must be the fee payer or the one authority that
+     * funds every matched payment transfer. Any other signer authorizes
+     * nothing and only adds a signature fee, which a sponsor would pay;
+     * letting each leg of a split name its own authority would let a payer
+     * multiply those fees.
+     *
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array<int, bool> $matched
+     */
+    private function verifyRequiredSigners(array $decoded, array $matched): void
+    {
+        $fundingAuthority = null;
+        foreach (array_keys($matched) as $index) {
+            $instruction = $decoded['instructions'][$index] ?? null;
+            if ($instruction === null) {
+                continue;
+            }
+            $position = match ($this->programId($decoded, $instruction)) {
+                SystemProgram::PROGRAM_ID => 0,
+                TokenProgram::PROGRAM_ID, TokenProgram::TOKEN_2022_PROGRAM_ID => 3,
+                default => null,
+            };
+            if ($position === null) {
+                continue;
+            }
+            $authority = $this->accountKey($decoded, $instruction['accounts'][$position] ?? null, 'funding authority')->toBase58();
+            if ($fundingAuthority !== null && $fundingAuthority !== $authority) {
+                throw new InvalidArgumentException('payment transfers must share one funding authority');
+            }
+            $fundingAuthority = $authority;
+        }
+
+        $allowed = array_filter([($decoded['accountKeys'][0] ?? null)?->toBase58(), $fundingAuthority]);
+        for ($i = 0; $i < $decoded['numRequiredSignatures']; $i += 1) {
+            $signer = ($decoded['accountKeys'][$i] ?? null)?->toBase58();
+            if ($signer === null || !in_array($signer, $allowed, true)) {
+                throw new InvalidArgumentException('unexpected signer in payment transaction');
+            }
+        }
+    }
+
+    /**
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array<int, array<string, mixed>> $splits
      * @param array<int, bool> $matched
      */
@@ -491,7 +558,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array<int, bool> $matched
      * @param array<string, bool> $allowedAtaOwners
      * @param array<string, bool> $requiredAtaOwners
@@ -598,7 +665,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array{programIdIndex: int, accounts: array<int, int>, data: string} $instruction
      * @param array<string, bool> $allowedAtaOwners
      */
@@ -690,7 +757,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array{programIdIndex: int, accounts: array<int, int>, data: string} $instruction
      */
     private function programId(array $decoded, array $instruction): string
@@ -699,7 +766,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      */
     private function accountKey(array $decoded, mixed $index, string $label): PublicKey
     {
@@ -711,7 +778,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     }
 
     /**
-     * @param array{accountKeys: array<int, PublicKey>, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
+     * @param array{accountKeys: array<int, PublicKey>, numRequiredSignatures: int, instructions: array<int, array{programIdIndex: int, accounts: array<int, int>, data: string}>} $decoded
      * @param array{programIdIndex: int, accounts: array<int, int>, data: string} $instruction
      */
     private function isMemoInstruction(array $decoded, array $instruction): bool

@@ -36,11 +36,13 @@ module PayKit
         @config = config || PayKit.config
         @pricing = pricing
         # Long-lived caches shared across every request this middleware
-        # instance handles. x402's SettlementCache prevents the same
-        # signature from being broadcast twice; the MPP method cache
-        # avoids rebuilding `PayKit::Protocols::Mpp.create(...)` for every gate hit (the
+        # instance handles. The consumed-signature store is the one ledger
+        # both x402 and every MPP gate claim settled signatures in, so a
+        # payment settled through one protocol cannot authorize a second
+        # request through the other; the MPP method cache avoids rebuilding
+        # `PayKit::Protocols::Mpp.create(...)` for every gate hit (the
         # underlying ChallengeStore allocates buffers on construction).
-        @x402_settlement_cache = ::PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+        @consumed_signatures_store = ::PayKit::Protocols::Mpp::MemoryStore.new
         @mpp_method_cache = MppMethodCache.new
       end
 
@@ -48,7 +50,7 @@ module PayKit
         env[ENV_DISPATCHER_KEY] = Dispatcher.new(
           config: @config,
           pricing: @pricing,
-          x402_settlement_cache: @x402_settlement_cache,
+          consumed_signatures_store: @consumed_signatures_store,
           mpp_method_cache: @mpp_method_cache
         )
 
@@ -82,7 +84,8 @@ module PayKit
         def render_invalid(error)
           payload = {error: error.code.to_s, message: error.detail}
           payload[:spec_code] = error.spec_code if error.spec_code
-          [402, {"content-type" => "application/json", "cache-control" => "no-store"}, [JSON.generate(payload)]]
+          headers = {"content-type" => "application/json", "cache-control" => "no-store"}.merge(error.response_headers)
+          [error.http_status, headers, [JSON.generate(payload)]]
         end
 
         # Rack 3 requires response header names to be lowercase. The
@@ -121,14 +124,14 @@ module PayKit
 
     # Per-request dispatcher. Holds the resolved adapters so the
     # helper can build challenges and verify proofs without touching
-    # the underlying server constructors. The shared caches
-    # (`x402_settlement_cache`, `mpp_method_cache`) are owned by the
+    # the underlying server constructors. The shared state
+    # (`consumed_signatures_store`, `mpp_method_cache`) is owned by the
     # Rack middleware and threaded in here.
     class Dispatcher
-      def initialize(config:, pricing:, x402_settlement_cache: nil, mpp_method_cache: nil)
+      def initialize(config:, pricing:, consumed_signatures_store: nil, mpp_method_cache: nil)
         @config = config
         @pricing_override = pricing
-        @x402_settlement_cache = x402_settlement_cache || ::PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+        @consumed_signatures_store = consumed_signatures_store || ::PayKit::Protocols::Mpp::MemoryStore.new
         @mpp_method_cache = mpp_method_cache || MppMethodCache.new
       end
 
@@ -226,7 +229,7 @@ module PayKit
           # Matches the 6-decimal scaling of to_smallest_units_string.
           decimals: 6,
           resource_path: request.path,
-          settlement_cache: @x402_settlement_cache
+          settlement_cache: @consumed_signatures_store
         )
       end
 
@@ -280,6 +283,7 @@ module PayKit
             method: method,
             secret_key: secret,
             realm: realm,
+            replay_store: @consumed_signatures_store,
             expires_in: expires_in
           )
         end

@@ -952,3 +952,14 @@ async def test_x402_client_factory(monkeypatch):
     finally:
         await client.aclose()
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_build_payment_refuses_an_offer_without_network():
+    # ``network`` is required; the client never signs for a guessed network.
+    from solana_pay_kit._paycore.errors import InvalidChallengeError
+
+    offer = _offer()
+    del offer["network"]
+    with pytest.raises(InvalidChallengeError, match="network"):
+        await build_payment(Signer.generate(), None, _entry(offer))

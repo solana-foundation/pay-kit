@@ -7,7 +7,7 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from 'mppx/server';
-import { getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
+import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { getTransferSolInstruction } from '@solana-program/system';
 import { findAssociatedTokenPda, getTransferCheckedInstruction } from '@solana-program/token';
 import {
@@ -31,7 +31,13 @@ import {
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
 import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
-import { transactionSignatureFromBase64 } from '../utils/transactions.js';
+import {
+    claimConsumedSignature,
+    consumedSignatureKey,
+    legacyConsumedSignatureKey,
+    reserveReplayKey,
+} from '../server/replay.js';
+import { assertTransactionSignaturesVerify, transactionSignatureFromBase64 } from '../utils/transactions.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -578,6 +584,97 @@ test('signature: accepts valid native SOL transfer', async () => {
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(SIGNATURE);
+});
+
+// One on-chain payment authorizes one request across protocols: a signature
+// another protocol (PayKit's x402 adapter) already claimed in the shared
+// ledger is refused, and MPP claims its own payments in that same ledger.
+test('signature: shares one consumed-signature ledger with other protocols', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    const credential = signatureCredential(SIGNATURE, { amount: '1000000' });
+
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(true);
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+
+    await store.delete(consumedSignatureKey(SIGNATURE));
+    await store.delete(legacyConsumedSignatureKey(SIGNATURE));
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(false);
+});
+
+// Rolling upgrade: a replica on the previous release claims and checks only
+// the legacy key. Every claim takes it too, so such a replica refuses a
+// payment this release accepted, through either settlement mode.
+test('a settled payment is visible to replicas on the previous release', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(await reserveReplayKey(store, legacyConsumedSignatureKey(SIGNATURE))).toBe(false);
+
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const signature = transactionSignatureFromBase64(transaction);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    await expect(
+        method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(await store.get(legacyConsumedSignatureKey(signature))).toMatchObject({ state: 'confirmed' });
+    expect(await reserveReplayKey(store, legacyConsumedSignatureKey(signature))).toBe(false);
+});
+
+// A previous-release replica that claimed the legacy key in the window after
+// the ledger check owns the payment: nothing is sent, and the ledger key is
+// given back.
+test('pull: a legacy claim taken by a previous release stops the broadcast', async () => {
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const signature = transactionSignatureFromBase64(transaction);
+    const legacy = legacyConsumedSignatureKey(signature);
+    let raced = false;
+    const racingStore: Store.Store = {
+        ...store,
+        async get(key) {
+            const value = await store.get(key);
+            // An old replica claims its key right after this release checked it.
+            if (key === legacy && !raced) {
+                raced = true;
+                await store.put(legacy, true);
+            }
+            return value;
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: racingStore });
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    await expect(
+        method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any }),
+    ).rejects.toThrow('already consumed');
+    expect(rpcMethods).not.toContain('sendTransaction');
+    expect(await store.get(consumedSignatureKey(signature))).toBeNull();
+});
+
+// A signature claimed under the pre-ledger MPP key (by an older replica, or
+// just before an upgrade) stays consumed for every claim path; the legacy
+// record is only read, never rewritten.
+test('signature: a pre-ledger consumed record stays consumed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    const legacyKey = `solana-charge:consumed:${SIGNATURE}`;
+    await store.put(legacyKey, true);
+
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).rejects.toThrow('already consumed');
+    expect(await claimConsumedSignature(store, SIGNATURE)).toBe(false);
+    expect(await store.get(consumedSignatureKey(SIGNATURE))).toBeNull();
+    expect(await store.get(legacyKey)).toBe(true);
+
+    // Signatures without a legacy record claim normally.
+    await store.delete(legacyKey);
+    await expect(
+        method.verify({ credential: signatureCredential(SIGNATURE, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
 });
 
 test('signature: rejects SOL transfer with wrong recipient', async () => {
@@ -1869,7 +1966,7 @@ test('pull: an uncertain settlement can recover once after its lease expires wit
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     await store.put(key, {
         binding: JSON.stringify({
             challengeId: credential.challenge.id ?? null,
@@ -1885,11 +1982,37 @@ test('pull: an uncertain settlement can recover once after its lease expires wit
     expect(rpcMethods).not.toContain('sendTransaction');
 });
 
+// A signature copied from any landed transaction must not name the charge:
+// the node refuses a forged one without a preflight result, it would stay
+// pending, and recovery would confirm the status of the transaction that owns
+// it. It is refused before anything is claimed or sent.
+test('pull: a forged client signature is refused before it is claimed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const signed = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const wire = Buffer.from(signed, 'base64');
+    wire.fill(7, 1, 65);
+    const forged = wire.toString('base64');
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(
+            method.verify({ credential: transactionCredential(forged, { amount: '1000000' }), request: {} as any }),
+        ).rejects.toThrow('signature verification failed');
+    }
+    expect(rpcMethods).not.toContain('sendTransaction');
+    expect(await store.get(consumedSignatureKey(transactionSignatureFromBase64(forged)))).toBeNull();
+
+    // Positive control: the transaction as really signed settles.
+    await expect(
+        method.verify({ credential: transactionCredential(signed, { amount: '1000000' }), request: {} as any }),
+    ).resolves.toMatchObject({ status: 'success' });
+});
+
 test('pull: recovers an accepted send with a lost response exactly once without rebroadcast', async () => {
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     const rpcMethods: string[] = [];
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const successfulFetch = globalThis.fetch;
@@ -1904,7 +2027,10 @@ test('pull: recovers an accepted send with a lost response exactly once without 
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('send response lost');
     const pending = await store.get(key);
     expect(pending).toMatchObject({ state: 'pending' });
+    // The lease lapses on the ledger key and its legacy mirror alike.
     await store.put(key, { ...(pending as object), leaseUntil: 0 });
+    const legacy = legacyConsumedSignatureKey(transactionSignatureFromBase64(transaction));
+    await store.put(legacy, { ...((await store.get(legacy)) as object), leaseUntil: 0 });
     globalThis.fetch = successfulFetch;
 
     await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
@@ -1917,7 +2043,7 @@ test('push cannot overwrite a pull reservation after passing its initial replay 
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const signature = transactionSignatureFromBase64(transaction);
-    const key = `solana-charge:consumed:${signature}`;
+    const key = consumedSignatureKey(signature);
     const rpcMethods: string[] = [];
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const successfulFetch = globalThis.fetch;
@@ -1988,7 +2114,8 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
         ...store,
         async update(key, fn) {
             updates++;
-            if (!fail || updates !== 2) return update(key, fn);
+            // Updates: claim, legacy claim, grant begin, legacy consume, ledger consume.
+            if (!fail || updates !== 5) return update(key, fn);
             if (committed) await update(key, fn);
             await Promise.resolve();
             throw new Error('atomic storage unavailable');
@@ -1997,14 +2124,129 @@ test.each([false, true])('pull: atomic consumption failure grants no receipt (co
     const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
     const credential = transactionCredential(transaction, { amount: '1000000' });
-    const key = `solana-charge:consumed:${transactionSignatureFromBase64(transaction)}`;
+    const key = consumedSignatureKey(transactionSignatureFromBase64(transaction));
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
-    expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'pending' });
+    expect(await store.get(key)).toMatchObject({ state: committed ? 'confirmed' : 'granting' });
     fail = false;
     await expect(method.verify({ credential, request: {} as any })).rejects.toThrow(
         committed ? 'already consumed' : 'already in progress',
     );
+});
+
+// The two keys of a grant cannot change atomically. A store failure after
+// the previous release's key was consumed but before the ledger key leaves a
+// confirmed payment without a receipt; the ledger record says a grant began,
+// so once its lease lapses the identical retry finishes it, exactly once.
+test('pull: a grant interrupted between its two keys is finished by the retry', async () => {
+    type AtomicStore = Store.Store & {
+        update<T>(
+            key: string,
+            fn: (current: unknown) => { op: 'noop'; result: T } | { op: 'set'; result: T; value: unknown },
+        ): Promise<T>;
+    };
+    const atomicStore = store as AtomicStore;
+    const update = atomicStore.update.bind(atomicStore);
+    let updates = 0;
+    let fail = true;
+    const failingStore: AtomicStore = {
+        ...store,
+        async update(key, fn) {
+            updates++;
+            // Updates: claim, legacy claim, grant begin, legacy consume, ledger consume.
+            if (fail && updates === 5) throw new Error('atomic storage unavailable');
+            return update(key, fn);
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
+    expect(await store.get(legacy)).toMatchObject({ state: 'confirmed' });
+    expect(await store.get(key)).toMatchObject({ state: 'granting' });
+
+    fail = false;
+    for (const lapsed of [key, legacy]) {
+        await store.put(lapsed, { ...((await store.get(lapsed)) as object), leaseUntil: 0 });
+    }
+    await expect(method.verify({ credential, request: {} as any })).resolves.toMatchObject({ status: 'success' });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+    expect(rpcMethods.filter(m => m === 'sendTransaction')).toHaveLength(1);
+});
+
+// A grant can stop after marking the ledger record granting and before it
+// confirms the legacy key. If a previous-release replica then recovers the
+// legacy record and confirms (and serves) it, the retry must not take that
+// confirmation for its own: only the grant id written with the confirmation
+// proves ownership.
+test('pull: a legacy key confirmed by an old replica during a grant stays consumed', async () => {
+    type AtomicStore = Store.Store & {
+        update<T>(
+            key: string,
+            fn: (current: unknown) => { op: 'noop'; result: T } | { op: 'set'; result: T; value: unknown },
+        ): Promise<T>;
+    };
+    const atomicStore = store as AtomicStore;
+    const update = atomicStore.update.bind(atomicStore);
+    let updates = 0;
+    let fail = true;
+    const failingStore: AtomicStore = {
+        ...store,
+        async update(key, fn) {
+            updates++;
+            // Updates: claim, legacy claim, grant begin, legacy confirm, ledger consume.
+            if (fail && updates === 4) throw new Error('atomic storage unavailable');
+            return update(key, fn);
+        },
+    };
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store: failingStore });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('atomic storage unavailable');
+    expect(await store.get(key)).toMatchObject({ state: 'granting' });
+    expect(await store.get(legacy)).toMatchObject({ state: 'pending' });
+
+    // The previous release recovers the legacy record and serves it: it
+    // confirms the key the way it always did, with no grant id.
+    const pending = (await store.get(legacy)) as object;
+    await store.put(legacy, { ...pending, leaseUntil: 0, state: 'confirmed' });
+    await store.put(key, { ...((await store.get(key)) as object), leaseUntil: 0 });
+    fail = false;
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
+});
+
+// Without that ownership record a confirmed legacy key is someone else's
+// grant (a replica on the previous release): it is never granted again.
+test('pull: a legacy key confirmed by another grant stays consumed', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const credential = transactionCredential(transaction, { amount: '1000000' });
+    const signature = transactionSignatureFromBase64(transaction);
+    const key = consumedSignatureKey(signature);
+    const legacy = legacyConsumedSignatureKey(signature);
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const successfulFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+        const response = await successfulFetch(url, init);
+        if (JSON.parse(init?.body as string).method === 'sendTransaction') throw new Error('send response lost');
+        return response;
+    };
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('send response lost');
+    globalThis.fetch = successfulFetch;
+    // A previous-release replica recovered the legacy record and served it.
+    const pending = (await store.get(legacy)) as object;
+    await store.put(legacy, { ...pending, leaseUntil: 0, state: 'confirmed' });
+    await store.put(key, { ...((await store.get(key)) as object), leaseUntil: 0 });
+    await expect(method.verify({ credential, request: {} as any })).rejects.toThrow('already consumed');
 });
 
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
@@ -3525,6 +3767,122 @@ test('#25 fee-sponsored compute-unit price under the tight cap passes', async ()
     ).resolves.toBeUndefined();
 });
 
+// A sponsor pays a signature fee per required signer, so every leg of a split
+// must be funded by one authority, and no signer may ride along that funds
+// nothing.
+async function buildSponsoredSolSplitTx(
+    feePayerKey: string,
+    splitRecipient: string,
+    options: { extraSigner?: boolean; splitPayer?: 'other' | 'same' } = {},
+) {
+    const payer = await generateKeyPairSigner();
+    const splitPayer = options.splitPayer === 'other' ? await generateKeyPairSigner() : payer;
+    const primary = getTransferSolInstruction({ source: payer, destination: address(RECIPIENT), amount: 800_000n });
+    const extra = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        options.extraSigner
+            ? ({
+                  ...primary,
+                  accounts: [
+                      ...primary.accounts,
+                      { address: extra.address, role: AccountRole.READONLY_SIGNER, signer: extra },
+                  ],
+              } as Instruction)
+            : primary,
+        getTransferSolInstruction({ source: splitPayer, destination: address(splitRecipient), amount: 200_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayer(address(feePayerKey), msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+test('sponsored split legs must share one funding authority and carry no extra signer', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const splitRecipient = (await generateKeyPairSigner()).address;
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: {
+            network: 'devnet',
+            feePayer: true,
+            feePayerKey: feePayer.address,
+            splits: [{ amount: '200000', recipient: splitRecipient }],
+        },
+        recipient: RECIPIENT,
+    };
+
+    await expect(
+        verifyChargeTransaction(
+            await buildSponsoredSolSplitTx(feePayer.address, splitRecipient, { splitPayer: 'other' }),
+            request,
+        ),
+    ).rejects.toThrow('Payment transfers must share one funding authority');
+    await expect(
+        verifyChargeTransaction(
+            await buildSponsoredSolSplitTx(feePayer.address, splitRecipient, { extraSigner: true }),
+            request,
+        ),
+    ).rejects.toThrow('Unexpected signer in payment transaction');
+    await expect(
+        verifyChargeTransaction(await buildSponsoredSolSplitTx(feePayer.address, splitRecipient), request),
+    ).resolves.toBeUndefined();
+});
+
+async function buildSponsoredSplitTx(feePayerKey: string, budget: Instruction[]) {
+    const authority = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        ...budget,
+        getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 950_000n }),
+        getTransferSolInstruction({ source: authority, destination: address(PLATFORM), amount: 50_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayer(address(feePayerKey), msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+test('fee-sponsored priority fee is bounded across limit and price, including the implicit limit', async () => {
+    const signer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: {
+            feePayer: true,
+            feePayerKey: signer.address,
+            network: 'devnet',
+            splits: [{ amount: '50000', recipient: PLATFORM }],
+        },
+        recipient: RECIPIENT,
+    };
+    // No limit: two transfers are budgeted 400_000 CU, so 10_000 µL/CU is 4_000 lamports.
+    const implicit = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(implicit, request)).rejects.toThrow(
+        /Priority fee 4000 lamports exceeds the sponsored maximum 2000/,
+    );
+
+    const duplicate = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitLimitInstruction({ units: 1_000 }),
+        getSetComputeUnitPriceInstruction({ microLamports: 1n }),
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(duplicate, request)).rejects.toThrow(/Duplicate SetComputeUnitPrice/);
+
+    const declared = await buildSponsoredSplitTx(signer.address, [
+        getSetComputeUnitLimitInstruction({ units: 200_000 }),
+        getSetComputeUnitPriceInstruction({ microLamports: 10_000n }),
+    ]);
+    await expect(verifyChargeTransaction(declared, request)).resolves.toBeUndefined();
+});
+
 test('#25 client-paid compute-unit price above the tight cap still passes (general cap applies)', async () => {
     const authority = await generateKeyPairSigner();
     const instructions: Instruction[] = [
@@ -3568,6 +3926,90 @@ test('verifyChargeTransaction accepts a legacy (unversioned) transaction under t
             methodDetails: { network: 'devnet' },
             recipient: RECIPIENT,
         }),
+    ).resolves.toBeUndefined();
+});
+
+// RULINGS SIG1: the verification step itself refuses a client signature
+// that does not verify over the message, so a caller of
+// verifyChargeTransaction never sees "valid" for a forged transaction. Only a
+// sponsoring server's own fee-payer slot may be empty before it co-signs.
+async function buildClientPaidSolTx() {
+    const authority = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n })],
+                msg,
+            ),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+/** Overwrite signature slot `index` (one-byte shortvec count) with a non-verifying value. */
+function forgeSignatureSlot(transaction: string, index: number, fill = 7): string {
+    const wire = Buffer.from(transaction, 'base64');
+    wire.fill(fill, 1 + index * 64, 1 + (index + 1) * 64);
+    return wire.toString('base64');
+}
+
+const CLIENT_PAID_SOL_REQUEST = {
+    amount: '1000000',
+    currency: 'sol',
+    methodDetails: { network: 'devnet' },
+    recipient: RECIPIENT,
+};
+
+test('verifyChargeTransaction refuses a forged client signature', async () => {
+    const signed = await buildClientPaidSolTx();
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0), CLIENT_PAID_SOL_REQUEST)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // An empty client slot verifies nothing either.
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0, 0), CLIENT_PAID_SOL_REQUEST)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // Positive control: the transaction as really signed is accepted.
+    await expect(verifyChargeTransaction(signed, CLIENT_PAID_SOL_REQUEST)).resolves.toBeUndefined();
+});
+
+test('verifyChargeTransaction refuses a forged client signature on a sponsored charge, leaving only the fee-payer slot empty', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        methodDetails: { network: 'devnet', feePayer: true, feePayerKey: feePayer.address },
+        recipient: RECIPIENT,
+    };
+    // Slot 0 is the server's (still empty), slot 1 the client's.
+    const signed = await buildSolTxWithComputePrice(feePayer.address, 5_000n);
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 1), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 1, 0), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // A non-verifying signature in the fee-payer slot is refused too.
+    await expect(verifyChargeTransaction(forgeSignatureSlot(signed, 0), request)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    // Positive control: the empty fee-payer slot is left for the server.
+    await expect(verifyChargeTransaction(signed, request)).resolves.toBeUndefined();
+});
+
+test('assertTransactionSignaturesVerify exempts only the named unsigned signer', async () => {
+    const feePayer = await generateKeyPairSigner();
+    const signed = await buildSolTxWithComputePrice(feePayer.address, 5_000n);
+    await expect(assertTransactionSignaturesVerify(signed)).rejects.toThrow(
+        'transaction signature verification failed',
+    );
+    await expect(
+        assertTransactionSignaturesVerify(signed, { unsignedSigner: (await generateKeyPairSigner()).address }),
+    ).rejects.toThrow('transaction signature verification failed');
+    await expect(
+        assertTransactionSignaturesVerify(signed, { unsignedSigner: feePayer.address }),
     ).resolves.toBeUndefined();
 });
 

@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
 use crate::mpp::protocol::core::headers::{
@@ -53,7 +53,7 @@ use crate::mpp::protocol::core::headers::{
     WWW_AUTHENTICATE_HEADER,
 };
 use crate::mpp::protocol::core::{PaymentChallenge, Receipt};
-use crate::mpp::server::{ChargeOptions, Mpp};
+use crate::mpp::server::{ChargeOptions, Mpp, VerificationError};
 
 /// Per-route charge configuration.
 ///
@@ -104,6 +104,59 @@ impl IntoResponse for PaymentRequired {
     }
 }
 
+/// The identity an MPP charge is bound to: method plus the full request URL,
+/// including the canonical authority (lowercased host, default port
+/// dropped), path and query. Issued into the challenge's HMAC-covered route
+/// and required again at verification, so a credential paid at one host or
+/// path is not accepted at another that shares the same price.
+pub(crate) fn charge_route(method: &Method, uri: &Uri, headers: &HeaderMap) -> String {
+    let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
+    let authority = uri.authority().map(|a| a.as_str().to_string()).or_else(|| {
+        headers
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok())
+            .map(str::to_string)
+    });
+    let Some(authority) = authority else {
+        return format!("{method} {path}");
+    };
+    let scheme = uri.scheme_str().map(str::to_string).unwrap_or_else(|| {
+        headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("https")
+            .to_ascii_lowercase()
+    });
+    let raw = format!("{scheme}://{authority}{path}");
+    // A host that does not parse stays bound verbatim (lowercased) rather
+    // than dropped: an unusual authority must still not match another one.
+    let canonical = url::Url::parse(&raw)
+        .ok()
+        .filter(|url| url.host_str().is_some_and(|host| !host.is_empty()))
+        .map_or_else(|| raw.to_ascii_lowercase(), |url| url.to_string());
+    format!("{method} {canonical}")
+}
+
+/// Whether `error` reports a payment that may already be on its way.
+pub(crate) fn is_settlement_in_progress(error: &VerificationError) -> bool {
+    error.code == Some("settlement-in-progress")
+}
+
+/// A payment that was (or may have been) broadcast and is not yet resolved.
+/// It must not be answered with a fresh challenge: a client that paid it
+/// would pay twice. The client retries the same credential instead.
+pub(crate) fn settlement_in_progress_response(error: &VerificationError) -> Response {
+    let mut resp = (StatusCode::CONFLICT, axum::Json(error.to_problem_json())).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    headers.insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
 /// Axum extractor that gates a handler behind payment verification.
 #[derive(Debug)]
 pub struct MppCharge<C: ChargeConfig> {
@@ -119,6 +172,10 @@ pub enum MppChargeRejection {
     Challenge(PaymentRequired),
     /// Credential present but failed verification — return 402 with a fresh challenge.
     VerificationFailed(PaymentRequired),
+    /// The credential's payment may already be broadcast and is unresolved —
+    /// return 409 without a challenge, so the client retries it rather than
+    /// paying again.
+    SettlementInProgress(VerificationError),
     /// Server couldn't generate a challenge — return 500.
     InternalError(String),
 }
@@ -127,6 +184,7 @@ impl IntoResponse for MppChargeRejection {
     fn into_response(self) -> Response {
         match self {
             Self::Challenge(pr) | Self::VerificationFailed(pr) => pr.into_response(),
+            Self::SettlementInProgress(error) => settlement_in_progress_response(&error),
             Self::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
         }
     }
@@ -142,6 +200,11 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let mpp: Arc<Mpp> = Arc::<Mpp>::from_ref(state);
+        let uri = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map_or(&parts.uri, |original| &original.0);
+        let route = charge_route(&parts.method, uri, &parts.headers);
 
         // Build the route's authoritative challenge once. We need it whether
         // we 402 (no credential, bad credential, failed verify) or pass it
@@ -153,6 +216,7 @@ where
                 C::amount(),
                 ChargeOptions {
                     description: C::description(),
+                    route: Some(&route),
                     ..Default::default()
                 },
             )
@@ -184,13 +248,16 @@ where
         };
 
         match mpp
-            .verify_credential_with_expected(&credential, &expected)
+            .verify_credential_for_route(&credential, &expected, &route)
             .await
         {
             Ok(receipt) => Ok(Self {
                 receipt,
                 _c: PhantomData,
             }),
+            Err(error) if is_settlement_in_progress(&error) => {
+                Err(MppChargeRejection::SettlementInProgress(error))
+            }
             Err(_) => Err(MppChargeRejection::VerificationFailed(PaymentRequired(
                 challenge,
             ))),
@@ -348,6 +415,80 @@ mod tests {
             MppChargeRejection::VerificationFailed(_) => {}
             other => panic!("expected VerificationFailed, got {other:?}"),
         }
+    }
+
+    // The route binds the full authority: case and a default port are
+    // normalized away, any other host or port is a different route.
+    #[test]
+    fn charge_route_binds_the_canonical_authority() {
+        let route = |host: Option<&str>, uri: &str| {
+            let mut headers = HeaderMap::new();
+            if let Some(host) = host {
+                headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+            }
+            charge_route(&Method::GET, &uri.parse().unwrap(), &headers)
+        };
+        let a = route(Some("api.example"), "/v1/echo?x=1");
+        assert_eq!(a, "GET https://api.example/v1/echo?x=1");
+        assert_eq!(route(Some("API.Example:443"), "/v1/echo?x=1"), a);
+        assert_ne!(route(Some("api.attacker.example"), "/v1/echo?x=1"), a);
+        assert_ne!(route(Some("api.example:8443"), "/v1/echo?x=1"), a);
+        assert_ne!(route(Some("api.example"), "/v1/echo?x=2"), a);
+        assert_eq!(route(None, "/v1/echo"), "GET /v1/echo");
+        let absolute = charge_route(
+            &Method::POST,
+            &"http://api.example:80/v1".parse().unwrap(),
+            &HeaderMap::new(),
+        );
+        assert_eq!(absolute, "POST http://api.example/v1");
+    }
+
+    // A payment that may already be on its way is never re-challenged: the
+    // client retries the same credential instead of paying again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settlement_in_progress_returns_409_without_a_challenge() {
+        use crate::mpp::protocol::solana::CredentialPayload;
+        use crate::mpp::store::{ChargeReplayStore, CHARGE_RESERVATION_LEASE};
+        let state = test_mpp();
+        let challenge = state
+            .charge_with_options(
+                OneCent::amount(),
+                ChargeOptions {
+                    route: Some("GET /protected"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let cred = PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::json!({"type": "signature", "signature": "fakesig"}),
+        );
+        let payload: CredentialPayload = serde_json::from_value(cred.payload.clone()).unwrap();
+        let digest = crate::mpp::server::charge::normalized_request_digest(
+            &cred.challenge.id,
+            cred.challenge.request.raw(),
+            &payload,
+        )
+        .unwrap();
+        ChargeReplayStore::new(state.store.clone())
+            .reserve(&cred.challenge.id, &digest, CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        let auth_header = format_authorization(&cred).unwrap();
+        let mut parts = parts_with_header(Some(&auth_header));
+
+        let rejection = MppCharge::<OneCent>::from_request_parts(&mut parts, &state)
+            .await
+            .err()
+            .expect("should reject");
+        assert!(
+            matches!(rejection, MppChargeRejection::SettlementInProgress(_)),
+            "{rejection:?}"
+        );
+        let resp = rejection.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(!resp.headers().contains_key(WWW_AUTHENTICATE_HEADER));
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "1");
     }
 
     #[tokio::test(flavor = "multi_thread")]

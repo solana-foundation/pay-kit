@@ -944,3 +944,104 @@ func TestFetchTransactionMissingVersionStillDecodesLegacyBytes(t *testing.T) {
 		t.Fatalf("version = %v, want legacy", fetched.Message.GetVersion())
 	}
 }
+
+// VerifiedSignature refuses a list whose length is not the message's
+// required signature count or whose signatures do not verify, and returns
+// slot 0 only when every one does.
+func TestVerifiedSignatureRequiresEveryRequiredSignature(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	memo, err := BuildMemoInstruction("verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{memo}, solana.Hash{}, solana.TransactionPayer(payer.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignTransaction(tx, payer); err != nil {
+		t.Fatal(err)
+	}
+	got, err := VerifiedSignature(tx)
+	if err != nil || got != tx.Signatures[0] {
+		t.Fatalf("genuine transaction: sig=%s err=%v", got, err)
+	}
+	var forgedSig solana.Signature
+	for i := range forgedSig {
+		forgedSig[i] = 7
+	}
+	cases := map[string][]solana.Signature{
+		"empty":  nil,
+		"longer": {tx.Signatures[0], tx.Signatures[0]},
+		"forged": {forgedSig},
+		"zero":   {{}},
+	}
+	for name, sigs := range cases {
+		mutated := *tx
+		mutated.Signatures = sigs
+		if _, err := VerifiedSignature(&mutated); !errors.Is(err, ErrSignatureVerification) {
+			t.Errorf("%s: err = %v, want ErrSignatureVerification", name, err)
+		}
+	}
+}
+
+// VerifyClientSignatures skips only the server's own fee-payer slot (account
+// zero); every other required slot must verify, and the list must have
+// exactly the required length.
+func TestVerifyClientSignaturesLeavesOnlyTheServerSlot(t *testing.T) {
+	feePayer := testutil.NewPrivateKey()
+	client := testutil.NewPrivateKey()
+	memo, err := BuildMemoInstruction("verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memo = solana.NewInstruction(memo.ProgramID(), solana.AccountMetaSlice{solana.Meta(client.PublicKey()).SIGNER()}, mustData(t, memo))
+	tx, err := NewV0Transaction([]solana.Instruction{memo}, solana.Hash{}, solana.TransactionPayer(feePayer.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignTransaction(tx, client); err != nil {
+		t.Fatal(err)
+	}
+	server := feePayer.PublicKey()
+	if err := VerifyClientSignatures(tx, &server); err != nil {
+		t.Fatalf("honest pre-cosign transaction: %v", err)
+	}
+	if err := VerifyClientSignatures(tx, nil); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("empty fee-payer slot without a server key: err = %v", err)
+	}
+	other := testutil.NewPrivateKey().PublicKey()
+	if err := VerifyClientSignatures(tx, &other); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("account zero is not the server: err = %v", err)
+	}
+	var forged solana.Signature
+	for i := range forged {
+		forged[i] = 7
+	}
+	for name, sigs := range map[string][]solana.Signature{
+		"forged_client": {{}, forged},
+		"empty_client":  {{}, {}},
+		"truncated":     {{}},
+		"longer":        {{}, tx.Signatures[1], tx.Signatures[1]},
+	} {
+		mutated := *tx
+		mutated.Signatures = sigs
+		if err := VerifyClientSignatures(&mutated, &server); !errors.Is(err, ErrSignatureVerification) {
+			t.Errorf("%s: err = %v, want ErrSignatureVerification", name, err)
+		}
+	}
+	if err := SignTransaction(tx, feePayer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifiedSignature(tx); err != nil {
+		t.Fatalf("co-signed transaction: %v", err)
+	}
+}
+
+func mustData(t *testing.T, ix solana.Instruction) []byte {
+	t.Helper()
+	data, err := ix.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}

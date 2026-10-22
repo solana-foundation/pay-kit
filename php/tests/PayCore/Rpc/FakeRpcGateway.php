@@ -24,7 +24,7 @@ final class FakeRpcGateway implements RpcGateway
     private int $callIdx = 0;
 
     /**
-     * @param list<array<string,mixed>|null> $statuses    Sequence returned by getSignatureStatuses; last entry repeats.
+     * @param list<array<string,mixed>|\Throwable|null> $statuses Sequence returned by getSignatureStatuses; last entry repeats. A Throwable entry is thrown, as by an RPC outage.
      * @param list<mixed>                    $callResults Sequence returned by call(); once exhausted returns null.
      */
     public function __construct(
@@ -59,6 +59,10 @@ final class FakeRpcGateway implements RpcGateway
     {
         $idx = min($this->statusIdx, array_key_last($this->statuses));
         $this->statusIdx += 1;
-        return [$this->statuses[$idx]];
+        $status = $this->statuses[$idx];
+        if ($status instanceof \Throwable) {
+            throw $status;
+        }
+        return [$status];
     }
 }

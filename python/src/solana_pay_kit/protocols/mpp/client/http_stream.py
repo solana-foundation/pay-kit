@@ -5,9 +5,9 @@ HTTP. This module keeps the parser transport-neutral (an incremental
 :class:`SseDecoder` plus the metered event state machine), then layers a small
 httpx adapter on top for applications that want batteries included.
 
-Two metering invariants are enforced while folding a stream: a usage event's
-``deliveryId`` must match the live metering directive, and a usage event may
-override only the committed amount, never the ``deliveryId``.
+Metering invariants enforced while folding a stream: a usage event must follow
+a metering directive, match its ``deliveryId`` and stay within its reserved
+amount, and it may lower only the committed amount, never the ``deliveryId``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from solana_pay_kit.protocols.mpp.client.session_consumer import SessionConsumer
@@ -190,30 +190,34 @@ def parse_metered_sse_event(event: SseEvent) -> MeteredSseEvent:
 class _MeteredStreamState:
     """Directive/usage/done bookkeeping shared by the stream wrappers.
 
-    Tracks the live metering directive, the final usage amount once one
-    arrives, and whether the stream has ended.
+    Tracks the live metering directive, that directive settled against the
+    final usage once one arrives, and whether the stream has ended.
     """
 
     def __init__(self) -> None:
         self.directive: MeteringDirective | None = None
-        self.final_amount: int | None = None
+        #: ``directive`` settled against the stream's ``mpp.usage``; only ever
+        #: built by :meth:`MeteringDirective.settle`, so it never exceeds the
+        #: reservation.
+        self.settled: MeteringDirective | None = None
         self.done = False
 
     def apply_event(self, event: SseEvent) -> Any | None:
         """Fold one SSE frame into the state, returning a message payload."""
         parsed = parse_metered_sse_event(event)
         if parsed.kind == "metering":
+            # Usage settles the directive it was reported against; a new
+            # reservation starts over.
             self.directive = parsed.metering
+            self.settled = None
             return None
         if parsed.kind == "usage":
             usage = parsed.usage
             if usage is None:  # pragma: no cover - parse always sets it
                 raise ValueError("invalid mpp.usage event: missing payload")
-            if self.directive is not None and usage.delivery_id != self.directive.delivery_id:
-                raise ValueError(
-                    f"usage delivery {usage.delivery_id} does not match directive {self.directive.delivery_id}"
-                )
-            self.final_amount = usage.amount_base_units()
+            if self.directive is None:
+                raise ValueError("mpp.usage arrived before the mpp.metering event")
+            self.settled = self.directive.settle(usage)
             return None
         if parsed.kind == "message":
             return parsed.message
@@ -222,14 +226,11 @@ class _MeteredStreamState:
         return None
 
     def directive_for_commit(self) -> MeteringDirective:
-        """Return the directive to commit, with usage overriding the amount.
-
-        Usage overrides only the amount, never the ``deliveryId``.
-        """
+        """Return the directive settled against the final usage, else the reservation."""
+        if self.settled is not None:
+            return self.settled
         if self.directive is None:
             raise ValueError("stream did not include mpp.metering event")
-        if self.final_amount is not None:
-            return replace(self.directive, amount=str(self.final_amount))
         return self.directive
 
 

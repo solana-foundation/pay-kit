@@ -32,6 +32,37 @@ const BUILD: &str = "charge-build-policy.json";
 /// The server fee payer of the fee-sponsored cases. Its slot stays empty.
 const SERVER_FEE_PAYER: &str = X402_OFFER_FEE_PAYER;
 
+/// A second payer key that funds a split leg (signs as its authority).
+const SECOND_AUTHORITY_SEED: [u8; 32] = [14; 32];
+/// A key added as a required signer that funds nothing.
+const UNUSED_SIGNER_SEED: [u8; 32] = [15; 32];
+
+/// The fee-sponsorship step that fixes the signer set of a sponsored payment.
+fn client_signature_spec() -> SpecRef {
+    spec(
+        CHARGE,
+        "Pull Mode Verification",
+        "the transfer authority is signed by the client;",
+    )
+}
+
+fn client_signs_only(quote: &'static str) -> SpecRef {
+    spec(CHARGE, "Server-Paid Fees", quote)
+}
+
+/// A fee-sponsored native SOL charge with one split: two System transfers,
+/// both funded by the client.
+fn sponsored_sol_split() -> Value {
+    input(sol_request(
+        "1000000",
+        json!({
+            "feePayer": true,
+            "feePayerKey": SERVER_FEE_PAYER,
+            "splits": [{ "recipient": SPLIT_RECIPIENT, "amount": "250000" }]
+        }),
+    ))
+}
+
 const SPLITS_VERIFIED: &str = "MPP-1180595e82";
 const SPLITS_CONSUME_REJECTED: &str = "MPP-95730a55e2";
 const SPLITS_NOT_EXCEED: &str = "MPP-73af393543";
@@ -412,6 +443,112 @@ crate::registry! {
         None,
     )
     .build();
+    charge_verify_sponsored_split_one_authority_accept => verify_case(
+        "charge-verify-sponsored-split-one-authority-accept",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signs_only("The client signs the transaction with only its own key (the transfer authority)."),
+        &[PAYLOAD_SERVER_FEE_PAYER, CLIENT_SPONSORED],
+        "Positive control for the sponsored signer-set rejects: a fee-sponsored SOL charge with one split, both legs funded by the client, signed only by the client (the fee payer's slot stays empty).",
+        sponsored_sol_split(),
+        None,
+        shape(true, false, false, &[]),
+        None,
+    )
+    .build();
+    charge_verify_sponsored_split_second_authority_reject => verify_case(
+        "charge-verify-sponsored-split-second-authority-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signs_only("The client signs the transaction with only its own key (the transfer authority)."),
+        &[PAYLOAD_SERVER_FEE_PAYER, CLIENT_SPONSORED],
+        "Fee-sponsored SOL split whose split leg is funded and signed by a second payer key: the sponsor pays a signature fee per required signer, so a payment funded by two authorities is refused before the server co-signs.",
+        sponsored_sol_split(),
+        Some(Mutation::SecondAuthority { transfer: 1, seed: SECOND_AUTHORITY_SEED }),
+        Pin::Outcome,
+        Some("the split leg's funding authority is not the primary leg's"),
+    )
+    .build();
+    charge_verify_sponsored_unused_signer_reject => verify_case(
+        "charge-verify-sponsored-unused-signer-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signs_only("The client signs the transaction with only its own key (the transfer authority)."),
+        &[PAYLOAD_SERVER_FEE_PAYER, CLIENT_SPONSORED],
+        "Fee-sponsored SOL split carrying an extra required signer that no instruction names: it authorizes nothing and only adds a signature fee the sponsor pays.",
+        sponsored_sol_split(),
+        Some(Mutation::UnusedSigner { seed: UNUSED_SIGNER_SEED }),
+        Pin::Outcome,
+        Some("a required signer is neither the fee payer nor the funding authority"),
+    )
+    .build();
+    // RULINGS SIG1: every client signature verifies over the message
+    // before the server claims, co-signs or sends it.
+    charge_verify_client_signature_accept => verify_case(
+        "charge-verify-client-signature-accept",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING],
+        "Client-paid SPL charge signed by the client over this message. Pair: charge-verify-forged-client-signature-reject.",
+        input(spl_request("1000", json!({}))),
+        None,
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_forged_client_signature_reject => verify_case(
+        "charge-verify-forged-client-signature-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING],
+        "Client-paid SPL charge whose signature slot holds the client's signature of another transaction, as a copied landed signature would. A server that keys its replay or pending record on that signature and reconciles by its on-chain status serves the resource for a payment that never happened (RULINGS SIG1).",
+        input(spl_request("1000", json!({}))),
+        Some(Mutation::ForgeSignature),
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_client_signature_accept => verify_case(
+        "charge-verify-sponsored-client-signature-accept",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge: the client signs as transfer authority, the fee payer slot is empty for the server. Pair: charge-verify-sponsored-forged-client-signature-reject, charge-verify-sponsored-truncated-signatures-reject.",
+        sponsored_spl(json!({})),
+        None,
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_forged_client_signature_reject => verify_case(
+        "charge-verify-sponsored-forged-client-signature-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge whose transfer authority slot holds the client's signature of another transaction (RULINGS SIG1).",
+        sponsored_spl(json!({})),
+        Some(Mutation::ForgeSignature),
+        Pin::Outcome,
+        None,
+    )
+    .build();
+    charge_verify_sponsored_truncated_signatures_reject => verify_case(
+        "charge-verify-sponsored-truncated-signatures-reject",
+        VERIFY,
+        BugType::AuthBypass,
+        client_signature_spec(),
+        &[VERIFY_BEFORE_SIGNING, PAYLOAD_SERVER_FEE_PAYER],
+        "Fee-sponsored SPL charge whose signature list stops after the fee payer slot: the message requires two signatures and carries one, so checking only the signatures present verifies nothing of the client's (RULINGS SIG1).",
+        sponsored_spl(json!({})),
+        Some(Mutation::TruncateSignatures { keep: 1 }),
+        Pin::Outcome,
+        None,
+    )
+    .build();
     charge_verify_compute_budget_heap_frame_reject => verify_case(
         "charge-verify-compute-budget-heap-frame-reject",
         VERIFY,
@@ -468,6 +605,16 @@ crate::registry! {
         "Fee-sponsored SPL charge: the client must set the server's feePayerKey as fee payer and sign only as transfer authority, leaving the fee payer's slot empty (the pinned shape includes the fee payer; the judge checks the signatures).",
         sponsored_spl(json!({})),
         Expect::Accept(shape(true, false, false, &[])),
+    );
+    charge_build_sponsor_is_signer_reject => build_case(
+        "charge-build-sponsor-is-signer-reject",
+        BUILD,
+        BugType::AuthBypass,
+        spec(CHARGE, "Server-Paid Fees", "The client's account is the transfer authority but NOT the fee payer."),
+        &[CLIENT_SPONSORED, CLIENT_SETS_FEE_PAYER],
+        "Fee-sponsored SPL challenge whose feePayerKey is the client's own key: the client refuses it instead of signing as both fee payer and transfer authority. Differs from charge-build-sponsored-fee-payer only in feePayerKey.",
+        input(spl_request("1000", json!({ "feePayer": true, "feePayerKey": CLIENT }))),
+        reject(RejectCode::FeePayerNotAuthority, "feePayerKey names the signer"),
     );
     charge_build_splits_exceed_amount_reject => build_case(
         "charge-build-splits-exceed-amount-reject",

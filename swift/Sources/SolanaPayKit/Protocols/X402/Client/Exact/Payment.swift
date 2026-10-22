@@ -277,7 +277,7 @@ private func _buildPaymentPayload(
         )
     }
     guard let payToStr = offer.effectivePayTo, !payToStr.isEmpty else {
-        throw PayKitError.invalidTransaction("x402 offer is missing payTo / recipient")
+        throw PayKitError.invalidTransaction("x402 offer is missing payTo")
     }
     guard let assetStr = offer.effectiveAsset, !assetStr.isEmpty else {
         throw PayKitError.invalidTransaction("x402 offer is missing asset")
@@ -450,8 +450,9 @@ private func _selectFromHeader(
 ) -> X402ParsedChallenge? {
     guard let data = Data(base64Encoded: headerValue),
           let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data),
-          let offer = _selectRequirement(from: envelope.accepts, selection: selection)
+          var offer = _selectRequirement(from: envelope.accepts, selection: selection)
     else { return nil }
+    offer.challengeResource = envelope.resource
     return X402ParsedChallenge(offer: offer, declaredVersion: envelope.x402Version)
 }
 
@@ -461,8 +462,9 @@ private func _selectFromBody(
 ) -> X402ParsedChallenge? {
     guard let data = body.data(using: .utf8),
           let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data),
-          let offer = _selectRequirement(from: envelope.accepts, selection: selection)
+          var offer = _selectRequirement(from: envelope.accepts, selection: selection)
     else { return nil }
+    offer.challengeResource = envelope.resource
     return X402ParsedChallenge(offer: offer, declaredVersion: envelope.x402Version)
 }
 

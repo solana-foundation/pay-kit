@@ -313,6 +313,18 @@ pub fn verify_exact_versioned_transaction(
         managed_signers,
         budgeted,
     )?;
+    // The facilitator is the fee payer, so it pays whatever priority fee the
+    // client's limit and price add up to: bound the product, not each factor.
+    crate::core::tx::check_priority_fee(
+        &tx.message,
+        crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS,
+    )
+    .map_err(|_| {
+        Error::Other(
+            "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
+                .into(),
+        )
+    })?;
     verify_required_signers(&tx.message, budgeted)
 }
 
@@ -1366,6 +1378,54 @@ mod tests {
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction")
         );
+    }
+
+    #[test]
+    fn sponsored_priority_fee_bounds_limit_times_price() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let too_high =
+            "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high";
+        let v0 = |units: u32, price: u64| {
+            let mut tx = build_exact_transaction(
+                &requirements,
+                &fee_payer,
+                &owner,
+                vec![],
+                1000,
+                None,
+                None,
+            );
+            ix_mut(&mut tx, 0).data = [vec![2], units.to_le_bytes().to_vec()].concat();
+            ix_mut(&mut tx, 1).data = [vec![3], price.to_le_bytes().to_vec()].concat();
+            verify_exact_transaction(&tx, &requirements, &[fee_payer])
+        };
+        // Each factor is within its own cap; the product is 1,000,000 lamports.
+        let err = v0(MAX_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(ref reason) if reason == too_high),
+            "{err}"
+        );
+        assert!(v0(20_000, 100_001).is_err());
+        v0(20_000, 100_000).unwrap();
+
+        let v1 = |units: u32, price: u64| {
+            let tx = build_exact_v1_transaction(
+                &requirements,
+                &fee_payer,
+                &owner,
+                vec![],
+                crate::core::tx::ComputeBudget::new(units, price),
+            );
+            verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer])
+        };
+        let err = v1(MAX_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(ref reason) if reason == too_high),
+            "{err}"
+        );
+        v1(20_000, 100_000).unwrap();
     }
 
     #[test]

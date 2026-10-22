@@ -43,15 +43,39 @@ class PayKitDispatcherTest < Minitest::Test
     end
   end
 
-  def test_x402_settlement_cache_is_shared_across_requests
+  def test_consumed_signatures_store_is_shared_across_requests
     PayKitTestHelpers.with_config do
       with_dispatcher do |middleware, _dispatcher|
-        cache = middleware.instance_variable_get(:@x402_settlement_cache)
-        refute_nil cache
-        assert_kind_of ::PayKit::Protocols::X402::Server::Exact::SettlementCache, cache
+        store = middleware.instance_variable_get(:@consumed_signatures_store)
+        refute_nil store
 
-        assert cache.put_if_absent("sig:abc")
-        refute cache.put_if_absent("sig:abc"), "second put should observe the first"
+        assert store.put_if_absent("sig:abc", true)
+        refute store.put_if_absent("sig:abc", true), "second put should observe the first"
+      end
+    end
+  end
+
+  # One on-chain payment authorizes one request across protocols: a
+  # signature settled through a gate's MPP server is refused by the same
+  # middleware's x402 settlement, and the other way round.
+  def test_signature_consumed_by_one_protocol_is_rejected_by_the_other
+    PayKitTestHelpers.with_config do
+      with_dispatcher do |_middleware, dispatcher|
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        request = ::Rack::Request.new("PATH_INFO" => "/report", "REQUEST_METHOD" => "GET", "rack.input" => StringIO.new)
+        mpp = dispatcher.send(:mpp_server_for, gate).instance_variable_get(:@handler)
+        # x402 settlement claims through this ledger (see settle_exact_payment).
+        ledger = ::PayCore::ConsumedSignatures.new(dispatcher.send(:build_x402_config, gate, request).settlement_cache)
+
+        mpp.send(:consume_signature, "mpp-paid")
+        refute ledger.claim("mpp-paid"), "x402 must refuse a signature MPP settled"
+
+        assert ledger.claim("x402-paid")
+        error = assert_raises(::PayKit::Protocols::Mpp::VerificationError) { mpp.send(:consume_signature, "x402-paid") }
+        assert_match(/already consumed/, error.message)
+
+        # An unrelated payment is still accepted.
+        mpp.send(:consume_signature, "third-signature")
       end
     end
   end

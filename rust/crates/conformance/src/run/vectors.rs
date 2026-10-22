@@ -76,6 +76,7 @@ impl Vector {
         self.input()
             .pointer("/sessionVoucherVerify/nowSeconds")
             .is_some()
+            || self.input().get("nowSeconds").is_some()
     }
 
     /// The v1 vector a testee receives, with the fixture RPC URL injected.
@@ -111,16 +112,19 @@ fn check_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// `<repo>/specs/<path>.md` for any pinned repository (`SpecRepo::ALL`).
 fn check_doc(doc: &str) -> bool {
-    let rest = doc
-        .strip_prefix("mpp-specs/specs/")
-        .or_else(|| doc.strip_prefix("x402/specs/"));
+    // Any pinned spec checkout (`case::SpecRepo`): mpp-specs/, x402/, and
+    // the unmerged drafts (mpp-specs-solana/, mpp-specs-txv1/, x402-txv1/).
+    let rest = crate::case::SpecRepo::ALL.iter().find_map(|repo| {
+        doc.strip_prefix(repo.prefix())
+            .and_then(|r| r.strip_prefix("/specs/"))
+    });
     matches!(rest, Some(r) if !r.starts_with('.') && r.ends_with(".md") && !r.chars().any(char::is_whitespace))
 }
 
 fn check_req(id: &str) -> bool {
-    let hex = id.strip_prefix("MPP-").or_else(|| id.strip_prefix("X402-"));
-    matches!(hex, Some(h) if h.len() == 10 && h.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
+    crate::case::ReqId::new(id).is_ok()
 }
 
 fn one_of(value: &Value, allowed: &[&str]) -> bool {
@@ -145,7 +149,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
     if !obj["id"].as_str().is_some_and(check_id) {
         return Err("id must match ^[a-z][a-z0-9-]*[a-z0-9]$".into());
     }
-    if !one_of(&obj["intent"], &["charge", "x402-exact", "session"]) {
+    if !one_of(&obj["intent"], &super::expectations::VECTOR_INTENTS) {
         return Err("unknown intent".into());
     }
     if !one_of(
@@ -172,7 +176,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .is_some_and(check_doc)
     {
-        return Err("spec.doc must be mpp-specs/specs/... or x402/specs/....md".into());
+        return Err("spec.doc must be <pinned repo>/specs/....md (mpp-specs, x402, mpp-specs-solana, mpp-specs-txv1, x402-txv1)".into());
     }
     if spec
         .get("section")
@@ -193,7 +197,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
             .as_array()
             .is_some_and(|a| a.iter().all(|r| r.as_str().is_some_and(check_req)));
         if !ok {
-            return Err("requirements must be MPP-/X402- ids".into());
+            return Err("requirements must be <MPP|X402|MPPTX|X402TX>-<10 hex> ids".into());
         }
     }
     let enums: [(&str, &[&str]); 4] = [

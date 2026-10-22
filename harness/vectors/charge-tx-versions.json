@@ -1,0 +1,4491 @@
+[
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions [0, 1]: an array of the integers 0 and 1 (the Wallet Standard vocabulary without \"legacy\"). The SDK's charge-request type parses it and re-encodes it unchanged, as integers; pins the canonical JSON.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiY3VycmVuY3kiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm1ldGhvZERldGFpbHMiOnsiZGVjaW1hbHMiOjYsIm5ldHdvcmsiOiJsb2NhbG5ldCIsInJlY2VudEJsb2NraGFzaCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfSwicmVjaXBpZW50IjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYifQ",
+        "canonicalJson": "{\"amount\":\"1000\",\"currency\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"methodDetails\":{\"decimals\":6,\"network\":\"localnet\",\"recentBlockhash\":\"11111111111111111111111111111111\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1]},\"recipient\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "charge-wire-transaction-versions-both-golden",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ]
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions [1]: a version-1-only server. The field round-trips through the SDK's charge-request type as written (not widened to the [0] default).",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiY3VycmVuY3kiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm1ldGhvZERldGFpbHMiOnsiZGVjaW1hbHMiOjYsIm5ldHdvcmsiOiJsb2NhbG5ldCIsInJlY2VudEJsb2NraGFzaCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlsxXX0sInJlY2lwaWVudCI6IkoyeGNjUnR1RzQzZHJFU0xZem5IaExoUWtMVGRmZXBjS1liaVE5QnNKVmFmIn0",
+        "canonicalJson": "{\"amount\":\"1000\",\"currency\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"methodDetails\":{\"decimals\":6,\"network\":\"localnet\",\"recentBlockhash\":\"11111111111111111111111111111111\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[1]},\"recipient\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "charge-wire-transaction-versions-v1-only-golden",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              1
+            ]
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions [\"legacy\"]: servers MUST NOT advertise legacy, so the value is outside the field's vocabulary and the SDK's charge-request type refuses it.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "\"legacy\" is not a transactionVersions entry"
+    },
+    "id": "charge-wire-transaction-versions-legacy-reject",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "legacy"
+            ]
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-5b29a4494f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions [0, 2]: each entry is the integer 0 or 1; version 2 does not exist, so no server can accept it and the request is refused (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "2 is not a Solana message version"
+    },
+    "id": "charge-wire-transaction-versions-unknown-reject",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              2
+            ]
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions [\"1\"]: entries are integers, never strings (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "a string entry"
+    },
+    "id": "charge-wire-transaction-versions-string-entry-reject",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              "1"
+            ]
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "methodDetails.transactionVersions 1: the field is an array, never a bare integer (RULINGS T1).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "not an array"
+    },
+    "id": "charge-wire-transaction-versions-not-array-reject",
+    "input": {
+      "chargeWire": {
+        "value": {
+          "amount": "1000",
+          "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "methodDetails": {
+            "decimals": 6,
+            "network": "localnet",
+            "recentBlockhash": "11111111111111111111111111111111",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": 1
+          },
+          "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        }
+      }
+    },
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises [0, 1] and the signer is unrestricted: the client builds the highest advertised version, a version-1 message with the compute budget (computeUnitLimit set) in its header and no ComputeBudget instruction. The build judge compares the message version and header config with the kit's build.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v1-advertised",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99",
+      "MPPTX-507629a4fa"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises [1] only: the client MUST build version 1 (a version-0 build is not one of the advertised versions).",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v1-only-advertised",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99",
+      "MPPTX-507629a4fa"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "transactionVersions absent: it defaults to [0], so the client builds a version-0 message with the ComputeBudget prefix. A client that builds version 1 here sends a version the server never advertised.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-absent-builds-v0",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises [0]: the client builds version 0 even though it could build version 1.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v0-only-advertised",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises [0, 1] but the signer signs version 0 only (input.signerMaxTransactionVersion = 0, e.g. a hardware wallet): the highest version the signer can produce is 0, and 0 is advertised.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-signer-v0-picks-v0",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerMaxTransactionVersion": 0,
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "The challenge advertises [1] only and the signer signs version 0 only: no advertised version is buildable, so the client MUST refuse up front rather than send version 0 (or fail at the device).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "no advertised version is buildable"
+    },
+    "id": "charge-build-no-buildable-version-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerMaxTransactionVersion": 0,
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "transactionVersions [] (present, empty): only an omitted field defaults to [0]. The client MUST build one of the advertised versions and none is advertised, so it refuses (RULINGS T2).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "an empty advertisement offers no version"
+    },
+    "id": "charge-build-empty-advertisement-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": []
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "transactionVersions [1, 1]: a repeated entry names the same version; the advertised set is {1} and the client builds version 1 (RULINGS T1).",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-duplicate-advertisement",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            1,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "Fee-sponsored challenge advertising [0, 1]: a version-1 message whose fee payer is feePayerKey, the client signing only as transfer authority (the sponsor slot stays empty; the build judge checks every slot).",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v1-sponsored",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "feePayer": true,
+          "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99",
+      "MPPTX-d5e5d796c6"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "When feePayer is true, the transaction MUST set the server's feePayerKey as fee payer, and the client signs only as transfer authority; the server adds the fee payer signature before broadcasting (see {{fee-sponsorship}}).",
+      "section": "Transaction Payload — Pull Mode"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "Native SOL charge advertising [0, 1]: a version-1 message carrying the System Program transfer, budget in the header.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000000",
+            "destination": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "sol"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v1-sol",
+    "input": {
+      "request": {
+        "amount": "1000000",
+        "currency": "sol",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "Three 566-byte memos (externalId and two split memos) under [0, 1]: about 1.9 KB, which fits version 1's 4096-byte limit but not version 0's 1232. The client builds version 1.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "memo": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "transfers": [
+          {
+            "amount": "800",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "Vote111111111111111111111111111111111111111",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-build-v1-large-memos",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "externalId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "recipient": "Vote111111111111111111111111111111111111111"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ]
+    },
+    "intent": "charge",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d180d03a99",
+      "MPPTX-3f51d8e008"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The challenge advertises [0, 1] and the credential is the kit's version-1 build: servers MUST accept every version they list.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v1-advertised-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAag3MwcrsJa3i2xORpmjskCcnlKPb/jc1zLpqjwRAu0E8qwtSpBLZzXjT1eGY6HOSC0u6PNFbxNjsAnj7Bey+YP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-4f1a73dd49"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The challenge advertises [1] only and the credential is a version-1 build.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v1-only-advertised-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAag3MwcrsJa3i2xORpmjskCcnlKPb/jc1zLpqjwRAu0E8qwtSpBLZzXjT1eGY6HOSC0u6PNFbxNjsAnj7Bey+YP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5",
+      "MPPTX-4f1a73dd49"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge carries no transactionVersions (so [0]) and the credential is a version-1 transaction (the kit's build for the same charge advertising [0, 1]). Rejected before any instruction is inspected: the transaction is otherwise valid.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "version 1 is not advertised"
+    },
+    "id": "charge-verify-v1-not-advertised-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAag3MwcrsJa3i2xORpmjskCcnlKPb/jc1zLpqjwRAu0E8qwtSpBLZzXjT1eGY6HOSC0u6PNFbxNjsAnj7Bey+YP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-27a6fd4f3f",
+      "MPPTX-102b6dc2a5",
+      "MPPTX-4f1a73dd49"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge advertises [0] explicitly and the credential is version 1.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "version 1 is not advertised"
+    },
+    "id": "charge-verify-v1-v0-only-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAag3MwcrsJa3i2xORpmjskCcnlKPb/jc1zLpqjwRAu0E8qwtSpBLZzXjT1eGY6HOSC0u6PNFbxNjsAnj7Bey+YP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-27a6fd4f3f",
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge advertises [1] only and the credential is a valid version-0 transaction (the kit's build for the same charge without the field). MUST reject any other version: version 0 is not implied.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "version 0 is not advertised"
+    },
+    "id": "charge-verify-v0-to-v1-only-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AYUwLzftDKmFX/Un8pV5Dds/ZQibMXXYCmGTUMzQ4EgLQItpxvWkPVCXRI33p5qNNV9W28FdC6aigo34P+CMVA+AAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCcGtVjr09OcKPR/pHmD/8JpHpzY093Kxjt9k/rkX7uhrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQCBQEACgzoAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-27a6fd4f3f",
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The challenge advertises [0, 1] and the credential is a version-0 transaction: still accepted (positive control for the version-1-only and legacy rejects).",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v0-with-v1-advertised-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AYUwLzftDKmFX/Un8pV5Dds/ZQibMXXYCmGTUMzQ4EgLQItpxvWkPVCXRI33p5qNNV9W28FdC6aigo34P+CMVA+AAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCcGtVjr09OcKPR/pHmD/8JpHpzY093Kxjt9k/rkX7uhrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQCBQEACgzoAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A legacy (unversioned) message with the kit's version-0 instructions, against a challenge advertising [0, 1]: servers MUST reject a legacy message. Pair: charge-verify-v0-with-v1-advertised-accept. Mutation: recompiled as a legacy message (compute budget as instructions).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "legacy messages are not supported"
+    },
+    "id": "charge-verify-legacy-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AfyqbAI5MTVi8PM8nnh4f4iMJJPlw0UDjdBsG4zBEbjaFnBZngILYzRSXa8WUHNzUrBNWudtlcOjXyPlpkGXRAQBAAMG6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAwAFAkANAwADAAkDAQAAAAAAAAAEBAIFAQAKDOgDAAAAAAAABg=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-5b29a4494f",
+      "MPPTX-27a6fd4f3f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A legacy message against a challenge with no transactionVersions: the default [0] does not admit legacy either. Pair: charge-verify-default-v0-accept. Mutation: recompiled as a legacy message (compute budget as instructions).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "legacy messages are not supported"
+    },
+    "id": "charge-verify-legacy-default-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AfyqbAI5MTVi8PM8nnh4f4iMJJPlw0UDjdBsG4zBEbjaFnBZngILYzRSXa8WUHNzUrBNWudtlcOjXyPlpkGXRAQBAAMG6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAwAFAkANAwADAAkDAQAAAAAAAAAEBAIFAQAKDOgDAAAAAAAABg=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-5b29a4494f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "No transactionVersions and a version-0 credential: the default accepted set is [0].",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-default-v0-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AYUwLzftDKmFX/Un8pV5Dds/ZQibMXXYCmGTUMzQ4EgLQItpxvWkPVCXRI33p5qNNV9W28FdC6aigo34P+CMVA+AAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCcGtVjr09OcKPR/pHmD/8JpHpzY093Kxjt9k/rkX7uhrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMABQJADQMAAwAJAwEAAAAAAAAABAQCBQEACgzoAwAAAAAAAAYA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-102b6dc2a5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A version-0 transaction whose recipient ATA is resolved through an address lookup table: the server cannot see the account in the static keys and MUST reject before inspecting any instruction. Pair: charge-verify-default-v0-accept. Mutation: transfer #0 destination resolved through an address lookup table.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "charge-verify-lookup-table-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AYWNK4Vct5dLLiG+Tt0a2DUcH3o6xvVz75EtnljvdEPHXFkL7FJT6/3K7A23tuc3OtOR+gQi8J0Vl20NQFecBwmAAQADBepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wDBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMCAAUCQA0DAAIACQMBAAAAAAAAAAMEAQQFAAoM6AMAAAAAAAAGAUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBAQAA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-27a6fd4f3f",
+      "MPPTX-2855caa59a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The kit's version-1 build of the three-566-byte-memo charge, recompiled as version 0 (budget back into instructions): about 1.9 KB, over the version-0 limit of 1232 bytes, against a challenge advertising [0, 1]. Pair: charge-verify-v1-large-memos-accept. Mutation: recompiled as a version-0 message (compute budget as instructions).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "a version-0 transaction over 1232 bytes"
+    },
+    "id": "charge-verify-v0-oversize-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "externalId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "recipient": "Vote111111111111111111111111111111111111111"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "AdX7bAHDruADrXO/FzSZtxZlyHPS2oUecjeAqcDOiFKNryKAIRvZWZmCisILMsJimJ/FE9HpB+32vmB3L3GpCgeAAQAECepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsB9hQK1k9dvQUscyaq+IuTbEhjjQQwJN6X/uI2pQaMJ8Jwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsq3cC4q933F8q5cxnOOYjZh/TpkwSywLl3Xs4XmKRciQDBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAUABQJADQMABQAJAwUAAAAAAAAABwQDCAIACgwgAwAAAAAAAAYGALYEYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEHBAMIAQAKDGQAAAAAAAAABgYAtgRiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYgcEAwgEAAoMZAAAAAAAAAAGBgC2BGNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjAA=="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-3f51d8e008",
+      "MPPTX-f8468a31de"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The same 1.9 KB charge as version 1: within the 4096-byte version-1 limit, accepted.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "memo": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "transfers": [
+          {
+            "amount": "800",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "amount": "100",
+            "decimals": 6,
+            "destinationOwner": "Vote111111111111111111111111111111111111111",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v1-large-memos-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "externalId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "amount": "100",
+              "memo": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os"
+            },
+            {
+              "amount": "100",
+              "memo": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "recipient": "Vote111111111111111111111111111111111111111"
+            }
+          ],
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAw8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYI6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwH2FArWT129BSxzJqr4i5NsSGONBDAk3pf+4jalBownwnBrVY69PTnCj0f6R5g//CaR6c2NPdysY7fZP65F+7oa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+yrdwLir3fcXyrlzGc45iNmH9OmTBLLAuXdezheYpFyJAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQGBAoABQA2AgYECgAFADYCBgQKAAUANgIDBwIADCADAAAAAAAABmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhAwcBAAxkAAAAAAAAAAZiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYgMHBAAMZAAAAAAAAAAGY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2Nu6sx7ZPxp1glDK7ZApeJowHpCmJ302Af30k2YXYVT/+u0IIKLhyboemK22QklzLcfMZ+t1jnwtxiHcbVQXJAE"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-3f51d8e008",
+      "MPPTX-f8468a31de"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A version-1 transaction that also carries a SetComputeUnitLimit instruction: ComputeBudget instructions have no effect under version 1, so a verifier that bounds them bounds nothing, and they MUST be rejected. Pair: charge-verify-v1-advertised-accept. Mutation: ComputeBudget instruction with data [2, 64, 13, 3, 0] added.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "charge-verify-v1-compute-budget-instruction-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAw8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIG6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAQAAAAAAAABADQMAAAAABAMABQAEBAoAAkANAwACBQEADOgDAAAAAAAABrx/UTEIn9Djxp4baDsttA8VESknXTanJhZjc+YvRDaDD9pPO5QfRa/SIgt1FsjAR+Xw3eXF5xqg4BZuoOsd7w4="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a036b6610",
+      "MPPTX-46848f6fce",
+      "MPPTX-c483036092",
+      "MPPTX-1a2e7c737e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "the transaction MUST NOT contain Compute Budget program instructions. They have no effect under version 1, and servers MUST reject them;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A version-1 header without computeUnitLimit: budgeted zero compute units, it cannot execute after the fee is charged. Pair: charge-verify-v1-advertised-accept. Mutation: version-1 header computeUnitLimit removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "charge-verify-v1-missing-compute-unit-limit-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAgsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAAAAABAMECgACBAEADOgDAAAAAAAABr9Gv1Z6S/m8pxLd+RQdLC1Mjy/1KRjQl6veMBF4cPaYJ0GFVARZG54+twF/2uGmA5uOqg3kx2RcPDLlohpw6A8="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d53a9f42dd",
+      "MPPTX-507629a4fa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "The transaction MUST set computeUnitLimit and loadedAccountsDataSizeLimit; a version-1 transaction that omits either is budgeted zero and cannot execute;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A version-1 header without loadedAccountsDataSizeLimit: budgeted zero bytes of account data, it fails at load time after the fee is charged. Pair: charge-verify-v1-advertised-accept. Mutation: version-1 header loadedAccountsDataSizeLimit removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "charge-verify-v1-missing-loaded-data-limit-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAgcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAMECgACBAEADOgDAAAAAAAABmm20hW73gPgsaQVjGYEIsKpXmZbB9navZN9l0qag7dvpjAE0gIYZ+kwb16lO/OuSc3toNHdJztfxn5Dt+NTuw0="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d53a9f42dd"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "The transaction MUST set computeUnitLimit and loadedAccountsDataSizeLimit; a version-1 transaction that omits either is budgeted zero and cannot execute;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Client-paid charge, version-1 header computeUnitLimit 200000 with priorityFee 1000000 lamports: 1000000 * 1000000 = 5000000 * 200000, exactly the 5000000 micro-lamport per-unit cap. Accepted (the cap is inclusive). Mutation: version-1 header priorityFee set to 1000000 lamports.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v1-priority-fee-at-cap-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup0BCDwAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAZKFgWLEA19t1hlTQg/nLF3ZEFsSvVayCouuVRY/a4+mkxH+eBlkJNlp5Pz44073b4X4gP4zd6DXltiTTPmki4N"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a988b0f7a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Client-paid charge, priorityFee 1000001 lamports over a 200000 unit limit: one lamport above priorityFee * 1000000 <= 5000000 * 200000. The total fee is normalised per unit, not compared with the per-unit cap directly. Mutation: version-1 header priorityFee set to 1000001 lamports.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-price-over-cap"
+    },
+    "id": "charge-verify-v1-priority-fee-over-cap-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup0FCDwAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAbhsZKc15yB4m0AV0c2ljoItIZ9f4LrN3WYKe4PeiZVZeRp/Y0wllGRSO13CBQiy3EPPHIzZw0LUhFSoEa7xlAP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a988b0f7a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Fee-sponsored charge (the sponsor caps the price at 10000 micro-lamports per unit), version-1 priorityFee 2000 lamports over 200000 units: 2000 * 1000000 = 10000 * 200000. Accepted. Mutation: version-1 header priorityFee set to 2000 lamports.",
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "forbiddenPrograms": [
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "amount": "1000",
+            "decimals": 6,
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "kind": "spl",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    },
+    "id": "charge-verify-v1-sponsored-priority-fee-at-cap-accept",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "feePayer": true,
+          "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQIBAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEGZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzrqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLAnBrVY69PTnCj0f6R5g//CaR6c2NPdysY7fZP65F+7oa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n0AcAAAAAAABADQMAAAAABAQECgADBQIBDOgDAAAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhu/0UDk2QiBXMT7q4tbHP47N7/3OCYgN5m9Sgg7Xb/NIeLtRYyTSKZ4FqRg6V4xyQeqSkfLVaATips4DWUcB"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a988b0f7a",
+      "MPPTX-d5e5d796c6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Fee-sponsored charge, priorityFee 2001 lamports over 200000 units: above the sponsor's 10000 micro-lamport per-unit cap. A sponsor that compares the lamport total with the per-unit cap (2001 < 10000) pays the client's priority fee. Mutation: version-1 header priorityFee set to 2001 lamports.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-price-over-cap"
+    },
+    "id": "charge-verify-v1-sponsored-priority-fee-over-cap-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "feePayer": true,
+          "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQIBAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEGZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzrqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLAnBrVY69PTnCj0f6R5g//CaR6c2NPdysY7fZP65F+7oa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n0QcAAAAAAABADQMAAAAABAQECgADBQIBDOgDAAAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABNCFGYXnsgGcEES9XBZfQwBSWy/yRQ+jklj6Dr3vRzVvQLYeed1np3p8hWCKY+cDhLxosMnshf88vhhoKaJ0oB"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-8a988b0f7a",
+      "MPPTX-d5e5d796c6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Fee-sponsored charge whose version-1 header lowers computeUnitLimit to 50 while keeping the 1-lamport priority fee: 1 * 1000000 > 10000 * 50, i.e. 20000 micro-lamports per unit. The total fee is under any per-unit number; only normalising by the declared limit exposes it. Mutation: version-1 header computeUnitLimit set to 50.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-price-over-cap",
+      "rejectReason": "1 lamport over 50 units is 20000 micro-lamports per unit"
+    },
+    "id": "charge-verify-v1-reduced-limit-price-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "feePayer": true,
+          "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQIBAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEGZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzrqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLAnBrVY69PTnCj0f6R5g//CaR6c2NPdysY7fZP65F+7oa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAQAAAAAAAAAyAAAAAAAABAQECgADBQIBDOgDAAAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABByrVfJ0s3NYw+wUDw115fKNz5718GvqI3b/7bD0uvdIs9LlhdxVuPHevat59TCb47lgNBwbEjMtnbpHZ6rWAK"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "MPPTX-8a988b0f7a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 transfer one base unit short of the charge. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: transfer #0 amount changed by -1 base units.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-v1-underpay-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAznAwAAAAAAAAbRqoEfZomVOCsoxPpMILFoYYwfOjO8kr+xOHYO9nUEF9F6dTM8wO18938aJE3gxoPWYWBO9CMCUmJjhvbZQVQD"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 transfer redirected to another owner's ATA. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: transfer #0 redirected to AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-v1-wrong-recipient-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwH2FArWT129BSxzJqr4i5NsSGONBDAk3pf+4jalBown2uE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAal9D3m0ajYZYs2AOF6T3IuVRuNY8A0GmEdPXbzf1QfTUBdpjyTCqcOE6TlbSWk+et96nV032nEGX388+Clvt4F"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 transfer paid in another mint. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: transfer #0 paid in mint Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-v1-wrong-mint-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEF6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0ixN0FQqGcRKS9o4A4n4ccKczO4SbGtRHcnjsU+MhiCOitfGXwCRCrM7hqicPoesNZ6XKvIyiiUIjSie5vadJCBcBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKnOAQ5gr+2yJxe9YxkvVBRaP5ZaM7uC0scCnrLOHiCCZAEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAZVZCRmJo2iG2mqJtFW0KjmG/cGi6UWWtZjIH5fFTS8AQZB3WC7U5284gp/Nn5QZNXIA3Zv2dl4lsPgeRRuYlkP"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-96ba338b1e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Native SOL version-1 transfer one lamport short. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: transfer #0 amount changed by -1 base units.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer"
+    },
+    "id": "charge-verify-v1-sol-underpay-reject",
+    "input": {
+      "request": {
+        "amount": "1000000",
+        "currency": "sol",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAQ8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAED6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAABADQMAAAAABAICDAAAAQIAAAA/Qg8AAAAAAPtYvRcvICUfe6yP1XdifIbPKpZ1SfElc1PvRehnw+jHi7vdd96ObRspSWZjnEA7oTvoNxQcMzbqg4Fmn/VsaQw="
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-6e9ac6c31d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 transaction with an extra instruction of an unrelated program after the transfer. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: instruction of program Vote111111111111111111111111111111111111111 with data [1, 2, 3] added.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "charge-verify-v1-unexpected-instruction-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAw8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIG6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkHYUgdNXR0u3xNdiTr072z2DVec9EQQ/wNo1OAAAAAADtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAQAAAAAAAABADQMAAAAABAMECgAEAAMAAgUBAAzoAwAAAAAAAAYBAgNkpUJSMiEsR5ujeS1+7lvhlqqlsv9lneye0k1zAWPnB6s4gVF6ztluvh2dgNAzrNM85UC9H0msrboH92xZN0AK"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-1a2e7c737e",
+      "MPPTX-c483036092"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Fee-sponsored version-1 transaction whose transfer authority is the sponsor: the client signs only as transfer authority, so a sponsor named as the authority would pay the charge. The pinned transaction is the kit's version-1 build (compute budget in the header), so the rule is checked independently of the message version. Mutation: fee payer made the authority of transfer #0.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-not-authority"
+    },
+    "id": "charge-verify-v1-sponsor-as-authority-reject",
+    "input": {
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "methodDetails": {
+          "decimals": 6,
+          "feePayer": true,
+          "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "transactionVersions": [
+            0,
+            1
+          ]
+        },
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "transaction": "gQEAAg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEFZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzoJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6GuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAupwEAAAAAAAAAQA0DAAAAAAQDBAoAAgQBAAzoAwAAAAAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPTX-d5e5d796c6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-txv1/specs/methods/solana/draft-solana-charge-00.md",
+      "quote": "every other rule in this document applies unchanged.",
+      "section": "Transaction Versions"
+    },
+    "tier": "offline"
+  }
+]

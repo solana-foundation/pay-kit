@@ -30,6 +30,7 @@ import type { Protocol } from '../protocol.js';
 import { paymentIdentifierExtension } from './payment-identifier.js';
 import {
     ClientPermissions,
+    type PaymentDestination,
     PermissionDeniedError,
     type PermissionRejection,
     type SolanaNetwork,
@@ -236,8 +237,14 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                 const mint = resolveStablecoinMint(challenge.request.currency, challengeNetwork);
                 if (mint) {
                     try {
+                        const amount = challengeAmount(challenge.request.amount);
                         const authorization = permissions.authorize({
-                            amount: challengeAmount(challenge.request.amount),
+                            amount,
+                            destinations: chargeDestinations(
+                                challenge.request.recipient,
+                                amount,
+                                challenge.request.methodDetails.splits,
+                            ),
                             mint,
                             network: challengeNetwork,
                             origin,
@@ -267,8 +274,10 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                             subscriptionTerms.methodDetails.network ?? 'mainnet',
                             network,
                         );
+                        const amount = challengeAmount(subscriptionTerms.amount);
                         permissions.authorize({
-                            amount: challengeAmount(subscriptionTerms.amount),
+                            amount,
+                            destinations: [{ amount, recipient: subscriptionTerms.recipient }],
                             mint: subscriptionTerms.currency,
                             network: challengeNetwork,
                             origin,
@@ -303,8 +312,10 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             const permitted: PaymentRequirements[] = [];
             for (const requirement of required.accepts ?? []) {
                 try {
+                    const amount = challengeAmount(requirement.amount);
                     permissions.authorize({
-                        amount: challengeAmount(requirement.amount),
+                        amount,
+                        destinations: [{ amount, recipient: requirement.payTo }],
                         mint: requirement.asset,
                         network: normalizeNetwork(requirement.network, network),
                         origin,
@@ -379,12 +390,33 @@ function challengeAmount(value: string): bigint {
     return BigInt(value);
 }
 
+/**
+ * Every transfer leg of an MPP charge, as the charge builder pays it: the
+ * primary `recipient` receives `amount` minus the splits, then each
+ * `methodDetails.splits` entry in order.
+ */
+function chargeDestinations(
+    recipient: string,
+    amount: bigint,
+    splits: readonly { amount: string; recipient: string }[] | undefined,
+): PaymentDestination[] {
+    const legs = (splits ?? []).map(split => ({ amount: challengeAmount(split.amount), recipient: split.recipient }));
+    const primary = legs.reduce((rest, leg) => rest - leg.amount, amount);
+    if (primary <= 0n) {
+        throw new PermissionDeniedError([
+            { code: 'invalid_challenge_terms', message: 'MPP splits leave nothing for the recipient' },
+        ]);
+    }
+    return [{ amount: primary, recipient }, ...legs];
+}
+
 function subscriptionRequest(
     value: unknown,
-): { amount: string; currency: string; methodDetails: { network?: string } } | undefined {
+): { amount: string; currency: string; methodDetails: { network?: string }; recipient: string } | undefined {
     if (!value || typeof value !== 'object') return undefined;
     const request = value as Record<string, unknown>;
     if (typeof request.amount !== 'string' || typeof request.currency !== 'string') return undefined;
+    if (typeof request.recipient !== 'string') return undefined;
     if (!request.methodDetails || typeof request.methodDetails !== 'object') return undefined;
     const methodDetails = request.methodDetails as Record<string, unknown>;
     if (methodDetails.network !== undefined && typeof methodDetails.network !== 'string') return undefined;
@@ -392,5 +424,6 @@ function subscriptionRequest(
         amount: request.amount,
         currency: request.currency,
         methodDetails: { network: methodDetails.network },
+        recipient: request.recipient,
     };
 }

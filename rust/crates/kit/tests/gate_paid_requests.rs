@@ -19,7 +19,6 @@ use tower::ServiceExt;
 const RECIPIENT: &str = "11111111111111111111111111111111";
 const SECRET: &str = "gate-paid-requests-test-secret-32-bytes";
 const ZERO_BLOCKHASH: &str = "11111111111111111111111111111111";
-const OFFLINE_RPC: &str = "http://127.0.0.1:1";
 
 /// JSON-RPC node that confirms every broadcast, so the gate can settle.
 fn mock_rpc_url() -> &'static str {
@@ -101,6 +100,19 @@ fn paykit() -> PayKit {
     .expect("valid local-only gate configuration")
 }
 
+/// An RPC that only vouches for the pinned blockhash; every other call fails.
+fn offline_rpc() -> RpcClient {
+    RpcClient::new_mock_with_mocks(
+        "fails".to_string(),
+        [(
+            solana_rpc_client_api::request::RpcRequest::IsBlockhashValid,
+            serde_json::json!({ "context": { "slot": 1 }, "value": true }),
+        )]
+        .into_iter()
+        .collect(),
+    )
+}
+
 fn payer() -> MemorySigner {
     keypair_signer(42)
 }
@@ -145,7 +157,7 @@ async fn pay_and_fetch(app: &Router, uri: &str) -> Response {
     let mut requirements =
         parse_x402_challenge(&[(PAYMENT_REQUIRED_HEADER.to_string(), required)], None).unwrap();
     requirements.recent_blockhash = Some(ZERO_BLOCKHASH.to_string());
-    let rpc = RpcClient::new(OFFLINE_RPC.to_string());
+    let rpc = offline_rpc();
     let payment = build_payment_header(&payer(), &rpc, &requirements, None, Some(TxVersion::V0))
         .await
         .unwrap();
@@ -357,7 +369,7 @@ async fn duplicate_query_key_with_a_credential_never_reaches_the_handler() {
         requirements.recent_blockhash = Some(ZERO_BLOCKHASH.to_string());
         build_payment_header(
             &payer(),
-            &RpcClient::new(OFFLINE_RPC.to_string()),
+            &offline_rpc(),
             &requirements,
             None,
             Some(TxVersion::V0),

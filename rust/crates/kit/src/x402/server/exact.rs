@@ -7,7 +7,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
-use crate::core::store::{MemoryStore, Store};
+use crate::core::store::{ConsumedSignatures, MemoryStore, PendingClaim, Store};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
@@ -746,49 +746,75 @@ impl X402 {
             .await?;
 
         // Claim before broadcasting so concurrent submissions of one
-        // transaction cannot both confirm and both be served.
+        // transaction cannot both confirm and both be served. The claim stays
+        // pending until the outcome is known; only a confirmed landing turns
+        // it into a consumed signature, and only once.
         let signature = tx
             .signatures
             .first()
             .ok_or_else(|| Error::Other("transaction has no signatures".into()))?
             .to_string();
-        self.consume_signature(&signature).await?;
+        let ledger = self.consumed_signatures();
+        let store_err = |e: crate::core::store::StoreError| {
+            Error::Other(format!("x402 replay store error: {e}"))
+        };
+        use crate::core::rpc::{BroadcastFailure, PriorBroadcast};
+        let prior = match ledger.claim_pending(&signature).await.map_err(store_err)? {
+            PendingClaim::Fresh => PriorBroadcast::None,
+            // This same transaction (same bytes, same fee-payer signature)
+            // whose earlier outcome was unknown. Re-broadcasting it is safe:
+            // one signature lands at most once. The earlier send may have
+            // reached a node, so a refusal now is no proof it never will.
+            PendingClaim::ResumePending => PriorBroadcast::Possible,
+            PendingClaim::Consumed => return Err(Error::SignatureConsumed),
+        };
 
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        match crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx) {
-            Ok(confirmed) => Ok(confirmed.to_string()),
-            Err(e) => {
-                // Unsettled: let the payer retry the same transaction.
-                if let Err(release) = self
-                    .replay_store
-                    .delete(&self.consumed_key(&signature))
-                    .await
-                {
+        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx, prior) {
+            Ok(confirmed) => {
+                if ledger.confirm(&signature).await.map_err(store_err)? {
+                    Ok(confirmed.to_string())
+                } else {
+                    Err(Error::SignatureConsumed)
+                }
+            }
+            Err(
+                failure @ (BroadcastFailure::NotLanded(_) | BroadcastFailure::FailedOnChain(_)),
+            ) => {
+                // Definitively unsettled: these bytes moved nothing and never
+                // will, so the payer may retry.
+                if let Err(release) = ledger.release_pending(&signature).await {
                     tracing::warn!(error = %release, "failed to release unsettled x402 payment");
                 }
                 Err(Error::Rpc(format!(
-                    "exact settlement broadcast failed: {e}"
+                    "exact settlement broadcast failed: {failure}"
+                )))
+            }
+            Err(failure @ BroadcastFailure::Unknown(_)) => {
+                // It may still land: keep the claim so neither this payment
+                // nor a fresh challenge settles twice for one request.
+                Err(Error::SettlementPending(format!(
+                    "transaction {signature} {failure}; retry the same payment, do not pay again"
                 )))
             }
         }
     }
 
-    fn consumed_key(&self, signature: &str) -> String {
-        format!(
-            "x402-exact:consumed:{}:{signature}",
-            caip2_network_for_cluster(&self.config.network)
-        )
+    /// The ledger shared with MPP charge, so a payment settled through either
+    /// protocol cannot authorize a second request through the other.
+    fn consumed_signatures(&self) -> ConsumedSignatures {
+        ConsumedSignatures::new(self.replay_store.clone())
     }
 
     /// Atomically mark a payment signature as used.
     pub(crate) async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
         let inserted = self
-            .replay_store
-            .put_if_absent(&self.consumed_key(signature), serde_json::json!(true))
+            .consumed_signatures()
+            .claim(signature)
             .await
             .map_err(|e| Error::Other(format!("x402 replay store error: {e}")))?;
         if inserted {
@@ -878,11 +904,13 @@ impl X402 {
             }
         }
 
-        // The canonical `accepted` object carries no resource, so a v2
-        // credential is bound to its route only through `resource`.
-        if envelope.x402_version == X402_VERSION_V2 {
-            verify_resource_binding(envelope.resource.as_ref(), requirements)?;
-        }
+        // Fail closed on a resource-bound route: whatever the credential
+        // omits, the binding must still hold.
+        verify_resource_binding(
+            envelope.x402_version,
+            envelope.resource.as_ref(),
+            requirements,
+        )?;
 
         match envelope.payload {
             PaymentProof::Transaction { transaction } => {
@@ -912,6 +940,11 @@ impl X402 {
 
                 let managed_signers = managed_signers_for_requirements(requirements)?;
                 verify_exact_versioned_transaction(&tx, requirements, &managed_signers)?;
+                // The client's signature verifies over this message before
+                // the sponsor co-signs, claims or sends it (RULINGS SIG1);
+                // the sponsor's slot is still empty.
+                crate::core::tx::require_presigned(&tx, managed_signers.first())
+                    .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
                 Ok(VerifiedExactPayment::Transaction(tx))
             }
             PaymentProof::Signature { signature } => {
@@ -1086,10 +1119,17 @@ fn unix_now() -> i64 {
         })
 }
 
-/// Reject a v2 credential that names a resource other than the route's.
-/// `resource` is optional on the v2 payload and unsigned, so an absent one
-/// is accepted; replay across routes is stopped by signature consumption.
+/// Bind a credential to a resource-bound route, failing closed.
+///
+/// The canonical `accepted` object carries no resource, so a v2 credential
+/// names its route only through `resource`: it must be present and equal.
+/// A v1 credential has no resource on the wire at all, so it is bound only by
+/// the memo its signed transaction carries (`extra.memo`, which the
+/// transaction verifier then requires); a resource-bound route without one
+/// cannot bind it and refuses it. Neither field is signed, which is why the
+/// memo, not the resource, is what ties the payment to the route.
 fn verify_resource_binding(
+    x402_version: u64,
     presented: Option<&ResourceInfo>,
     requirements: &PaymentRequirements,
 ) -> Result<(), Error> {
@@ -1099,13 +1139,32 @@ fn verify_resource_binding(
     else {
         return Ok(());
     };
+    if x402_version != X402_VERSION_V2 {
+        let memo_bound = requirements
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("memo"))
+            .and_then(|memo| memo.as_str())
+            .is_some_and(|memo| !memo.is_empty());
+        return if memo_bound {
+            Ok(())
+        } else {
+            Err(Error::Other(format!(
+                "Resource binding missing: a v1 credential cannot name {}, and the route sets no memo",
+                expected.url
+            )))
+        };
+    }
     match presented {
         Some(resource) if resource.url == expected.url => Ok(()),
         Some(resource) => Err(Error::Other(format!(
             "Resource mismatch: expected {}, got {}",
             expected.url, resource.url
         ))),
-        None => Ok(()),
+        None => Err(Error::Other(format!(
+            "Resource binding missing: expected {}",
+            expected.url
+        ))),
     }
 }
 
@@ -1191,14 +1250,57 @@ pub(crate) mod test_support {
     ) -> VersionedTransaction {
         let amount = requirements.amount.parse().unwrap();
         let decimals = requirements.decimals.unwrap_or(6);
-        crate::core::tx::build_unsigned(
+        let mut instructions = vec![transfer_checked(requirements, owner, amount, decimals)];
+        // An honest client stamps the seller's `extra.memo` on the transfer.
+        if let Some(memo) = requirements
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("memo"))
+            .and_then(|memo| memo.as_str())
+        {
+            instructions.push(Instruction {
+                program_id: Pubkey::from_str(programs::MEMO_PROGRAM).unwrap(),
+                accounts: vec![],
+                data: memo.as_bytes().to_vec(),
+            });
+        }
+        let mut tx = crate::core::tx::build_unsigned(
             TxVersion::V0,
             fee_payer,
-            &[transfer_checked(requirements, owner, amount, decimals)],
+            &instructions,
             Hash::new_unique(),
             Some(&crate::core::tx::ComputeBudget::new(20_000, 1)),
         )
-        .unwrap()
+        .unwrap();
+        sign_as_test_client(&mut tx);
+        tx
+    }
+
+    fn test_client_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+    }
+
+    /// A client whose slot [`exact_transaction`] signs, as an honest client
+    /// does: the server verifies it before co-signing (RULINGS SIG1).
+    pub(crate) fn test_client() -> Pubkey {
+        Pubkey::new_from_array(test_client_key().verifying_key().to_bytes())
+    }
+
+    /// Sign the test client's slot, if it is a required signer.
+    pub(crate) fn sign_as_test_client(tx: &mut VersionedTransaction) {
+        use ed25519_dalek::Signer;
+        let client = test_client();
+        let required = usize::from(tx.message.header().num_required_signatures);
+        if let Some(index) = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .take(required)
+            .position(|key| *key == client)
+        {
+            let signature = test_client_key().sign(&tx.message.serialize());
+            tx.signatures[index] = solana_signature::Signature::from(signature.to_bytes());
+        }
     }
 
     /// Wrap a transaction proof in a v2 `PAYMENT-SIGNATURE` header.
@@ -1574,7 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn verify_transaction_header_rejects_non_exact_transaction() {
         let x402 = X402::new(config()).unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let recipient = Pubkey::new_unique();
         let ix = system_instruction::transfer(&payer, &recipient, 1000);
         let message =
@@ -2152,7 +2254,7 @@ mod tests {
         // The canonical accepted objects are identical; only the resource differs.
         assert_eq!(route_a.to_accepted_value(), route_b.to_accepted_value());
 
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&route_a, &payer, &payer);
         let header = transaction_header(&route_a, route_a.resource_info(), &tx);
 
@@ -2179,14 +2281,104 @@ mod tests {
             assert!(err.to_string().contains("Resource mismatch"), "{err}");
         }
 
-        // Clients that omit the optional resource are not rejected.
+        // Omitting the resource does not escape the binding.
         let unbound = transaction_header(&route_a, None, &tx);
         let omitted = x402
             .process_payment(&unbound, "0.01", resource_options("/route-a"))
-            .await;
+            .await
+            .unwrap_err();
         assert!(
-            matches!(omitted, Ok(VerifiedExactPayment::Transaction(_))),
-            "{omitted:?}"
+            omitted.to_string().contains("Resource binding missing"),
+            "{omitted}"
+        );
+    }
+
+    /// A credential without `accepted` or `resource`, as v1 always is.
+    fn bare_header(
+        version: u64,
+        resource: Option<ResourceInfo>,
+        tx: &VersionedTransaction,
+    ) -> String {
+        let envelope = PaymentSignatureEnvelope {
+            scheme: Some(EXACT_SCHEME.to_string()),
+            network: Some(SOLANA_DEVNET.to_string()),
+            x402_version: version,
+            accepted: None,
+            resource,
+            payload: PaymentProof::Transaction {
+                transaction: crate::core::tx::encode(tx).unwrap(),
+            },
+            extensions: None,
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn bound_route_fails_closed_on_a_missing_resource_or_memo() {
+        let x402 = X402::new(config()).unwrap();
+        let bound = |memo| ExactOptions {
+            resource: Some("/route-a"),
+            memo,
+            ..ExactOptions::default()
+        };
+        let requirements = x402
+            .exact_requirements("0.01", bound(Some("GET route-a")))
+            .unwrap();
+        let payer = test_client();
+        let tx = exact_transaction(&requirements, &payer, &payer);
+        let verify = |header: String, options: ExactOptions<'static>| {
+            let x402 = &x402;
+            async move { x402.process_payment(&header, "0.01", options).await }
+        };
+        let accepted = |result: Result<VerifiedExactPayment, Error>| {
+            assert!(
+                matches!(result, Ok(VerifiedExactPayment::Transaction(_))),
+                "{result:?}"
+            );
+        };
+        let rejected = |result: Result<VerifiedExactPayment, Error>, reason: &str| {
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains(reason), "{err}");
+        };
+
+        // v2 must echo `accepted`, and (tested above) the resource.
+        rejected(
+            verify(
+                bare_header(X402_VERSION_V2, requirements.resource_info(), &tx),
+                bound(Some("GET route-a")),
+            )
+            .await,
+            "missing accepted",
+        );
+
+        // v1 carries no resource: the signed memo binds it, so a bound route
+        // without a memo refuses it and one with a memo requires it.
+        rejected(
+            verify(bare_header(X402_VERSION_V1, None, &tx), bound(None)).await,
+            "Resource binding missing",
+        );
+        accepted(
+            verify(
+                bare_header(X402_VERSION_V1, None, &tx),
+                bound(Some("GET route-a")),
+            )
+            .await,
+        );
+        let unmemoed = exact_transaction(
+            &x402.exact_requirements("0.01", bound(None)).unwrap(),
+            &payer,
+            &payer,
+        );
+        rejected(
+            verify(
+                bare_header(X402_VERSION_V1, None, &unmemoed),
+                bound(Some("GET route-a")),
+            )
+            .await,
+            "memo",
         );
     }
 
@@ -2198,7 +2390,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &payer);
         let header = transaction_header(&requirements, None, &tx);
         assert!(matches!(
@@ -2229,7 +2421,7 @@ mod tests {
             .unwrap()
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let confirmed = confirmed_transfer(&requirements, &payer, 10_000, 6, Some(now_unix()));
         let x402 = with_rpc(
             X402::new(config()).unwrap(),
@@ -2292,7 +2484,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &sponsor.pubkey());
 
         let settled = x402
@@ -2315,6 +2507,238 @@ mod tests {
         assert!(err.to_string().contains("already consumed"), "{err}");
     }
 
+    /// JSON-RPC stub whose `sendTransaction` is accepted. `status` selects
+    /// `getSignatureStatuses`: 0 errors (outcome unknown), 1 landed, other
+    /// values not found; `blockhash_valid` answers `isBlockhashValid`.
+    async fn accepting_rpc(
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    ) -> RpcClient {
+        stub_rpc(
+            Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            status,
+            blockhash_valid,
+        )
+        .await
+    }
+
+    /// [`accepting_rpc`] whose `sendTransaction` answer is selected by `send`:
+    /// 0 accepts it, 1 is a preflight rejection, 2 another JSON-RPC refusal
+    /// (node unhealthy).
+    async fn stub_rpc(
+        send: Arc<std::sync::atomic::AtomicU8>,
+        status: Arc<std::sync::atomic::AtomicU8>,
+        blockhash_valid: Arc<std::sync::atomic::AtomicBool>,
+    ) -> RpcClient {
+        use axum::{routing::post, Json, Router};
+        use std::sync::atomic::Ordering;
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let (send, status, blockhash_valid) =
+                    (send.clone(), status.clone(), blockhash_valid.clone());
+                async move {
+                    let id = request["id"].clone();
+                    let context = serde_json::json!({ "slot": 1 });
+                    let refusal = match send.load(Ordering::SeqCst) {
+                        1 => Some(serde_json::json!({
+                            "code": -32002,
+                            "message": "Transaction simulation failed: Blockhash not found",
+                            "data": { "err": "BlockhashNotFound", "logs": [] },
+                        })),
+                        2 => Some(serde_json::json!({
+                            "code": -32005,
+                            "message": "Node is unhealthy",
+                            "data": { "numSlotsBehind": 100 },
+                        })),
+                        _ => None,
+                    };
+                    let result = match request["method"].as_str() {
+                        Some("sendTransaction") if refusal.is_some() => {
+                            return Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id, "error": refusal,
+                            }))
+                        }
+                        Some("sendTransaction") => {
+                            let tx =
+                                crate::core::tx::decode(request["params"][0].as_str().unwrap())
+                                    .unwrap();
+                            serde_json::json!(tx.signatures[0].to_string())
+                        }
+                        Some("isBlockhashValid") => serde_json::json!({
+                            "context": context,
+                            "value": blockhash_valid.load(Ordering::SeqCst),
+                        }),
+                        Some("getSignatureStatuses") => match status.load(Ordering::SeqCst) {
+                            0 => {
+                                return Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "error": { "code": -32603, "message": "node behind" },
+                                }))
+                            }
+                            1 => serde_json::json!({ "context": context, "value": [{
+                                "slot": 1, "confirmations": null, "err": null,
+                                "status": { "Ok": null }, "confirmationStatus": "confirmed",
+                            }] }),
+                            _ => serde_json::json!({ "context": context, "value": [null] }),
+                        },
+                        other => panic!("unexpected RPC method {other:?}"),
+                    };
+                    Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        RpcClient::new_with_commitment(url, solana_commitment_config::CommitmentConfig::confirmed())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_broadcast_outcome_keeps_the_claim_until_reconciled() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let status = Arc::new(AtomicU8::new(0));
+        let blockhash_valid = Arc::new(AtomicBool::new(true));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            accepting_rpc(status.clone(), blockhash_valid.clone()).await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
+        let settle = || {
+            x402.settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+        };
+
+        // Accepted for broadcast, then the status read fails: it may land.
+        for _ in 0..2 {
+            let err = settle().await.unwrap_err();
+            assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        }
+
+        // It landed: the same payment settles once, then is consumed.
+        status.store(1, Ordering::SeqCst);
+        let signature = settle().await.unwrap();
+        assert_eq!(signature, {
+            let mut signed = tx.clone();
+            crate::core::signing::cosign_versioned_fee_payer(
+                sponsor.as_ref(),
+                &sponsor.pubkey(),
+                &mut signed,
+            )
+            .await
+            .unwrap();
+            signed.signatures[0].to_string()
+        });
+        assert!(matches!(
+            settle().await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
+    }
+
+    /// A status still missing once the blockhash expired is not proof that
+    /// the transaction never landed (the node may lag or lack its history):
+    /// the claim is kept and the same payment settles once it shows up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_broadcast_with_no_status_keeps_the_claim() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let status = Arc::new(AtomicU8::new(2));
+        let blockhash_valid = Arc::new(AtomicBool::new(false));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            accepting_rpc(status.clone(), blockhash_valid).await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
+        let settle = || {
+            x402.settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+        };
+
+        for _ in 0..2 {
+            let err = settle().await.unwrap_err();
+            assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        }
+        status.store(1, Ordering::SeqCst);
+        settle().await.unwrap();
+        assert!(matches!(
+            settle().await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
+    }
+
+    /// Only a preflight rejection of the first broadcast releases the claim.
+    /// Another refusal, or a preflight rejection of a resumed settlement whose
+    /// earlier send may have been forwarded, is followed by a missing status
+    /// that proves nothing, so the claim is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_broadcast_releases_the_claim_only_on_first_preflight_rejection() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let send = Arc::new(AtomicU8::new(0));
+        let status = Arc::new(AtomicU8::new(2));
+        let x402 = with_rpc(
+            X402::new(cfg).unwrap(),
+            stub_rpc(
+                send.clone(),
+                status.clone(),
+                Arc::new(AtomicBool::new(true)),
+            )
+            .await,
+        );
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let settle = |tx: VersionedTransaction| {
+            x402.settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+        };
+
+        // Positive control: a first broadcast refused at preflight was never
+        // forwarded, so the payer may present it again.
+        let first = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
+        send.store(1, Ordering::SeqCst);
+        let err = settle(first.clone()).await.unwrap_err();
+        assert!(err.to_string().contains("not landed"), "{err}");
+        send.store(0, Ordering::SeqCst);
+        status.store(1, Ordering::SeqCst);
+        settle(first).await.unwrap();
+
+        // A refusal that is not a preflight rejection proves nothing.
+        status.store(2, Ordering::SeqCst);
+        let unhealthy = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
+        send.store(2, Ordering::SeqCst);
+        let err = settle(unhealthy.clone()).await.unwrap_err();
+        assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        // Resumed, its earlier send may have landed: a preflight rejection
+        // now (the blockhash expired meanwhile) keeps the claim too.
+        send.store(1, Ordering::SeqCst);
+        let err = settle(unhealthy.clone()).await.unwrap_err();
+        assert!(matches!(err, Error::SettlementPending(_)), "{err:?}");
+        // It had landed: the same payment settles once.
+        status.store(1, Ordering::SeqCst);
+        settle(unhealthy.clone()).await.unwrap();
+        assert!(matches!(
+            settle(unhealthy).await.unwrap_err(),
+            Error::SignatureConsumed
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn failed_broadcast_releases_the_claim() {
         let sponsor = memory_signer(9);
@@ -2324,7 +2748,7 @@ mod tests {
             .unwrap()
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let tx = exact_transaction(&requirements, &Pubkey::new_unique(), &sponsor.pubkey());
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
         let failing = with_rpc(
@@ -2356,7 +2780,7 @@ mod tests {
             .exact_requirements("1.00", ExactOptions::default())
             .unwrap();
         assert_eq!(requirements.amount, "1000000");
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         // 1_000_000 raw units of a nine-decimal mint is 0.001 tokens, not 1.00.
         let nine = confirmed_transfer(&requirements, &payer, 1_000_000, 9, Some(now_unix()));
         let six = confirmed_transfer(&requirements, &payer, 1_000_000, 6, Some(now_unix()));
@@ -2388,7 +2812,7 @@ mod tests {
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
         assert_eq!(requirements.to_accepted_value()["maxTimeoutSeconds"], 60);
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let now = now_unix();
         let cases = [
             (Some(now - 3_600), false),
@@ -2542,7 +2966,7 @@ mod tests {
         let requirements = x402
             .exact_requirements("0.01", ExactOptions::default())
             .unwrap();
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(&requirements, &payer, &payer);
         let envelope = PaymentSignatureEnvelope {
             scheme: None,
@@ -2687,7 +3111,7 @@ mod tests {
         requirements: &PaymentRequirements,
         accepted: serde_json::Value,
     ) -> String {
-        let payer = Pubkey::new_unique();
+        let payer = test_client();
         let tx = exact_transaction(requirements, &payer, &payer);
         let envelope = PaymentSignatureEnvelope {
             scheme: None,
@@ -2708,6 +3132,52 @@ mod tests {
 
     // Regression: an `accepted` without the server's non-spec hints was
     // rejected as a structural mismatch.
+    // RULINGS SIG1: the client's signature verifies over this message
+    // before the sponsor co-signs; a copied or missing one is refused.
+    #[tokio::test]
+    async fn a_client_signature_that_does_not_verify_is_refused() {
+        use ed25519_dalek::Signer;
+        let sponsor = Pubkey::new_unique();
+        let mut server_config = config();
+        server_config.fee_payer_key = Some(sponsor.to_string());
+        let x402 = X402::new(server_config).unwrap();
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let honest = exact_transaction(&requirements, &test_client(), &sponsor);
+        let verify = |tx: &VersionedTransaction| {
+            let header = transaction_header(&requirements, requirements.resource_info(), tx);
+            let x402 = &x402;
+            let requirements = &requirements;
+            async move {
+                x402.verify_payment_signature_for_requirements(&header, requirements)
+                    .await
+            }
+        };
+        verify(&honest).await.unwrap();
+
+        let client = honest
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| *key == test_client())
+            .unwrap();
+        let mut forged = honest.clone();
+        forged.signatures[client] = solana_signature::Signature::from(
+            ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                .sign(b"a transaction that already landed")
+                .to_bytes(),
+        );
+        assert!(verify(&forged).await.is_err(), "a copied signature passed");
+
+        let mut truncated = honest.clone();
+        truncated.signatures.truncate(1);
+        assert!(
+            verify(&truncated).await.is_err(),
+            "a short signature list passed"
+        );
+    }
+
     #[tokio::test]
     async fn spec_shaped_accepted_without_server_hints_matches() {
         let x402 = X402::new(config()).unwrap();

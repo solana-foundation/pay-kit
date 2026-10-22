@@ -37,6 +37,11 @@ module PayCore
     # The on-chain signature has already been used to settle a previous charge.
     CODE_SIGNATURE_CONSUMED = "signature_consumed"
 
+    # The credential's payment may already be broadcast and is not resolved
+    # yet. Retryable with the same credential; never answered with a fresh
+    # challenge, which the client could pay a second time.
+    CODE_SETTLEMENT_IN_PROGRESS = "settlement_in_progress"
+
     CANONICAL_CODES = [
       CODE_CHARGE_REQUEST_MISMATCH,
       CODE_CHALLENGE_ROUTE_MISMATCH,
@@ -44,7 +49,8 @@ module PayCore
       CODE_CHALLENGE_EXPIRED,
       CODE_PAYMENT_INVALID,
       CODE_WRONG_NETWORK,
-      CODE_SIGNATURE_CONSUMED
+      CODE_SIGNATURE_CONSUMED,
+      CODE_SETTLEMENT_IN_PROGRESS
     ].freeze
 
     # Mapping from legacy or per-language internal codes to canonical codes.
@@ -64,7 +70,8 @@ module PayCore
       "missing-transaction" => CODE_PAYMENT_INVALID,
       "transaction-failed" => CODE_PAYMENT_INVALID,
       "transaction-not-found" => CODE_PAYMENT_INVALID,
-      "no-transfer" => CODE_PAYMENT_INVALID
+      "no-transfer" => CODE_PAYMENT_INVALID,
+      "settlement-in-progress" => CODE_SETTLEMENT_IN_PROGRESS
     }.freeze
 
     # Substring patterns that classify an SDK error message into a canonical

@@ -6,6 +6,7 @@ namespace PayKit\Protocols\Mpp;
 
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\Gate;
 use Brick\Math\BigDecimal;
 use PayKit\PayCore\Solana\Mints;
@@ -17,6 +18,7 @@ use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\ChargeSettlement;
 use PayKit\Protocols\Mpp\Server\PaymentRequiredResponse;
+use PayKit\Protocols\Mpp\Server\SettlementPending;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
@@ -132,6 +134,9 @@ final class Adapter
         $chargeRequest = $this->chargeRequestFor($gate);
         $result = $handler->handle($authorization, $chargeRequest);
 
+        if ($result instanceof SettlementPending) {
+            throw new SettlementInProgressException('pay_kit: ' . $result->body['detail']);
+        }
         if ($result instanceof PaymentRequiredResponse) {
             throw new InvalidProofException(
                 'pay_kit: ' . ($result->body['error'] ?? 'payment_invalid'),

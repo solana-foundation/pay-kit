@@ -28,6 +28,7 @@ from solana_pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
+from solana_pay_kit._paycore.transaction import SignatureCheckError, verify_required_signatures
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server._tx_decode import (
     _COMPUTE_BUDGET_PROGRAM,
@@ -356,6 +357,19 @@ def _validate_instruction_allowlist(
     # Details), so each one admits its own Memo instruction.
     remaining_transfers: list[tuple[str, int]] = list(expected_transfers)
     remaining_memos: Counter[str] = Counter(memo for _label, memo in _expected_memos(request, details))
+    # Every payment leg must be funded by one authority. A sponsor pays a
+    # signature fee per required signer, so letting each leg of a split name
+    # its own authority would let a payer multiply the fees the sponsor pays.
+    funding_authority: str | None = None
+
+    def _record_funding_authority(authority: str) -> None:
+        nonlocal funding_authority
+        if funding_authority is not None and funding_authority != authority:
+            raise PaymentError(
+                "payment transfers must share one funding authority",
+                code="invalid-payload",
+            )
+        funding_authority = authority
 
     for instruction in message_instructions:
         try:
@@ -443,6 +457,7 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             remaining_transfers.pop(match_idx)
+            _record_funding_authority(source)
             continue
 
         if program_id in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
@@ -523,6 +538,7 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             remaining_transfers.pop(match_idx)
+            _record_funding_authority(authority)
             continue
 
         if program_id == ASSOCIATED_TOKEN_PROGRAM:
@@ -553,6 +569,51 @@ def _validate_instruction_allowlist(
                 f"missing required ATA creation instruction for split recipient {owner}",
                 code="invalid-payload",
             )
+
+    # Every required signer must be the fee payer or the one funding
+    # authority. Any other signer authorizes nothing and only adds a
+    # signature fee, which a sponsor would pay.
+    allowed_signers = {fee_payer_account, funding_authority}
+    num_required = int(message.header.num_required_signatures)
+    if any(signer not in allowed_signers for signer in account_keys[:num_required]):
+        raise PaymentError(
+            "unexpected signer in payment transaction",
+            code="invalid-payload",
+        )
+
+
+def _verify_signatures(raw_tx: bytes, *, unsigned_fee_payer: str | None = None) -> None:
+    """Refuse a transaction unless every required signer's signature verifies.
+
+    The wire must carry exactly ``num_required_signatures`` signatures, each
+    valid over the message: a landed multi-signer transaction truncated to
+    its first signature would otherwise pass a slot-by-slot check (RULINGS
+    SIG1). ``unsigned_fee_payer`` names the server's own fee payer, whose slot
+    may still be the zero placeholder before it co-signs; every other slot
+    must verify.
+
+    Runs in charge verification (before the cosign) and again on the exact
+    co-signed bytes before the signature is claimed or sent. A forged
+    signature would otherwise name the charge: the node refuses it without a
+    preflight result, the charge is kept as possibly sent, and a retry would
+    reconcile on the status of whatever landed transaction owns that
+    signature.
+    """
+    from solders.pubkey import Pubkey
+    from solders.transaction import VersionedTransaction
+
+    try:
+        transaction = VersionedTransaction.from_bytes(raw_tx)
+    except Exception as exc:  # noqa: BLE001
+        raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
+    try:
+        unsigned = Pubkey.from_string(unsigned_fee_payer) if unsigned_fee_payer is not None else None
+    except ValueError as exc:
+        raise PaymentError(f"invalid fee payer key: {exc}", code="invalid-payload") from exc
+    try:
+        verify_required_signatures(transaction, unsigned=unsigned)
+    except SignatureCheckError as exc:
+        raise PaymentError(f"transaction signature verification failed: {exc}", code="invalid-payload") from exc
 
 
 def _verify_local_transaction_intent(
@@ -600,3 +661,12 @@ def _verify_local_transaction_intent(
         details,
         expected_fee_payer_pubkey=expected_fee_payer_pubkey,
     )
+    # RULINGS SIG1: the client's signatures must authorize this exact
+    # message before anything co-signs, claims or sends it. Checked last so a
+    # transaction that violates the payment policy is refused for that reason.
+    # Only the server's fee-payer slot may still be empty (pre-cosign); it
+    # resolves the same way as the allowlist's fee payer above.
+    unsigned_fee_payer: str | None = None
+    if details.fee_payer:
+        unsigned_fee_payer = expected_fee_payer_pubkey or details.fee_payer_key or None
+    _verify_signatures(base64.b64decode(transaction_b64), unsigned_fee_payer=unsigned_fee_payer)

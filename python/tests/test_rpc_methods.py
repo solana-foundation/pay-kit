@@ -234,3 +234,26 @@ async def test_get_slot_returns_integer_and_rejects_garbage():
     assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
     with pytest.raises(_RpcError):
         await _rpc({"result": "not-a-slot", "id": 1}).get_slot()
+
+
+@pytest.mark.asyncio
+async def test_status_read_defaults_to_the_recent_status_cache():
+    rpc = _rpc({"result": {"value": [None]}})
+    await rpc.get_signature_statuses(["sig"])
+    assert rpc._client.last_body["params"][1] == {"searchTransactionHistory": False}  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_status_read_for_recovery_searches_transaction_history():
+    """A payment confirmed long ago has left the node's recent status cache;
+    a recovery read must still find it when the node keeps history."""
+    rpc = _rpc({"result": {"value": [{"err": None, "confirmationStatus": "finalized"}]}})
+    await rpc.get_signature_statuses(["sig"], search_transaction_history=True)
+    assert rpc._client.last_body["params"][1] == {"searchTransactionHistory": True}  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_await_confirmation_forwards_the_history_flag():
+    rpc = _rpc({"result": {"value": [{"err": None, "confirmationStatus": "finalized"}]}})
+    await rpc.await_confirmation("sig", attempts=1, delay_seconds=0, search_transaction_history=True)
+    assert rpc._client.last_body["params"][1] == {"searchTransactionHistory": True}  # type: ignore[attr-defined]

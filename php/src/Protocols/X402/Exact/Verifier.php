@@ -145,6 +145,21 @@ final class Verifier
             self::findMemoMatch($accountKeys, $instructions, $expectedMemo);
         }
 
+        // Rule 12: every client signature verifies over the message before
+        // the facilitator co-signs or sends (RULINGS SIG1). Only the
+        // facilitator's own fee-payer slot may still be empty.
+        $feePayer = $tx->staticAccountKeys()[0] ?? null;
+        $unsignedFeePayer = $feePayer !== null && in_array((string) $feePayer, $managedSigners, true)
+            ? $feePayer
+            : null;
+        try {
+            $tx->assertSignaturesVerify($unsignedFeePayer);
+        } catch (Throwable $error) {
+            throw new InvalidProofException(
+                'invalid_exact_svm_payload_transaction_signature: ' . $error->getMessage(),
+            );
+        }
+
         return $transfer;
     }
 

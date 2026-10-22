@@ -1,11 +1,15 @@
 import {
+    type Address,
     type Base64EncodedWireTransaction,
     getBase64Codec,
     getBase64EncodedWireTransaction,
+    getCompiledTransactionMessageDecoder,
+    getPublicKeyFromAddress,
     getSignatureFromTransaction,
     getTransactionDecoder,
     type Signature,
     type TransactionPartialSigner,
+    verifySignature,
 } from '@solana/kit';
 
 /** Rejection text when `getTransaction` omits `version`; shared verbatim with the Rust kit. */
@@ -29,6 +33,50 @@ export function assertReportedTransactionVersion(version: unknown): void {
         throw new Error(
             `transaction version ${JSON.stringify(version)} is not accepted; accepted versions: ${ACCEPTED_TRANSACTION_VERSIONS.join(', ')}`,
         );
+    }
+}
+
+/**
+ * Throw unless a base64 wire transaction carries exactly one signature slot
+ * per required signer (`header.num_required_signatures`) and every slot holds
+ * a signature that verifies against the message for that signer. An empty
+ * slot does not verify.
+ *
+ * `unsignedSigner` names the server's own fee-payer key on a transaction the
+ * server has not co-signed yet: its slot may still be empty (a signature
+ * there must verify). Every other slot must verify. Pass nothing once the
+ * transaction is fully signed.
+ *
+ * The one signature check for charge pull mode: the verification step runs
+ * it before co-signing, and settlement again on the co-signed transaction
+ * before anything is claimed or sent.
+ */
+export async function assertTransactionSignaturesVerify(
+    transaction: string,
+    options: { unsignedSigner?: string } = {},
+): Promise<void> {
+    let decoded: ReturnType<ReturnType<typeof getTransactionDecoder>['decode']>;
+    let requiredSignatures: number;
+    try {
+        decoded = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
+        requiredSignatures = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes).header
+            .numSignerAccounts;
+    } catch {
+        throw new Error('transaction signature slots do not match its required signers');
+    }
+    const entries = Object.entries(decoded.signatures);
+    if (entries.length === 0 || entries.length !== requiredSignatures) {
+        throw new Error('transaction signature slots do not match its required signers');
+    }
+    for (const [address, signature] of entries) {
+        if (!signature) {
+            if (address === options.unsignedSigner) continue;
+            throw new Error('transaction signature verification failed');
+        }
+        const key = await getPublicKeyFromAddress(address as Address);
+        if (!(await verifySignature(key, signature, decoded.messageBytes))) {
+            throw new Error('transaction signature verification failed');
+        }
     }
 }
 

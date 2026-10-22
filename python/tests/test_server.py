@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
+import httpx
 import pytest
 from solana_keychain import MemorySigner
 from solders.hash import Hash
@@ -16,8 +18,9 @@ from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
+from solana_pay_kit._paycore.rpc import PreflightRejectedError, _RpcError
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
-from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit._paycore.store import MemoryStore, consumed_signature_key
 from solana_pay_kit._paycore.transaction import TRANSACTION_VERSION_NOT_REPORTED
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
@@ -25,6 +28,7 @@ from solana_pay_kit.protocols.mpp.server.charge import (
     ChargeOptions,
     Config,
     Mpp,
+    _verify_local_transaction_intent,
     _verify_parsed_memo_instructions,
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
@@ -131,8 +135,13 @@ class FakeResponse:
         self.value = value
 
 
+def _wire_signature(raw: bytes) -> str:
+    """The first signature of a signed wire transaction, as a node reports it."""
+    return str(VersionedTransaction.from_bytes(raw).signatures[0])
+
+
 class FakeRPC:
-    def __init__(self, tx=None, send_value="sig-123", statuses=None, token_accounts=None):
+    def __init__(self, tx=None, send_value=None, statuses=None, token_accounts=None):
         self.tx = tx
         self.send_value = send_value
         self.statuses = statuses if statuses is not None else [{"err": None}]
@@ -144,7 +153,7 @@ class FakeRPC:
 
     async def send_raw_transaction(self, raw: bytes):
         self.sent.append(raw)
-        return FakeResponse(self.send_value)
+        return FakeResponse(self.send_value if self.send_value is not None else _wire_signature(raw))
 
     async def confirm_transaction(self, *_args, **_kwargs):
         return FakeResponse(self.statuses)
@@ -487,7 +496,7 @@ class TestVerifyCredential:
                 }
             },
         }
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -510,12 +519,11 @@ class TestVerifyCredential:
 
         receipt = await _verify(mpp, credential, challenge)
         assert receipt.is_success()
-        assert receipt.reference == "1111111111111111111111111111111111111111111111111111111111111111"
-        assert rpc.sent
+        assert receipt.reference == _wire_signature(rpc.sent[0])
 
     async def test_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -542,7 +550,7 @@ class TestVerifyCredential:
 
     async def test_transaction_verification_rejects_wrong_amount_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -569,7 +577,7 @@ class TestVerifyCredential:
 
     async def test_transaction_verification_rejects_missing_memo_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -617,7 +625,7 @@ class TestVerifyCredential:
                 }
             },
         }
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -644,7 +652,7 @@ class TestVerifyCredential:
 
     async def test_token_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -671,7 +679,7 @@ class TestVerifyCredential:
 
     async def test_token_transaction_verification_rejects_wrong_amount_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -698,7 +706,7 @@ class TestVerifyCredential:
 
     async def test_token_transaction_verification_rejects_missing_memo_before_broadcast(self):
         tx = {"meta": {"err": None}, "version": 0, "transaction": {"message": {"instructions": []}}}
-        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        rpc = FakeRPC(tx=tx)
         mpp = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -943,7 +951,7 @@ class TestL8SettlementOrdering:
         def __init__(self, ordering: list[str], confirm_value):
             self._ordering = ordering
             self._confirm_value = confirm_value
-            self.tx = {
+            self.tx: dict[str, object] | None = {
                 "meta": {"err": None},
                 "version": 0,
                 "transaction": {
@@ -965,9 +973,10 @@ class TestL8SettlementOrdering:
                 },
             }
 
-        async def send_raw_transaction(self, _raw: bytes):
+        async def send_raw_transaction(self, raw: bytes):
             self._ordering.append("send_raw_transaction")
-            return FakeResponse(VALID_SIGNATURE)
+            self.sent_signature = _wire_signature(raw)
+            return FakeResponse(self.sent_signature)
 
         async def confirm_transaction(self, *_args, **_kwargs):
             self._ordering.append("confirm_transaction")
@@ -1021,7 +1030,7 @@ class TestL8SettlementOrdering:
         )
         return credential, transaction, challenge
 
-    async def test_broadcast_before_consume(self):
+    async def test_claim_before_broadcast_then_await(self):
         ordering: list[str] = []
         rpc = self._OrderingRPC(ordering, [{"err": None}])
         store = self._RecordingStore(ordering)
@@ -1043,18 +1052,15 @@ class TestL8SettlementOrdering:
         receipt = await _verify(handler, credential, challenge)
         assert receipt.is_success()
 
-        # The canonical L8 order is broadcast → consume → await. assertions
-        # are positional, not equality, so adding extra steps later (e.g.
-        # simulate before broadcast) does not break this test as long as
-        # the relative order holds.
+        # The signature is claimed (as a pending record) before it leaves, so
+        # an ambiguous send still leaves it tracked; it is never released
+        # after broadcast. Assertions are positional, not equality.
         broadcast_idx = ordering.index("send_raw_transaction")
         consume_idx = ordering.index("store.put_if_absent")
-        # The handler now uses ``await_confirmation`` (discriminated
-        # error codes) instead of ``confirm_transaction``; assert against
-        # the new step name.
         confirm_idx = ordering.index("await_confirmation")
-        assert broadcast_idx < consume_idx, f"L8 violation: broadcast must precede consume; saw {ordering}"
-        assert consume_idx < confirm_idx, f"L8 violation: consume must precede await; saw {ordering}"
+        assert consume_idx < broadcast_idx, f"claim must precede broadcast; saw {ordering}"
+        assert broadcast_idx < confirm_idx, f"broadcast must precede await; saw {ordering}"
+        assert "store.delete" not in ordering
 
     async def test_confirm_timeout_after_broadcast_does_not_rollback_consume(self):
         """The headline L8 bug: a confirm-timeout post-broadcast used to
@@ -1172,12 +1178,663 @@ class TestL8SettlementOrdering:
         await _verify(handler, credential, challenge)
 
         # Inspect the store: the consume key must include the on-chain
-        # signature returned by send_raw_transaction, not the credential
+        # signature of the broadcast transaction, not the credential
         # transaction prefix.
         keys = list(store._data.keys())
-        assert any(VALID_SIGNATURE in key for key in keys), (
+        assert any(rpc.sent_signature in key for key in keys), (
             f"consume key must be keyed by on-chain signature; saw {keys}"
         )
+
+
+class _PendingRPC(TestL8SettlementOrdering._OrderingRPC):
+    """Ordering RPC whose send can fail and whose status the test controls."""
+
+    def __init__(self, send_error: Exception | None = None):
+        super().__init__([], [{"err": None}])
+        self.send_error = send_error
+        self.status: dict | None = None
+        self.sends = 0
+        self.status_error: Exception | None = None
+        self.confirm_error: Exception | None = None
+        self.fetch_error: Exception | None = None
+        self.status_history: list[bool] = []
+
+    async def send_raw_transaction(self, raw: bytes):
+        self.sends += 1
+        if self.send_error is not None:
+            raise self.send_error
+        return await super().send_raw_transaction(raw)
+
+    async def get_signature_statuses(self, _signatures, *, search_transaction_history: bool = False):
+        self.status_history.append(search_transaction_history)
+        if self.status_error is not None:
+            raise self.status_error
+        return [self.status]
+
+    async def await_confirmation(self, *args, **kwargs):
+        if self.confirm_error is not None:
+            raise self.confirm_error
+        return await super().await_confirmation(*args, **kwargs)
+
+    async def get_transaction(self, *args, **kwargs):
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return await super().get_transaction(*args, **kwargs)
+
+
+class TestAmbiguousBroadcast:
+    """SOLA1-301: only a preflight rejection proves the node did not forward
+    the transaction. Any other send error leaves the charge pending under the
+    locally derived signature, so the client retries the same credential and
+    is never invited to pay a replacement while the original can still land."""
+
+    def _handler(self, rpc, store) -> Mpp:
+        return Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=store,
+            )
+        )
+
+    def _credential(self, handler: Mpp):
+        transaction = _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1_000_000)
+        challenge = handler.charge("1.00")
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "transaction", "transaction": transaction},
+        )
+        signature = _wire_signature(base64.b64decode(transaction))
+        return credential, challenge, signature
+
+    @pytest.mark.parametrize(
+        "send_error",
+        [
+            httpx.ReadTimeout("response lost after the node accepted the transaction"),
+            _RpcError("Internal error", code="payment_invalid"),
+        ],
+    )
+    async def test_ambiguous_send_error_is_pending_not_failed(self, send_error):
+        rpc = _PendingRPC(send_error=send_error)
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        assert exc.value.retryable
+        record = await store.get(consumed_signature_key(signature))
+        assert record == {"state": "pending", "challengeId": credential.challenge.id}
+
+        # Not confirmed yet: still pending, and the retry never rebroadcasts.
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        assert rpc.sends == 1
+
+        # The transaction did land: the identical retry gets the receipt, once.
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+        assert rpc.sends == 1
+        with pytest.raises(ReplayError):
+            await _verify(handler, credential, challenge)
+
+    @pytest.mark.parametrize(
+        "error",
+        [_RpcError("Node is unhealthy", code="payment_invalid"), httpx.ConnectError("connection refused")],
+    )
+    async def test_failed_confirmation_read_after_the_send_is_pending(self, error):
+        """The payment was handed to the node; a status read that fails is
+        never proof it did not land, so the charge stays pending (not a fresh
+        402) and the same credential reconciles it once the node answers."""
+        rpc = _PendingRPC()
+        rpc.confirm_error = error
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        assert await store.get(consumed_signature_key(signature)) == {
+            "state": "pending",
+            "challengeId": credential.challenge.id,
+        }
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+        assert rpc.sends == 1
+
+    async def test_failed_status_read_while_reconciling_is_pending(self):
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        rpc.status_error = _RpcError("Node is behind", code="payment_invalid")
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.status_error = None
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        assert (await _verify(handler, credential, challenge)).reference == signature
+
+    async def test_failed_transaction_fetch_after_confirmation_is_pending(self):
+        rpc = _PendingRPC()
+        rpc.fetch_error = _RpcError("Node is unhealthy", code="payment_invalid")
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.fetch_error = None
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        assert (await _verify(handler, credential, challenge)).reference == signature
+        assert rpc.sends == 1
+
+    async def test_reconciling_reads_status_with_transaction_history(self):
+        """A retry may come after the payment left the node's recent status
+        cache; the reconciliation read searches the node's history."""
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        rpc.status = {"err": None, "confirmationStatus": "finalized"}
+        await _verify(handler, credential, challenge)
+        assert rpc.status_history == [True]
+
+    async def test_pending_charge_reconciles_after_its_challenge_expires(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        # Expired but still unresolved: in progress, not expired.
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        # It landed: the same credential is granted once, without a rebroadcast.
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+        assert rpc.sends == 1
+        # Granted once: the charge is no longer pending, so it is just expired.
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, credential, challenge)
+
+    async def test_expired_credential_never_starts_a_payment(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC()
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, credential, challenge)
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(signature)) is None
+
+    async def test_expired_credential_cannot_reconcile_another_challenges_pending_charge(self, monkeypatch):
+        from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        other = handler.charge_with_options("1.00", ChargeOptions(description="another route"))
+        replayed = PaymentCredential(challenge=other.to_echo(), payload=credential.payload)
+        monkeypatch.setattr(PaymentChallenge, "is_expired", lambda self, now=None: True)
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        with pytest.raises(ChallengeExpiredError):
+            await _verify(handler, replayed, other)
+
+    async def test_forged_client_signature_is_refused_before_it_is_claimed(self):
+        """A signature copied from any landed transaction must not name the
+        charge: it is refused before the claim, and nothing is sent."""
+        from solders.signature import Signature
+        from solders.transaction import VersionedTransaction as _Vtx
+
+        rpc = _PendingRPC(send_error=_RpcError("Transaction signature verification failure", code="payment_invalid"))
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        tx = _Vtx.from_bytes(base64.b64decode(credential.payload["transaction"]))
+        forged = Signature(bytes([7]) * 64)
+        tx = _Vtx.populate(tx.message, [forged])
+        credential = PaymentCredential(
+            challenge=credential.challenge,
+            payload={"type": "transaction", "transaction": base64.b64encode(bytes(tx)).decode()},
+        )
+        for _ in range(2):
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "invalid-payload"
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(str(forged))) is None
+
+    @staticmethod
+    def _two_signer_transaction() -> VersionedTransaction:
+        """A USDC charge paid by one key with fees paid by another: two
+        required signers, both signed, as it would have landed."""
+        fee_payer, authority = Keypair(), Keypair()
+        destination = Pubkey.from_string(_derive_ata(TEST_RECIPIENT, USDC_DEVNET, TOKEN_PROGRAM))
+        data = bytes([12]) + (1_000_000).to_bytes(8, "little") + bytes([6])
+        transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(destination, False, True),
+                AccountMeta(authority.pubkey(), True, False),
+            ],
+        )
+        message = MessageV0.try_compile(fee_payer.pubkey(), [transfer], [], Hash.from_string(TEST_BLOCKHASH))
+        assert message.header.num_required_signatures == 2
+        return VersionedTransaction(message, [fee_payer, authority])
+
+    def _two_signer_credential(self, handler: Mpp, transaction: VersionedTransaction):
+        challenge = handler.charge("1.00")
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "transaction", "transaction": base64.b64encode(bytes(transaction)).decode()},
+        )
+        return credential, challenge
+
+    async def test_landed_two_signer_payment_truncated_to_its_first_signature_is_refused_before_it_is_claimed(self):
+        """Every present signature verifies, but the message requires two: the
+        truncated wire names the landed transaction without authorizing this
+        charge. It is refused before the claim, and nothing is sent, so a
+        retry can never reconcile it on the landed transaction's status."""
+        landed = self._two_signer_transaction()
+        truncated = VersionedTransaction.populate(landed.message, [landed.signatures[0]])
+        assert all(truncated.verify_with_results())  # what the old check relied on
+
+        rpc = _PendingRPC(send_error=_RpcError("Transaction signature verification failure", code="payment_invalid"))
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}  # the landed transaction's status
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge = self._two_signer_credential(handler, truncated)
+        for _ in range(2):
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "invalid-payload"
+        assert rpc.sends == 0
+        assert await store.get(consumed_signature_key(str(landed.signatures[0]))) is None
+
+    async def test_fully_signed_two_signer_payment_settles(self):
+        """Positive control: the same payment with both signatures settles."""
+        transaction = self._two_signer_transaction()
+        rpc = _PendingRPC()
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge = self._two_signer_credential(handler, transaction)
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == str(transaction.signatures[0])
+        assert rpc.sends == 1
+
+    async def test_already_processed_with_a_fresh_claim_is_a_replay(self):
+        """The node already processed this exact transaction, but this store
+        never claimed it (another worker's per-process store, or a restart):
+        granting it again would serve one payment twice."""
+        rpc = _PendingRPC(
+            send_error=_RpcError("This transaction has already been processed", code="signature_consumed")
+        )
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        for _ in range(2):  # the retry does not reconcile it into a receipt either
+            with pytest.raises(ReplayError):
+                await _verify(handler, credential, challenge)
+        record = await store.get(consumed_signature_key(signature))
+        assert record is not None and record["state"] == "consumed"
+
+    async def test_pending_charge_cannot_be_reconciled_by_another_challenge(self):
+        rpc = _PendingRPC(send_error=httpx.ReadTimeout("lost"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError):
+            await _verify(handler, credential, challenge)
+        other = handler.charge_with_options("1.00", ChargeOptions(description="another route"))
+        assert other.id != credential.challenge.id
+        replayed = PaymentCredential(challenge=other.to_echo(), payload=credential.payload)
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        with pytest.raises(ReplayError):
+            await _verify(handler, replayed, other)
+
+    async def test_preflight_rejection_fails_and_releases_the_claim(self):
+        rpc = _PendingRPC(send_error=PreflightRejectedError("Transaction simulation failed", code="payment_invalid"))
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "transaction-failed"
+        assert await store.get(consumed_signature_key(signature)) is None
+
+        # Positive control: once the node accepts it, the same transaction settles.
+        rpc.send_error = None
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+
+    async def test_rpc_reporting_another_signature_is_not_authoritative(self):
+        rpc = _PendingRPC()
+
+        async def send(raw: bytes):
+            rpc.sends += 1
+            return FakeResponse(VALID_SIGNATURE)
+
+        rpc.send_raw_transaction = send  # type: ignore[method-assign]
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        record = await store.get(consumed_signature_key(signature))
+        assert record is not None and record["state"] == "pending"
+
+
+class _UnconfirmedRPC(_PendingRPC):
+    """Broadcast is accepted, but polling never sees a status until set."""
+
+    async def await_confirmation(self, *_args, **_kwargs):
+        if self.status is None:
+            raise PaymentError("timed out awaiting confirmation", code="transaction-not-found")
+        if self.status.get("err") is not None:
+            raise PaymentError("transaction failed on-chain", code="transaction-failed")
+
+
+class TestMissingStatusNeverFails:
+    """SOLA1-299: a null signature status is never proof the transaction did
+    not execute (the node may lag or lack history), so it never fails a
+    pending charge; only an explicit on-chain error does."""
+
+    _handler = TestAmbiguousBroadcast._handler
+    _credential = TestAmbiguousBroadcast._credential
+
+    async def test_missing_status_keeps_the_charge_pending(self):
+        rpc = _UnconfirmedRPC()
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+
+        for _ in range(2):  # the broadcast, then a reconciling retry
+            with pytest.raises(PaymentError) as exc:
+                await _verify(handler, credential, challenge)
+            assert exc.value.code == "settlement-in-progress"
+            record = await store.get(consumed_signature_key(signature))
+            assert record is not None and record["state"] == "pending"
+
+        # When the status does surface, the same retry is granted.
+        rpc.status = {"err": None, "confirmationStatus": "finalized"}
+        receipt = await _verify(handler, credential, challenge)
+        assert receipt.reference == signature
+
+    async def test_confirmed_but_unretrievable_transaction_stays_pending(self):
+        rpc = _UnconfirmedRPC()
+        rpc.status = {"err": None, "confirmationStatus": "confirmed"}
+        tx = rpc.tx
+        rpc.tx = None
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "settlement-in-progress"
+        rpc.tx = tx
+        assert (await _verify(handler, credential, challenge)).reference == signature
+
+    async def test_explicit_on_chain_failure_is_definitive(self):
+        rpc = _UnconfirmedRPC()
+        rpc.status = {"err": {"InstructionError": [0, {"Custom": 1}]}}
+        store = MemoryStore()
+        handler = self._handler(rpc, store)
+        credential, challenge, _signature = self._credential(handler)
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "transaction-failed"
+        # A reconciling retry sees the same explicit failure.
+        with pytest.raises(PaymentError) as exc:
+            await _verify(handler, credential, challenge)
+        assert exc.value.code == "transaction-failed"
+
+
+class TestOneFundingAuthority:
+    """SOLA1-349: a sponsor pays a signature fee per required signer, so every
+    payment leg must be funded by one authority and the only signers may be
+    the fee payer and that authority."""
+
+    SPLIT_RECIPIENT = "11111111111111111111111111111113"
+
+    def _sponsored(self, fee_payer: Keypair, currency: str, amount: int, decimals: int | None = None):
+        request = ChargeRequest(amount=str(amount), currency=currency, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            decimals=decimals,
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+            splits=[Split(recipient=self.SPLIT_RECIPIENT, amount="200000")],
+        )
+        return request, details
+
+    def _unsigned_tx(self, instructions: list[Instruction], fee_payer: Keypair, *clients: Keypair) -> str:
+        """The client's wire before the cosign: ``clients`` sign their slots,
+        the sponsor's fee-payer slot (and any other) stays a placeholder."""
+        from solders.message import to_bytes_versioned
+
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH))
+        signers = message.header.num_required_signatures
+        by_key = {client.pubkey(): client for client in clients}
+        signed = to_bytes_versioned(message)
+        signatures = [
+            by_key[key].sign_message(signed) if key in by_key else Signature.default()
+            for key in message.account_keys[:signers]
+        ]
+        tx = VersionedTransaction.populate(message, signatures)
+        return base64.b64encode(bytes(tx)).decode("ascii")
+
+    def _sol(self, source: Pubkey, destination: str, lamports: int) -> Instruction:
+        return transfer(
+            TransferParams(from_pubkey=source, to_pubkey=Pubkey.from_string(destination), lamports=lamports)
+        )
+
+    def _spl(self, authority: Pubkey, owner: str, amount: int) -> Instruction:
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([6])
+        return Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(Pubkey.from_string(_derive_ata(owner, USDC_DEVNET)), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def test_sol_split_legs_must_share_one_funding_authority(self):
+        fee_payer, payer, other = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, "SOL", 1_000_000)
+        mixed = self._unsigned_tx(
+            [
+                self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._sol(other.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        with pytest.raises(PaymentError, match="share one funding authority"):
+            _verify_local_transaction_intent(mixed, request, details)
+
+        one = self._unsigned_tx(
+            [
+                self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._sol(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+            payer,
+        )
+        _verify_local_transaction_intent(one, request, details)
+
+    def test_spl_split_legs_must_share_one_funding_authority(self):
+        fee_payer, payer, other = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, USDC_DEVNET, 1_000_000, decimals=6)
+        mixed = self._unsigned_tx(
+            [
+                self._spl(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._spl(other.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+        )
+        with pytest.raises(PaymentError, match="share one funding authority"):
+            _verify_local_transaction_intent(mixed, request, details)
+
+        one = self._unsigned_tx(
+            [
+                self._spl(payer.pubkey(), TEST_RECIPIENT, 800_000),
+                self._spl(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000),
+            ],
+            fee_payer,
+            payer,
+        )
+        _verify_local_transaction_intent(one, request, details)
+
+    def test_extra_signer_that_funds_nothing_is_rejected(self):
+        fee_payer, payer, extra = Keypair(), Keypair(), Keypair()
+        request, details = self._sponsored(fee_payer, "SOL", 1_000_000)
+        primary = self._sol(payer.pubkey(), TEST_RECIPIENT, 800_000)
+        split = self._sol(payer.pubkey(), self.SPLIT_RECIPIENT, 200_000)
+        padded = Instruction(split.program_id, split.data, [*split.accounts, AccountMeta(extra.pubkey(), True, False)])
+        tx = self._unsigned_tx([primary, padded], fee_payer)
+        with pytest.raises(PaymentError, match="unexpected signer"):
+            _verify_local_transaction_intent(tx, request, details)
+
+
+class TestVerifyRefusesUnauthorizedSignatures:
+    """RULINGS SIG1: charge verification itself refuses a transaction whose
+    client signature does not verify, or whose signature list is short of
+    the required signers, before anything claims, co-signs or sends it. Only
+    the server's own fee-payer slot may still be empty before the cosign."""
+
+    AMOUNT = 1_000_000
+
+    def _payment(self, authority: Pubkey) -> Instruction:
+        data = bytes([12]) + self.AMOUNT.to_bytes(8, "little") + bytes([6])
+        return Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            data,
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(Pubkey.from_string(USDC_DEVNET), False, False),
+                AccountMeta(Pubkey.from_string(_derive_ata(TEST_RECIPIENT, USDC_DEVNET)), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def _request(self, fee_payer: Keypair | None = None) -> tuple[ChargeRequest, MethodDetails]:
+        request = ChargeRequest(amount=str(self.AMOUNT), currency=USDC_DEVNET, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            decimals=6,
+            fee_payer=fee_payer is not None,
+            fee_payer_key=str(fee_payer.pubkey()) if fee_payer is not None else "",
+        )
+        return request, details
+
+    @staticmethod
+    def _b64(tx: VersionedTransaction) -> str:
+        return base64.b64encode(bytes(tx)).decode("ascii")
+
+    def _self_paid(self) -> VersionedTransaction:
+        payer = Keypair()
+        message = MessageV0.try_compile(
+            payer.pubkey(), [self._payment(payer.pubkey())], [], Hash.from_string(TEST_BLOCKHASH)
+        )
+        return VersionedTransaction(message, [payer])
+
+    def _sponsored(self, fee_payer: Keypair) -> VersionedTransaction:
+        payer = Keypair()
+        message = MessageV0.try_compile(
+            fee_payer.pubkey(), [self._payment(payer.pubkey())], [], Hash.from_string(TEST_BLOCKHASH)
+        )
+        assert message.header.num_required_signatures == 2
+        from solders.message import to_bytes_versioned
+
+        client = payer.sign_message(to_bytes_versioned(message))
+        return VersionedTransaction.populate(message, [Signature.default(), client])
+
+    def test_signed_self_paid_payment_is_accepted(self):
+        request, details = self._request()
+        _verify_local_transaction_intent(self._b64(self._self_paid()), request, details)
+
+    def test_forged_client_signature_is_rejected(self):
+        tx = self._self_paid()
+        forged = VersionedTransaction.populate(tx.message, [Signature(bytes([7]) * 64)])
+        request, details = self._request()
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(self._b64(forged), request, details)
+        assert exc.value.code == "invalid-payload"
+
+    def test_sponsored_payment_with_empty_fee_payer_slot_is_accepted(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        _verify_local_transaction_intent(
+            self._b64(tx), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+        )
+
+    def test_sponsored_forged_client_signature_is_rejected(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        forged = VersionedTransaction.populate(tx.message, [Signature.default(), Signature(bytes([7]) * 64)])
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(
+                self._b64(forged), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+            )
+        assert exc.value.code == "invalid-payload"
+
+    def test_sponsored_truncated_signature_list_is_rejected(self):
+        fee_payer = Keypair()
+        request, details = self._request(fee_payer)
+        tx = self._sponsored(fee_payer)
+        truncated = VersionedTransaction.populate(tx.message, [Signature.default()])
+        with pytest.raises(PaymentError, match="signature verification failed") as exc:
+            _verify_local_transaction_intent(
+                self._b64(truncated), request, details, expected_fee_payer_pubkey=str(fee_payer.pubkey())
+            )
+        assert exc.value.code == "invalid-payload"
+
+    def test_only_the_server_fee_payer_slot_may_be_empty(self):
+        """An unsponsored charge has no server slot: an empty payer slot is
+        an unsigned transaction."""
+        tx = self._self_paid()
+        unsigned = VersionedTransaction.populate(tx.message, [Signature.default()])
+        request, details = self._request()
+        with pytest.raises(PaymentError, match="signature verification failed"):
+            _verify_local_transaction_intent(self._b64(unsigned), request, details)
 
 
 class TestCoSignSplitBounds:

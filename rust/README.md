@@ -504,5 +504,6 @@ present. Existing signed builders keep their signatures and behavior.
 
 This seam lets a host inspect the exact message before its own signing and
 submission boundary. The host owns authorization, evidence, submission and
-recovery; preparing a transaction grants no spending authority. Mint-decimals and
-blockhash fallbacks still use async RPC. Supplying both values avoids those reads.
+recovery; preparing a transaction grants no spending authority. RPC reads remain asynchronous: supplied blockhashes are checked against the
+configured RPC, missing blockhashes are fetched, and missing mint decimals are
+resolved on-chain. Preparation does not submit a transaction.

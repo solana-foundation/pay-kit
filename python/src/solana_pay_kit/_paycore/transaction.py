@@ -14,6 +14,8 @@ from solana_keychain import TransactionSigner
 from solders.hash import Hash
 from solders.instruction import Instruction
 from solders.pubkey import Pubkey
+from solders.signature import Signature
+from solders.transaction import VersionedTransaction
 
 
 def _message_offset(raw: bytes) -> int | None:
@@ -80,6 +82,51 @@ def require_reported_version(version: object, error: Callable[[str], Exception] 
         raise error(f"transaction version {version!r} is not accepted; accepted versions: 0, 1")
 
 
+class SignatureCheckError(ValueError):
+    """A wire transaction whose signatures do not authorize its message."""
+
+
+def verify_required_signatures(transaction: VersionedTransaction, *, unsigned: Pubkey | None = None) -> None:
+    """Refuse a transaction unless every required signer has signed its message.
+
+    The signature list must hold exactly ``header.num_required_signatures``
+    entries, one per required signer, and each must verify against the
+    account key in its slot over the exact signed message bytes. Checking only
+    the signatures present is not enough: a landed two-signer transaction cut
+    down to its first signature still verifies slot for slot, yet it names
+    the landed transaction, so a server that claimed it and then reconciled
+    on that signature's status would grant a payment it never received.
+
+    ``unsigned`` is the one key whose slot may still be the all-zero
+    placeholder: the server's own fee payer before it co-signs. Its slot must
+    still exist, and a non-placeholder signature in it must verify. Every
+    other slot must verify. Call this on the exact bytes that are claimed or
+    sent, before either.
+
+    Raises :class:`SignatureCheckError`; callers map it to their protocol's
+    reject code.
+    """
+    from solders.message import to_bytes_versioned  # type: ignore[import-untyped]
+
+    message = transaction.message
+    required = int(message.header.num_required_signatures)
+    signatures = list(transaction.signatures)
+    if required == 0 or len(signatures) != required:
+        raise SignatureCheckError(
+            f"transaction carries {len(signatures)} signatures but its message requires {required}"
+        )
+    account_keys = list(message.account_keys)
+    if len(account_keys) < required:
+        raise SignatureCheckError("transaction message lists fewer account keys than required signers")
+    signed_bytes = bytes(to_bytes_versioned(message))
+    placeholder = Signature.default()
+    for key, signature in zip(account_keys[:required], signatures, strict=True):
+        if unsigned is not None and key == unsigned and signature == placeholder:
+            continue
+        if not signature.verify(key, signed_bytes):
+            raise SignatureCheckError(f"signature for required signer {key} does not verify")
+
+
 async def build_partially_signed_v0_transaction(
     instructions: Sequence[Instruction],
     fee_payer: Pubkey,
@@ -94,8 +141,6 @@ async def build_partially_signed_v0_transaction(
     so remote transaction-only signers use the same path as local signers.
     """
     from solders.message import MessageV0  # type: ignore[import-untyped]
-    from solders.signature import Signature  # type: ignore[import-untyped]
-    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
 
     message = MessageV0.try_compile(fee_payer, list(instructions), [], blockhash)
     num_required = int(message.header.num_required_signatures)

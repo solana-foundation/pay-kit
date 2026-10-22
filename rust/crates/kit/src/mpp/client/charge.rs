@@ -178,22 +178,26 @@ pub struct SelectChargeChallengeOptions<'a> {
 }
 
 /// Build a charge transaction from challenge parameters and additional client options.
-/// Resolve the blockhash to sign with: prefer the server-provided
-/// `recentBlockhash`, else fetch one at `confirmed` commitment.
+/// Resolve the blockhash to sign with: the server-provided `recentBlockhash`
+/// once the client's RPC confirms it is live on its cluster, else one fetched
+/// at `confirmed` commitment.
 ///
 /// Audit #36: ask for `confirmed` explicitly instead of leaning on the RPC
 /// client's default commitment. Solana's client guidance recommends
 /// `confirmed` for blockhash fetches — a `processed` hash can disappear under
 /// reorgs and produce signed transactions that fail with BlockhashNotFound.
-fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
-    if let Some(bh) = &method_details.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))
-    } else {
-        use solana_commitment_config::CommitmentConfig;
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .map(|(hash, _last_valid_block_height)| hash)
-            .map_err(|e| Error::Rpc(e.to_string()))
-    }
+async fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
+    // Only the nonblocking client is reachable here: a blocking call panics
+    // on a current-thread runtime.
+    crate::core::blockhash::resolve_challenge_blockhash(
+        rpc.get_inner_client(),
+        method_details.recent_blockhash.as_deref(),
+    )
+    .await
+    .map_err(|e| match e {
+        crate::core::blockhash::ChallengeBlockhashError::Invalid(message) => Error::Other(message),
+        crate::core::blockhash::ChallengeBlockhashError::Rpc(message) => Error::Rpc(message),
+    })
 }
 
 /// An unsigned, fully-compiled charge transaction plus the metadata a
@@ -287,6 +291,38 @@ pub fn build_spl_transfer_batch_instructions(
     Ok(instructions)
 }
 
+/// The server fee payer a sponsored challenge names, or `None` when the
+/// signer pays its own fees.
+///
+/// Sponsorship relaxes the split ATA-rent guard, so it must mean a payer other
+/// than the signer: a challenge naming the signer's own key as `feePayerKey`
+/// would make the signer fund that rent while looking sponsored.
+fn server_fee_payer(
+    method_details: &MethodDetails,
+    signer_pubkey: &Pubkey,
+) -> Result<Option<Pubkey>, Error> {
+    if !method_details.fee_payer.unwrap_or(false) {
+        return Ok(None);
+    }
+    let Some(key) = method_details.fee_payer_key.as_deref() else {
+        return Ok(None);
+    };
+    let fee_payer =
+        Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?;
+    if fee_payer == *signer_pubkey {
+        return Err(signer_as_fee_payer());
+    }
+    Ok(Some(fee_payer))
+}
+
+fn signer_as_fee_payer() -> Error {
+    Error::InvalidConfig(
+        "Fee payer cannot authorize the payment: feePayerKey names the signer; a sponsored charge \
+         needs a separate server fee payer"
+            .into(),
+    )
+}
+
 /// Build the unsigned message for a non-confidential Solana charge: one
 /// primary transfer plus any validated splits, compiled against a resolved
 /// blockhash. This is the prepared-message half of
@@ -332,15 +368,7 @@ pub async fn build_prepared_charge(
     let recipient_pubkey =
         Pubkey::from_str(recipient).map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
 
-    let use_fee_payer =
-        method_details.fee_payer.unwrap_or(false) && method_details.fee_payer_key.is_some();
-
-    let fee_payer_pubkey = if use_fee_payer {
-        let key = method_details.fee_payer_key.as_ref().unwrap();
-        Some(Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?)
-    } else {
-        None
-    };
+    let fee_payer_pubkey = server_fee_payer(method_details, &signer_pubkey)?;
 
     // Bounded compute-unit price/limit instead of the
     // historical hardcoded 1 micro-lamport / 200,000 units.
@@ -388,7 +416,8 @@ pub async fn build_prepared_charge(
             splits,
             fee_payer_pubkey.as_ref(),
             options.allow_unknown_token_2022,
-        )?;
+        )
+        .await?;
     } else {
         build_sol_instructions(
             &mut instructions,
@@ -400,7 +429,7 @@ pub async fn build_prepared_charge(
         )?;
     }
 
-    let blockhash = resolve_blockhash(rpc, method_details)?;
+    let blockhash = resolve_blockhash(rpc, method_details).await?;
 
     let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let version = crate::core::tx::negotiate(
@@ -491,6 +520,9 @@ pub async fn build_charge_transaction_with_options(
             })?;
             let fee_payer = Pubkey::from_str(fee_payer_key)
                 .map_err(|e| Error::Other(format!("invalid feePayerKey `{fee_payer_key}`: {e}")))?;
+            if fee_payer == signer.pubkey() {
+                return Err(signer_as_fee_payer());
+            }
             // Resolve a currency SYMBOL (e.g. "USDPT") to its mint address, the
             // same way the non-confidential path does — the bundle builder feeds
             // this straight to Pubkey::from_str, so a bare symbol would fail.
@@ -504,7 +536,17 @@ pub async fn build_charge_transaction_with_options(
                     )
                 },
             )?;
-            let blockhash = resolve_blockhash(rpc, method_details)?;
+            // Confidential mints are always Token-2022, so the unknown-mint
+            // opt-in that guards the plaintext SPL path applies here too.
+            if !crate::mpp::protocol::solana::is_known_stablecoin_mint(mint)
+                && !options.allow_unknown_token_2022
+            {
+                return Err(Error::Other(format!(
+                    "Refusing to sign a confidential charge for unknown Token-2022 mint {mint}: \
+                     set BuildChargeTransactionOptions::allow_unknown_token_2022 to opt in"
+                )));
+            }
+            let blockhash = resolve_blockhash(rpc, method_details).await?;
             return super::confidential::confidential_charge_payload(
                 signer,
                 rpc,
@@ -772,7 +814,7 @@ fn build_sol_instructions(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_spl_instructions(
+async fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
     recipient: &Pubkey,
@@ -786,7 +828,7 @@ fn build_spl_instructions(
     allow_unknown_token_2022: bool,
 ) -> Result<(), Error> {
     let mint = Pubkey::from_str(spl).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
-    let token_program = resolve_token_program(rpc, &mint, method_details)?;
+    let token_program = resolve_token_program(rpc, &mint, method_details).await?;
 
     // Spec §13.3: refuse to sign for an arbitrary Token-2022 mint unless
     // the caller opted in. Transfer hooks run on every transfer and can
@@ -890,7 +932,7 @@ fn push_memo_instruction(
     Ok(())
 }
 
-fn resolve_token_program(
+async fn resolve_token_program(
     rpc: &RpcClient,
     mint: &Pubkey,
     method_details: &MethodDetails,
@@ -902,7 +944,11 @@ fn resolve_token_program(
         Pubkey::from_str(token_program)
             .map_err(|e| Error::InvalidChallenge(format!("Invalid token program: {e}")))?
     } else {
-        rpc.get_account(mint)
+        // The nonblocking client, as for the blockhash: the blocking one runs
+        // on its own runtime, and mixing the two on one connection pool hangs.
+        rpc.get_inner_client()
+            .get_account(mint)
+            .await
             .map_err(|e| {
                 Error::InvalidChallenge(format!(
                     "tokenProgram omitted and the mint account lookup failed: {e}"
@@ -1808,8 +1854,9 @@ mod tests {
     }
 
     fn dummy_rpc() -> RpcClient {
-        // Never actually contacted — tests bypass RPC via method_details overrides.
-        RpcClient::new("http://localhost:1".to_string())
+        // Only confirms the challenged blockhash is live; every other call
+        // fails, so tests supply mint data through method_details overrides.
+        crate::core::blockhash::mock_blockhash_rpc(true)
     }
 
     /// 32 zero bytes in base58 — same as the system program address and a valid Hash.
@@ -1863,6 +1910,57 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn build_charge_confidential_refuses_an_unknown_mint_without_opt_in() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
+            token_program: Some(
+                crate::mpp::protocol::solana::programs::TOKEN_2022_PROGRAM.to_string(),
+            ),
+            confidential: Some(true),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let unknown_mint = Pubkey::new_unique().to_string();
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            &unknown_mint,
+            "not-a-pubkey",
+            &md,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("allow_unknown_token_2022"),
+            "{err}"
+        );
+
+        // With the opt-in the builder proceeds to the bundle (and stops at
+        // the deliberately invalid recipient).
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            &unknown_mint,
+            "not-a-pubkey",
+            &md,
+            BuildChargeTransactionOptions {
+                allow_unknown_token_2022: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid recipient"), "{err}");
+    }
+
     // ── build_charge_transaction: SOL happy paths ──
 
     #[tokio::test]
@@ -1878,6 +1976,41 @@ mod tests {
                 .await
                 .unwrap();
         assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_refuses_a_challenged_blockhash_its_cluster_does_not_know() {
+        let signer = make_signer();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &crate::core::blockhash::mock_blockhash_rpc(false),
+            "1000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not a live blockhash"), "{err}");
+
+        // An unreachable RPC cannot vouch for the hint either.
+        let unreachable = RpcClient::new("http://127.0.0.1:1".to_string());
+        assert!(matches!(
+            build_charge_transaction(
+                signer.as_ref(),
+                &unreachable,
+                "1000000",
+                "SOL",
+                RECIPIENT,
+                &md
+            )
+            .await,
+            Err(Error::Rpc(_))
+        ));
     }
 
     #[tokio::test]
@@ -2165,45 +2298,45 @@ mod tests {
 
     // ── resolve_token_program ──
 
-    #[test]
-    fn resolve_tp_token_program() {
+    #[tokio::test]
+    async fn resolve_tp_token_program() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some(programs::TOKEN_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(&rpc, &mint, &md).await.unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_PROGRAM);
     }
 
-    #[test]
-    fn resolve_tp_token_2022() {
+    #[tokio::test]
+    async fn resolve_tp_token_2022() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(&rpc, &mint, &md).await.unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_2022_PROGRAM);
     }
 
-    #[test]
-    fn resolve_tp_invalid_program_string() {
+    #[tokio::test]
+    async fn resolve_tp_invalid_program_string() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         let md = MethodDetails {
             token_program: Some("invalid-key!!!".to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(&rpc, &mint, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid token program"));
     }
 
-    #[test]
-    fn resolve_tp_unsupported_program() {
+    #[tokio::test]
+    async fn resolve_tp_unsupported_program() {
         let rpc = dummy_rpc();
         let mint = Pubkey::new_unique();
         // System program is a valid pubkey but not a supported token program.
@@ -2211,7 +2344,7 @@ mod tests {
             token_program: Some(programs::SYSTEM_PROGRAM.to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(&rpc, &mint, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
     }
@@ -2243,34 +2376,38 @@ mod tests {
 
     // RULINGS C3: with tokenProgram omitted, the owner read from the mint wins
     // (positive control for the two rejections below).
-    #[test]
-    fn resolve_tp_reads_mint_owner_when_omitted() {
+    #[tokio::test]
+    async fn resolve_tp_reads_mint_owner_when_omitted() {
         let mint = Pubkey::new_unique();
         let md = MethodDetails::default();
         for owner in [programs::TOKEN_PROGRAM, programs::TOKEN_2022_PROGRAM] {
-            let tp = resolve_token_program(&mint_lookup_rpc(Some(owner)), &mint, &md).unwrap();
+            let tp = resolve_token_program(&mint_lookup_rpc(Some(owner)), &mint, &md)
+                .await
+                .unwrap();
             assert_eq!(tp.to_string(), owner);
         }
     }
 
-    #[test]
-    fn resolve_tp_rejects_challenge_when_mint_lookup_fails() {
+    #[tokio::test]
+    async fn resolve_tp_rejects_challenge_when_mint_lookup_fails() {
         let err = resolve_token_program(
             &mint_lookup_rpc(None),
             &Pubkey::new_unique(),
             &MethodDetails::default(),
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
     }
 
-    #[test]
-    fn resolve_tp_rejects_challenge_when_mint_owner_unexpected() {
+    #[tokio::test]
+    async fn resolve_tp_rejects_challenge_when_mint_owner_unexpected() {
         let err = resolve_token_program(
             &mint_lookup_rpc(Some(programs::SYSTEM_PROGRAM)),
             &Pubkey::new_unique(),
             &MethodDetails::default(),
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, Error::InvalidChallenge(_)), "{err:?}");
     }
@@ -2794,8 +2931,8 @@ mod tests {
 
     // ── build_spl_instructions ──
 
-    #[test]
-    fn build_spl_no_splits() {
+    #[tokio::test]
+    async fn build_spl_no_splits() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -2818,12 +2955,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 1);
     }
 
-    #[test]
-    fn build_spl_rejects_missing_decimals() {
+    #[tokio::test]
+    async fn build_spl_rejects_missing_decimals() {
         // Audit #42: spec §7.2 requires `decimals` for SPL challenges;
         // we now error instead of silently defaulting to 6.
         let signer_pk = Pubkey::new_unique();
@@ -2848,6 +2986,7 @@ mod tests {
             None,
             false,
         )
+        .await
         .expect_err("missing decimals should be rejected");
         assert!(
             format!("{err}").contains("decimals is required"),
@@ -2855,8 +2994,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_spl_with_external_id_memo() {
+    #[tokio::test]
+    async fn build_spl_with_external_id_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -2879,6 +3018,7 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
 
         assert_eq!(ixs.len(), 2);
@@ -2890,8 +3030,8 @@ mod tests {
         assert_eq!(ixs[1].data, b"order-123");
     }
 
-    #[test]
-    fn build_spl_with_fee_payer() {
+    #[tokio::test]
+    async fn build_spl_with_fee_payer() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let fee_payer = Pubkey::new_unique();
@@ -2915,12 +3055,13 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 1);
     }
 
-    #[test]
-    fn build_spl_with_splits() {
+    #[tokio::test]
+    async fn build_spl_with_splits() {
         // Audit #20: with ata_creation_required=None the client must NOT
         // emit the ATA-create instruction (even in client-paid mode).
         let signer_pk = Pubkey::new_unique();
@@ -2944,13 +3085,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
         // 1 primary transfer + 1 split transfer. No split ATA create.
         assert_eq!(ixs.len(), 2);
     }
 
-    #[test]
-    fn build_spl_creates_split_ata_only_when_flagged() {
+    #[tokio::test]
+    async fn build_spl_creates_split_ata_only_when_flagged() {
         // Audit #20: ata_creation_required = Some(true) means the client
         // MUST include the ATA-create ix.
         let signer_pk = Pubkey::new_unique();
@@ -2974,13 +3116,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
         // 1 primary transfer + 1 ATA create + 1 split transfer.
         assert_eq!(ixs.len(), 3);
     }
 
-    #[test]
-    fn build_spl_with_split_memo() {
+    #[tokio::test]
+    async fn build_spl_with_split_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3002,6 +3145,7 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap();
 
         // 1 primary transfer + 1 split transfer + 1 split memo (no ATA create).
@@ -3014,8 +3158,8 @@ mod tests {
         assert_eq!(ixs[2].data, b"platform fee");
     }
 
-    #[test]
-    fn build_spl_rejects_long_split_memo() {
+    #[tokio::test]
+    async fn build_spl_rejects_long_split_memo() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3037,13 +3181,14 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
         )
+        .await
         .unwrap_err();
 
         assert!(format!("{err}").contains("memo cannot exceed 566 bytes"));
     }
 
-    #[test]
-    fn build_spl_with_fee_payer_split_ata_creation() {
+    #[tokio::test]
+    async fn build_spl_with_fee_payer_split_ata_creation() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3077,6 +3222,7 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
 
         assert_eq!(ixs.len(), 3);
@@ -3084,8 +3230,8 @@ mod tests {
         assert_eq!(ixs[1].accounts[2].pubkey, split_recipient);
     }
 
-    #[test]
-    fn build_spl_fee_payer_excludes_unmarked_split_ata_creation() {
+    #[tokio::test]
+    async fn build_spl_fee_payer_excludes_unmarked_split_ata_creation() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3119,12 +3265,13 @@ mod tests {
             Some(&fee_payer),
             false,
         )
+        .await
         .unwrap();
         assert_eq!(ixs.len(), 2);
     }
 
-    #[test]
-    fn build_spl_refuses_unknown_token_2022_without_opt_in() {
+    #[tokio::test]
+    async fn build_spl_refuses_unknown_token_2022_without_opt_in() {
         // A made-up base58 mint NOT in the known stablecoin allowlist,
         // explicitly placed on Token-2022. Default (allow_unknown_token_2022
         // = false) must refuse.
@@ -3151,7 +3298,8 @@ mod tests {
             &[],
             None,
             false,
-        );
+        )
+        .await;
         let err = err.expect_err("should refuse unknown Token-2022 mint");
         assert!(
             format!("{err}").contains("unknown Token-2022 mint"),
@@ -3159,8 +3307,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_spl_allows_unknown_token_2022_with_opt_in() {
+    #[tokio::test]
+    async fn build_spl_allows_unknown_token_2022_with_opt_in() {
         // Same setup as above but with the opt-in flag set — gate passes
         // and the function builds successfully.
         // Valid base58 pubkey not in the stablecoin allowlist.
@@ -3187,12 +3335,13 @@ mod tests {
             None,
             true,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_allows_unknown_vanilla_token_mint() {
+    #[tokio::test]
+    async fn build_spl_allows_unknown_vanilla_token_mint() {
         // Arbitrary mint on the vanilla Token Program (no transfer hooks)
         // — gate does not apply.
         // Valid base58 pubkey not in the stablecoin allowlist.
@@ -3219,12 +3368,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_does_not_gate_known_token_2022_stablecoin() {
+    #[tokio::test]
+    async fn build_spl_does_not_gate_known_token_2022_stablecoin() {
         // PYUSD is Token-2022 but in the known allowlist — gate must not
         // fire even with allow_unknown_token_2022 = false.
         let signer_pk = Pubkey::new_unique();
@@ -3249,12 +3399,13 @@ mod tests {
             None,
             false,
         )
+        .await
         .unwrap();
         assert!(!ixs.is_empty());
     }
 
-    #[test]
-    fn build_spl_invalid_mint() {
+    #[tokio::test]
+    async fn build_spl_invalid_mint() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let rpc = dummy_rpc();
@@ -3275,13 +3426,14 @@ mod tests {
             &[],
             None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid mint"));
     }
 
-    #[test]
-    fn build_spl_invalid_split_recipient() {
+    #[tokio::test]
+    async fn build_spl_invalid_split_recipient() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let rpc = dummy_rpc();
@@ -3301,13 +3453,14 @@ mod tests {
         let err = build_spl_instructions(
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split recipient"));
     }
 
-    #[test]
-    fn build_spl_invalid_split_amount() {
+    #[tokio::test]
+    async fn build_spl_invalid_split_amount() {
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -3328,7 +3481,8 @@ mod tests {
         let err = build_spl_instructions(
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
             false,
-        );
+        )
+        .await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split amount"));
     }
@@ -3494,6 +3648,10 @@ mod tests {
             confidential: Some(true),
             auditor_elgamal_pubkey: Some("auditor-key".to_string()),
             recent_blockhash: Some(ZERO_HASH.to_string()),
+            // Confidential charges are gateway-sponsored; with a sponsor the
+            // challenge is well formed and only the missing feature refuses it.
+            fee_payer: Some(true),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
             ..Default::default()
         };
         let err = build_charge_transaction_with_options(
@@ -3887,5 +4045,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ata_create_count(&payload), 8);
+    }
+
+    #[tokio::test]
+    async fn build_charge_rejects_the_signer_posing_as_server_fee_payer() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+
+        // A challenge naming the signer as its sponsor would have the signer
+        // fund the split ATA rent without the opt-in.
+        let md = ata_split_details(Some(signer.pubkey()));
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("names the signer"), "{err}");
+
+        // Also without ATA creation: sponsorship must mean another payer.
+        let md = MethodDetails {
+            splits: None,
+            ..ata_split_details(Some(signer.pubkey()))
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("names the signer"), "{err}");
+
+        let md = MethodDetails {
+            splits: None,
+            ..ata_split_details(Some(Pubkey::new_unique()))
+        };
+        assert!(build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md
+        )
+        .await
+        .is_ok());
     }
 }

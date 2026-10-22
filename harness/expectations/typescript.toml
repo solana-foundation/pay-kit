@@ -3,7 +3,14 @@ language = "typescript"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session"]
+vector = [
+  "charge",
+  "x402-exact",
+  "session",
+  "x402-upto",
+  "x402-batch-settlement",
+  "subscription",
+]
 protocol = true
 flow = true
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -107,3 +114,504 @@ ids = [
 ]
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
 tracking = "FINDINGS.md#x402-canonical-codes"
+
+[[unsupported]]
+reason = "@solana/pay-kit and the vendored @x402/svm expose no distribution-hash or channel-PDA helper (both are internal to the payment-channels module)"
+ids = [
+  "vector/x402-upto-distribution-hash-golden",
+  "vector/x402-upto-channel-pda-golden",
+]
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-channel-already-open-reject",
+]
+reason = "the vendored facilitator's read-only verify omits the channel-exists check (it runs only in settle, which broadcasts)"
+tracking = "FINDINGS.md#upto-channel-exists-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-open-slot-number-accept",
+]
+reason = "isUptoSvmPayload requires openSlot to be a string; the pinned spec types it as a number"
+tracking = "FINDINGS.md#upto-slot-wire-type"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-open-trailing-byte-reject",
+]
+reason = "verifyOpenTransaction decodes the open args with a decoder that ignores trailing bytes"
+tracking = "FINDINGS.md#ts-upto-open-trailing-bytes"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-verify-v0-oversize-reject",
+]
+reason = "verifyOpenTransaction never bounds the serialized size of the open transaction"
+tracking = "FINDINGS.md#ts-upto-open-size-unbounded"
+
+[[known_failing]]
+ids = [
+  "vector/x402-upto-build-v1-when-advertised",
+  "vector/x402-upto-build-no-common-version-reject",
+  "vector/x402-upto-verify-v1-accept",
+  "vector/x402-upto-verify-v1-unadvertised-reject",
+  "vector/x402-upto-verify-v1-unadvertised-before-layout-reject",
+  "vector/x402-upto-verify-v1-compute-budget-instruction-reject",
+  "vector/x402-upto-verify-v1-limit-over-cap-reject",
+  "vector/x402-upto-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-upto-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-upto-verify-v1-missing-limit-reject",
+  "vector/x402-upto-verify-v1-missing-loaded-limit-reject",
+  "vector/x402-upto-verify-v1-small-loaded-limit-accept",
+  "vector/x402-upto-verify-v1-large-accept",
+  "vector/x402-upto-verify-v1-oversize-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates transaction-version negotiation (x402-foundation/x402 PR 3710): the client ignores extra.transactionVersions and the facilitator cannot decode a version-1 message"
+tracking = "FINDINGS.md#ts-upto-no-transaction-versions"
+# subscription (draft-solana-subscription-00) vectors
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-activation",
+  "vector/subscription-build-sponsored",
+  "vector/subscription-build-external-id-memo",
+  "vector/subscription-build-week-period",
+  "vector/subscription-build-token-2022",
+  "vector/subscription-build-plan-puller-listed",
+  "vector/subscription-build-spec-request",
+]
+reason = "the activation also creates the recipient's ATA (typescript/packages/mpp/src/client/Subscription.ts:353, :407), which the Rust server's activation scope check refuses (\"Only one idempotent subscriber ATA creation is allowed\") and the spec's instruction list does not allow"
+tracking = "FINDINGS.md#subscription-ts-recipient-ata"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-untrusted-program-reject",
+]
+reason = "buildSubscriptionActivationTransaction signs for whatever methodDetails.subscriptionProgram names; nothing pins the deployment (typescript/packages/mpp/src/client/Subscription.ts:297)"
+tracking = "FINDINGS.md#subscription-ts-program-not-pinned"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-currency-not-mint-reject",
+]
+reason = "the client builds from methodDetails.mint and never compares it with currency (typescript/packages/mpp/src/client/Subscription.ts:264)"
+tracking = "FINDINGS.md#subscription-ts-currency-not-mint"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-amount-leading-zero-reject",
+  "vector/subscription-build-zero-amount-reject",
+  "vector/subscription-build-period-count-leading-zero-reject",
+  "vector/subscription-build-token-program-not-spl-reject",
+  "vector/subscription-period-count-leading-zero-reject",
+  "vector/subscription-period-count-sign-reject",
+  "vector/subscription-period-count-decimal-point-reject",
+  "vector/subscription-period-count-exponent-reject",
+  "vector/subscription-period-count-whitespace-reject",
+]
+reason = "amount and periodCount are read with BigInt()/Number() (typescript/packages/mpp/src/client/Subscription.ts:273, :331), which accept leading zeros, a sign, a decimal point, an exponent and whitespace, and the client accepts any tokenProgram"
+tracking = "FINDINGS.md#subscription-ts-request-format"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-build-plan-puller-unauthorized-reject",
+  "vector/subscription-build-plan-no-destination-reject",
+  "vector/subscription-build-plan-two-destinations-reject",
+  "vector/subscription-build-plan-other-destination-reject",
+]
+reason = "the client checks the plan's mint, amount and period (typescript/packages/mpp/src/client/Subscription.ts:329) but not plan.owner / plan.pullers against the puller nor plan.destinations against the recipient"
+tracking = "FINDINGS.md#subscription-ts-plan-pullers-destinations"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-forged-challenge-id-reject",
+  "vector/subscription-verify-other-method-reject",
+  "vector/subscription-verify-charge-intent-reject",
+  "vector/subscription-verify-other-realm-reject",
+  "vector/subscription-verify-cheaper-route-reject",
+  "vector/subscription-verify-shorter-period-route-reject",
+  "vector/subscription-verify-other-plan-reject",
+  "vector/subscription-verify-other-recipient-reject",
+  "vector/subscription-verify-other-currency-reject",
+  "vector/subscription-verify-other-network-reject",
+  "vector/subscription-verify-no-network-on-devnet-reject",
+]
+reason = "subscription().verify trusts the echoed challenge (typescript/packages/mpp/src/server/Subscription.ts:230); the HMAC and route binding live in mppx's Mppx.create handler, which reports a generic error the testee cannot classify"
+tracking = "FINDINGS.md#subscription-ts-route-binding-in-mppx"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-push-mode-reject",
+]
+reason = "the server accepts push-mode (type=\"signature\") activations and fetches the transaction (typescript/packages/mpp/src/server/Subscription.ts:485); the profile defines type=\"transaction\" only"
+tracking = "FINDINGS.md#subscription-ts-push-mode"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-source-other-address-reject",
+  "vector/subscription-verify-source-other-method-reject",
+]
+reason = "verify never reads credential.source (typescript/packages/mpp/src/server/Subscription.ts:230)"
+tracking = "FINDINGS.md#subscription-source-not-verified"
+
+[[known_failing]]
+ids = [
+  "vector/subscription-verify-subscribe-other-plan-reject",
+  "vector/subscription-verify-unrelated-authority-init-reject",
+]
+reason = "validateActivationInstructions checks transfer_subscription's receiver and data but not subscribe's accounts, and accepts any initialize_subscription_authority (typescript/packages/mpp/src/server/Subscription.ts:793-797)"
+tracking = "FINDINGS.md#subscription-ts-scope-accounts"
+
+[[unsupported]]
+ids = [
+  "vector/subscription-active-live",
+  "vector/subscription-active-cancellation-scheduled",
+  "vector/subscription-active-cancelled-now-reject",
+  "vector/subscription-active-last-second-of-period",
+  "vector/subscription-active-period-ended-reject",
+  "vector/subscription-active-unpaid-period-reject",
+  "vector/subscription-active-authority-reinitialized-reject",
+  "vector/subscription-active-authority-missing-reject",
+  "vector/subscription-active-authority-foreign-owner-reject",
+  "vector/subscription-active-delegation-missing-reject",
+  "vector/subscription-active-delegation-foreign-owner-reject",
+  "vector/subscription-active-delegation-other-plan-reject",
+  "vector/subscription-active-delegation-wrong-version-reject",
+]
+reason = "@solana/mpp has no stateless active-subscription check: delegation usability is only re-checked inside verify of a type=\"proof\" credential bound in the server's store by a confirmed activation"
+
+[[unsupported]]
+ids = [
+  "vector/subscription-instruction-subscribe-data",
+  "vector/subscription-instruction-transfer-data",
+]
+reason = "@solana/mpp exposes no subscriptions instruction-data encoder (it builds instructions with @solana/subscriptions); the layouts are judged through the build vectors' instruction multiset"
+# ── x402 batch-settlement (SVM): vendored @x402/svm 2.26.0 ──
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-open",
+  "vector/batch-build-terms-payment-flow-authorization",
+  "vector/batch-verify-open-accept",
+  "vector/batch-verify-open-channel-pda-mismatch-reject",
+  "vector/batch-verify-open-deposit-mismatch-reject",
+  "vector/batch-verify-open-diverting-distribution-reject",
+  "vector/batch-verify-open-foreign-binding-reject",
+  "vector/batch-verify-open-future-slot-reject",
+  "vector/batch-verify-open-grace-period-mismatch-reject",
+  "vector/batch-verify-open-missing-binding-memo-reject",
+  "vector/batch-verify-open-stale-slot-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates the receiver-binding memo: its client opens with the seller memo only and its facilitator requires exactly one memo, so it accepts an unbound open and refuses the two-memo open (\"An open suffix also carries exactly one binding Memo from section 3.\")"
+tracking = "FINDINGS.md#ts-batch-open-binding-memo"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-version-intersection-empty-reject",
+  "vector/batch-txv1-top-up-legacy-policed-as-v0-reject",
+  "vector/batch-txv1-top-up-v0-over-1232-bytes-reject",
+  "vector/batch-txv1-top-up-v1-advertised",
+  "vector/batch-txv1-top-up-v1-compute-budget-instruction-reject",
+  "vector/batch-txv1-top-up-v1-loaded-limit-below-max",
+  "vector/batch-txv1-top-up-v1-missing-loaded-limit-reject",
+  "vector/batch-txv1-top-up-v1-missing-unit-limit-reject",
+  "vector/batch-txv1-top-up-v1-not-advertised-reject",
+  "vector/batch-txv1-top-up-v1-over-1232-bytes",
+  "vector/batch-txv1-top-up-v1-priority-fee-at-cap",
+  "vector/batch-txv1-top-up-v1-priority-fee-over-cap-reject",
+  "vector/batch-txv1-top-up-v1-unit-limit-over-cap-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 predates SVM transaction versions (x402-foundation/x402 PR 3473): its verifier fails on a version-1 message and does not enforce the 1232-byte version-0 limit, and its client ignores extra.transactionVersions"
+tracking = "FINDINGS.md#ts-batch-transaction-versions"
+
+[[known_failing]]
+ids = [
+  "vector/batch-txv1-refund-v1-not-advertised-reject",
+  "vector/batch-verify-refund-compute-price-over-cap-reject",
+  "vector/batch-verify-refund-disallowed-suffix-reject",
+  "vector/batch-verify-refund-extra-account-reject",
+  "vector/batch-verify-refund-extra-instruction-reject",
+  "vector/batch-verify-refund-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-refund-invalid-payer-signature-reject",
+  "vector/batch-verify-refund-memo-mismatch-reject",
+  "vector/batch-verify-refund-prefix-only-reject",
+  "vector/batch-verify-refund-request-close",
+  "vector/batch-verify-refund-sealed-channel-reject",
+  "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
+  "vector/batch-verify-refund-without-voucher-reject",
+  "vector/batch-verify-refund-wrong-channel-reject",
+  "vector/batch-wire-payload-refund-cooperative",
+  "vector/batch-wire-payload-refund-transaction-without-voucher-reject",
+]
+reason = "the vendored facilitator refuses a client-mode refund carrying the voucher (\"cooperative close requires a trusted server binding\") instead of validating the request_close retry, and accepts a refund without the voucher; its wire guard applies the same shape (\"| voucher | BatchVoucher | REQUIRED in client mode.\")"
+tracking = "FINDINGS.md#ts-batch-refund-cooperative"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-top-up-amount-mismatch-reject",
+  "vector/batch-verify-top-up-ata-instruction-reject",
+  "vector/batch-verify-top-up-compute-limit-over-cap-reject",
+  "vector/batch-verify-top-up-compute-price-over-cap-reject",
+  "vector/batch-verify-top-up-duplicate-limit-reject",
+  "vector/batch-verify-top-up-exceeds-deposit-reject",
+  "vector/batch-verify-top-up-extra-signer-reject",
+  "vector/batch-verify-top-up-fee-payer-as-account-reject",
+  "vector/batch-verify-top-up-fee-payer-in-memo-reject",
+  "vector/batch-verify-top-up-fee-payer-not-sponsor-reject",
+  "vector/batch-verify-top-up-four-lighthouse-reject",
+  "vector/batch-verify-top-up-frozen-payer-ata-reject",
+  "vector/batch-verify-top-up-memo-mismatch-reject",
+  "vector/batch-verify-top-up-missing-memo-reject",
+  "vector/batch-verify-top-up-missing-payer-signature-reject",
+  "vector/batch-verify-top-up-oversized-memo-reject",
+  "vector/batch-verify-top-up-price-before-limit-reject",
+  "vector/batch-verify-top-up-second-setup-instruction-reject",
+  "vector/batch-verify-top-up-smuggled-transfer-reject",
+  "vector/batch-verify-top-up-trailing-bytes-reject",
+  "vector/batch-verify-top-up-two-memos-reject",
+  "vector/batch-verify-top-up-unsupported-compute-budget-reject",
+  "vector/batch-verify-top-up-wrong-channel-reject",
+]
+reason = "the vendored facilitator rejects every setup-transaction policy violation with the generic transaction_failed reason (and an over-deposit top-up voucher as cumulative_amount_mismatch) rather than invalid_batch_settlement_svm_setup_transaction / cumulative_exceeds_deposit; it accepts a top_up with trailing data bytes and does not check the payer return ATA on a top-up"
+tracking = "FINDINGS.md#ts-batch-setup-reason-code"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-voucher-close-pending-in-store-reject",
+  "vector/batch-verify-voucher-one-above-reject",
+  "vector/batch-verify-voucher-one-below-reject",
+  "vector/batch-verify-voucher-stale-reject",
+]
+reason = "the testee drives the stateless upstream facilitator, which never sees the resource server's chargedCumulativeAmount or close-pending mark: it accepts any voucher above the onchain settled floor (RULINGS.md B1)"
+tracking = "FINDINGS.md#ts-batch-facilitator-stateless"
+
+[[known_failing]]
+ids = [
+  "vector/batch-verify-accepted-amount-mismatch-reject",
+  "vector/batch-verify-accepted-network-mismatch-reject",
+  "vector/batch-verify-accepted-pay-to-mismatch-reject",
+]
+reason = "the vendored facilitator does not compare paymentPayload.accepted with paymentRequirements (amount, payTo) and reports a network mismatch as network_mismatch (\"For every request, paymentPayload.accepted MUST equal paymentRequirements.\")"
+tracking = "FINDINGS.md#ts-batch-accepted-not-checked"
+
+[[known_failing]]
+ids = [
+  "vector/batch-build-deposit-payer-is-fee-payer-reject",
+  "vector/batch-verify-voucher-server-mode-config-reject",
+]
+reason = "the vendored client builds an open whose payer is the challenge's own feePayer, and refuses a mismatched channelConfig.voucherSigner as payload_type rather than channel_state"
+tracking = "FINDINGS.md#ts-batch-client-terms"
+
+[[unsupported]]
+reason = "@x402/svm exports no batch voucher-message, channel-PDA or receiver-binding memo encoder"
+ids = [
+  "vector/batch-channel-id-derivation-frozen",
+  "vector/batch-channel-id-hex-salt-reject",
+  "vector/batch-channel-id-receiver-is-not-a-seed",
+  "vector/batch-channel-id-salt-u64-max",
+  "vector/batch-receiver-binding-memo-frozen",
+  "vector/batch-voucher-message-frozen",
+  "vector/batch-voucher-message-non-decimal-amount-reject",
+  "vector/batch-voucher-message-nonzero-expiry-layout",
+  "vector/batch-voucher-message-u64-max",
+]
+
+[[unsupported]]
+reason = "@x402/svm exports no codec or guard for batch requirements, PaymentPayload envelopes, settlement responses or PaymentRequired objects"
+ids = [
+  "vector/batch-wire-corrective-payment-required",
+  "vector/batch-wire-payment-payload-frozen",
+  "vector/batch-wire-requirements-frozen",
+  "vector/batch-wire-requirements-transaction-versions",
+  "vector/batch-wire-requirements-unknown-transaction-version-reject",
+  "vector/batch-wire-settlement-response-voucher-acceptance",
+]
+
+[[unsupported]]
+reason = "@x402/svm adopts a corrective 402 only inside its client channel flow; it has no single-shot entry point"
+ids = [
+  "vector/batch-corrective-adopt-own-signature",
+  "vector/batch-corrective-charged-below-signed",
+  "vector/batch-corrective-charged-exceeds-signed-reject",
+  "vector/batch-corrective-foreign-signature-reject",
+  "vector/batch-corrective-nonzero-expiry-reject",
+  "vector/batch-corrective-other-channel-reject",
+  "vector/batch-corrective-without-proof-reject",
+]
+
+[[unsupported]]
+reason = "@x402/svm builds a voucher, top-up or refund only from its own client channel storage, which the vector input does not model"
+ids = [
+  "vector/batch-build-refund",
+  "vector/batch-build-top-up",
+  "vector/batch-build-top-up-version-1",
+  "vector/batch-build-voucher-first",
+  "vector/batch-build-voucher-next",
+]
+# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
+
+[[unsupported]]
+reason = "neither @solana/mpp buildChargeTransaction nor the @solana/pay-kit x402 client takes a highest signable transaction version (input.signerMaxTransactionVersion)"
+ids = [
+  "vector/charge-build-signer-v0-picks-v0",
+  "vector/charge-build-no-buildable-version-reject",
+  "vector/x402-build-signer-v0-picks-v0",
+  "vector/x402-build-no-intersection-reject",
+]
+
+[[unsupported]]
+reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
+ids = [
+  "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v0-with-v1-sponsor-accept",
+  "vector/x402-verify-v1-over-1232-accept",
+  "vector/x402-verify-v0-over-1232-reject",
+  "vector/x402-verify-v1-over-4096-reject",
+  "vector/x402-verify-v1-compute-budget-instruction-reject",
+  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
+  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
+  "vector/x402-verify-v1-compute-limit-at-cap-accept",
+  "vector/x402-verify-v1-compute-limit-over-cap-reject",
+  "vector/x402-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-verify-v1-priority-fee-over-cap-reject",
+  "vector/x402-verify-v1-too-many-instructions-reject",
+  "vector/x402-verify-v1-underpay-reject",
+  "vector/x402-verify-v1-wrong-recipient-reject",
+  "vector/x402-verify-v1-wrong-mint-reject",
+  "vector/x402-verify-v1-decimals-reject",
+  "vector/x402-verify-v1-fee-payer-authority-reject",
+  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
+  "vector/x402-verify-v1-extra-signer-reject",
+]
+
+[[known_failing]]
+ids = [
+  "vector/charge-wire-transaction-versions-both-golden",
+  "vector/charge-wire-transaction-versions-v1-only-golden",
+  "vector/charge-wire-transaction-versions-legacy-reject",
+  "vector/charge-wire-transaction-versions-unknown-reject",
+  "vector/charge-wire-transaction-versions-string-entry-reject",
+  "vector/charge-wire-transaction-versions-not-array-reject",
+  "vector/session-wire-transaction-versions-both-golden",
+  "vector/session-wire-transaction-versions-v1-only-golden",
+  "vector/session-wire-transaction-versions-v0-golden",
+  "vector/session-wire-transaction-versions-legacy-reject",
+  "vector/session-wire-transaction-versions-unknown-reject",
+  "vector/session-wire-transaction-versions-string-entry-reject",
+]
+reason = "@solana/mpp's charge and session request schemas (typescript/packages/mpp/src/Methods.ts) have no methodDetails.transactionVersions: zod strips the field, so the goldens lose it and the legacy/unknown/string/not-array rejects parse (mpp-specs-txv1: \"Servers MUST accept every version they list\")"
+tracking = "FINDINGS.md#txv1-ts-mpp-no-transaction-versions"
+
+[[known_failing]]
+ids = [
+  "vector/charge-build-v1-advertised",
+  "vector/charge-build-v1-only-advertised",
+  "vector/charge-build-empty-advertisement-reject",
+  "vector/charge-build-duplicate-advertisement",
+  "vector/charge-build-v1-sponsored",
+  "vector/charge-build-v1-sol",
+  "vector/charge-build-v1-large-memos",
+]
+reason = "the @solana/mpp charge client never reads transactionVersions and always builds a version-0 message with the ComputeBudget prefix (typescript/packages/mpp/src/client/Charge.ts); mpp-specs-txv1: \"Clients MUST build one of the advertised versions\""
+tracking = "FINDINGS.md#txv1-ts-mpp-client-v0-only"
+
+[[known_failing]]
+ids = [
+  "vector/charge-verify-v1-advertised-accept",
+  "vector/charge-verify-v1-only-advertised-accept",
+  "vector/charge-verify-v1-not-advertised-reject",
+  "vector/charge-verify-v1-v0-only-reject",
+  "vector/charge-verify-v0-to-v1-only-reject",
+  "vector/charge-verify-legacy-reject",
+  "vector/charge-verify-legacy-default-reject",
+  "vector/charge-verify-v0-oversize-reject",
+  "vector/charge-verify-v1-large-memos-accept",
+  "vector/charge-verify-v1-compute-budget-instruction-reject",
+  "vector/charge-verify-v1-missing-compute-unit-limit-reject",
+  "vector/charge-verify-v1-missing-loaded-data-limit-reject",
+  "vector/charge-verify-v1-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-sponsored-priority-fee-at-cap-accept",
+  "vector/charge-verify-v1-sponsored-priority-fee-over-cap-reject",
+  "vector/charge-verify-v1-reduced-limit-price-reject",
+  "vector/charge-verify-v1-underpay-reject",
+  "vector/charge-verify-v1-wrong-recipient-reject",
+  "vector/charge-verify-v1-wrong-mint-reject",
+  "vector/charge-verify-v1-sol-underpay-reject",
+  "vector/charge-verify-v1-unexpected-instruction-reject",
+  "vector/charge-verify-v1-sponsor-as-authority-reject",
+]
+reason = "verifyChargeTransaction does not admit by advertised version: it throws on a version-1 message (decoded instructions undefined), accepts version 0 for a version-1-only challenge, accepts legacy, and applies no per-version size limit (mpp-specs-txv1 Transaction Versions)"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[known_failing]]
+ids = [
+  "vector/x402-build-v1-advertised",
+  "vector/x402-build-duplicate-advertisement",
+  "vector/x402-build-empty-advertisement-reject",
+  "vector/x402-build-legacy-only-reject",
+  "vector/x402-verify-v1-not-accepted-reject",
+  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
+]
+reason = "the vendored x402 @03b3919b predates x402-foundation/x402 PR 3474: the exact client ignores extra.transactionVersions (always builds version 0, never refuses), and the facilitator has no version gate, so a version-1 transaction fails as signature_invalid instead of unsupported_transaction_version (scheme_exact_svm.md §1.5)"
+tracking = "FINDINGS.md#txv1-ts-x402-pre-3474"
+
+# Cross-verification of the transaction-version builds.
+
+[[known_failing]]
+ids = [
+  "cross/charge-build-duplicate-advertisement/go/typescript",
+  "cross/charge-build-duplicate-advertisement/python/typescript",
+  "cross/charge-build-duplicate-advertisement/swift/typescript",
+  "cross/charge-build-duplicate-advertisement/typescript/typescript",
+  "cross/charge-build-v1-large-memos/go/typescript",
+  "cross/charge-build-v1-large-memos/python/typescript",
+  "cross/charge-build-v1-large-memos/swift/typescript",
+  "cross/charge-build-v1-large-memos/typescript/typescript",
+  "cross/charge-build-v1-only-advertised/go/typescript",
+  "cross/charge-build-v1-only-advertised/python/typescript",
+  "cross/charge-build-v1-only-advertised/swift/typescript",
+  "cross/charge-build-v1-only-advertised/typescript/typescript",
+]
+reason = "accepts a version-0 charge build the Rust verifier refuses: version 0 for a challenge advertising [1] only, or over the 1232-byte version-0 limit (mpp-specs-txv1 Transaction Versions)"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[known_failing]]
+ids = [
+  "cross/charge-build-duplicate-advertisement/rust/typescript",
+  "cross/charge-build-v1-advertised/rust/typescript",
+  "cross/charge-build-v1-large-memos/rust/typescript",
+  "cross/charge-build-v1-only-advertised/rust/typescript",
+  "cross/charge-build-v1-sol/rust/typescript",
+  "cross/charge-build-v1-sponsored/rust/typescript",
+]
+reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK's that the Rust judge accepts): the verifier cannot decode or admit version 1"
+tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
+
+[[unsupported]]
+reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
+ids = [
+  "cross/x402-build-duplicate-advertisement/go/typescript",
+  "cross/x402-build-duplicate-advertisement/python/typescript",
+  "cross/x402-build-duplicate-advertisement/rust/typescript",
+  "cross/x402-build-duplicate-advertisement/swift/typescript",
+  "cross/x402-build-duplicate-advertisement/typescript/typescript",
+  "cross/x402-build-signer-v0-picks-v0/go/typescript",
+  "cross/x402-build-signer-v0-picks-v0/python/typescript",
+  "cross/x402-build-signer-v0-picks-v0/rust/typescript",
+  "cross/x402-build-signer-v0-picks-v0/swift/typescript",
+  "cross/x402-build-v1-advertised/go/typescript",
+  "cross/x402-build-v1-advertised/python/typescript",
+  "cross/x402-build-v1-advertised/rust/typescript",
+  "cross/x402-build-v1-advertised/swift/typescript",
+  "cross/x402-build-v1-advertised/typescript/typescript",
+]
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
+pattern = "vector/session-open-*"
+[[known_failing]]
+id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
+reason = "the x402 exact verifier caps the unit price alone (typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
+tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"

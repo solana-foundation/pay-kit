@@ -122,6 +122,9 @@ REJECT_PATTERNS = [
   # x402 v2: the credential's `accepted` matches no offered requirement.
   [/No matching payment requirements|accepted payment requirement does not match/i, "accepted-mismatch"],
   [/no memo instruction found|memo_mismatch|memo_count/i, "invalid-payload"],
+  # RULINGS SIG1: a client signature that does not verify over the message,
+  # or a signature list short of the required signers.
+  [/signature verification failed|signature slots do not match|invalid client transaction signature/i, "invalid-payload"],
   [/unsupported x402\s*version/i, "unsupported-version"],
   [/network mismatch/i, "wrong-network"],
   [/payment.identifier .*(required|missing|invalid)/i, "payment-identifier-required"],
@@ -134,6 +137,8 @@ REJECT_PATTERNS = [
   [/splits consume the entire amount|split amounts exceed/i, "splits-exceed-amount"],
   [/too many splits/i, "too-many-splits"],
   [/no matching (spl )?(transfer|transferchecked|sol transfer)|no_transfer_instruction|recipient_mismatch|mint_mismatch/i, "no-matching-transfer"],
+  [/share one funding authority/i, "mixed-funding-authority"],
+  [/unexpected signer/i, "unexpected-signer"],
   [/amount_mismatch|amount .* (mismatch|does not match)/i, "amount-mismatch"],
   [/unexpected .* (instruction|transfer)|unknown_(fourth|fifth|sixth|optional)_instruction/i, "unexpected-instruction"]
 ].freeze

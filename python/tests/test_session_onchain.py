@@ -631,3 +631,53 @@ async def test_top_up_verifier_rejects_a_deposit_below_the_top_up() -> None:
     verifier = await _seeded_top_up_verifier(rpc, state)
     with pytest.raises(PaymentError, match="deposit does not reflect"):
         await verifier(payload)
+
+
+def _sponsored_top_up(payload: TopUpPayload, fee_payer_signature) -> TopUpPayload:
+    """The scenario's top-up with a separate fee payer at slot 0: the payer's
+    slot 1 is validly signed, slot 0 is set by ``fee_payer_signature``."""
+    from solders.message import to_bytes_versioned  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.solana import resolve_mint
+    from solana_pay_kit.protocols.mpp._paymentchannels import TopUpParams, build_top_up_instruction
+
+    payer = Keypair.from_seed(bytes([11] * 32))
+    fee_payer = Keypair.from_seed(bytes([15] * 32))
+    instruction = build_top_up_instruction(
+        TopUpParams(
+            payer=payer.pubkey(),
+            channel=Pubkey.from_string(payload.channel_id),
+            mint=Pubkey.from_string(resolve_mint("USDC", "mainnet")),
+            amount=int(payload.additional_amount),
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            program_id=PROGRAM_ID,
+        )
+    )
+    message = MessageV0.try_compile(fee_payer.pubkey(), [instruction], [], Hash.default())
+    assert list(message.account_keys[:2]) == [fee_payer.pubkey(), payer.pubkey()]
+    signed = bytes(to_bytes_versioned(message))
+    signatures = [fee_payer_signature(fee_payer, signed), payer.sign_message(signed)]
+    transaction = VersionedTransaction.populate(message, signatures)
+    return TopUpPayload(payload.channel_id, payload.additional_amount, base64.b64encode(bytes(transaction)).decode())
+
+
+async def test_top_up_verifier_refuses_an_unverified_fee_payer_signature_before_sending() -> None:
+    # The payer's own signature verifies, but slot 0 (the signature the
+    # rescue path resolves a failed broadcast on) is a copy from elsewhere.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    forged = _sponsored_top_up(payload, lambda _kp, _msg: Signature(bytes([7]) * 64))
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    with pytest.raises(PaymentError, match="signature verification failed"):
+        await verifier(forged)
+    assert rpc.sent == []
+
+
+async def test_top_up_verifier_accepts_a_fully_signed_sponsored_top_up() -> None:
+    # Positive control: the same top-up with the fee payer's real signature.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    signed = _sponsored_top_up(payload, lambda kp, msg: kp.sign_message(msg))
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    await verifier(signed)
+    assert len(rpc.sent) == 1

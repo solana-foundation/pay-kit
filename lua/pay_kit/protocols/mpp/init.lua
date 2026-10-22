@@ -92,23 +92,18 @@ local function build_mpp_server(config, gate, store)
 
   local rpc = rpc_mod.new({url = config.rpc_url, transport = rpc_transport_mod.new()})
   local verifier_bundle = solana_verify.new_real_verifier({pull_signer = fee_payer_signer})
-  -- The legacy mpp.store expects (key, value) semantics on
-  -- put_if_absent (it stores arbitrary values keyed by signature).
-  -- pay_kit.store uses (key, ttl) for the x402 replay path, so
-  -- they are NOT interchangeable - bind the mpp handler to its own
-  -- store. The `store` argument from the dispatcher is reserved for
-  -- the x402 adapter.
-  local _ = store
-  -- Replay store. The default `store.memory()` is process-local and lost
-  -- on worker restart, so it only protects against replays seen by the
-  -- SAME worker since boot - acceptable for single-worker dev, NOT for a
-  -- multi-worker / multi-node production deploy where a replay reservation
-  -- must be visible across all settlers. Callers wire a shared store
-  -- (e.g. an ngx.shared.dict / Redis-backed adapter) via
-  -- `config.mpp.replay_store`; when none is supplied we fall back to the
-  -- volatile in-memory store and warn once so the dev-only nature is
-  -- explicit. Mirrors the Ruby/PHP "default volatile replay store" caveat.
-  local replay_store = config.mpp and config.mpp.replay_store
+  -- Replay store. Consumed signatures are claimed in one ledger shared
+  -- with the x402 adapter (`pay_kit.consumed_signatures`), so a payment
+  -- settled through either protocol cannot authorize a second request
+  -- through the other: both resolve the store through `shared_store`, the
+  -- operator's `config.mpp.replay_store` when set (e.g. an ngx.shared.dict /
+  -- Redis-backed adapter for multi-worker / multi-node deploys), else the
+  -- dispatcher's replay store. Only a standalone adapter built without a
+  -- store falls back to a volatile, process-local memory store, and warns
+  -- once so the dev-only nature is explicit. Mirrors the Ruby/PHP
+  -- "default volatile replay store" caveat.
+  local consumed_signatures = require('pay_kit.consumed_signatures')
+  local replay_store = consumed_signatures.shared_store(config, store)
   if not replay_store then
     replay_store = store_mod.memory()
     warn_volatile_replay_store(network)
@@ -133,6 +128,7 @@ local function build_mpp_server(config, gate, store)
     network        = network,
     rpc_url        = config.rpc_url,
     verify_payment = handler:as_callback(),
+    reconcile_expired = handler:reconcile_expired_callback(),
   }
   if fee_payer_signer then
     opts.fee_payer = true

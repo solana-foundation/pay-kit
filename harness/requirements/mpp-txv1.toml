@@ -1,0 +1,131 @@
+repo = "mpp-specs-txv1"
+commit = "77aa6a113f8abadaf2a3faa9d57c2dc3453627ce"
+files = [
+  "specs/methods/solana/draft-solana-charge-*",
+  "specs/methods/solana/draft-solana-session-*",
+]
+
+# Transaction-version negotiation for the Solana charge and session methods,
+# pinned from solana-foundation/mpp-specs feat/solana-transaction-versions
+# until it merges into tempoxyz/mpp-specs. id = "MPPTX-" + sha256(normalised
+# text)[:10]. `required = true`: `pkc req-lint` fails if no case maps the id.
+
+[[requirement]]
+id = "MPPTX-102b6dc2a5"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Servers MUST accept every version they list, MUST reject any other version, and MUST NOT list 1 unless the enable_tx_v1 feature gate (txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL) is active on network."
+required = true
+
+[[requirement]]
+id = "MPPTX-1a2e7c737e"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Any unexpected instructions MUST cause rejection."
+required = true
+
+[[requirement]]
+id = "MPPTX-27a6fd4f3f"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Servers MUST reject a transaction whose version is not advertised, or which references an address lookup table, with the malformed-credential problem type, before inspecting any instruction."
+required = true
+
+[[requirement]]
+id = "MPPTX-2855caa59a"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Clients MUST NOT use address lookup tables: a version-0 transaction carries every account in its static account keys."
+required = true
+
+[[requirement]]
+id = "MPPTX-3f51d8e008"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "A version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes."
+required = true
+
+[[requirement]]
+id = "MPPTX-4563533e08"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "| transaction | string | REQUIRED | Base64-encoded signed topUp transaction; its message version MUST be one the challenge advertises ({{transaction-versions}}) |"
+required = true
+
+[[requirement]]
+id = "MPPTX-46848f6fce"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "They have no effect under version 1, and servers MUST reject them;"
+required = true
+
+[[requirement]]
+id = "MPPTX-4f1a73dd49"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The transaction MUST be a valid Solana transaction whose message version is accepted by the server and whose size does not exceed the limit for that version (see {{transaction-versions}}), containing the transfer instruction(s) matching the challenge parameters."
+required = true
+
+[[requirement]]
+id = "MPPTX-507629a4fa"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "In a version-1 transaction these live in the message TransactionConfig, and computeUnitLimit MUST be set (see {{transaction-versions}})."
+required = true
+
+[[requirement]]
+id = "MPPTX-5410e1de47"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction; its message version MUST be one the challenge advertises ({{transaction-versions}}) |"
+required = true
+
+[[requirement]]
+id = "MPPTX-5b29a4494f"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Legacy messages are not supported: servers MUST NOT advertise \"legacy\" and MUST reject a legacy message."
+required = true
+
+[[requirement]]
+id = "MPPTX-6e9ac6c31d"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "If any required transfer instruction is missing, the server MUST reject the credential."
+required = true
+
+[[requirement]]
+id = "MPPTX-8a036b6610"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "the transaction MUST NOT contain Compute Budget program instructions."
+required = true
+
+[[requirement]]
+id = "MPPTX-8a988b0f7a"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "A server that caps the compute-unit price MUST evaluate priorityFee 1000000 <= maxPriceMicroLamports computeUnitLimit;"
+required = true
+
+[[requirement]]
+id = "MPPTX-96ba338b1e"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "If any required transferChecked instruction is missing, the server MUST reject the credential."
+required = true
+
+[[requirement]]
+id = "MPPTX-c483036092"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Servers MUST verify that the transaction contains only the expected instructions: transfer instruction(s) matching the challenge parameters, ATA creation (idempotent), and, in version-0 transactions, optionally compute budget instructions."
+required = true
+
+[[requirement]]
+id = "MPPTX-d180d03a99"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce."
+required = true
+
+[[requirement]]
+id = "MPPTX-d53a9f42dd"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "The transaction MUST set computeUnitLimit and loadedAccountsDataSizeLimit; a version-1 transaction that omits either is budgeted zero and cannot execute;"
+required = true
+
+[[requirement]]
+id = "MPPTX-d5e5d796c6"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "When feePayer is true, the transaction MUST set the server's feePayerKey as fee payer, and the client signs only as transfer authority; the server adds the fee payer signature before broadcasting (see {{fee-sponsorship}})."
+required = true
+
+[[requirement]]
+id = "MPPTX-f8468a31de"
+doc = "specs/methods/solana/draft-solana-charge-00.md"
+text = "| transaction | string | REQUIRED | Base64-encoded serialized signed transaction bytes; the decoded size MUST NOT exceed the limit for its message version ({{transaction-versions}}) |"
+required = true

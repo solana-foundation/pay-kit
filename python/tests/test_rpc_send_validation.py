@@ -8,7 +8,7 @@ empty or non-string signatures before the caller writes to the store.
 
 import pytest
 
-from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError
+from solana_pay_kit._paycore.rpc import PreflightRejectedError, SolanaRpc, _RpcError
 
 
 class _FakeResponse:
@@ -108,3 +108,21 @@ async def test_duplicate_message_on_non_broadcast_rpc_is_not_a_replay():
     with pytest.raises(_RpcError) as exc:
         await rpc.get_transaction("signature")
     assert exc.value.code == "payment_invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "preflight"),
+    [
+        ({"code": -32002, "message": "Transaction simulation failed: insufficient funds"}, True),
+        ({"code": -32005, "message": "Node is behind by 42 slots"}, False),
+        ({"code": -32603, "message": "Internal error"}, False),
+    ],
+)
+async def test_only_a_preflight_failure_proves_the_send_was_not_forwarded(error, preflight):
+    # A preflight rejection proves the node never forwarded the transaction;
+    # any other send error leaves the outcome unknown (SOLA1-301).
+    rpc = _rpc_with({"error": error})
+    with pytest.raises(_RpcError) as exc:
+        await rpc.send_raw_transaction(b"raw")
+    assert isinstance(exc.value, PreflightRejectedError) is preflight

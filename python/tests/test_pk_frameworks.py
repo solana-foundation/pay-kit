@@ -369,3 +369,57 @@ def test_django_middleware_402_when_unpaid(monkeypatch):
     request.paykit_gate = Price.usd("0.10", Stablecoin.USDC)  # type: ignore[attr-defined]
     resp = middleware(request)
     assert resp.status_code == 402
+
+
+# ---------------------------------------------------------------------------
+# Settlement in progress: a retryable 409 with no challenge on every shim
+# ---------------------------------------------------------------------------
+
+
+def _patch_in_progress(monkeypatch):
+    from solana_pay_kit.errors import SettlementInProgressError
+
+    async def pending(self, gate_ref, pricing, request):
+        raise SettlementInProgressError("settlement of tx is in progress; retry the same credential")
+
+    monkeypatch.setattr(mw.PayCore, "process", pending)
+
+
+def _assert_retry(status, headers):
+    assert status == 409
+    assert headers.get("retry-after") == "1"
+    assert headers.get("cache-control") == "no-store"
+    assert headers.get("www-authenticate") is None
+
+
+def test_fastapi_settlement_in_progress_is_a_retry_not_a_challenge(monkeypatch):
+    from starlette.testclient import TestClient
+
+    _patch_in_progress(monkeypatch)
+    resp = TestClient(_fastapi_app()).get("/report")
+    _assert_retry(resp.status_code, resp.headers)
+    assert resp.json()["detail"]["error"] == "settlement_in_progress"
+
+
+def test_flask_settlement_in_progress_is_a_retry_not_a_challenge(monkeypatch):
+    _patch_in_progress(monkeypatch)
+    resp = _flask_app().test_client().get("/report")
+    _assert_retry(resp.status_code, resp.headers)
+    assert resp.get_json()["code"] == "settlement_in_progress"
+
+
+def test_django_settlement_in_progress_is_a_retry_not_a_challenge(monkeypatch):
+    from django.test import RequestFactory
+
+    import solana_pay_kit.django as pk_django
+
+    _patch_in_progress(monkeypatch)
+
+    @pk_django.require_payment(Price.usd("0.10", Stablecoin.USDC))
+    def view(request):
+        from django.http import JsonResponse
+
+        return JsonResponse({"ok": True})
+
+    resp = view(RequestFactory().get("/report"))
+    _assert_retry(resp.status_code, {k.lower(): v for k, v in resp.items()})

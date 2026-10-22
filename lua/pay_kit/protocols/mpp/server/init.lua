@@ -14,7 +14,9 @@ local crypto = require('pay_kit.util._mpp_crypto')
 local M = {}
 
 local MIN_SECRET_KEY_BYTES = 32
-local CONSUMED_PREFIX = 'solana-charge:consumed:'
+-- Consumed signatures live in the protocol-independent ledger shared with
+-- x402, so one on-chain payment authorizes one request across protocols.
+local CONSUMED_PREFIX = require('pay_kit.consumed_signatures').PREFIX
 
 -- Audit #15: derive a per-recipient default realm instead of the static
 -- shared `"MPP Payment"`. Two servers that share a secret but front
@@ -167,6 +169,12 @@ function M.new(config)
     fee_payer_key = config.fee_payer_key,
     store = config.store or store.memory(),
     verify_payment = config.verify_payment,
+    -- Optional. Reconciles the pending charge an expired credential's
+    -- challenge left behind (a broadcast whose response was lost), returning
+    -- nil when there is none. Without it an expired challenge is refused
+    -- outright; it is never handed to `verify_payment`, which would start a
+    -- new payment.
+    reconcile_expired = config.reconcile_expired,
     recent_blockhash = config.recent_blockhash,
     html = config.html or false,
   }
@@ -306,7 +314,10 @@ end
 -- configuration, so cross-route replay across instances with different
 -- recipients/currencies is blocked.
 function Server:verify_credential(credential_value, now_epoch)
-  local request, _method_details, payload = self:_verify_challenge_and_decode(credential_value, now_epoch)
+  local request, _method_details, payload, expired = self:_verify_challenge_and_decode(credential_value, now_epoch)
+  if expired then
+    return self:_reconcile_expired(credential_value, request, payload, expired)
+  end
   return self:_finalize_verification(credential_value, request, payload)
 end
 
@@ -320,8 +331,22 @@ function Server:verify_credential_with_expected(credential_value, expected, now_
   if type(expected) ~= 'table' then
     error('expected request table is required')
   end
-  local cred_request, _method_details, payload = self:_verify_challenge_and_decode(credential_value, now_epoch)
+  local cred_request, _method_details, payload, expired = self:_verify_challenge_and_decode(credential_value, now_epoch)
+  if expired then
+    -- Any binding failure on an expired challenge reports the expiry.
+    local bound, settlement_request = pcall(self._bind_to_expected, self, cred_request, expected)
+    if not bound then
+      error(expired)
+    end
+    return self:_reconcile_expired(credential_value, settlement_request, payload, expired)
+  end
+  local settlement_request = self:_bind_to_expected(cred_request, expected)
+  return self:_finalize_verification(credential_value, settlement_request, payload)
+end
 
+--- Bind a credential's charge to the route's expected one, returning the
+--- request settlement runs against.
+function Server:_bind_to_expected(cred_request, expected)
   -- The three pinned fields are the route's contract with the client:
   -- the same credential issued for a cheaper / different route must not
   -- settle here, even if its HMAC verifies. All three rejections share
@@ -414,7 +439,23 @@ function Server:verify_credential_with_expected(credential_value, expected, now_
     externalId = expected.externalId or cred_request.externalId,
     description = cred_request.description,
   }
-  return self:_finalize_verification(credential_value, settlement_request, payload)
+  return settlement_request
+end
+
+--- An expired challenge never starts a payment. It may only finish one the
+--- same challenge already broadcast and left pending, through the server's
+--- `reconcile_expired` hook; otherwise it is refused as expired.
+function Server:_reconcile_expired(credential_value, request, payload, expired)
+  if type(self.reconcile_expired) ~= 'function' then
+    error(expired)
+  end
+  return self:_finalize_verification(credential_value, request, payload, function(context)
+    local result = self.reconcile_expired(context)
+    if result == nil then
+      error(expired)
+    end
+    return result
+  end)
 end
 
 --- Tier-1 (HMAC + expiry) and Tier-2 (pinned-field) checks.
@@ -438,9 +479,26 @@ function Server:_verify_challenge_and_decode(credential_value, now_epoch)
     error_codes.raise(error_codes.CHALLENGE_VERIFICATION_FAILED, 'challenge ID mismatch')
   end
   if challenge_value:is_expired(now_epoch or os.time()) then
-    error_codes.raise(error_codes.CHALLENGE_EXPIRED,
-      'challenge expired at ' .. tostring(challenge_value.expires))
+    local expired = { code = error_codes.CHALLENGE_EXPIRED,
+      message = 'challenge expired at ' .. tostring(challenge_value.expires) }
+    if type(self.reconcile_expired) ~= 'function' then
+      error(expired)
+    end
+    -- Run every other check so a pending charge can be reconciled; any
+    -- failure reports the expiry, as it always has.
+    local ok, request, method_details, payload = pcall(self._decode_verified, self, credential_value, challenge_value)
+    if not ok then
+      error(expired)
+    end
+    return request, method_details, payload, expired
   end
+  return self:_decode_verified(credential_value, challenge_value)
+end
+
+--- Tier-2 (pinned-field) checks and payload decoding for an authentic
+--- challenge.
+function Server:_decode_verified(credential_value, challenge_value)
+  local echoed = credential_value.challenge
 
   local request, decode_err = challenge_value.request:decode()
   if not request then
@@ -506,13 +564,14 @@ function Server:_verify_pinned_fields(echoed, request)
   end
 end
 
-function Server:_finalize_verification(credential_value, request, payload)
+function Server:_finalize_verification(credential_value, request, payload, settle)
   local method_details = request.methodDetails or {}
-  if type(self.verify_payment) ~= 'function' then
+  settle = settle or self.verify_payment
+  if type(settle) ~= 'function' then
     error('verify_payment callback is required')
   end
 
-  local result = self.verify_payment({
+  local result = settle({
     payload = payload,
     request = request,
     method_details = method_details,
@@ -529,7 +588,7 @@ function Server:_finalize_verification(credential_value, request, payload)
 
   -- Settlement layers that already consumed the replay marker themselves
   -- (e.g. `charge_handler:as_callback()` which writes
-  -- `solana-charge:consumed:<sig>` inside `settle_pull` before await, and
+  -- the consumed-signature ledger claim inside `settle_pull` before await, and
   -- `solana_verify.verify_transaction` which writes the same key between
   -- broadcast and await for the L8 ordering fix) signal back via
   -- `result.consumed = true`. Skip the outer put_if_absent in that case so

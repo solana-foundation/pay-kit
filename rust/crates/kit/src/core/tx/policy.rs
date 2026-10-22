@@ -198,6 +198,39 @@ pub fn check_v0_budget_caps(
     Ok(Some(declared))
 }
 
+/// Highest total priority fee, in lamports, a fee sponsor pays for one
+/// co-signed transaction: 200,000 compute units at 10,000 micro-lamports per
+/// unit, the sponsored MPP charge policy.
+pub const MAX_SPONSORED_PRIORITY_FEE_LAMPORTS: u64 = 2_000;
+
+/// Bound the total priority fee a sponsor would pay for `message`, whatever
+/// mix of unit limit and price the client chose. Per-field caps alone let the
+/// largest limit pair with the largest price.
+///
+/// Version 1 is read from the header `priority_fee`. Version 0 multiplies the
+/// declared price by the declared limit, or by the runtime default the
+/// instruction count implies when no limit is declared. Returns the fee.
+pub fn check_priority_fee(message: &VersionedMessage, max_lamports: u64) -> Result<u64> {
+    let declared = DeclaredBudget::of(message)?;
+    let fee = match message {
+        VersionedMessage::V1(v1) => v1.config.priority_fee.unwrap_or(0),
+        _ => {
+            let price = declared.unit_price_micro_lamports.unwrap_or(0);
+            let limit = declared.unit_limit.unwrap_or_else(|| {
+                let budgeted = message.instructions().len() - declared.instruction_indexes.len();
+                super::budget::ComputeBudget::runtime_default(budgeted).unit_limit
+            });
+            super::budget::ComputeBudget::new(limit, price).priority_fee_lamports()
+        }
+    };
+    if fee > max_lamports {
+        return Err(Error::Other(format!(
+            "priority fee {fee} lamports exceeds the sponsored maximum {max_lamports}"
+        )));
+    }
+    Ok(fee)
+}
+
 /// Require a version-0 budget's ComputeBudget instructions to be the leading
 /// prefix of the message, `SetComputeUnitLimit` before `SetComputeUnitPrice`.
 pub fn require_budget_prefix(message: &VersionedMessage, declared: &DeclaredBudget) -> Result<()> {
@@ -272,6 +305,45 @@ pub fn check_envelope(tx: &VersionedTransaction, accepted: &[TxVersion]) -> Resu
     require_static_accounts(&tx.message)?;
     check_limits(tx, version)?;
     Ok(version)
+}
+
+/// Verify every signature a client already placed on a transaction the server
+/// is about to co-sign, before it signs, simulates or pays for anything.
+///
+/// The signature slots must match the message's required signers. When
+/// `server_fee_payer` is set it must be account key zero with an empty slot,
+/// left for the server; every other required signature must verify against
+/// the exact message. Signer membership alone proves nothing: a corrupted
+/// signature only surfaces at broadcast, after earlier sponsored transactions
+/// may already have landed.
+pub fn require_presigned(
+    tx: &VersionedTransaction,
+    server_fee_payer: Option<&Pubkey>,
+) -> Result<()> {
+    let required = usize::from(tx.message.header().num_required_signatures);
+    let keys = tx.message.static_account_keys();
+    if tx.signatures.len() != required || keys.len() < required {
+        return Err(Error::Other(
+            "transaction signature slots do not match its required signers".into(),
+        ));
+    }
+    let message = tx.message.serialize();
+    for (index, (signature, key)) in tx.signatures.iter().zip(keys).enumerate() {
+        if server_fee_payer == Some(key) {
+            if index != 0 || *signature != solana_signature::Signature::default() {
+                return Err(Error::Other(
+                    "fee-payer signature slot must be empty before server co-signing".into(),
+                ));
+            }
+            continue;
+        }
+        if !signature.verify(key.as_ref(), &message) {
+            return Err(Error::Other(format!(
+                "invalid client transaction signature for required signer {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Version policy for a transaction read back from the RPC by signature.

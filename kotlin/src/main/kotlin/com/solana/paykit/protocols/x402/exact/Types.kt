@@ -61,70 +61,44 @@ data class X402AcceptsEntry(
     // `null` for entries built in code (those re-serialize from the typed
     // fields). Excluded from (de)serialization; populated during parsing.
     @Transient val raw: JsonElement? = null,
+    // The challenge's `resource` (PaymentRequired.resource), echoed in the
+    // v2 envelope so the credential names the resource it pays for (servers
+    // that bind payments to their route require it). `null` for entries
+    // built in code. Excluded from (de)serialization; populated during parsing.
+    @Transient val resource: JsonElement? = null,
 )
 
-/**
- * Effective recipient: prefers ``recipient``, falls back to ``payTo``.
- *
- * ``recipient ?: payTo`` — the rust spine deserializes the destination as
- * ``recipient.or_else(payTo)`` (types.rs:334-336), so a conflicting top-level
- * ``recipient`` field WINS over ``payTo``. Matching this keeps Kotlin and the
- * canonical verifier selecting the same recipient on the same wire.
- */
-val X402AcceptsEntry.effectivePayTo: String? get() = recipient ?: payTo
+// RULINGS X1: each term is read from its x402 field only. ``amount`` falls
+// back to the v1 ``maxAmountRequired`` a legacy offer uses; the fields a server
+// adds beside them (``recipient``, ``currency``, top-level ``tokenProgram``,
+// ``decimals``, ``recentBlockhash``, ``feePayerKey``) are ignored, so the
+// signed transfer pays what the echoed ``accepted`` object names.
 
-/**
- * Effective mint: top-level ``currency`` wins; ``asset`` is the fallback.
- *
- * ``currency ?: asset`` — the rust spine deserializes the mint as
- * ``currency.or_else(asset)`` (types.rs:340-342), so a conflicting top-level
- * ``currency`` field WINS over ``asset``. Matching this keeps Kotlin and the
- * canonical verifier selecting the same mint on the same wire.
- */
-val X402AcceptsEntry.effectiveAsset: String? get() = currency ?: asset
+/** Recipient: ``payTo``. */
+val X402AcceptsEntry.effectivePayTo: String? get() = payTo
 
-/**
- * Effective token program: prefers the TOP-LEVEL ``tokenProgram``, then
- * the ``extra.tokenProgram`` nested alias. Top-level-first matches the
- * rust spine, which normalizes the canonical token program onto the
- * top-level field.
- */
-val X402AcceptsEntry.effectiveTokenProgram: String? get() = tokenProgram ?: extra?.tokenProgram
+/** Mint: ``asset``. */
+val X402AcceptsEntry.effectiveAsset: String? get() = asset
 
-/**
- * Effective token decimals: prefers the TOP-LEVEL ``decimals``, then the
- * ``extra.decimals`` nested alias. Top-level-first matches the rust spine.
- */
-val X402AcceptsEntry.effectiveDecimals: Int? get() = decimals ?: extra?.decimals
+/** Token program hint: ``extra.tokenProgram``. */
+val X402AcceptsEntry.effectiveTokenProgram: String? get() = extra?.tokenProgram
 
-/**
- * Effective pinned blockhash: prefers the TOP-LEVEL ``recentBlockhash``,
- * then the ``extra.recentBlockhash`` nested alias. Top-level-first matches
- * the rust spine.
- */
-val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = recentBlockhash ?: extra?.recentBlockhash
+/** Token decimals hint: ``extra.decimals``. */
+val X402AcceptsEntry.effectiveDecimals: Int? get() = extra?.decimals
+
+/** Pinned blockhash: ``extra.recentBlockhash``. */
+val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = extra?.recentBlockhash
 
 /**
  * Effective managed fee payer pubkey, or ``null`` when the offer does not
  * request a managed fee payer.
  *
- * Mirrors the rust spine ``build_payment``: a managed fee payer is used when
- * the ``feePayer`` toggle is true AND a ``feePayerKey`` is present. The rust
- * parser also normalizes ``feePayer = true`` whenever ``feePayerKey`` is set,
- * so a top-level ``feePayerKey`` with no explicit ``feePayer`` flag still
- * selects the managed fee payer. The top-level fields take precedence; the
- * nested ``extra.feePayer`` (a bare pubkey string) is read as a fallback so
- * the older nested-only offer shape keeps working.
+ * The key is ``extra.feePayer``. The ``feePayer`` boolean toggle then gates
+ * it: it defaults to true when a key is present and only an explicit
+ * ``false`` opts out.
  */
 val X402AcceptsEntry.effectiveFeePayerKey: String? get() {
-    // Mirror the rust normalization (types.rs): the managed fee-payer key is the
-    // top-level feePayerKey, else the nested extra.feePayer alias. The feePayer
-    // boolean toggle then gates BOTH sources: it defaults to true when a key is
-    // present and only an explicit `false` opts out. The prior code applied the
-    // toggle only to the top-level key and returned extra.feePayer
-    // unconditionally, so an offer with extra.feePayer + feePayer=false wrongly
-    // selected a managed fee payer.
-    val key = feePayerKey ?: extra?.feePayer
+    val key = extra?.feePayer
     if (key != null) {
         return if (feePayer != false) key else null
     }

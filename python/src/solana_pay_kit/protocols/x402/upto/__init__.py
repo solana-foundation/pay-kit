@@ -52,7 +52,11 @@ from solana_pay_kit._paycore.paymentchannels import (
     voucher_message_bytes,
 )
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+from solana_pay_kit._paycore.transaction import (
+    SignatureCheckError,
+    build_partially_signed_v0_transaction,
+    verify_required_signatures,
+)
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
@@ -654,7 +658,14 @@ async def _cosign_fee_payer(transaction_b64: str, signer: TransactionSigner) -> 
     if idx >= num_required:
         raise InvalidProofError("fee payer is not a required signer", code="payment_invalid")
     signed = await signer.sign_transaction(vtx)
-    return bytes(signed.transaction)
+    cosigned = bytes(signed.transaction)
+    try:
+        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+    except SignatureCheckError as exc:
+        raise InvalidProofError(
+            f"open transaction signature verification failed: {exc}", code="payment_invalid"
+        ) from exc
+    return cosigned
 
 
 def _request_path(request: Any) -> str:

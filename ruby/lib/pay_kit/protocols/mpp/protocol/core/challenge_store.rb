@@ -87,20 +87,26 @@ module PayKit::Protocols::Mpp
           )
 
           return Protocol::Solana::VerificationResult.failure("challenge verification failed", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_VERIFICATION_FAILED) unless challenge.verify?(secret_key)
-          return Protocol::Solana::VerificationResult.failure("challenge expired", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED) if challenge.expired?(now: now)
+          # An expired challenge still runs every check below, so the caller
+          # can reconcile a charge it already left pending; any failure
+          # reports the expiry, and it never reaches the verifier.
+          expired = challenge.expired?(now: now)
 
           result = verify_pinned_fields(challenge, expected_request)
-          return result unless result.ok?
+          return (expired ? expired_failure : result) unless result.ok?
 
           decoded = Intents::ChargeRequest.from_h(challenge.decode_request)
           result = verify_expected(decoded, expected_request)
-          return result unless result.ok?
+          return (expired ? expired_failure : result) unless result.ok?
+          return Protocol::Solana::VerificationResult.expired(credential: credential, challenge: challenge) if expired
 
           result = verifier.verify(credential, challenge, expected_request: expected_request)
           return result unless result.ok?
 
           Protocol::Solana::VerificationResult.success(reference: result.reference, credential: credential, challenge: challenge)
         rescue KeyError, ArgumentError, Error => error
+          return expired_failure if expired
+
           code = error.respond_to?(:code) ? error.code : nil
           Protocol::Solana::VerificationResult.failure(error.message, code: code)
         end
@@ -117,6 +123,10 @@ module PayKit::Protocols::Mpp
         end
 
         private
+
+        def expired_failure
+          Protocol::Solana::VerificationResult.failure("challenge expired", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED)
+        end
 
         def verify_pinned_fields(challenge, expected)
           return Protocol::Solana::VerificationResult.failure("Credential method does not match this server", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.method == "solana"

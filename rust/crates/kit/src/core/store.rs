@@ -173,10 +173,217 @@ impl Store for MemoryStore {
     }
 }
 
+// ── Consumed transaction signatures ──
+
+/// Protocol-independent ledger of Solana transaction signatures that already
+/// authorized a protected response.
+///
+/// MPP charge and x402 `exact` both claim here, so one on-chain payment
+/// authorizes one request whichever protocol presents it: a transaction
+/// settled through MPP cannot be presented again as an x402 signature proof
+/// on a gate that shares the store, and vice versa. The key is the signature
+/// alone; a signature commits to a message carrying a cluster-specific
+/// blockhash, so scoping by network would add nothing but a second
+/// normalization that both protocols would have to agree on.
+#[derive(Clone)]
+pub struct ConsumedSignatures {
+    store: Arc<dyn Store>,
+}
+
+fn consumed_signature_key(signature: &str) -> String {
+    format!("solana:consumed-signature:{signature}")
+}
+
+/// CAIP-2 networks the x402 `exact` server scoped its pre-ledger claims by
+/// (every value `caip2_network_for_cluster` returns).
+const LEGACY_X402_NETWORKS: [&str; 3] = [
+    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+];
+
+/// Keys under which MPP charge and x402 `exact` claimed signatures before
+/// they shared this ledger.
+///
+/// Every claim also takes these, so that during a rolling upgrade a replica
+/// still running the previous release (which claims and checks only its own
+/// legacy key) sees a payment this release accepted, and the other way round.
+fn legacy_consumed_signature_keys(signature: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(format!("solana-charge:consumed:{signature}")).chain(
+        LEGACY_X402_NETWORKS
+            .iter()
+            .map(move |network| format!("x402-exact:consumed:{network}:{signature}")),
+    )
+}
+
+impl ConsumedSignatures {
+    pub fn new(store: Arc<dyn Store>) -> Self {
+        Self { store }
+    }
+
+    /// Atomically claim `signature`. `false` means an earlier presentation,
+    /// through any protocol and any release, already claimed it.
+    pub async fn claim(&self, signature: &str) -> Result<bool, StoreError> {
+        self.claim_with(signature, serde_json::json!(true)).await
+    }
+
+    /// Take every legacy key, then the ledger key holding `value`.
+    ///
+    /// The legacy keys come first and each is taken with `put_if_absent`, so
+    /// a replica on the previous release, which claims its own legacy key the
+    /// same way, contends on the very same key: at most one of them wins,
+    /// with no window between a check and a write. A signature already held
+    /// under any of them (a pre-ledger claim, or a previous release's) stays
+    /// consumed and is never migrated. When the claim fails, refused or on a
+    /// store error, the keys this call took are given back: the caller then
+    /// neither sends nor serves anything for the signature.
+    async fn claim_with(
+        &self,
+        signature: &str,
+        value: serde_json::Value,
+    ) -> Result<bool, StoreError> {
+        let mut taken = Vec::new();
+        for key in legacy_consumed_signature_keys(signature) {
+            match self
+                .store
+                .put_if_absent(&key, serde_json::json!(true))
+                .await
+            {
+                Ok(true) => taken.push(key),
+                outcome => {
+                    self.give_back(&taken).await;
+                    return outcome;
+                }
+            }
+        }
+        let key = consumed_signature_key(signature);
+        let outcome = match self.store.put_if_absent(&key, value.clone()).await {
+            // A released claim reads as absent.
+            Ok(false) => {
+                self.store
+                    .put_if_eq(&key, Some(released_marker()), value)
+                    .await
+            }
+            outcome => outcome,
+        };
+        if !matches!(outcome, Ok(true)) {
+            self.give_back(&taken).await;
+        }
+        outcome
+    }
+
+    async fn give_back(&self, keys: &[String]) {
+        for key in keys {
+            if let Err(error) = self.store.delete(key).await {
+                tracing::warn!(%error, key, "failed to give back a legacy signature claim");
+            }
+        }
+    }
+
+    /// Claim `signature` for a transaction about to be broadcast, whose
+    /// outcome may be unknown when the call returns.
+    ///
+    /// The claim is pending until [`Self::confirm`] (it landed) or
+    /// [`Self::release`] (it provably never will). A pending claim is still
+    /// taken: [`Self::claim`] refuses it, so no protocol can present the
+    /// signature while its settlement is unresolved.
+    pub async fn claim_pending(&self, signature: &str) -> Result<PendingClaim, StoreError> {
+        if self.claim_with(signature, pending_marker()).await? {
+            return Ok(PendingClaim::Fresh);
+        }
+        let key = consumed_signature_key(signature);
+        Ok(if self.store.get(&key).await? == Some(pending_marker()) {
+            PendingClaim::ResumePending
+        } else {
+            PendingClaim::Consumed
+        })
+    }
+
+    /// Turn a pending claim into a consumed signature once its transaction
+    /// landed. `false` means another caller already confirmed it (and served
+    /// the request) or it was never pending.
+    pub async fn confirm(&self, signature: &str) -> Result<bool, StoreError> {
+        self.store
+            .put_if_eq(
+                &consumed_signature_key(signature),
+                Some(pending_marker()),
+                serde_json::json!(true),
+            )
+            .await
+    }
+
+    /// Release a [`Self::claim`] this caller made for a transaction that
+    /// provably never landed (for example a preflight rejection), so the payer
+    /// may retry it. Returns `false`, releasing nothing, when the claim no
+    /// longer holds what this caller wrote.
+    pub async fn release(&self, signature: &str) -> Result<bool, StoreError> {
+        self.release_holding(signature, serde_json::json!(true))
+            .await
+    }
+
+    /// Release a [`Self::claim_pending`] that provably never landed. Only a
+    /// claim still pending is released: once any holder (a resumed
+    /// settlement) confirmed it, a release from a holder that saw it as
+    /// unlanded (say on a lagging node) must not erase it. Returns `false`,
+    /// releasing nothing, in that case.
+    pub async fn release_pending(&self, signature: &str) -> Result<bool, StoreError> {
+        self.release_holding(signature, pending_marker()).await
+    }
+
+    /// Swap the ledger key from `held` to a released marker in one atomic
+    /// step, then give back the legacy keys the claim took. The marker stays
+    /// behind and a later claim takes it over (see [`Self::claim_with`]): the
+    /// store cannot delete conditionally, and an unconditional delete could
+    /// erase a claim that changed in between.
+    async fn release_holding(
+        &self,
+        signature: &str,
+        held: serde_json::Value,
+    ) -> Result<bool, StoreError> {
+        if !self
+            .store
+            .put_if_eq(
+                &consumed_signature_key(signature),
+                Some(held),
+                released_marker(),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        for key in legacy_consumed_signature_keys(signature) {
+            self.store.delete(&key).await?;
+        }
+        Ok(true)
+    }
+}
+
+/// What a released claim leaves behind: absent, for every claim.
+fn released_marker() -> serde_json::Value {
+    serde_json::json!({ "state": "released" })
+}
+
+fn pending_marker() -> serde_json::Value {
+    serde_json::json!({ "state": "pending" })
+}
+
+/// Outcome of [`ConsumedSignatures::claim_pending`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingClaim {
+    /// Newly claimed; this caller broadcasts.
+    Fresh,
+    /// An earlier broadcast of this signature has an unknown outcome. The
+    /// same bytes may be broadcast again (a signature lands at most once),
+    /// then confirmed or released.
+    ResumePending,
+    /// Already consumed by a settled presentation.
+    Consumed,
+}
+
 // ── Charge replay / idempotency store ──
 //
-// PayKit's original charge replay guard
-// (`solana-charge:consumed:<signature>`, see
+// PayKit's original charge replay guard (the consumed-signature claim in
+// [`ConsumedSignatures`], see
 // `mpp::server::charge::Mpp::consume_signature`) is replay-safe — the same
 // final signature can never be reserved twice — but produces the wrong
 // error for a retry: Ed25519 signing is deterministic, so replaying an
@@ -191,6 +398,11 @@ impl Store for MemoryStore {
 /// replay once it reaches a terminal (`Confirmed`/`Failed`) state. Chosen to
 /// exceed Solana's transaction-history retention and typical client resume
 /// windows; a Redis-backed [`Store`] should set this as the key's TTL.
+///
+/// It is also the floor for how long a [`Store`] keeps charge records and
+/// [`ConsumedSignatures`] claims: an MPP server accepting push credentials
+/// refuses any challenge that expires later than this from now, so a paid
+/// signature cannot outlive its replay record.
 pub const DEFAULT_CHARGE_RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a charge record may sit in [`ChargeRecordState::Reserved`]
@@ -213,9 +425,9 @@ pub enum ChargeRecordState {
     Confirmed,
     /// Settlement failed terminally; `failure_reason` explains why.
     Failed,
-    /// Broadcast, but confirmation was ambiguous (timeout, RPC error).
-    /// `final_signature` is the broadcast signature; a retry reconciles it
-    /// before any replacement payment is allowed.
+    /// `final_signature` may have been broadcast (it is recorded before the
+    /// send) and its outcome is not yet known. A retry reconciles it before
+    /// any replacement payment is allowed; it is never lease-reclaimed.
     Pending,
 }
 
@@ -369,7 +581,31 @@ impl ChargeReplayStore {
             updated_at: now,
             expires_at: now + lease.as_secs() as i64,
         };
+        // A record's generations share one lifecycle: a store must expire
+        // them together (the root key and every `:<generation>` key under one
+        // TTL). A root missing while a descendant survives means retention was
+        // applied per key; recreating the root there would hide a confirmed
+        // or pending settlement and let the challenge settle again. Refuse,
+        // both before claiming the root and after, in case the root expired
+        // between the two.
+        let orphaned = || {
+            StoreError::Internal(format!(
+                "charge record `{challenge_id}` lost its root while later generations remain; \
+                 the store must expire a record's generations together"
+            ))
+        };
+        if self.read(challenge_id, 1).await?.is_some()
+            && self.read(challenge_id, 0).await?.is_none()
+        {
+            return Err(orphaned());
+        }
         if self.append(challenge_id, 0, &fresh).await? {
+            if self.read(challenge_id, 1).await?.is_some() {
+                self.store
+                    .delete(&charge_record_key(challenge_id, 0))
+                    .await?;
+                return Err(orphaned());
+            }
             return Ok(ChargeReservation::Reserved { generation: 0 });
         }
         for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
@@ -416,24 +652,64 @@ impl ChargeReplayStore {
         )))
     }
 
-    /// Record the confirmed settlement signature.
+    /// Record the confirmed settlement signature for the `generation` this
+    /// caller owns: its reservation (a push signature, never broadcast here)
+    /// or the pending broadcast of `final_signature` it recorded.
     ///
-    /// A confirmed signature is an on-chain fact, so it supersedes any
-    /// non-confirmed state whichever owner reports it, and is never replaced.
+    /// Returns `false`, writing nothing, when that generation is no longer
+    /// current. A stale owner whose lease was taken over can therefore never
+    /// rewrite the newer generation's outcome, a recorded failure included.
     /// Fails when the challenge was never reserved.
     pub async fn mark_confirmed(
         &self,
         challenge_id: &str,
+        generation: u64,
         final_signature: &str,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
+        let (tip, record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        let owned = match record.state {
+            ChargeRecordState::Reserved => true,
+            ChargeRecordState::Pending => {
+                record.final_signature.as_deref() == Some(final_signature)
+            }
+            ChargeRecordState::Confirmed | ChargeRecordState::Failed => false,
+        };
+        if tip != generation || !owned {
+            return Ok(false);
+        }
+        let confirmed = terminal(
+            record,
+            ChargeRecordState::Confirmed,
+            Some(final_signature.to_string()),
+            None,
+        );
+        self.append(challenge_id, generation + 1, &confirmed).await
+    }
+
+    /// Record a settlement confirmed outside this ledger's ownership (a
+    /// payment-channel submission found on retry), whichever generation is
+    /// current. It supersedes an unresolved (`Reserved`/`Pending`) record
+    /// only: a recorded failure already released the client and is kept.
+    /// Returns whether the record is now confirmed.
+    pub async fn record_confirmed(
+        &self,
+        challenge_id: &str,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
         for _ in 0..MAX_CHARGE_RECORD_GENERATIONS {
             let (generation, record) = self.tip(challenge_id).await?.ok_or_else(|| {
                 StoreError::Internal(format!(
                     "cannot settle charge record `{challenge_id}`: no reservation found"
                 ))
             })?;
-            if record.state == ChargeRecordState::Confirmed {
-                return Ok(());
+            match record.state {
+                ChargeRecordState::Confirmed => return Ok(true),
+                ChargeRecordState::Failed => return Ok(false),
+                ChargeRecordState::Reserved | ChargeRecordState::Pending => {}
             }
             let confirmed = terminal(
                 record,
@@ -445,12 +721,40 @@ impl ChargeReplayStore {
                 .append(challenge_id, generation + 1, &confirmed)
                 .await?
             {
-                return Ok(());
+                return Ok(true);
             }
         }
         Err(StoreError::Internal(format!(
             "charge record `{challenge_id}` is contended"
         )))
+    }
+
+    /// Return the pending record at `generation` to an immediately
+    /// reclaimable reservation, for a broadcast of `final_signature` that
+    /// provably never left this process (a preflight rejection). Returns
+    /// `false`, writing nothing, when that generation is no longer current.
+    pub async fn release_pending(
+        &self,
+        challenge_id: &str,
+        generation: u64,
+        final_signature: &str,
+    ) -> Result<bool, StoreError> {
+        let (tip, mut record) = self.tip(challenge_id).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        if tip != generation
+            || record.state != ChargeRecordState::Pending
+            || record.final_signature.as_deref() != Some(final_signature)
+        {
+            return Ok(false);
+        }
+        record.state = ChargeRecordState::Reserved;
+        record.final_signature = None;
+        record.updated_at = now_unix();
+        record.expires_at = record.updated_at;
+        self.append(challenge_id, generation + 1, &record).await
     }
 
     /// Confirm the pending broadcast at `generation` (from
@@ -505,11 +809,14 @@ impl ChargeReplayStore {
         })
     }
 
-    /// Record that `final_signature` was broadcast but its outcome is unknown,
-    /// for the reservation `generation` returned by [`Self::reserve`].
+    /// Record that `final_signature` is about to be broadcast, for the
+    /// reservation `generation` returned by [`Self::reserve`]. Settlement
+    /// calls this BEFORE sending, so a reservation is only ever reclaimed by a
+    /// lease takeover while nothing has been sent, and a pending record is
+    /// never reclaimed.
     ///
     /// Returns `false`, writing nothing, when that reservation is no longer
-    /// current.
+    /// current: its lease was taken over, and the caller MUST NOT broadcast.
     pub async fn mark_pending(
         &self,
         challenge_id: &str,
@@ -614,6 +921,21 @@ pub struct PendingDelivery {
     /// lease in `expires_at` ran out.
     #[serde(default, rename = "handlerSucceeded")]
     pub handler_succeeded: bool,
+}
+
+impl PendingDelivery {
+    /// Whether a close at `now` (unix seconds) must charge this reservation.
+    ///
+    /// A metered delivery (no request fingerprint) handed its directive to
+    /// the host, which may already have sent the response, so it is owed
+    /// until the client commits it or the host releases it with a zero
+    /// usage. Its `expires_at` only bounds the commit window; the passage of
+    /// time never proves the response was not delivered. An authorization is
+    /// owed once its handler succeeded, or while its lease may still lead to
+    /// a commit.
+    pub fn owed_at_close(&self, now: i64) -> bool {
+        self.request_fingerprint.is_none() || self.handler_succeeded || self.expires_at > now
+    }
 }
 
 /// A committed delivery, retained so an exact retry can be answered without
@@ -897,10 +1219,11 @@ pub struct ChannelState {
     pub pending_setup: Option<PendingSetup>,
 
     /// Unix seconds of the last reconciliation against confirmed onchain state.
+    /// `0` means never reconciled.
     ///
-    /// A scheme that must confirm the channel is still `Open` before accepting
-    /// an authorization uses this to decide whether its snapshot is fresh
-    /// enough to trust. `0` means never reconciled.
+    /// Informational: admission trusts only
+    /// [`ChannelState::onchain_observed_at`], which is written together with
+    /// the lifecycle the read showed.
     #[serde(default)]
     pub onchain_checked_at: u64,
 
@@ -966,6 +1289,12 @@ impl ChannelBinding {
         }
     }
 
+    /// Whether every deployment field is recorded. A partial binding predates
+    /// the newer fields and cannot by itself place the channel in a deployment.
+    pub fn is_complete(&self) -> bool {
+        self.pay_to.is_some() && self.network.is_some() && self.program_id.is_some()
+    }
+
     /// This binding with any field it did not record taken from `current`.
     pub fn filled_from(&self, current: &ChannelBinding) -> ChannelBinding {
         ChannelBinding {
@@ -981,6 +1310,45 @@ impl ChannelBinding {
 }
 
 const CHANNEL_BINDING_KEY: &str = "channelBinding";
+
+/// [`ChannelState::extra`] key holding [`ChannelState::grace_period`].
+const GRACE_PERIOD_KEY: &str = "gracePeriod";
+
+/// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_slot`].
+const ONCHAIN_OBSERVED_SLOT_KEY: &str = "onchainObservedSlot";
+
+/// [`ChannelState::extra`] key holding [`ChannelState::onchain_observed_at`].
+const ONCHAIN_OBSERVED_AT_KEY: &str = "onchainObservedAt";
+
+/// The lifecycle an onchain read showed for a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedLifecycle {
+    /// Open, with no close started.
+    Open,
+    /// A payer close started at `started_at` (unix seconds); still claimable.
+    Closing { started_at: u64 },
+    /// Sealed, distributed or otherwise past accepting vouchers.
+    Terminal { started_at: Option<u64> },
+}
+
+/// One onchain read of a channel; see [`ChannelState::record_onchain_observation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnchainObservation {
+    /// Slot of the bank that served the read, when the read reported one.
+    pub slot: Option<u64>,
+    /// What the read showed.
+    pub lifecycle: ObservedLifecycle,
+}
+
+/// Whether [`ChannelState::record_onchain_observation`] renewed the snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationOutcome {
+    /// The snapshot now stands at this observation.
+    Fresh,
+    /// The read came from a bank behind `recorded`: its fences were applied,
+    /// the snapshot was not renewed.
+    Behind { recorded: u64 },
+}
 
 impl ChannelState {
     /// The deployment binding stamped on this record, if any.
@@ -1011,10 +1379,121 @@ impl ChannelState {
         Ok(())
     }
 
+    /// The channel's immutable onchain grace period (seconds), when recorded.
+    /// It is not a PDA seed, so a policy change can leave an open channel with
+    /// a shorter close window than the server now plans its leases around.
+    pub fn grace_period(&self) -> Option<u32> {
+        self.extra
+            .get(GRACE_PERIOD_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+    }
+
+    /// Record the channel's onchain grace period.
+    pub fn set_grace_period(&mut self, grace_period: u32) {
+        self.extra
+            .insert(GRACE_PERIOD_KEY.to_string(), grace_period.into());
+    }
+
+    /// Require the recorded grace period to be `withdraw_delay`, the window
+    /// the server sizes its reservation leases and snapshots against. A record
+    /// without one must first be completed from its confirmed channel.
+    pub fn check_grace_period(&self, withdraw_delay: u32) -> Result<(), StoreError> {
+        match self.grace_period() {
+            Some(recorded) if recorded == withdraw_delay => Ok(()),
+            Some(recorded) => Err(StoreError::Internal(format!(
+                "channel {} has a {recorded}s grace period, not the {withdraw_delay}s this \
+                 server requires",
+                self.channel_id
+            ))),
+            None => Err(StoreError::Internal(format!(
+                "channel {} has no recorded grace period",
+                self.channel_id
+            ))),
+        }
+    }
+
+    /// Slot of the bank that served the newest onchain observation this
+    /// record accepted, `0` when none recorded one.
+    pub fn onchain_observed_slot(&self) -> u64 {
+        self.extra
+            .get(ONCHAIN_OBSERVED_SLOT_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// Unix seconds of the newest onchain observation recorded through
+    /// [`Self::record_onchain_observation`], `0` when none was.
+    ///
+    /// This, not [`Self::onchain_checked_at`], is what may stand in for a
+    /// fresh read at admission: it is only written together with the lifecycle
+    /// the read showed, so a refreshed timestamp can never hide a close or a
+    /// distribution the same read saw.
+    pub fn onchain_observed_at(&self) -> u64 {
+        self.extra
+            .get(ONCHAIN_OBSERVED_AT_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// Apply an onchain observation of this channel in one step.
+    ///
+    /// The lifecycle fences it carries are applied first and unconditionally:
+    /// they only ever close a channel, so even a stale read may set them. The
+    /// snapshot is renewed (`onchain_observed_at`, `onchain_checked_at`) only
+    /// when the read is not behind the newest accepted slot; a lagging node
+    /// can return a channel as open after it closed, and must never renew the
+    /// admission window.
+    pub fn record_onchain_observation(
+        &mut self,
+        observation: OnchainObservation,
+        now: u64,
+    ) -> ObservationOutcome {
+        match observation.lifecycle {
+            ObservedLifecycle::Open => {}
+            ObservedLifecycle::Closing { started_at } => {
+                self.close_requested_at = Some(self.close_requested_at.unwrap_or(started_at));
+            }
+            ObservedLifecycle::Terminal { started_at } => {
+                self.sealed = true;
+                if let Some(started_at) = started_at {
+                    self.close_requested_at = Some(self.close_requested_at.unwrap_or(started_at));
+                }
+            }
+        }
+        let recorded = self.onchain_observed_slot();
+        if let Some(slot) = observation.slot {
+            if slot < recorded {
+                return ObservationOutcome::Behind { recorded };
+            }
+            self.extra
+                .insert(ONCHAIN_OBSERVED_SLOT_KEY.to_string(), slot.into());
+        }
+        self.extra
+            .insert(ONCHAIN_OBSERVED_AT_KEY.to_string(), now.into());
+        self.onchain_checked_at = now;
+        ObservationOutcome::Fresh
+    }
+
     /// Stamp `binding` on this record.
     pub fn set_binding(&mut self, binding: &ChannelBinding) {
         if let Ok(value) = serde_json::to_value(binding) {
             self.extra.insert(CHANNEL_BINDING_KEY.to_string(), value);
+        }
+    }
+
+    /// Require this record to be bound to exactly `current`, every field
+    /// recorded. This is the check that admits a charge: a record without a
+    /// binding, or with a partial one, must first be completed from a
+    /// confirmed read of its channel with [`Self::adopt_binding`].
+    pub fn check_binding_complete(&self, current: &ChannelBinding) -> Result<(), StoreError> {
+        self.check_binding(current)?;
+        match self.binding()? {
+            Some(recorded) if recorded == *current && recorded.is_complete() => Ok(()),
+            _ => Err(StoreError::Internal(format!(
+                "channel {} has no complete deployment binding",
+                self.channel_id
+            ))),
         }
     }
 
@@ -1148,7 +1627,8 @@ pub enum BatchReservation {
     /// The same authorization id was presented by a different request.
     Conflict,
     /// A reservation outlived its lease without reporting either outcome, so
-    /// whether its handler ran is unknown.
+    /// whether its handler ran is unknown. Reported both for that
+    /// authorization and for any other one on the channel while it stands.
     ///
     /// The reservation is taken immediately before the handler is invoked, so
     /// an unreported one means the handler may well have run — a process that
@@ -1156,9 +1636,10 @@ pub enum BatchReservation {
     /// past its lease. Serving it again would execute the same authorization
     /// twice, which the scheme forbids outright, so it is never reclaimed.
     ///
-    /// This is deliberately terminal for that authorization: the client cannot
-    /// reuse the voucher, and because the watermark never advanced it cannot
-    /// step past it either, so recovery is a new channel. That liveness cost
+    /// This is deliberately terminal for the channel: the client cannot reuse
+    /// the voucher, and no other voucher may step past it while its handler
+    /// could still finish unaccounted, so recovery is a new channel unless the
+    /// owner releases or commits it late. That liveness cost
     /// falls only on a crashed or overrunning request, and it is the price of
     /// never serving a paid request twice.
     Abandoned,
@@ -1288,8 +1769,8 @@ impl ChannelState {
     /// record are one atomic step.
     ///
     /// Only an authorization with no record at all is reservable. An existing
-    /// reservation is never taken over, however long its lease has been
-    /// dead — see [`BatchReservation::Abandoned`].
+    /// reservation is never taken over or stepped past, however long its lease
+    /// has been dead — see [`BatchReservation::Abandoned`].
     ///
     /// One cumulative step is in flight per channel: while another
     /// authorization holds a live or handler-succeeded reservation this one is
@@ -1345,10 +1826,21 @@ impl ChannelState {
         {
             return Some(outcome);
         }
-        if self.pending_deliveries.iter().any(|pending| {
-            pending.delivery_id != *authorization_id
-                && (pending.handler_succeeded || pending.expires_at > now)
-        }) {
+        let mut others = self
+            .pending_deliveries
+            .iter()
+            .filter(|pending| pending.delivery_id != *authorization_id);
+        // Another authorization that outlived its lease without reporting may
+        // still be running, or may have served its request before a crash.
+        // Stepping past it would leave that work out of the watermark, so it
+        // fences the channel until its owner releases or commits it.
+        if others
+            .clone()
+            .any(|pending| !pending.handler_succeeded && pending.expires_at <= now)
+        {
+            return Some(BatchReservation::Abandoned);
+        }
+        if others.any(|pending| pending.handler_succeeded || pending.expires_at > now) {
             return Some(BatchReservation::InProgress);
         }
         if self.cumulative.checked_add(amount) != Some(cumulative) {
@@ -1639,6 +2131,10 @@ impl ChannelState {
     }
 }
 
+/// A decision about one channel record, made against the state a store
+/// holds at the moment it acts; see [`ChannelStore::delete_channel_if`].
+pub type ChannelPredicate = Box<dyn FnOnce(&ChannelState) -> bool + Send>;
+
 /// An atomic in-place step on one channel record.
 pub type ChannelMutator = Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>;
 
@@ -1714,6 +2210,24 @@ pub trait ChannelStore: Send + Sync {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Atomically delete the record only if `keep_unless` approves the state
+    /// it holds at the moment of deletion. Returns whether it was deleted
+    /// (`false` when absent, refused, or changed concurrently).
+    ///
+    /// A reconciler that decides from an earlier snapshot (no in-flight
+    /// authorization, say) must delete through this, not
+    /// [`Self::delete_channel`]: a request may reserve new work between the
+    /// read and the delete, and the decision has to be re-made against the
+    /// record that is actually removed. A lock-based store evaluates the
+    /// predicate under the lock; an optimistic store evaluates it on a read
+    /// and deletes only if the record is still byte-identical, reporting
+    /// `false` otherwise so the caller retries on its next pass.
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>>;
 
     /// Atomically read-modify-write channel state.
     ///
@@ -1875,6 +2389,14 @@ where
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         (**self).delete_channel(channel_id)
+    }
+
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        (**self).delete_channel_if(channel_id, approve)
     }
 
     fn update_channel(
@@ -2039,6 +2561,23 @@ impl ChannelStore for MemoryChannelStore {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         self.data.remove(channel_id);
         Box::pin(async { Ok(()) })
+    }
+
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        // `remove_if` evaluates the predicate under the key's shard write
+        // guard, so no request can change the record in between.
+        let mut approve = Some(approve);
+        let removed = self
+            .data
+            .remove_if(channel_id, |_, state| {
+                approve.take().is_some_and(|approve| approve(state))
+            })
+            .is_some();
+        Box::pin(async move { Ok(removed) })
     }
 
     fn update_channel(
@@ -2527,6 +3066,37 @@ impl ChannelStore for RedisChannelStore {
         })
     }
 
+    fn delete_channel_if(
+        &self,
+        channel_id: &str,
+        approve: ChannelPredicate,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let Some(raw) = self.get_raw(&channel_id).await? else {
+                return Ok(false);
+            };
+            if !approve(&Self::decode(&raw)?) {
+                return Ok(false);
+            }
+            // Delete only the exact value the predicate approved.
+            const SCRIPT: &str = r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"#;
+            let mut connection = self.connection.clone();
+            let deleted: i32 = redis::Script::new(SCRIPT)
+                .key(self.key(&channel_id))
+                .arg(raw)
+                .invoke_async(&mut connection)
+                .await
+                .map_err(|e| StoreError::Internal(format!("Redis compare-and-delete: {e}")))?;
+            Ok(deleted == 1)
+        })
+    }
+
     fn update_channel(
         &self,
         channel_id: &str,
@@ -2826,10 +3396,58 @@ pub mod conformance {
         fresh: &(dyn Fn(&str) -> ChannelState + Sync),
     ) {
         refuses_a_reservation_from_a_moved_watermark(store, fresh).await;
-        refuses_a_reservation_superseded_over_its_dead_lease(store, fresh).await;
+        refuses_to_step_past_a_dead_unreported_lease(store, fresh).await;
         refuses_reservations_on_a_closing_channel(store, fresh).await;
         a_refused_preparation_reserves_nothing(store, fresh).await;
         a_refused_reservation_leaves_the_record_unchanged(store, fresh).await;
+    }
+
+    /// Run the deletion suite against a store a reconciliation worker uses.
+    /// Request-path wrappers that refuse deletion outright skip it.
+    pub async fn check_channel_store_deletion(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        a_conditional_delete_judges_the_record_it_removes(store, fresh).await;
+    }
+
+    /// A reconciler read the record with nothing in flight, then a request
+    /// reserved work before the delete: the delete must see the reservation
+    /// and keep the record.
+    async fn a_conditional_delete_judges_the_record_it_removes(
+        store: &dyn ChannelStore,
+        fresh: &(dyn Fn(&str) -> ChannelState + Sync),
+    ) {
+        let id = "conformance-conditional-delete";
+        store.put_channel(id, fresh(id)).await.unwrap();
+        let snapshot = store.get_channel(id).await.unwrap().unwrap();
+        assert!(!snapshot.has_in_flight_authorization());
+
+        token(reserve(store, id, request("a", 500, 500, 100)).await);
+        let idle =
+            || -> ChannelPredicate { Box::new(|state| !state.has_in_flight_authorization()) };
+        assert!(!store.delete_channel_if(id, idle()).await.unwrap());
+        assert!(store
+            .get_channel(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_in_flight_authorization());
+
+        store
+            .update_channel(
+                id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.pending_deliveries.clear();
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(store.delete_channel_if(id, idle()).await.unwrap());
+        assert!(store.get_channel(id).await.unwrap().is_none());
+        assert!(!store.delete_channel_if(id, idle()).await.unwrap());
     }
 
     /// Two replicas price vouchers from the same watermark and the first
@@ -2862,9 +3480,11 @@ pub mod conformance {
         );
     }
 
-    /// A reservation whose lease ran out may be superseded; the overrunning
-    /// one can then neither commit nor come to block the channel.
-    async fn refuses_a_reservation_superseded_over_its_dead_lease(
+    /// A reservation whose lease ran out without reporting is never stepped
+    /// past: its handler may still be running, and a later voucher committing
+    /// first would leave that work out of the watermark. The overrunning owner
+    /// can still account for it; a release reopens the channel.
+    async fn refuses_to_step_past_a_dead_unreported_lease(
         store: &dyn ChannelStore,
         fresh: &(dyn Fn(&str) -> ChannelState + Sync),
     ) {
@@ -2872,50 +3492,35 @@ pub mod conformance {
         store.put_channel(id, fresh(id)).await.unwrap();
         let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
-        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
-        let late = slow.clone();
-        assert!(store
-            .mutate_channel(
-                id,
-                None,
-                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
-            )
-            .await
-            .is_err());
-        let late = slow.clone();
-        assert!(store
-            .mutate_channel(
-                id,
-                None,
-                Box::new(move |state| state.commit_authorization(&late, "sig", 0, 100, |_| None)),
-            )
-            .await
-            .is_err());
-        commit(store, id, &next).await;
+        assert_eq!(
+            reserve(store, id, request("next", 700, 700, after_lease)).await,
+            BatchReservation::Abandoned
+        );
+        // The overrunning handler finishes and is charged.
+        commit(store, id, &slow).await;
         assert_eq!(
             store.get_channel(id).await.unwrap().unwrap().cumulative,
-            700
+            500
         );
+        assert!(matches!(
+            reserve(store, id, request("after", 200, 700, after_lease)).await,
+            BatchReservation::Reserved(_)
+        ));
 
-        // The superseding reservation commits before the slow handler returns:
-        // the slow one is still refused at mark, so it never comes to block
-        // the channel as handler-succeeded.
-        let id = "conformance-lease-committed";
+        // Positive control: a dead lease its owner released does not block.
+        let id = "conformance-lease-released";
         store.put_channel(id, fresh(id)).await.unwrap();
-        let slow = token(reserve(store, id, request("slow", 500, 500, 100)).await);
-        let next = token(reserve(store, id, request("next", 700, 700, after_lease)).await);
-        commit(store, id, &next).await;
-        let late = slow.clone();
-        assert!(store
+        token(reserve(store, id, request("slow", 500, 500, 100)).await);
+        store
             .mutate_channel(
                 id,
                 None,
-                Box::new(move |state| state.mark_authorization_handler_succeeded(&late)),
+                Box::new(|state| state.release_authorization("slow", "fp-slow")),
             )
             .await
-            .is_err());
+            .unwrap();
         assert!(matches!(
-            reserve(store, id, request("after", 300, 1_000, after_lease)).await,
+            reserve(store, id, request("next", 700, 700, after_lease)).await,
             BatchReservation::Reserved(_)
         ));
     }
@@ -3088,6 +3693,161 @@ mod tests {
 
     // ── ChargeReplayStore ──
 
+    // A signature claimed under a pre-ledger key (by an older replica, or
+    // just before an upgrade) stays consumed for every claim path, and the
+    // legacy record is only read, never rewritten.
+    async fn assert_legacy_key_stays_consumed(legacy_key: &str) {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        raw.put(legacy_key, serde_json::json!(true)).await.unwrap();
+
+        assert!(!ledger.claim("sig-legacy").await.unwrap(), "{legacy_key}");
+        assert_eq!(
+            ledger.claim_pending("sig-legacy").await.unwrap(),
+            PendingClaim::Consumed,
+            "{legacy_key}"
+        );
+        assert!(raw
+            .get(&consumed_signature_key("sig-legacy"))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            raw.get(legacy_key).await.unwrap(),
+            Some(serde_json::json!(true))
+        );
+
+        // Signatures without a legacy record claim normally.
+        assert!(ledger.claim("sig-fresh").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-other").await.unwrap(),
+            PendingClaim::Fresh
+        );
+    }
+
+    // Rolling upgrade: a replica on the previous release claims and checks
+    // only its own legacy key. Every claim takes those keys too, so such a
+    // replica refuses a payment this release accepted.
+    #[tokio::test]
+    async fn a_claim_is_visible_to_replicas_on_the_previous_release() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        let old_replica_claims = |raw: Arc<dyn Store>, key: String| async move {
+            raw.put_if_absent(&key, serde_json::json!(true))
+                .await
+                .unwrap()
+        };
+
+        assert!(ledger.claim("sig-new").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-pending").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        for signature in ["sig-new", "sig-pending"] {
+            for key in legacy_consumed_signature_keys(signature) {
+                assert!(!old_replica_claims(raw.clone(), key.clone()).await, "{key}");
+            }
+        }
+        // Resuming this release's own pending claim is still a resume.
+        assert_eq!(
+            ledger.claim_pending("sig-pending").await.unwrap(),
+            PendingClaim::ResumePending
+        );
+
+        // A release gives every key back, so the payer may retry and an
+        // older replica is not left refusing a payment that never landed.
+        assert!(ledger.release_pending("sig-pending").await.unwrap());
+        for key in legacy_consumed_signature_keys("sig-pending") {
+            assert!(raw.get(&key).await.unwrap().is_none(), "{key}");
+        }
+        assert!(ledger.claim("sig-pending").await.unwrap());
+    }
+
+    // A release only gives back a claim still holding what its caller wrote.
+    // A holder that saw the transaction as unlanded (say on a lagging node)
+    // must not erase a claim a resumed settlement has since confirmed.
+    #[tokio::test]
+    async fn a_release_never_erases_a_confirmed_claim() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::ResumePending
+        );
+        assert!(ledger.confirm("sig-race").await.unwrap());
+
+        assert!(!ledger.release_pending("sig-race").await.unwrap());
+        assert_eq!(
+            ledger.claim_pending("sig-race").await.unwrap(),
+            PendingClaim::Consumed
+        );
+        for key in legacy_consumed_signature_keys("sig-race") {
+            assert!(raw.get(&key).await.unwrap().is_some(), "{key}");
+        }
+
+        // Positive control: an unconfirmed pending claim is released, and a
+        // later claim takes the released key over.
+        assert_eq!(
+            ledger.claim_pending("sig-free").await.unwrap(),
+            PendingClaim::Fresh
+        );
+        assert!(ledger.release_pending("sig-free").await.unwrap());
+        assert!(ledger.claim("sig-free").await.unwrap());
+        assert!(!ledger.claim("sig-free").await.unwrap());
+    }
+
+    // A previous release's claim on one legacy key refuses the signature, and
+    // the keys this claim took before finding it are given back.
+    #[tokio::test]
+    async fn a_refused_claim_gives_back_the_legacy_keys_it_took() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let ledger = ConsumedSignatures::new(raw.clone());
+        let held = format!("x402-exact:consumed:{}:sig-old", LEGACY_X402_NETWORKS[2]);
+        raw.put(&held, serde_json::json!(true)).await.unwrap();
+
+        assert!(!ledger.claim("sig-old").await.unwrap());
+        for key in legacy_consumed_signature_keys("sig-old") {
+            let expected = (key == held).then_some(serde_json::Value::Bool(true));
+            assert_eq!(raw.get(&key).await.unwrap(), expected, "{key}");
+        }
+        assert!(raw
+            .get(&consumed_signature_key("sig-old"))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_mpp_charge_claim_stays_consumed() {
+        assert_legacy_key_stays_consumed("solana-charge:consumed:sig-legacy").await;
+    }
+
+    #[tokio::test]
+    async fn legacy_x402_exact_claim_stays_consumed_on_every_network() {
+        for network in LEGACY_X402_NETWORKS {
+            assert_legacy_key_stays_consumed(&format!("x402-exact:consumed:{network}:sig-legacy"))
+                .await;
+        }
+    }
+
+    // The legacy x402 key was scoped by `caip2_network_for_cluster`; every
+    // network it can return must be checked.
+    #[cfg(feature = "x402")]
+    #[test]
+    fn legacy_x402_networks_cover_every_caip2_cluster() {
+        use crate::x402::protocol::schemes::exact::caip2_network_for_cluster;
+        for cluster in ["mainnet", "devnet", "testnet", "localnet", "unknown"] {
+            assert!(
+                LEGACY_X402_NETWORKS.contains(&caip2_network_for_cluster(cluster)),
+                "{cluster}"
+            );
+        }
+    }
+
     fn replay_store() -> ChargeReplayStore {
         ChargeReplayStore::new(Arc::new(MemoryStore::new()))
     }
@@ -3126,7 +3886,7 @@ mod tests {
             .reserve("chal-3", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
-        store.mark_confirmed("chal-3", "sig-abc").await.unwrap();
+        assert!(store.mark_confirmed("chal-3", 0, "sig-abc").await.unwrap());
 
         // Response-loss-idempotent: an identical retry after the first
         // settled must return the SAME signature instead of erroring or
@@ -3205,7 +3965,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, ChargeReservation::Conflict);
 
-        store.mark_confirmed("chal-p", "sig-pending").await.unwrap();
+        assert!(store
+            .mark_confirmed("chal-p", generation + 1, "sig-pending")
+            .await
+            .unwrap());
         let outcome = store
             .reserve("chal-p", "digest-a", CHARGE_RESERVATION_LEASE)
             .await
@@ -3314,12 +4077,49 @@ mod tests {
         assert_eq!(outcome, ChargeReservation::Conflict);
 
         // ...or already confirmed.
-        store.mark_confirmed("chal-5", "sig-abc").await.unwrap();
+        assert!(store.mark_confirmed("chal-5", 0, "sig-abc").await.unwrap());
         let outcome = store
             .reserve("chal-5", "digest-b", CHARGE_RESERVATION_LEASE)
             .await
             .unwrap();
         assert_eq!(outcome, ChargeReservation::Conflict);
+    }
+
+    // A store that expired the root key of a record independently of its
+    // generations must not let the challenge settle again: the surviving
+    // confirmed generation is authoritative.
+    #[tokio::test]
+    async fn charge_replay_never_recreates_a_root_over_surviving_generations() {
+        let raw: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let store = ChargeReplayStore::new(raw.clone());
+        store
+            .reserve("chal-ttl", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert!(store.mark_confirmed("chal-ttl", 0, "sig-a").await.unwrap());
+        raw.delete("solana-charge:record:chal-ttl").await.unwrap();
+
+        for digest in ["digest-a", "digest-b"] {
+            let err = store
+                .reserve("chal-ttl", digest, CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("lost its root"), "{err}");
+        }
+        assert!(raw
+            .get("solana-charge:record:chal-ttl")
+            .await
+            .unwrap()
+            .is_none());
+
+        // A challenge with no record at all still reserves normally.
+        assert_eq!(
+            store
+                .reserve("chal-new", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 0 }
+        );
     }
 
     #[tokio::test]
@@ -3343,7 +4143,7 @@ mod tests {
     async fn charge_replay_mark_confirmed_without_reservation_errors() {
         let store = replay_store();
         let err = store
-            .mark_confirmed("never-reserved", "sig-abc")
+            .mark_confirmed("never-reserved", 0, "sig-abc")
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::Internal(_)));
@@ -3377,10 +4177,15 @@ mod tests {
             ChargeReservation::InProgress
         );
 
-        store
-            .mark_confirmed("chal-stale", "newer-worker-signature")
+        // ...and so is its late confirmation.
+        assert!(!store
+            .mark_confirmed("chal-stale", 0, "stale-worker-signature")
             .await
-            .unwrap();
+            .unwrap());
+        assert!(store
+            .mark_confirmed("chal-stale", 1, "newer-worker-signature")
+            .await
+            .unwrap());
         // Neither the stale owner nor the confirmed owner can fail it now.
         assert!(!store
             .mark_failed("chal-stale", 0, "stale-worker-rpc-timeout")
@@ -3416,10 +4221,10 @@ mod tests {
                 .unwrap(),
             ChargeReservation::Reserved { generation: 1 }
         );
-        store
-            .mark_confirmed("chal-keep", "confirmed-by-reclaimer")
+        assert!(store
+            .mark_confirmed("chal-keep", 1, "confirmed-by-reclaimer")
             .await
-            .unwrap();
+            .unwrap());
         assert!(!store
             .mark_failed("chal-keep", 0, "stale-owner-settlement-error")
             .await
@@ -3469,14 +4274,18 @@ mod tests {
             .unwrap());
     }
 
+    // A failure recorded by a takeover already let the client move on (the
+    // gate re-challenges it), so a stale owner's late confirmation must not
+    // rewrite it into a second, silent success; and an owner that recorded
+    // its broadcast as pending is never taken over at all.
     #[tokio::test]
-    async fn charge_replay_late_confirmation_supersedes_a_failure() {
+    async fn charge_replay_stale_owner_cannot_confirm_over_a_takeover() {
         let store = replay_store();
         store
             .reserve("chal-late", "digest-a", Duration::ZERO)
             .await
             .unwrap();
-        // B takes over and fails (e.g. A's signature was already consumed).
+        // B takes over A's expired lease and fails.
         assert_eq!(
             store
                 .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
@@ -3488,20 +4297,64 @@ mod tests {
             .mark_failed("chal-late", 1, "signature already consumed")
             .await
             .unwrap());
-        // A's settlement did land: the on-chain fact wins.
-        store.mark_confirmed("chal-late", "sig-a").await.unwrap();
-        store
-            .mark_confirmed("chal-late", "sig-other")
-            .await
-            .unwrap();
+        // A, fenced at generation 0, can neither begin a broadcast nor confirm.
+        assert!(!store.mark_pending("chal-late", 0, "sig-a").await.unwrap());
+        assert!(!store.mark_confirmed("chal-late", 0, "sig-a").await.unwrap());
+        assert!(!store.record_confirmed("chal-late", "sig-a").await.unwrap());
         assert_eq!(
             store
                 .reserve("chal-late", "digest-a", CHARGE_RESERVATION_LEASE)
                 .await
                 .unwrap(),
-            ChargeReservation::AlreadyConfirmed {
+            ChargeReservation::AlreadyFailed {
+                reason: "signature already consumed".to_string()
+            }
+        );
+
+        // An owner that recorded its broadcast first keeps the record past
+        // its lease, and only its own signature confirms it.
+        store
+            .reserve("chal-own", "digest-a", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(store.mark_pending("chal-own", 0, "sig-a").await.unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-own", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::PendingConfirmation {
+                generation: 1,
                 final_signature: "sig-a".to_string()
             }
+        );
+        assert!(!store
+            .mark_confirmed("chal-own", 1, "sig-other")
+            .await
+            .unwrap());
+        assert!(store.mark_confirmed("chal-own", 1, "sig-a").await.unwrap());
+    }
+
+    // A pending broadcast proven unsent returns to a reclaimable reservation.
+    #[tokio::test]
+    async fn charge_replay_released_pending_record_is_reclaimable() {
+        let store = replay_store();
+        store
+            .reserve("chal-rel", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert!(store.mark_pending("chal-rel", 0, "sig-a").await.unwrap());
+        assert!(!store
+            .release_pending("chal-rel", 1, "sig-other")
+            .await
+            .unwrap());
+        assert!(store.release_pending("chal-rel", 1, "sig-a").await.unwrap());
+        assert_eq!(
+            store
+                .reserve("chal-rel", "digest-a", CHARGE_RESERVATION_LEASE)
+                .await
+                .unwrap(),
+            ChargeReservation::Reserved { generation: 3 }
         );
     }
 
@@ -3898,10 +4751,17 @@ mod tests {
             .is_err());
         assert_eq!(state.cumulative, 500);
 
-        // A dead lease does not block the channel forever.
+        // A dead lease that never reported fences the channel: its handler
+        // may still finish, so no other voucher steps past it.
         let mut state = make_state("c2", 10_000);
         state.reserve_authorization(&req("access:c2:500", "a", 500, 500, 100));
         let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        assert_eq!(
+            state.reserve_authorization(&req("access:c2:700", "b", 700, 700, after_lease)),
+            BatchReservation::Abandoned
+        );
+        // Released by its owner, it no longer blocks.
+        state.release_authorization("access:c2:500", "a").unwrap();
         assert!(matches!(
             state.reserve_authorization(&req("access:c2:700", "b", 700, 700, after_lease)),
             BatchReservation::Reserved(_)
@@ -3964,7 +4824,8 @@ mod tests {
         };
         assert!(decoded.check_binding(&other_program).is_err());
 
-        // An older binding without a receiver is accepted and completed.
+        // An older binding without a receiver passes the mismatch check but
+        // admits no charge until it is completed.
         let mut older = make_state("c2", 10_000);
         older.set_binding(&ChannelBinding {
             scheme: "batch-settlement".to_string(),
@@ -3973,8 +4834,13 @@ mod tests {
             program_id: None,
         });
         older.check_binding(&batch).unwrap();
+        assert!(older.check_binding_complete(&batch).is_err());
+        assert!(make_state("c3", 10_000)
+            .check_binding_complete(&batch)
+            .is_err());
         older.adopt_binding(&batch).unwrap();
         assert_eq!(older.binding().unwrap(), Some(batch.clone()));
+        older.check_binding_complete(&batch).unwrap();
 
         state
             .extra
@@ -4348,13 +5214,16 @@ mod tests {
 
     #[tokio::test]
     async fn memory_store_passes_conformance() {
-        conformance::check_channel_store(&MemoryChannelStore::new(), &conformance_state).await;
+        let store = MemoryChannelStore::new();
+        conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[tokio::test]
     async fn arc_store_passes_conformance() {
         let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
         conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[cfg(feature = "redis-store")]
@@ -4368,11 +5237,12 @@ mod tests {
             .as_nanos();
         let store = RedisChannelStore::connect(
             &redis_url,
-            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+            format!("pay-kit:test:conformance:{}:{unique}:", std::process::id()),
         )
         .await
         .unwrap();
         conformance::check_channel_store(&store, &conformance_state).await;
+        conformance::check_channel_store_deletion(&store, &conformance_state).await;
     }
 
     #[cfg(feature = "redis-store")]
@@ -4386,7 +5256,7 @@ mod tests {
             .as_nanos();
         let store = RedisChannelStore::connect(
             &redis_url,
-            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+            format!("pay-kit:test:roundtrip:{}:{unique}:", std::process::id()),
         )
         .await
         .unwrap();

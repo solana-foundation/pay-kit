@@ -34,7 +34,14 @@ export const SUITES: readonly Suite[] = ["vector", "protocol", "flow", "cross", 
 // Vector intents an SDK may claim (ConformanceVector["intent"]). A claim
 // outside this list is a typo that would otherwise silently leave every
 // real vector of the intended intent unclaimed.
-export const VECTOR_INTENTS: readonly string[] = ["charge", "x402-exact", "session"];
+export const VECTOR_INTENTS: readonly string[] = [
+  "charge",
+  "x402-exact",
+  "session",
+  "x402-upto",
+  "x402-batch-settlement",
+  "subscription",
+];
 
 // Interop roles an SDK may claim, `<protocol>:<scheme>:<role>`, the twin of
 // `crate::interop::claims::Claim::all()` in rust/crates/conformance. The

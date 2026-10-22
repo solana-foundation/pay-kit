@@ -9,6 +9,7 @@ use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;
+use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\ComputeBudgetProgram;
@@ -33,6 +34,85 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertTrue($result->ok, $result->reason);
         self::assertSame('', $result->reference);
+    }
+
+    /**
+     * RULINGS SIG1: a client signature that does not verify over the message
+     * is refused before the server claims, co-signs or sends. The sponsored
+     * fee payer's slot (0) is still empty; the client's slot (1) is forged.
+     * The untampered transaction verifies (positive control above).
+     */
+    public function testRejectsForgedClientSignatureWhenFeeSponsored(): void
+    {
+        $fixture = $this->fixture();
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        self::assertTrue($this->verify($this->request($fixture), $transaction)->ok);
+
+        $result = $this->verify($this->request($fixture), self::forgeSignature($transaction, slot: 1));
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('signature verification failed (slot 1 does not verify)', $result->reason);
+    }
+
+    /** RULINGS SIG1: the client-pays fee payer's own signature (slot 0) must verify. */
+    public function testRejectsForgedClientSignatureWhenClientPaysFees(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->clientPaysRequest($fixture);
+        $transaction = $this->clientPaysTransactionPayload($fixture, ataPayer: $fixture['payer']);
+        self::assertTrue($this->verify($request, $transaction)->ok);
+
+        $result = $this->verify($request, self::forgeSignature($transaction, slot: 0));
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('signature verification failed (slot 0 does not verify)', $result->reason);
+    }
+
+    /** RULINGS SIG1: the client may leave only the sponsor's slot empty, never its own. */
+    public function testRejectsUnsignedClientSlotWhenClientPaysFees(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->clientPaysRequest($fixture);
+        $transaction = $this->clientPaysTransactionPayload($fixture, ataPayer: $fixture['payer']);
+
+        $wire = base64_decode($transaction, true);
+        self::assertIsString($wire);
+        $wire = substr_replace($wire, str_repeat("\x00", 64), 1, 64);
+        $result = $this->verify($request, base64_encode($wire));
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('signature verification failed (slot 0 is unsigned)', $result->reason);
+    }
+
+    /**
+     * RULINGS SIG1: a signature list shorter than header.num_required_signatures
+     * is refused, not padded with an empty slot.
+     */
+    public function testRejectsSignatureListShorterThanRequired(): void
+    {
+        $fixture = $this->fixture();
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $wire = base64_decode($transaction, true);
+        self::assertIsString($wire);
+        self::assertSame(2, ord($wire[0]));
+        // Drop the client's signature (slot 1) and the count to 1.
+        $truncated = chr(1) . substr($wire, 1, 64) . substr($wire, 1 + 128);
+
+        $result = $this->verify($this->request($fixture), base64_encode($truncated));
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('expected 2 signatures, got 1', $result->reason);
+    }
+
+    /** Flip one byte of the signature in `$slot` of a base64 wire transaction. */
+    private static function forgeSignature(string $transactionBase64, int $slot): string
+    {
+        $wire = base64_decode($transactionBase64, true);
+        self::assertIsString($wire);
+        $offset = 1 + 64 * $slot;
+        $wire[$offset] = chr(ord($wire[$offset]) ^ 0x01);
+
+        return base64_encode($wire);
     }
 
     public function testRejectsSplTransactionWithWrongAmount(): void
@@ -201,6 +281,31 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('fee payer cannot fund the SOL payment transfer', $result->reason);
+    }
+
+    // A sponsor pays a signature fee per required signer, so the legs of a
+    // split must all be funded by one authority, not one signer per leg.
+    public function testRejectsSplitLegsFundedByDifferentAuthorities(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $otherPayer = PublicKey::fromBytes(str_repeat("\x0b", 32));
+        $result = $this->verify($request, $this->solTransactionPayload($fixture, splitSource: $otherPayer));
+
+        self::assertFalse($result->ok);
+        self::assertSame('payment transfers must share one funding authority', $result->reason);
+    }
+
+    // A signer that funds no leg authorizes nothing and only adds a fee.
+    public function testRejectsSignerThatFundsNoPaymentLeg(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $stranger = PublicKey::fromBytes(str_repeat("\x0b", 32));
+        $result = $this->verify($request, $this->solTransactionPayload($fixture, memoSigners: [$stranger]));
+
+        self::assertFalse($result->ok);
+        self::assertSame('unexpected signer in payment transaction', $result->reason);
     }
 
     public function testRejectsTooManySplits(): void
@@ -803,12 +908,19 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
     /**
      * @param array<string, PublicKey> $fixture
      */
-    private function solTransactionPayload(array $fixture, ?PublicKey $primarySource = null): string
-    {
+    /**
+     * @param array<int, PublicKey> $memoSigners
+     */
+    private function solTransactionPayload(
+        array $fixture,
+        ?PublicKey $primarySource = null,
+        ?PublicKey $splitSource = null,
+        array $memoSigners = [],
+    ): string {
         $instructions = [];
         $instructions[] = SystemProgram::transfer($primarySource ?? $fixture['payer'], $fixture['recipient'], 750);
-        $instructions[] = SystemProgram::transfer($fixture['payer'], $fixture['splitRecipient'], 250);
-        $instructions[] = MemoProgram::create('order-123');
+        $instructions[] = SystemProgram::transfer($splitSource ?? $fixture['payer'], $fixture['splitRecipient'], 250);
+        $instructions[] = MemoProgram::create('order-123', $memoSigners);
         $instructions[] = MemoProgram::create('split memo');
         return $this->v0TransactionBase64($fixture['feePayer'], $instructions);
     }
@@ -830,6 +942,8 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
             str_repeat("\x09", 32),
         );
 
+        $transaction->partialSign(self::payerKeypair());
+
         $result = $this->verify($this->solRequest($fixture), base64_encode($transaction->serialize(verifySignatures: false)));
 
         self::assertTrue($result->ok, (string) $result->reason);
@@ -844,8 +958,33 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
     private function v0TransactionBase64(PublicKey $payer, array $instructions): string
     {
         $transaction = new VersionedTransaction(MessageV0::compile($payer, $instructions, str_repeat("\x09", 32)));
+        if (self::isRequiredSigner($transaction->message->staticAccountKeys, $transaction->message->numRequiredSignatures)) {
+            $transaction->partialSign(self::payerKeypair());
+        }
 
         return base64_encode($transaction->serialize(verifySignatures: false));
+    }
+
+    /**
+     * The client's key: it signs every fixture it is a required signer of.
+     * The sponsoring fee payer never signs here, as before the server
+     * co-signs.
+     */
+    private static function payerKeypair(): Keypair
+    {
+        return Keypair::fromSeed(str_repeat("\x03", 32));
+    }
+
+    /** @param array<int, PublicKey> $keys */
+    private static function isRequiredSigner(array $keys, int $numRequiredSignatures): bool
+    {
+        foreach (array_slice($keys, 0, $numRequiredSignatures) as $key) {
+            if ($key->equals(self::payerKeypair()->getPublicKey())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function verify(ChargeRequest $request, string $transaction): \PayKit\Protocols\Mpp\Server\VerificationResult
@@ -878,7 +1017,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
     {
         return [
             'feePayer' => PublicKey::fromBytes(str_repeat("\x02", 32)),
-            'payer' => PublicKey::fromBytes(str_repeat("\x03", 32)),
+            'payer' => self::payerKeypair()->getPublicKey(),
             'recipient' => PublicKey::fromBytes(str_repeat("\x04", 32)),
             'splitRecipient' => PublicKey::fromBytes(str_repeat("\x05", 32)),
             'mint' => new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),

@@ -101,6 +101,23 @@ pub fn transaction(tx: &VersionedTransaction) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "transaction version {version}");
     let _ = writeln!(out, "  recent blockhash {}", tx.message.recent_blockhash());
+    if let Some(config) = crate::tx::v1_config(&tx.message) {
+        let show = |v: Option<String>| v.unwrap_or_else(|| "absent".into());
+        let _ = writeln!(
+            out,
+            "  config computeUnitLimit {} priorityFee {} loadedAccountsDataSizeLimit {}",
+            show(config.compute_unit_limit.map(|v| v.to_string())),
+            show(config.priority_fee.map(|v| format!("{v} lamports"))),
+            show(
+                config
+                    .loaded_accounts_data_size_limit
+                    .map(|v| v.to_string())
+            ),
+        );
+    }
+    if let Some(lookups) = tx.message.address_table_lookups().filter(|l| !l.is_empty()) {
+        let _ = writeln!(out, "  address lookup tables {}", lookups.len());
+    }
     let _ = writeln!(out, "  signatures");
     for (i, sig) in tx.signatures.iter().enumerate() {
         let state = if *sig == Default::default() {

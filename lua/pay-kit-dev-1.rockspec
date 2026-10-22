@@ -44,6 +44,7 @@ build = {
     ['pay_kit.signer.demo']              = 'pay_kit/signer/demo.lua',
     ['pay_kit.signer.local']             = 'pay_kit/signer/local.lua',
     ['pay_kit.store']                    = 'pay_kit/store.lua',
+    ['pay_kit.consumed_signatures']      = 'pay_kit/consumed_signatures.lua',
 
     -- Solana primitives
     ['pay_kit.solana.ata']               = 'pay_kit/solana/ata.lua',
@@ -55,6 +56,7 @@ build = {
     ['pay_kit.solana.rpc']               = 'pay_kit/solana/rpc.lua',
     ['pay_kit.solana.rpc_transport']     = 'pay_kit/solana/rpc_transport.lua',
     ['pay_kit.solana.rpc_transport_resty'] = 'pay_kit/solana/rpc_transport_resty.lua',
+    ['pay_kit.solana.signatures']        = 'pay_kit/solana/signatures.lua',
     ['pay_kit.solana.transaction']       = 'pay_kit/solana/transaction.lua',
     ['pay_kit.solana.tx_cosign']         = 'pay_kit/solana/tx_cosign.lua',
     ['pay_kit.solana.verifier']          = 'pay_kit/solana/verifier.lua',

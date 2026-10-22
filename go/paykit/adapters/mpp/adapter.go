@@ -138,7 +138,11 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	}
 	receipt, err := srv.VerifyCredentialWithExpected(context.Background(), credential, expected)
 	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
+		code := "invalid_proof"
+		if server.IsSettlementInProgress(err) {
+			code = paykit.CodeSettlementInProgress
+		}
+		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
 	receiptHeader, err := core.FormatReceipt(receipt)
 	headers := map[string]string{}

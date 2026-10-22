@@ -231,6 +231,46 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
     assert sigs[client_index] != sigs[client_index].default()
 
 
+@pytest.mark.parametrize("ata_split", [False, True])
+async def test_build_charge_transaction_refuses_the_signer_as_sponsor_fee_payer(ata_split: bool):
+    # A challenge naming the signer as feePayerKey would have the signer fund
+    # fees (and any split ATA rent) while looking sponsored.
+    signer = MemorySigner(Keypair())
+    mint = resolve("USDC", "devnet")
+    assert mint is not None
+    splits = [Split(recipient=str(Keypair().pubkey()), amount="100", ata_creation_required=True)] if ata_split else []
+
+    def details(fee_payer_key: str) -> MethodDetails:
+        return MethodDetails(
+            network="devnet",
+            decimals=6,
+            token_program=token_program_for("USDC", "devnet"),
+            recent_blockhash=BLOCKHASH,
+            fee_payer=True,
+            fee_payer_key=fee_payer_key,
+            splits=splits,
+        )
+
+    with pytest.raises(ValueError, match="feePayerKey names the signer"):
+        await build_charge_transaction(
+            signer=signer,
+            rpc_client=None,
+            amount="1000",
+            currency=mint,
+            recipient=str(Keypair().pubkey()),
+            method_details=details(str(signer.pubkey)),
+        )
+    payload = await build_charge_transaction(
+        signer=signer,
+        rpc_client=None,
+        amount="1000",
+        currency=mint,
+        recipient=str(Keypair().pubkey()),
+        method_details=details(str(Keypair().pubkey())),
+    )
+    assert payload.transaction
+
+
 async def test_build_charge_transaction_emits_v0_message():
     # Clients never build legacy messages: the wire must carry the v0 version
     # prefix (0x80) as the first message byte after the signatures.

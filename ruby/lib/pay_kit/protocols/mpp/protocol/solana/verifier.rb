@@ -58,9 +58,26 @@ module PayKit::Protocols::Mpp
         def verify_transaction_payload(transaction_base64, request)
           transaction = ::PayCore::Solana::Transaction.from_base64(transaction_base64)
           verify_transaction(transaction, request)
+          verify_client_signatures(transaction, request)
           VerificationResult.success(reference: "")
         rescue ArgumentError, Error => error
           VerificationResult.failure(error.message)
+        end
+
+        # Refuse a transaction whose signature list is not exactly one slot
+        # per required signer, or whose client signatures do not verify over
+        # its message (RULINGS SIG1). A signature that does not verify names
+        # some other transaction, so it must be refused before anything is
+        # claimed, co-signed or sent. The server's own fee-payer slot is the
+        # only one allowed to be empty: it signs it after this check.
+        def verify_client_signatures(transaction, request)
+          raise VerificationError, "Transaction signature slots do not match the required signers" unless transaction.signature_slots_match?
+
+          details = request.method_details || {}
+          server_signer = (details["feePayer"] == true) ? details["feePayerKey"] : nil
+          return if transaction.signatures_verify?(server_signer: server_signer)
+
+          raise VerificationError, "Transaction signature verification failed"
         end
 
         # Fail unless `signature` is a Solana base58 signature.
@@ -107,6 +124,7 @@ module PayKit::Protocols::Mpp
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: mint, expected_token_program: token_program, fee_payer: fee_payer, splits: splits)
           end
+          verify_required_signers(transaction, matched)
         end
 
         private
@@ -188,6 +206,39 @@ module PayKit::Protocols::Mpp
           return if found
 
           raise VerificationError, "No matching SPL transferChecked of #{amount} to #{recipient}"
+        end
+
+        # Every required signer must be the fee payer or the one authority
+        # that funds every matched payment transfer. Any other signer
+        # authorizes nothing and only adds a signature fee, which a sponsor
+        # would pay; letting each leg of a split name its own authority would
+        # let a payer multiply those fees. Mirrors the Rust spine
+        # `verify_required_signers`.
+        def verify_required_signers(transaction, matched)
+          funding_authority = nil
+          transaction.message.instructions.each_with_index do |ix, index|
+            next unless matched[index]
+
+            authority_position =
+              case program_id(transaction, ix)
+              when ::PayCore::Solana::Mints::SYSTEM_PROGRAM then 0
+              when ::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM then 3
+              end
+            next if authority_position.nil?
+
+            authority = account_key(transaction, ix.accounts[authority_position], "authority")
+            if funding_authority && funding_authority != authority
+              raise VerificationError, "Payment transfers must share one funding authority"
+            end
+            funding_authority = authority
+          end
+
+          account_keys = transaction.message.account_keys
+          allowed = [account_keys.first, funding_authority].compact
+          signers = account_keys.first(transaction.message.header.fetch(:required_signatures))
+          return if signers.all? { |signer| allowed.include?(signer) }
+
+          raise VerificationError, "Unexpected signer in payment transaction"
         end
 
         def verify_memos(transaction, request, splits, matched)

@@ -321,16 +321,18 @@ final class ChargeServer
         if (!$challenge->verify($this->secretKey)) {
             return VerificationResult::failure('challenge verification failed');
         }
-        if ($challenge->isExpired($now)) {
-            return VerificationResult::failure('challenge expired');
-        }
+        // An expired challenge still runs every check below, so a caller can
+        // reconcile a charge it already left pending; any failure reports the
+        // expiry, and it never reaches the verifier.
+        $expired = $challenge->isExpired($now);
+        $fail = static fn (string $reason): VerificationResult => VerificationResult::failure($expired ? 'challenge expired' : $reason);
 
         try {
             $request = ChargeRequest::fromArray($challenge->decodeRequest());
         } catch (InvalidArgumentException $error) {
-            return VerificationResult::failure($error->getMessage());
+            return $fail($error->getMessage());
         } catch (Throwable) {
-            return VerificationResult::failure('invalid charge request');
+            return $fail('invalid charge request');
         }
 
         // Tier-2 pinned-field backstop. Runs unconditionally so even callers
@@ -340,14 +342,18 @@ final class ChargeServer
         // which always compares the credential currency/recipient against the
         // pinned server configuration.
         if ($this->pinnedCurrency !== null && $request->currency !== $this->pinnedCurrency) {
-            return VerificationResult::failure('charge request mismatch');
+            return $fail('charge request mismatch');
         }
         if ($this->pinnedRecipient !== null && $request->recipient !== $this->pinnedRecipient) {
-            return VerificationResult::failure('charge request mismatch');
+            return $fail('charge request mismatch');
         }
 
         if ($expectedRequest !== null && !$this->matchesExpectedRequest($request, $expectedRequest)) {
-            return VerificationResult::failure('charge request mismatch');
+            return $fail('charge request mismatch');
+        }
+
+        if ($expired) {
+            return VerificationResult::expiredFor($challenge, $credential);
         }
 
         try {

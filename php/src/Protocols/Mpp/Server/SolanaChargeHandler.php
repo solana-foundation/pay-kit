@@ -4,18 +4,24 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp\Server;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\PayCore\Solana\SignatureConfirmation;
 use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use PayKit\Store\ConsumedSignatures;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
+use SolanaPhpSdk\Exception\RpcException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
+use SolanaPhpSdk\Util\Base58;
 
 /**
  * High-level Solana charge server: verify → optional co-sign → broadcast →
@@ -32,11 +38,21 @@ use SolanaPhpSdk\Rpc\RpcClient;
  */
 final class SolanaChargeHandler
 {
-    private const REPLAY_KEY_PREFIX = 'solana-charge:consumed:';
-
     private readonly PaymentVerifier $verifier;
     private readonly TransactionPayloadVerifier $transactionVerifier;
+    private readonly ConsumedSignatures $consumedSignatures;
     private readonly Store $replayStore;
+
+    /**
+     * Prefix of the record binding a claimed, possibly broadcast signature to
+     * the challenge that broadcast it, so that challenge alone may reconcile
+     * it after expiry.
+     */
+    // Namespaced to this SDK: another SDK's pending record under a look-alike
+    // key must never be reconciled (and authorized) here, nor ours there.
+    private const PENDING_BINDING_PREFIX = 'pay-kit:php:charge-pending:';
+    /** A claimed signature refused for good (preflight, or already processed elsewhere). */
+    private const REFUSED_PREFIX = 'pay-kit:php:charge-refused:';
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -92,6 +108,7 @@ final class SolanaChargeHandler
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode));
         $this->replayStore = $replayStore ?? new MemoryStore();
+        $this->consumedSignatures = new ConsumedSignatures($this->replayStore);
     }
 
     /**
@@ -108,10 +125,12 @@ final class SolanaChargeHandler
      *
      * Returns 402 ({@see PaymentRequiredResponse}) when the credential is
      * missing, malformed, fails protocol checks, or fails on-chain. Returns
-     * 200 ({@see ChargeSettlement}) only after a transaction has been
+     * 409 ({@see SettlementPending}) when the payment may have been broadcast
+     * and is not resolved yet; the client retries the same credential.
+     * Returns 200 ({@see ChargeSettlement}) only after a transaction has been
      * broadcast and confirmed.
      */
-    public function handle(?string $authorization, ChargeRequest $request): PaymentRequiredResponse|ChargeSettlement
+    public function handle(?string $authorization, ChargeRequest $request, ?DateTimeImmutable $now = null): PaymentRequiredResponse|ChargeSettlement|SettlementPending
     {
         if ($authorization === null || $authorization === '') {
             return $this->challenges->paymentRequiredResponse($request);
@@ -120,22 +139,38 @@ final class SolanaChargeHandler
         $result = $this->challenges->verifyAuthorizationHeader(
             $authorization,
             $this->verifier,
+            $now,
             expectedRequest: $request,
         );
-        if (!$result->ok) {
-            return $this->challenges->paymentRequiredResponse($request, $result->reason);
-        }
-
         $credential = $result->credential;
         $challenge = $result->challenge;
-        if ($credential === null || $challenge === null) {
+        if (!$result->ok) {
+            // An expired challenge never starts a payment, but a retry after
+            // a lost broadcast response must still reconcile the charge this
+            // same challenge left pending: the payment may have landed.
+            if (!$result->expired || $credential === null || $challenge === null) {
+                return $this->challenges->paymentRequiredResponse($request, $result->reason);
+            }
+            try {
+                $signature = $this->reconcileExpired($credential, $challenge->id);
+            } catch (SettlementInProgressException $pending) {
+                return SettlementPending::withDetail($pending->getMessage());
+            } catch (Throwable $error) {
+                return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+            }
+            if ($signature === null) {
+                return $this->challenges->paymentRequiredResponse($request, $result->reason);
+            }
+        } elseif ($credential === null || $challenge === null) {
             return $this->challenges->paymentRequiredResponse($request, 'verified result is missing credential or challenge');
-        }
-
-        try {
-            $signature = $this->settleCredentialPayload($credential, $request);
-        } catch (Throwable $error) {
-            return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+        } else {
+            try {
+                $signature = $this->settleCredentialPayload($credential, $request, $challenge->id);
+            } catch (SettlementInProgressException $pending) {
+                return SettlementPending::withDetail($pending->getMessage());
+            } catch (Throwable $error) {
+                return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+            }
         }
 
         $receipt = $this->challenges->createReceiptHeaderForReference(
@@ -170,7 +205,7 @@ final class SolanaChargeHandler
      * never touches the network. Mirrors Rust `charge.rs::settle()`,
      * Ruby `verifier.rb`, Lua `verify_signature`, and Python `_settle_push`.
      */
-    private function settleCredentialPayload(Credential $credential, ChargeRequest $request): string
+    private function settleCredentialPayload(Credential $credential, ChargeRequest $request, string $challengeId): string
     {
         $methodDetails = is_array($request->methodDetails) ? $request->methodDetails : [];
 
@@ -179,7 +214,7 @@ final class SolanaChargeHandler
             if ($this->isSurfpoolMismatch($transaction)) {
                 throw new RuntimeException("Signed with a Surfpool localnet blockhash but the server expects {$this->network}.");
             }
-            return $this->settle($transaction);
+            return $this->settle($transaction, $challengeId);
         }
 
         $signature = $credential->payload['signature'] ?? null;
@@ -258,13 +293,84 @@ final class SolanaChargeHandler
      * in the replay store, then wait for confirmation. Returns the on-chain
      * signature.
      *
-     * `consumeSignature` is called between broadcast and confirmation
-     * polling on purpose. If the server crashes or the polling times out
-     * after `sendRawTransaction` accepted the transaction, the signature
-     * has already landed and must not be re-settled by a retry of the same
-     * credential. See PR #85 Greptile P1 and audit gap G05.
+     * The transaction is settled under its locally derived signature, never
+     * one an RPC node reports. Only a preflight rejection proves the node did
+     * not forward it; any other send error (a lost response, a 5xx from a
+     * proxy that already forwarded it) leaves the outcome unknown, so the
+     * signature is claimed and the charge stays pending
+     * ({@see SettlementInProgressException}) instead of failing: a fresh
+     * challenge would let the client pay a replacement while the original
+     * can still land. A retry of the same credential reconciles the claimed
+     * signature against the chain.
      */
-    private function settle(string $transactionBase64): string
+    private function settle(string $transactionBase64, string $challengeId): string
+    {
+        [$signed, $signature] = $this->signedTransaction($transactionBase64);
+
+        // Claim the signature and bind it to this challenge before anything
+        // is sent, so a payment that may land always has the record its retry
+        // reconciles. Bound only after an ambiguous send, a store failure
+        // would leave a claim with nothing to reconcile, and every retry would
+        // refuse a payment that may have landed. A failure here sends nothing.
+        if (!$this->consumedSignatures->claim($signature)) {
+            return $this->reconcileOwn($signature, $challengeId);
+        }
+        $this->bindPending($signature, $challengeId);
+
+        try {
+            $reported = $this->rpc->sendRawTransaction($signed, [
+                'encoding' => 'base64',
+                'skipPreflight' => false,
+                'preflightCommitment' => 'confirmed',
+            ]);
+        } catch (Throwable $error) {
+            if (self::isAlreadyProcessed($error)) {
+                // It landed, yet this store held no claim on it: it was
+                // settled somewhere this store cannot see. A replay.
+                $this->markRefused($signature);
+                throw new RuntimeException("Transaction signature already consumed: $signature", 0, $error);
+            }
+            if (self::isPreflightRejection($error)) {
+                // Never forwarded, so it cannot land: the charge failed. The
+                // store cannot release the claim, so the refusal is recorded.
+                $this->markRefused($signature);
+                throw new RuntimeException('Transaction rejected by preflight: ' . $error->getMessage(), 0, $error);
+            }
+            throw new SettlementInProgressException(
+                "Broadcast outcome unknown for transaction $signature; retry the same credential: " . $error->getMessage(),
+                0,
+                $error,
+            );
+        }
+
+        if ($reported !== $signature) {
+            throw new SettlementInProgressException(
+                "RPC reported signature $reported for transaction $signature; retry the same credential",
+            );
+        }
+        $this->awaitConfirmation($signature);
+        return $this->authorize($signature);
+    }
+
+    /** Record that `$signature` was refused for good, so no retry reconciles it. */
+    private function markRefused(string $signature): void
+    {
+        $this->replayStore->putIfAbsent(self::REFUSED_PREFIX . $signature, true);
+    }
+
+    /** Whether a send error says the node already processed this transaction. */
+    private static function isAlreadyProcessed(Throwable $error): bool
+    {
+        return preg_match('/already (been )?processed/i', $error->getMessage()) === 1;
+    }
+
+    /**
+     * The transaction as this server broadcasts it (co-signed when it pays
+     * the fee) and its first signature, which identifies it on chain.
+     *
+     * @return array{string, string}
+     */
+    private function signedTransaction(string $transactionBase64): array
     {
         $wire = base64_decode($transactionBase64, true);
         if ($wire === false || $wire === '') {
@@ -275,47 +381,144 @@ final class SolanaChargeHandler
         if ($this->feePayer !== null) {
             $tx->partialSign($this->feePayer);
         }
+        // Every signature must verify before the signature is claimed or the
+        // transaction sent. A forged one would otherwise name the charge: the
+        // node refuses it without a preflight result, the charge is kept as
+        // possibly sent, and a retry would reconcile on the status of
+        // whatever landed transaction owns that signature.
+        $tx->assertSignaturesVerify();
         $signed = $tx->serialize();
+        return [$signed, self::firstSignature($signed)];
+    }
 
-        $signature = $this->rpc->sendRawTransaction($signed, [
-            'encoding' => 'base64',
-            'skipPreflight' => false,
-            'preflightCommitment' => 'confirmed',
-        ]);
+    /** Record that `$challengeId` claimed (and may have broadcast) `$signature`. */
+    private function bindPending(string $signature, string $challengeId): void
+    {
+        $this->replayStore->putIfAbsent(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId, true);
+    }
 
-        $this->consumeSignature($signature);
-        $this->awaitConfirmation($signature);
+    /**
+     * Reconcile the charge an expired credential's challenge left pending,
+     * from the chain only (never broadcast). Null when that challenge has no
+     * claimed transaction of its own, so the credential is refused as expired.
+     */
+    private function reconcileExpired(Credential $credential, string $challengeId): ?string
+    {
+        $transaction = $credential->payload['transaction'] ?? null;
+        if (!is_string($transaction) || $transaction === '') {
+            return null;
+        }
+        try {
+            [, $signature] = $this->signedTransaction($transaction);
+        } catch (Throwable) {
+            return null;
+        }
+        if (!$this->replayStore->has(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId)) {
+            return null;
+        }
+        return $this->reconcile($signature);
+    }
+
+    /**
+     * Reconcile a signature another presentation already claimed, only when
+     * it is this challenge's own pending charge. Any other claim (a payment
+     * this or another SDK already settled on the shared ledger, or another
+     * challenge's) is a replay: reconciling it would authorize a payment
+     * that already authorized a response.
+     */
+    private function reconcileOwn(string $signature, string $challengeId): string
+    {
+        if (!$this->replayStore->has(self::PENDING_BINDING_PREFIX . $signature . ':' . $challengeId)) {
+            throw new RuntimeException("Transaction signature already consumed: $signature");
+        }
+        return $this->reconcile($signature);
+    }
+
+    /**
+     * Resolve a claimed signature from its on-chain status. Only an explicit
+     * outcome resolves it: an execution error fails the charge, a confirmed
+     * transaction authorizes one response, and anything else leaves the
+     * charge pending.
+     */
+    private function reconcile(string $signature): string
+    {
+        if ($this->replayStore->has(self::REFUSED_PREFIX . $signature)) {
+            throw new RuntimeException("Transaction $signature was refused and cannot settle");
+        }
+        if (SignatureConfirmation::isConfirmed($this->rpc, $signature, searchTransactionHistory: true)) {
+            return $this->authorize($signature);
+        }
+        throw new SettlementInProgressException(
+            "Transaction $signature is not confirmed yet; retry the same credential",
+        );
+    }
+
+    /**
+     * Record that `$signature` authorized this response. At most one request,
+     * through any protocol, gets past this for one payment.
+     */
+    private function authorize(string $signature): string
+    {
+        if (!$this->consumedSignatures->authorize($signature)) {
+            throw new RuntimeException("Transaction signature already consumed: $signature");
+        }
         return $signature;
     }
 
     /**
-     * Reserve the signature in the replay store. Throws on replay attempts.
+     * Claim and authorize the signature in the ledger shared with x402, so a
+     * payment settled through either protocol authorizes one request. Throws
+     * on replay attempts.
      */
     private function consumeSignature(string $signature): void
     {
-        $key = self::REPLAY_KEY_PREFIX . $signature;
-        if (!$this->replayStore->putIfAbsent($key, true)) {
+        if (!$this->consumedSignatures->claim($signature)) {
             throw new RuntimeException("Transaction signature already consumed: $signature");
         }
+        $this->authorize($signature);
+    }
+
+    /** The base58 first signature of a serialized transaction: its id. */
+    private static function firstSignature(string $wire): string
+    {
+        $count = 0;
+        $offset = 0;
+        for ($shift = 0; $offset < 3; $shift += 7) {
+            if (!isset($wire[$offset])) {
+                throw new InvalidArgumentException('invalid transaction payload');
+            }
+            $byte = ord($wire[$offset]);
+            $offset += 1;
+            $count |= ($byte & 0x7f) << $shift;
+            if (($byte & 0x80) === 0) {
+                break;
+            }
+        }
+        if ($count < 1 || strlen($wire) < $offset + 64) {
+            throw new InvalidArgumentException('transaction carries no signature');
+        }
+        return Base58::encode(substr($wire, $offset, 64));
+    }
+
+    /**
+     * Whether a send error is a preflight rejection, the one send failure
+     * that proves the node did not forward the transaction.
+     */
+    private static function isPreflightRejection(Throwable $error): bool
+    {
+        if (!$error instanceof RpcException || $error->getRpcErrorCode() !== -32002) {
+            return false;
+        }
+        $data = $error->getRpcErrorData();
+        return is_array($data) && array_key_exists('err', $data);
     }
 
     private function awaitConfirmation(string $signature): void
     {
-        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
-            $statuses = $this->rpc->getSignatureStatuses([$signature]);
-            $status = $statuses[0] ?? null;
-            if (is_array($status)) {
-                if (($status['err'] ?? null) !== null) {
-                    throw new RuntimeException("Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR));
-                }
-                $confirmationStatus = $status['confirmationStatus'] ?? null;
-                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
-                    return;
-                }
-            }
-            usleep($this->confirmationDelayMicros);
-        }
-        throw new RuntimeException("Timed out waiting for transaction $signature");
+        // Only a reported execution error fails the charge; an unreadable
+        // or unconfirmed status keeps it pending so the retry reconciles it
+        // instead of a fresh challenge releasing the client to pay again.
+        SignatureConfirmation::await($this->rpc, $signature, $this->confirmationAttempts, $this->confirmationDelayMicros);
     }
 
     /**

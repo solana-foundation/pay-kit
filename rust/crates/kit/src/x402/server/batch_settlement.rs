@@ -45,8 +45,8 @@ use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
 use crate::core::store::{
     AuthorizationRequest, BatchReservation, ChannelBinding, ChannelState, ChannelStore,
-    MemoryChannelStore, PendingSetup, ReservationToken, CHANNEL_STATE_SCHEMA_VERSION,
-    CHARGE_RESERVATION_LEASE,
+    MemoryChannelStore, ObservationOutcome, ObservedLifecycle, OnchainObservation, PendingSetup,
+    ReservationToken, CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
@@ -251,6 +251,79 @@ fn rpc_lookup_channel(
         .transpose()
 }
 
+/// The lifecycle a confirmed channel read shows, as the store fences it.
+fn observed_lifecycle(channel: &Channel, now: u64) -> ObservedLifecycle {
+    let started_at = (channel.closure_started_at != 0 || channel.status != CHANNEL_STATUS_OPEN)
+        .then(|| {
+            u64::try_from(channel.closure_started_at)
+                .unwrap_or(now)
+                .max(1)
+        });
+    if channel.status != CHANNEL_STATUS_OPEN && channel.status != CHANNEL_STATUS_CLOSING {
+        ObservedLifecycle::Terminal { started_at }
+    } else if let Some(started_at) = started_at {
+        ObservedLifecycle::Closing { started_at }
+    } else {
+        ObservedLifecycle::Open
+    }
+}
+
+/// A channel account read together with the slot of the bank that served it.
+struct ChannelObservation {
+    channel: Option<Channel>,
+    slot: u64,
+}
+
+/// [`rpc_lookup_channel`] fenced on chain progress: the node must serve the
+/// read from a bank at or after `min_context_slot`, so a lagging node cannot
+/// answer with a channel state older than one this record already accepted.
+fn rpc_observe_channel(
+    rpc: &RpcClient,
+    channel_id: &Pubkey,
+    program_id: &Pubkey,
+    min_context_slot: u64,
+) -> Result<ChannelObservation, Error> {
+    let mut config = serde_json::json!({
+        "commitment": rpc.commitment().commitment.to_string(),
+        "encoding": "base64",
+    });
+    if min_context_slot > 0 {
+        config["minContextSlot"] = min_context_slot.into();
+    }
+    let response: solana_rpc_client_api::response::Response<
+        Option<solana_account_decoder_client_types::UiAccount>,
+    > = rpc
+        .send(
+            solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+            serde_json::json!([pc::pubkey_string(channel_id), config]),
+        )
+        .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
+    if response.context.slot < min_context_slot {
+        return Err(Error::Rpc(format!(
+            "channel account read at slot {} is behind the recorded slot {min_context_slot}",
+            response.context.slot
+        )));
+    }
+    let channel = response
+        .value
+        .map(|account| {
+            let account = account
+                .to_account()
+                .ok_or_else(|| Error::Other("channel account data could not be decoded".into()))?;
+            decode_channel_account(
+                channel_id,
+                &pc::from_address(&account.owner),
+                &account.data,
+                program_id,
+            )
+        })
+        .transpose()?;
+    Ok(ChannelObservation {
+        channel,
+        slot: response.context.slot,
+    })
+}
+
 /// Decode a channel account owned by `program_id`. An account at the channel
 /// address owned by another program is an error, never an absence: it is not
 /// this deployment's channel, and its record must not be dropped for it.
@@ -325,6 +398,10 @@ fn broadcast_and_confirm_deposit(
             }
         }
     }
+}
+
+fn may_drop_absent_record(state: &ChannelState, binding: &ChannelBinding) -> bool {
+    !state.has_in_flight_authorization() && state.check_binding(binding).is_ok()
 }
 
 /// Server configuration for the SVM `batch-settlement` scheme.
@@ -655,6 +732,13 @@ impl X402BatchSettlement {
         crate::core::tx::highest(&self.accepted_versions)
     }
 
+    /// Route this handler's chain reads through `rpc` (a mock in tests).
+    #[cfg(test)]
+    pub(crate) fn with_rpc_client(mut self, rpc: RpcClient) -> Self {
+        self.rpc = Arc::new(rpc);
+        self
+    }
+
     /// Use a host-owned transaction pipeline for channel redemption.
     ///
     /// Sharing one pipeline across gate instances keeps submission pacing and
@@ -983,7 +1067,8 @@ impl X402BatchSettlement {
                 "authorization payloads belong to server-signed channels",
             )),
             BatchPayload::Refund { transaction, .. } => {
-                self.verify_refund(transaction, &config, &requirements, &channel_id)?;
+                self.verify_refund(transaction, &config, &requirements, &channel_id)
+                    .await?;
                 // A refund only needs the current watermark; read it out without
                 // cloning the record.
                 let max_claimable = Arc::new(Mutex::new(0u64));
@@ -1112,6 +1197,24 @@ impl X402BatchSettlement {
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
                 let max_claimable = check_voucher_batched(voucher, &config, &channel_id).await?;
+                // A deposit may create a record only for a channel the chain
+                // does not hold yet. A channel already onchain with no record
+                // here lost it (a restart over an in-memory store, a fresh
+                // replica): the vouchers it accepted lived only in that record,
+                // so seeding a zero watermark would serve them again.
+                let onchain_without_record = match &stored {
+                    Some(_) => None,
+                    None => Some(self.lookup_channel(&channel_id).await?.is_some()),
+                };
+                if onchain_without_record == Some(true) {
+                    return Err(batch_err(
+                        codes::INVALID_CHANNEL_STATE,
+                        format!(
+                            "channel {channel_b58} is open onchain but has no record in this \
+                             store; its accepted vouchers are unknown, so open a new channel"
+                        ),
+                    ));
+                }
                 let deposit_amount = deposit.amount()?;
                 let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
                 if let Some(state) = &stored {
@@ -1172,7 +1275,10 @@ impl X402BatchSettlement {
                     .is_some_and(|setup| {
                         Some(setup.payer_signature.as_str()) == carried_signature.as_deref()
                     })
-                    || self.lookup_channel(&channel_id)?.is_some();
+                    || match onchain_without_record {
+                        Some(landed) => landed,
+                        None => self.lookup_channel(&channel_id).await?.is_some(),
+                    };
                 let recent_slot = (matches!(form, SetupForm::Open) && !retrying)
                     .then(|| {
                         crate::core::blockhash::fetch_blockhash_with_slot(
@@ -1437,7 +1543,7 @@ impl X402BatchSettlement {
         Ok(())
     }
 
-    fn verify_refund(
+    async fn verify_refund(
         &self,
         transaction: &str,
         config: &BatchChannelConfig,
@@ -1467,7 +1573,7 @@ impl X402BatchSettlement {
         self.check_settlement_accounts(&self.mint()?, &token_program, &receiver, &payer)?;
         // The channel must still be closeable. `Closing` is accepted so a
         // retried refund is idempotent rather than a second transition.
-        let channel = self.fetch_channel(channel_id)?;
+        let channel = self.fetch_channel(channel_id).await?;
         if channel.status != CHANNEL_STATUS_OPEN && channel.status != CHANNEL_STATUS_CLOSING {
             return Err(batch_err(
                 codes::INVALID_CLOSE_STATE,
@@ -1518,6 +1624,7 @@ impl X402BatchSettlement {
         // a stale one is conservative — while a channel that is closing or gone
         // is refused by the reconciliation itself.
         self.reconcile_channel(&outcome.channel_id).await?;
+        self.complete_binding(&outcome).await?;
         // The watermark already stands at this voucher, so the request it pays
         // for was charged and served. Answer it as a replay even if the cached
         // record has since aged out — never as a fresh serve.
@@ -1559,9 +1666,10 @@ impl X402BatchSettlement {
                 ),
             )),
             // A reservation that never reported an outcome may have served its
-            // request already, so this voucher can never be served again. The
-            // channel is stuck at this cumulative and the client's recovery is
-            // a new one, which is worth an operator's attention.
+            // request already, so neither it nor a voucher stepping past it can
+            // be served. The channel is stuck at this cumulative and the
+            // client's recovery is a new one, which is worth an operator's
+            // attention.
             BatchReservation::Abandoned => {
                 tracing::error!(
                     channel = %outcome.channel_id,
@@ -1571,9 +1679,9 @@ impl X402BatchSettlement {
                 Err(batch_err(
                     codes::INVALID_CHANNEL_STATE,
                     format!(
-                        "authorization {} was abandoned while it may have been served; \
-                         open a new channel",
-                        authorization.id
+                        "channel {} holds an authorization abandoned while it may have \
+                         been served; open a new channel",
+                        outcome.channel_id
                     ),
                 ))
             }
@@ -1612,6 +1720,8 @@ impl X402BatchSettlement {
         });
         let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
+        let binding = self.binding();
+        let withdraw_delay = self.config.withdraw_delay;
         let request = AuthorizationRequest {
             authorization_id: id,
             request_fingerprint: fingerprint,
@@ -1630,18 +1740,24 @@ impl X402BatchSettlement {
                 &outcome.channel_id,
                 seed,
                 request,
-                Box::new(move |state| match (&state.pending_setup, setup) {
-                    // Another setup transaction is already in flight for this
-                    // channel; one of them would be credited twice.
-                    (Some(current), Some(setup))
-                        if current.payer_signature != setup.payer_signature =>
-                    {
-                        Err(crate::core::store::StoreError::Internal(format!(
-                            "channel {} already has a pending setup transaction",
-                            state.channel_id
-                        )))
+                Box::new(move |state| {
+                    // Admission requires the complete binding of this
+                    // deployment, in the same transition as the reservation.
+                    state.check_binding_complete(&binding)?;
+                    state.check_grace_period(withdraw_delay)?;
+                    match (&state.pending_setup, setup) {
+                        // Another setup transaction is already in flight for this
+                        // channel; one of them would be credited twice.
+                        (Some(current), Some(setup))
+                            if current.payer_signature != setup.payer_signature =>
+                        {
+                            Err(crate::core::store::StoreError::Internal(format!(
+                                "channel {} already has a pending setup transaction",
+                                state.channel_id
+                            )))
+                        }
+                        (_, setup) => Ok(setup),
                     }
-                    (_, setup) => Ok(setup),
                 }),
             )
             .await
@@ -1650,6 +1766,95 @@ impl X402BatchSettlement {
                 BatchReservation::Closing => Err(closing_error(&outcome.channel_id)),
                 reservation => Ok(reservation),
             })
+    }
+
+    /// Complete the deployment binding of a record that predates it, before
+    /// anything is reserved on it.
+    ///
+    /// A missing or partial binding cannot rule out a record left by another
+    /// deployment sharing this store, so it is completed only from a confirmed
+    /// read of the channel: owned by this program and committing to this
+    /// receiver's distribution. A channel that cannot be read or does not match
+    /// is refused, and the reservation itself requires the complete binding.
+    async fn complete_binding(&self, outcome: &BatchOutcome) -> Result<(), Error> {
+        let current = self.binding();
+        let withdraw_delay = self.config.withdraw_delay;
+        type Recorded = (Option<ChannelBinding>, Option<u32>);
+        let recorded: Arc<Mutex<Option<Recorded>>> = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&recorded);
+        let expected = current.clone();
+        self.store
+            .read_channel(
+                &outcome.channel_id,
+                Box::new(move |state| {
+                    if let Some(state) = state {
+                        state.check_binding(&expected)?;
+                        // A recorded grace period is the confirmed channel's:
+                        // one this policy does not match is refused outright.
+                        if state.grace_period().is_some() {
+                            state.check_grace_period(withdraw_delay)?;
+                        }
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((state.binding()?, state.grace_period()));
+                    }
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
+        let recorded = recorded.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match recorded {
+            // No record yet: a deposit seeds one carrying the full binding.
+            None => return Ok(()),
+            Some((Some(binding), Some(_))) if binding == current && binding.is_complete() => {
+                return Ok(())
+            }
+            Some(_) => {}
+        }
+        let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
+        let rpc = Arc::clone(&self.rpc);
+        let program_id = self.program_id()?;
+        let onchain =
+            tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
+                .await
+                .map_err(|e| Error::Other(format!("channel binding task failed: {e}")))??
+                .ok_or_else(|| {
+                    batch_err(
+                        codes::INVALID_CHANNEL_STATE,
+                        format!(
+                            "channel {} has no complete deployment binding and is not onchain \
+                             to complete it from",
+                            outcome.channel_id
+                        ),
+                    )
+                })?;
+        // Binds the grace period too: the payload's withdrawDelay was already
+        // held to this server's, so the channel must have been opened with it.
+        self.check_channel_bindings(
+            &onchain,
+            outcome.payload.channel_config(),
+            &self.config.pay_to,
+            0,
+        )?;
+        let grace_period = onchain.grace_period;
+        self.store
+            .mutate_channel(
+                &outcome.channel_id,
+                None,
+                Box::new(move |state| {
+                    state.check_binding(&current)?;
+                    state.adopt_binding(&current)?;
+                    state.set_grace_period(grace_period);
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?;
+        tracing::info!(
+            channel = %outcome.channel_id,
+            "completed a legacy channel binding from the confirmed channel"
+        );
+        Ok(())
     }
 
     /// Record that the resource handler succeeded, before the charge is
@@ -1760,7 +1965,9 @@ impl X402BatchSettlement {
                 let signature = self
                     .broadcast_client_transaction(&deposit.transaction)
                     .await?;
-                let channel = self.fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)?;
+                let channel = self
+                    .fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)
+                    .await?;
                 self.check_channel_bindings(
                     &channel,
                     outcome.payload.channel_config(),
@@ -1800,8 +2007,16 @@ impl X402BatchSettlement {
                             .distributed_on_chain
                             .max(channel.settlement.payout_watermark);
                         state.open_slot = Some(channel.open_slot);
+                        state.set_grace_period(channel.grace_period);
                         state.rent_payer = rent_payer;
-                        state.onchain_checked_at = now.max(0) as u64;
+                        // `check_channel_bindings` held it open.
+                        state.record_onchain_observation(
+                            OnchainObservation {
+                                slot: None,
+                                lifecycle: ObservedLifecycle::Open,
+                            },
+                            now.max(0) as u64,
+                        );
                         state.pending_setup = None;
                         // Marks this escrow as applied, so a retry re-uses the
                         // confirmed deposit rather than adding it again.
@@ -1811,9 +2026,9 @@ impl X402BatchSettlement {
                             }
                         }
                     }
-                    state.check_binding(&binding)?;
-                    // A record from before bindings adopts this deployment's.
-                    state.adopt_binding(&binding)?;
+                    // Completed before the reservation; never adopted here,
+                    // after the handler has already been served.
+                    state.check_binding_complete(&binding)?;
                     state.last_activity_at = now.max(0) as u64;
                     state.commit_authorization(
                         &token,
@@ -1885,7 +2100,7 @@ impl X402BatchSettlement {
         // Hot path: only the last-checked timestamp decides whether a refresh
         // is due, so read that one field without cloning the whole record.
         let now = now_unix();
-        let snapshot: Arc<Mutex<Option<(u64, bool)>>> = Arc::new(Mutex::new(None));
+        let snapshot: Arc<Mutex<Option<(u64, u64, bool)>>> = Arc::new(Mutex::new(None));
         let out = Arc::clone(&snapshot);
         self.store
             .read_channel(
@@ -1895,7 +2110,8 @@ impl X402BatchSettlement {
                         .filter(|state| !is_empty_tombstone(state))
                         .map(|state| {
                             (
-                                state.onchain_checked_at,
+                                state.onchain_observed_at(),
+                                state.onchain_observed_slot(),
                                 has_active_pending_open(state, now),
                             )
                         });
@@ -1904,7 +2120,7 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let Some((onchain_checked_at, has_pending_open)) =
+        let Some((observed_at, observed_slot, has_pending_open)) =
             *snapshot.lock().unwrap_or_else(|e| e.into_inner())
         else {
             // Nothing to reconcile: an unknown channel is refused by
@@ -1912,7 +2128,7 @@ impl X402BatchSettlement {
             // tombstone left by a released opener holds nothing to protect.
             return Ok(());
         };
-        let age = now.saturating_sub(onchain_checked_at);
+        let age = now.saturating_sub(observed_at);
         if age < self.config.channel_snapshot_max_age_seconds {
             return Ok(());
         }
@@ -1921,13 +2137,18 @@ impl X402BatchSettlement {
         // never stalls the async worker serving other paid requests.
         let rpc = Arc::clone(&self.rpc);
         let program_id = self.program_id()?;
-        let fetched =
-            tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
-                .await
-                .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
+        let fetched = tokio::task::spawn_blocking(move || {
+            rpc_observe_channel(&rpc, &channel_id, &program_id, observed_slot)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
         // A snapshot past its window cannot rule out a payer's close, so a
-        // failed refresh refuses the voucher rather than serving on it.
-        let onchain = fetched?;
+        // failed refresh, or one served by a node behind what this record
+        // already saw, refuses the voucher rather than serving on it.
+        let ChannelObservation {
+            channel: onchain,
+            slot,
+        } = fetched?;
         let closed_at = match onchain {
             // Confirmed absent: reclaimed, or never opened. Either way no
             // voucher against it can ever be redeemed.
@@ -1960,8 +2181,12 @@ impl X402BatchSettlement {
                 let deposit = channel.deposit;
                 let settled = channel.settlement.settled;
                 let distributed = channel.settlement.payout_watermark;
-                let sealed = channel.status != CHANNEL_STATUS_OPEN
-                    && channel.status != CHANNEL_STATUS_CLOSING;
+                let observation = OnchainObservation {
+                    slot: Some(slot),
+                    lifecycle: observed_lifecycle(&channel, now),
+                };
+                let outcome = Arc::new(Mutex::new(ObservationOutcome::Fresh));
+                let out = Arc::clone(&outcome);
                 self.store
                     .update_channel(
                         channel_b58,
@@ -1973,17 +2198,24 @@ impl X402BatchSettlement {
                             state.settled_on_chain = state.settled_on_chain.max(settled);
                             state.distributed_on_chain =
                                 state.distributed_on_chain.max(distributed);
-                            state.sealed = state.sealed || sealed;
-                            if let Some(closed_at) = closed_at {
-                                state.close_requested_at =
-                                    Some(state.close_requested_at.unwrap_or(closed_at));
-                            }
-                            state.onchain_checked_at = now;
+                            // Fenced on the stored slot again inside the
+                            // transition, so a concurrent fresher refresh is
+                            // never overwritten by this older one.
+                            *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                                state.record_onchain_observation(observation, now);
                             Ok(state)
                         }),
                     )
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                if let ObservationOutcome::Behind { recorded } =
+                    *outcome.lock().unwrap_or_else(|e| e.into_inner())
+                {
+                    return Err(Error::Rpc(format!(
+                        "channel account read at slot {slot} is behind the recorded slot \
+                         {recorded}"
+                    )));
+                }
                 closed_at
             }
         };
@@ -2011,7 +2243,7 @@ impl X402BatchSettlement {
         match &outcome.payload {
             BatchPayload::Refund { transaction, .. } => {
                 let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
-                let mut channel = self.fetch_channel(&channel_id)?;
+                let mut channel = self.fetch_channel(&channel_id).await?;
                 self.upsert_channel(&outcome, &channel).await?;
                 let signature = if channel.status == CHANNEL_STATUS_OPEN {
                     let state = self
@@ -2032,7 +2264,7 @@ impl X402BatchSettlement {
                         "channel cannot be closed",
                     ));
                 };
-                channel = self.fetch_channel(&channel_id)?;
+                channel = self.fetch_channel(&channel_id).await?;
                 if channel.status != CHANNEL_STATUS_CLOSING {
                     return Err(batch_err(
                         codes::INVALID_CLOSE_STATE,
@@ -2287,6 +2519,9 @@ impl X402BatchSettlement {
             extra: Default::default(),
         };
         state.set_binding(&self.binding());
+        // The open is validated against this delay before it is broadcast,
+        // and the confirmed channel is checked against it again at commit.
+        state.set_grace_period(config.withdraw_delay);
         state
     }
 
@@ -2309,8 +2544,34 @@ impl X402BatchSettlement {
     /// Whether a record whose channel is confirmed absent onchain may be
     /// dropped: not while it carries in-flight work, and never when it belongs
     /// to another deployment, whose absence this server cannot judge.
-    fn may_drop_absent_record(&self, state: &ChannelState) -> bool {
-        !state.has_in_flight_authorization() && state.check_binding(&self.binding()).is_ok()
+    /// Drop the record of a channel whose account is confirmed gone onchain,
+    /// unless it is in flight or bound to another deployment.
+    ///
+    /// The check runs inside the store's delete: a request can reserve work
+    /// on the record after any earlier read, and deleting it then would erase
+    /// that reservation and its replay state.
+    async fn drop_absent_record(&self, channel_id: &str) -> Result<(), Error> {
+        let binding = self.binding();
+        let dropped = self
+            .store
+            .delete_channel_if(
+                channel_id,
+                Box::new(move |state| may_drop_absent_record(state, &binding)),
+            )
+            .await
+            .map_err(|error| Error::Other(format!("store error: {error}")))?;
+        if dropped {
+            tracing::info!(
+                channel = %channel_id,
+                "channel account is gone onchain; dropping its record"
+            );
+        } else {
+            tracing::debug!(
+                channel = %channel_id,
+                "keeping a record that is in flight, bound to another deployment, or changed"
+            );
+        }
+        Ok(())
     }
 
     /// Durably record that the payer has started a forced close, and return
@@ -2416,12 +2677,20 @@ impl X402BatchSettlement {
     /// an unreachable RPC, an undecodable account — is an error and never an
     /// absence: a durable record must not be dropped for a condition that can
     /// clear, because it holds the only copy of this server's charge watermark.
-    fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
-        rpc_lookup_channel(&self.rpc, channel_id, &self.program_id()?)
+    ///
+    /// The blocking RPC read runs on a blocking thread (`spawn_blocking`), so a
+    /// slow node never holds a Tokio worker that unrelated requests need.
+    async fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
+        let rpc = Arc::clone(&self.rpc);
+        let program_id = self.program_id()?;
+        let channel_id = *channel_id;
+        tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id, &program_id))
+            .await
+            .map_err(|e| Error::Other(format!("channel lookup task failed: {e}")))?
     }
 
-    fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
-        self.lookup_channel(channel_id)?.ok_or_else(|| {
+    async fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
+        self.lookup_channel(channel_id).await?.ok_or_else(|| {
             batch_err(
                 codes::INVALID_CHANNEL_STATE,
                 format!("channel {} does not exist", pc::pubkey_string(channel_id)),
@@ -2469,27 +2738,7 @@ impl X402BatchSettlement {
             if snapshot.is_some() {
                 continue;
             }
-            let keep = self
-                .store
-                .get_channel(channel_id)
-                .await
-                .map_err(|error| Error::Other(format!("store error: {error}")))?
-                .is_some_and(|state| !self.may_drop_absent_record(&state));
-            if keep {
-                tracing::debug!(
-                    channel = %channel_id,
-                    "keeping a record that is in flight or bound to another deployment"
-                );
-                continue;
-            }
-            tracing::info!(
-                channel = %channel_id,
-                "channel account is gone onchain; dropping its record"
-            );
-            self.store
-                .delete_channel(channel_id)
-                .await
-                .map_err(|error| Error::Other(format!("store error: {error}")))?;
+            self.drop_absent_record(channel_id).await?;
         }
         Ok(snapshots)
     }
@@ -2681,7 +2930,7 @@ impl X402BatchSettlement {
         channel_id: &str,
         channel: &Pubkey,
     ) -> Result<Option<Channel>, Error> {
-        if let Some(onchain) = self.lookup_channel(channel)? {
+        if let Some(onchain) = self.lookup_channel(channel).await? {
             return Ok(Some(onchain));
         }
         // A channel being opened has a record before it has a PDA: its setup
@@ -2690,27 +2939,7 @@ impl X402BatchSettlement {
         // authorization with it — losing a charge that was served but not yet
         // committed, or freeing one whose handler already ran to be served a
         // second time.
-        let keep = self
-            .store
-            .get_channel(channel_id)
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?
-            .is_some_and(|state| !self.may_drop_absent_record(&state));
-        if keep {
-            tracing::debug!(
-                channel = %channel_id,
-                "keeping a record that is in flight or bound to another deployment"
-            );
-            return Ok(None);
-        }
-        tracing::info!(
-            channel = %channel_id,
-            "channel account is gone onchain; dropping its record"
-        );
-        self.store
-            .delete_channel(channel_id)
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        self.drop_absent_record(channel_id).await?;
         Ok(None)
     }
 
@@ -3523,7 +3752,22 @@ mod tests {
         deposit: u64,
         cumulative: u64,
     ) -> ChannelState {
-        ChannelState {
+        let mut state = unbound(channel, config, deposit, cumulative);
+        // Bound to the deployment `handler` builds, as a deposit seeds it.
+        state.set_binding(&handler(Arc::new(MemoryChannelStore::new())).0.binding());
+        state.set_grace_period(config.withdraw_delay);
+        state
+    }
+
+    /// [`seeded`] without a deployment binding, as a record that predates
+    /// bindings was written.
+    fn unbound(
+        channel: &Pubkey,
+        config: &BatchChannelConfig,
+        deposit: u64,
+        cumulative: u64,
+    ) -> ChannelState {
+        let mut state = ChannelState {
             channel_id: pc::pubkey_string(channel),
             authorized_signer: config.payer_authorizer.clone(),
             deposit,
@@ -3550,12 +3794,22 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: Default::default(),
             pending_setup: None,
-            // Fresh enough that the reservation path trusts it instead of
-            // reaching for an RPC these tests do not have.
-            onchain_checked_at: now_unix(),
+            onchain_checked_at: 0,
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
+        };
+        // Fresh enough that the reservation path trusts it instead of
+        // reaching for an RPC these tests do not have.
+        state.record_onchain_observation(open_observation(), now_unix());
+        state
+    }
+
+    /// An observation of an open channel with no slot.
+    fn open_observation() -> OnchainObservation {
+        OnchainObservation {
+            slot: None,
+            lifecycle: ObservedLifecycle::Open,
         }
     }
 
@@ -4643,7 +4897,7 @@ mod tests {
                 &channel_b58,
                 Box::new(|current| {
                     let mut state = current.unwrap();
-                    state.onchain_checked_at = now_unix() - 60;
+                    state.record_onchain_observation(open_observation(), now_unix() - 60);
                     Ok(state)
                 }),
             )
@@ -4854,7 +5108,7 @@ mod tests {
             .await
             .unwrap();
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
-        assert!(!handler.may_drop_absent_record(&state));
+        assert!(!may_drop_absent_record(&state, &handler.binding()));
         let err = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
@@ -4863,31 +5117,264 @@ mod tests {
 
         let mut own = state.clone();
         own.set_binding(&handler.binding());
-        assert!(handler.may_drop_absent_record(&own));
+        assert!(may_drop_absent_record(&own, &handler.binding()));
     }
 
-    /// A record from before bindings is accepted and adopts this server's
-    /// binding when its next charge commits.
-    #[tokio::test]
-    async fn an_unbound_record_adopts_the_binding_on_commit() {
+    /// A record from before bindings is bound from its confirmed channel
+    /// before anything is reserved on it, never adopted after serving.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unbound_record_is_bound_from_the_confirmed_channel_before_serving() {
         let store = Arc::new(MemoryChannelStore::new());
         let (handler, fee_payer) = handler(store.clone());
-        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
-        let BatchAccess::Serve(outcome) = handler
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        store
+            .put_channel(
+                &pc::pubkey_string(&channel),
+                unbound(&channel, &config, 5_000, 2_000),
+            )
+            .await
+            .unwrap();
+        let handler = handler.with_rpc_client(chain_with(Some(&onchain_channel(
+            &config, &fee_payer, 5_000,
+        ))));
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config,
+                voucher: voucher(&key, &channel, 3_000),
+            },
+        );
+        let BatchAccess::Serve(_outcome) = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
             .unwrap()
         else {
-            panic!("an unbound record is served");
+            panic!("an unbound record matching its channel is served");
         };
-        handler.mark_handler_succeeded(&outcome).await.unwrap();
-        handler.finish_commit(&outcome).await.unwrap();
         let state = store
-            .get_channel(&outcome.channel_id)
+            .get_channel(&pc::pubkey_string(&channel))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(state.binding().unwrap(), Some(handler.binding()));
+    }
+
+    /// A partial legacy binding does not let another deployment sharing the
+    /// store serve on the channel: the confirmed channel pays the original
+    /// receiver, so the binding is not completed and nothing is reserved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_partial_binding_is_not_admitted_by_another_deployment() {
+        const API_B: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+        let store = Arc::new(MemoryChannelStore::new());
+        let (api_a, fee_payer) = handler(store.clone());
+        let requirements_a = api_a.requirements("0.001").unwrap();
+        let (key, config_a, channel) = client(&fee_payer, &requirements_a);
+        let partial = ChannelBinding {
+            scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
+            pay_to: None,
+            network: None,
+            program_id: None,
+        };
+        let mut legacy = unbound(&channel, &config_a, 5_000, 1_000);
+        legacy.set_binding(&partial);
+        store
+            .put_channel(&pc::pubkey_string(&channel), legacy)
+            .await
+            .unwrap();
+        // The channel commits to deployment A's receiver.
+        let chain = || chain_with(Some(&onchain_channel(&config_a, &fee_payer, 5_000)));
+
+        let mut config = BatchConfig::new(API_B, "localnet", Arc::new(TestSigner::new(21)));
+        config.withdraw_delay = 3600;
+        config.memo = Some("invoice-1".to_string());
+        let api_b = X402BatchSettlement::with_store(config, store.clone())
+            .unwrap()
+            .with_rpc_client(chain());
+        let requirements_b = api_b.requirements("0.001").unwrap();
+        let mut config_b = config_a.clone();
+        config_b.receiver = requirements_b.pay_to.clone();
+        let request_b = header(
+            &requirements_b,
+            BatchPayload::Voucher {
+                channel_config: config_b,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+        let err = api_b
+            .verify_and_reserve_payment(&request_b, "0.001")
+            .await
+            .expect_err("deployment B is refused");
+        assert!(err.to_string().contains("distribution"), "{err}");
+        let state = store
+            .get_channel(&pc::pubkey_string(&channel))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.binding().unwrap(), Some(partial));
+        assert!(state.pending_deliveries.is_empty());
+
+        // Positive control: deployment A completes the binding and serves.
+        let api_a = api_a.with_rpc_client(chain());
+        let request_a = header(
+            &requirements_a,
+            BatchPayload::Voucher {
+                channel_config: config_a,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+        assert!(matches!(
+            api_a
+                .verify_and_reserve_payment(&request_a, "0.001")
+                .await
+                .unwrap(),
+            BatchAccess::Serve(_)
+        ));
+    }
+
+    /// A channel opened under an older, shorter grace period is not served
+    /// after the policy changed: the reservation lease is sized for the new
+    /// delay and could outlast the old channel's close window. Its recorded
+    /// grace period is refused outright; a record without one is checked
+    /// against the confirmed channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_channel_with_a_drifted_grace_period_is_refused() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config.clone(),
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let mut drifted = seeded(&channel, &config, 5_000, 1_000);
+        drifted.set_grace_period(900);
+        store.put_channel(&channel_b58, drifted).await.unwrap();
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("a recorded shorter grace period is refused");
+        assert!(err.to_string().contains("grace period"), "{err}");
+
+        let mut old_open = onchain_channel(&config, &fee_payer, 5_000);
+        old_open.grace_period = 900;
+        let mut unrecorded = seeded(&channel, &config, 5_000, 1_000);
+        unrecorded.extra.remove("gracePeriod");
+        store
+            .update_channel(&channel_b58, Box::new(move |_| Ok(unrecorded)))
+            .await
+            .unwrap();
+        let (chained, _) = super::tests::handler(store.clone());
+        let chained = chained.with_rpc_client(chain_with(Some(&old_open)));
+        let err = chained
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("an unrecorded grace period is read from the chain");
+        assert!(err.to_string().contains("grace_period"), "{err}");
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .grace_period(),
+            None
+        );
+
+        // Positive control: the grace period this server advertises.
+        let matching = seeded(&channel, &config, 5_000, 1_000);
+        store
+            .update_channel(&channel_b58, Box::new(move |_| Ok(matching)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            handler
+                .verify_and_reserve_payment(&request, "0.001")
+                .await
+                .unwrap(),
+            BatchAccess::Serve(_)
+        ));
+    }
+
+    /// A refreshed `onchain_checked_at` alone, as a lifecycle worker that
+    /// observed the channel without recording its status leaves it, is not a
+    /// fresh snapshot: admission reads the chain, sees the distribution and
+    /// fences the record.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bare_checked_timestamp_does_not_admit_a_distributed_channel() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        state.extra.remove("onchainObservedAt");
+        state.onchain_checked_at = now_unix();
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let mut distributed = onchain_channel(&config, &fee_payer, 5_000);
+        distributed.status = CHANNEL_STATUS_DISTRIBUTED;
+        distributed.closure_started_at = 1;
+        let handler = handler.with_rpc_client(chain_with(Some(&distributed)));
+        let request = header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_config: config,
+                voucher: voucher(&key, &channel, 2_000),
+            },
+        );
+
+        let err = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect_err("the distributed channel is refused");
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+            codes::INVALID_CHANNEL_CLOSING,
+            "{err}"
+        );
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.sealed, "the terminal observation is persisted");
+        assert!(state.close_requested_at.is_some());
+        assert!(state.pending_deliveries.is_empty());
+    }
+
+    /// A terminal observation fences the record even from a read behind the
+    /// recorded slot, which only declines to renew the snapshot.
+    #[test]
+    fn a_terminal_observation_fences_even_when_behind() {
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let mut state = seeded(&channel, &config, 5_000, 0);
+        let observed = |slot, lifecycle| OnchainObservation {
+            slot: Some(slot),
+            lifecycle,
+        };
+        assert_eq!(
+            state.record_onchain_observation(observed(500, ObservedLifecycle::Open), 10),
+            ObservationOutcome::Fresh
+        );
+        assert!(!state.sealed);
+        assert_eq!(
+            state.record_onchain_observation(
+                observed(
+                    400,
+                    ObservedLifecycle::Terminal {
+                        started_at: Some(7)
+                    }
+                ),
+                20
+            ),
+            ObservationOutcome::Behind { recorded: 500 }
+        );
+        assert!(state.sealed);
+        assert_eq!(state.close_requested_at, Some(7));
+        assert_eq!(state.onchain_observed_at(), 10);
     }
 
     /// A voucher for a channel this store has no record of is refused, never
@@ -4921,6 +5408,190 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("open one with a deposit"), "{err}");
+    }
+
+    /// An RPC whose `getAccountInfo` answers with `channel` (owned by the
+    /// default program), or with an absent account for `None`.
+    fn chain_with(channel: Option<&Channel>) -> RpcClient {
+        chain_at(channel, 1)
+    }
+
+    /// [`chain_with`], served from a bank at `slot`.
+    fn chain_at(channel: Option<&Channel>, slot: u64) -> RpcClient {
+        use base64::Engine as _;
+        let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+        if let Some(channel) = channel {
+            let data = borsh::to_vec(channel).unwrap();
+            for _ in 0..8 {
+                mocks.insert(
+                    solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                    serde_json::json!({
+                        "context": { "slot": slot },
+                        "value": {
+                            "lamports": 1_000_000,
+                            "data": [
+                                base64::engine::general_purpose::STANDARD.encode(&data),
+                                "base64"
+                            ],
+                            "owner": pc::pubkey_string(&pc::default_program_id()),
+                            "executable": false,
+                            "rentEpoch": 0,
+                            "space": data.len(),
+                        }
+                    }),
+                );
+            }
+        }
+        RpcClient::new_mock_with_mocks_map("succeeds".to_string(), mocks)
+    }
+
+    /// The confirmed channel `config` derives, open with `deposit` escrowed.
+    fn onchain_channel(config: &BatchChannelConfig, fee_payer: &Pubkey, deposit: u64) -> Channel {
+        use crate::core::payment_channels::generated::types::SettlementWatermarks;
+        let receiver = pc::parse_pubkey(&config.receiver).unwrap();
+        Channel {
+            discriminator: 0,
+            version: 1,
+            bump: 0,
+            status: CHANNEL_STATUS_OPEN,
+            salt: config.salt.parse().unwrap(),
+            deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: config.withdraw_delay,
+            distribution_hash: pc::distribution_hash(&pc::sole_recipient(&receiver)),
+            payer: pc::to_address(&pc::parse_pubkey(&config.payer).unwrap()),
+            payee: pc::to_address(fee_payer),
+            authorized_signer: pc::to_address(&pc::parse_pubkey(&config.payer_authorizer).unwrap()),
+            mint: pc::to_address(&pc::parse_pubkey(&config.token).unwrap()),
+            rent_payer: pc::to_address(fee_payer),
+            open_slot: config.open_slot,
+        }
+    }
+
+    /// A replayed opening deposit for a channel the chain already holds, sent
+    /// to a store that has no record of it (a restart over the in-memory
+    /// store), is refused instead of seeding a zero watermark that would serve
+    /// the already-accepted first voucher again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_replayed_open_for_an_unrecorded_onchain_channel_is_refused() {
+        let deposit_header = |handler: &X402BatchSettlement, fee_payer: &Pubkey| {
+            let requirements = handler.requirements("0.001").unwrap();
+            let (key, config, channel) = client(fee_payer, &requirements);
+            let payload = BatchPayload::Deposit {
+                channel_config: config.clone(),
+                voucher: Some(voucher(&key, &channel, 1_000)),
+                deposit: crate::x402::protocol::schemes::batch_settlement::BatchDeposit {
+                    amount: "5000".to_string(),
+                    transaction: "b64".to_string(),
+                },
+                authorization: None,
+            };
+            (header(&requirements, payload), config)
+        };
+
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let (_, config) = deposit_header(&probe, &fee_payer);
+        let landed = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (restarted, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let restarted = restarted.with_rpc_client(chain_with(Some(&landed)));
+        let (request, _) = deposit_header(&restarted, &fee_payer);
+        let err = restarted
+            .verify_payment(&request, "0.001")
+            .await
+            .expect_err("an unrecorded onchain channel is refused");
+        assert!(
+            err.to_string().contains("has no record in this store"),
+            "{err}"
+        );
+
+        // Positive control: the same deposit for a channel the chain does not
+        // hold yet passes this check and proceeds to validate its transaction.
+        let (fresh, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let fresh = fresh.with_rpc_client(chain_with(None));
+        let (request, _) = deposit_header(&fresh, &fee_payer);
+        let err = fresh
+            .verify_payment(&request, "0.001")
+            .await
+            .expect_err("the placeholder transaction does not decode");
+        assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// Channel reads run off the async worker. The blocking RPC client parks
+    /// its calling thread (`block_in_place`, which a current-thread runtime
+    /// refuses outright), so a read made inline from async verification would
+    /// hold a Tokio worker for a full RPC round trip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn channel_reads_do_not_block_the_async_worker() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (absent, _) = handler(store.clone());
+        let absent = absent.with_rpc_client(chain_at(None, 1));
+        assert!(absent.lookup_channel(&channel).await.unwrap().is_none());
+
+        let (present, _) = handler(store);
+        let present = present.with_rpc_client(chain_at(Some(&open), 1));
+        assert_eq!(
+            present.fetch_channel(&channel).await.unwrap().deposit,
+            5_000
+        );
+    }
+
+    /// A refresh served by a node behind the slot this record already
+    /// accepted is refused and does not renew the snapshot: a lagging node can
+    /// still show a distributed channel as open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refresh_from_a_lagging_node_does_not_renew_admission() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        state.record_onchain_observation(
+            OnchainObservation {
+                slot: Some(500),
+                lifecycle: ObservedLifecycle::Open,
+            },
+            0,
+        );
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+
+        let (lagging, _) = handler(store.clone());
+        let lagging = lagging.with_rpc_client(chain_at(Some(&open), 400));
+        let err = lagging
+            .reconcile_channel(&channel_b58)
+            .await
+            .expect_err("a read behind the recorded slot is refused");
+        assert!(
+            err.to_string().contains("behind the recorded slot"),
+            "{err}"
+        );
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(
+            state.onchain_observed_at(),
+            0,
+            "the snapshot was not renewed"
+        );
+        assert_eq!(state.onchain_observed_slot(), 500);
+
+        // Positive control: a node at or past the recorded slot refreshes it.
+        let (current, _) = handler(store.clone());
+        let current = current.with_rpc_client(chain_at(Some(&open), 600));
+        current.reconcile_channel(&channel_b58).await.unwrap();
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.onchain_observed_at() > 0);
+        assert_eq!(state.onchain_observed_slot(), 600);
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a
@@ -5352,6 +6023,13 @@ mod tests {
         }
         fn delete_channel(&self, channel_id: &str) -> StoreFuture<'_, ()> {
             self.inner.delete_channel(channel_id)
+        }
+        fn delete_channel_if(
+            &self,
+            channel_id: &str,
+            approve: crate::core::store::ChannelPredicate,
+        ) -> StoreFuture<'_, bool> {
+            self.inner.delete_channel_if(channel_id, approve)
         }
         fn update_channel(
             &self,

@@ -8,12 +8,14 @@ use Closure;
 use PayKit\PayKit;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Exception\PaymentRequiredException;
+use PayKit\Exception\SettlementInProgressException;
 use PayKit\Gate;
 use PayKit\PayCore\HttpFactory;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
 use PayKit\Protocols\X402\Adapter as X402Adapter;
+use PayKit\Store\MemoryStore;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
@@ -52,14 +54,29 @@ final class RequirePayment implements MiddlewareInterface
         ?MppAdapter $mpp = null,
         ?X402Adapter $x402 = null,
     ) {
-        $this->mpp  = $mpp ?? new MppAdapter($client->config);
+        // Default adapters share one replay store: the consumed-signature
+        // ledger is protocol-independent, so a payment settled through MPP
+        // cannot authorize a second request as an x402 payment (or the
+        // reverse). Separate stores would each see only their own claims.
+        $wantsX402 = $x402 === null && in_array(Protocol::X402, $client->config->accept, true);
+        $sharedStore = null;
+        if ($mpp === null && $wantsX402) {
+            if (function_exists('error_log')) {
+                error_log(
+                    'pay_kit: WARN: mpp and x402 adapters using one in-memory replay store; '
+                    . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+                );
+            }
+            $sharedStore = new MemoryStore();
+        }
+        $this->mpp  = $mpp ?? new MppAdapter($client->config, $sharedStore);
         // Auto-wire the X402 adapter when the client's accept list
         // includes Protocol::X402. Callers can still pass an explicit
         // adapter to override (e.g. with an offline blockhash provider).
         if ($x402 !== null) {
             $this->x402 = $x402;
-        } elseif (in_array(Protocol::X402, $client->config->accept, true)) {
-            $this->x402 = new X402Adapter($client->config);
+        } elseif ($wantsX402) {
+            $this->x402 = new X402Adapter($client->config, $sharedStore);
         } else {
             $this->x402 = null;
         }
@@ -78,6 +95,10 @@ final class RequirePayment implements MiddlewareInterface
 
         try {
             $payment = $adapter->verifyAndSettle($gate, $request);
+        } catch (SettlementInProgressException $e) {
+            // The payment may already be on chain: a fresh challenge would let
+            // the client pay twice, so answer a retryable 409 instead.
+            return $this->build409($e);
         } catch (InvalidProofException | PaymentRequiredException $e) {
             return $this->build402($gate, $request);
         }
@@ -123,6 +144,21 @@ final class RequirePayment implements MiddlewareInterface
             }
         }
         return null;
+    }
+
+    private function build409(SettlementInProgressException $e): ResponseInterface
+    {
+        $body = json_encode([
+            'type'   => 'https://paymentauth.org/problems/settlement-in-progress',
+            'title'  => 'Settlement Already In Progress',
+            'status' => 409,
+            'detail' => $e->getMessage(),
+        ], JSON_THROW_ON_ERROR);
+        return HttpFactory::responseFactory()->createResponse(409)
+            ->withHeader('content-type', 'application/problem+json')
+            ->withHeader('retry-after', '1')
+            ->withHeader('cache-control', 'no-store')
+            ->withBody(HttpFactory::streamFactory()->createStream($body));
     }
 
     private function build402(Gate $gate, ServerRequestInterface $request): ResponseInterface

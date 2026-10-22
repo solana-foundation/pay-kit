@@ -265,6 +265,8 @@ function classify_reject(string $message): ?string
         '/too many splits/i' => 'too-many-splits',
         '/no matching (spl )?(token )?(transfer|transferchecked|sol transfer)/i' => 'no-matching-transfer',
         '/unexpected .* (instruction|transfer)/i' => 'unexpected-instruction',
+        '/share one funding authority/i' => 'mixed-funding-authority',
+        '/unexpected signer/i' => 'unexpected-signer',
         '/amount .* (mismatch|does not match)/i' => 'amount-mismatch',
         // x402 exact structural verifier tokens (invalid_exact_svm_payload_*).
         '/compute_price_instruction_too_high/' => 'compute-price-over-cap',

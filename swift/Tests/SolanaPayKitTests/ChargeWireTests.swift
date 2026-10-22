@@ -767,4 +767,38 @@ final class RpcStubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    @Test(arguments: [false, true])
+    func refusesSponsoredChargeWhoseFeePayerKeyIsTheSigner(ataSplit: Bool) async throws {
+        let signer = try MemorySigner(secretKey: Data(repeating: 52, count: 32))
+        let blockhash = Base58.encode(Data(repeating: 0x11, count: 32))
+        let splits = ataSplit
+            ? #", "splits": [{"recipient": "11111111111111111111111111111112", "amount": "100", "ataCreationRequired": true}]"#
+            : ""
+
+        func build(feePayerKey: String) async throws -> String {
+            let requestJson = """
+            {
+              "amount": "1000",
+              "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+              "methodDetails": {
+                "network": "localnet",
+                "decimals": 6,
+                "feePayer": true,
+                "feePayerKey": "\(feePayerKey)",
+                "recentBlockhash": "\(blockhash)",
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"\(splits)
+              }
+            }
+            """
+            let request = try JSONDecoder().decode(ChargeRequest.self, from: Data(requestJson.utf8))
+            return try await Charge.buildChargeTransaction(request: request, signer: signer)
+        }
+
+        let signerAddress = try Pubkey(bytes: signer.publicKey).base58
+        await #expect(throws: PayKitError.self) { try await build(feePayerKey: signerAddress) }
+        let tx = try await build(feePayerKey: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin")
+        #expect(!tx.isEmpty)
+    }
 }

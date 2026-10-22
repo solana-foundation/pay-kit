@@ -12,6 +12,7 @@ import com.solana.paykit.protocols.x402.exact.X402Extra
 import com.solana.paykit.protocols.x402.exact.effectiveAsset
 import com.solana.paykit.protocols.x402.exact.effectiveDecimals
 import com.solana.paykit.protocols.x402.exact.effectiveFeePayerKey
+import com.solana.paykit.protocols.x402.exact.effectivePayTo
 import com.solana.paykit.protocols.x402.exact.effectiveRecentBlockhash
 import com.solana.paykit.protocols.x402.exact.effectiveTokenProgram
 import java.util.Base64
@@ -50,17 +51,14 @@ class BuildPaymentTest {
     private val fixedBlockhash: () -> ByteArray = { ByteArray(32) }
 
     @Test
-    fun buildsFromRecipientAliasOffer() {
-        // The rust-normalized requirement shape carries `recipient` instead of
-        // `payTo`; the client resolves it via effectivePayTo rather than
-        // rejecting the offer as unpayable.
+    fun refusesAnOfferNamingOnlyALegacyRecipient() {
+        // RULINGS X1: only `payTo` names the destination, so an offer carrying
+        // just the legacy `recipient` has none and is not signed.
         val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
             """"amount":"1000","asset":"SOL","recipient":"$devnetRecipient"}]}"""
         val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
         assertNotNull(requirement)
-        assertNull(requirement.payTo)
-        val envelope = buildPayment(signer, requirement, fixedBlockhash)
-        assertNotNull(envelope.payload.transaction)
+        assertFailsWith<IllegalArgumentException> { buildPayment(signer, requirement, fixedBlockhash) }
     }
 
     @Test
@@ -79,6 +77,29 @@ class BuildPaymentTest {
         // Previously threw on the symbol asset / missing token program.
         val envelope = buildPayment(signer, requirement, fixedBlockhash)
         assertNotNull(envelope.payload.transaction)
+    }
+
+    @Test
+    fun echoesTheChallengeResource() {
+        // The credential names the resource it pays for, so a server that
+        // binds payments to its route can match it (x402 v2 PaymentPayload
+        // `resource`); an offer built in code carries none.
+        val body = """{"x402Version":2,"resource":{"url":"/protected","description":"report"},""" +
+            """"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"5000","asset":"SOL","payTo":"$devnetRecipient"}]}"""
+        val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(requirement)
+        val envelope = Json.parseToJsonElement(
+            Base64.getDecoder().decode(buildPaymentHeader(signer, requirement, fixedBlockhash)).decodeToString(),
+        ).jsonObject
+        val resource = envelope["resource"]!!.jsonObject
+        assertEquals("/protected", resource["url"]!!.jsonPrimitive.content)
+        assertEquals("report", resource["description"]!!.jsonPrimitive.content)
+
+        val inCode = Json.parseToJsonElement(
+            Base64.getDecoder().decode(buildPaymentHeader(signer, solOffer(), fixedBlockhash)).decodeToString(),
+        ).jsonObject
+        assertNull(inCode["resource"])
     }
 
     @Test
@@ -448,48 +469,48 @@ class BuildPaymentTest {
     }
 
     @Test
-    fun topLevelFieldsTakePrecedenceOverExtraAliases() {
-        // 152-field-precedence: effective* resolution must prefer the TOP-LEVEL
-        // field over the nested extra.* alias, matching the rust spine. Build
-        // an offer carrying conflicting shapes and assert the top-level value
-        // wins for decimals, tokenProgram, and recentBlockhash.
-        val topBlockhash = "11111111111111111111111111111111"
-        val offer = X402AcceptsEntry(
+    fun disagreeingLegacyAliasesNeverReplaceX402Terms() {
+        // RULINGS.md X1: a field a server adds beside the x402 ones is ignored,
+        // so the signed transfer pays what the echoed `accepted` object names.
+        val base = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_DEVNET,
             asset = Mints.USDC_DEVNET,
             amount = "1000",
             payTo = devnetRecipient,
-            // Top-level canonical fields.
-            decimals = 9,
-            tokenProgram = Programs.TOKEN_PROGRAM,
-            recentBlockhash = topBlockhash,
-            // Conflicting nested aliases that MUST lose.
-            extra = X402Extra(
-                decimals = 2,
-                tokenProgram = Programs.TOKEN_2022_PROGRAM,
-                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
-            ),
+            extra = X402Extra(decimals = 6, tokenProgram = Programs.TOKEN_PROGRAM),
         )
-        assertEquals(9, offer.effectiveDecimals)
-        assertEquals(Programs.TOKEN_PROGRAM, offer.effectiveTokenProgram)
-        assertEquals(topBlockhash, offer.effectiveRecentBlockhash)
+        for (offer in listOf(
+            base.copy(recipient = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"),
+            base.copy(currency = Mints.USDT_MAINNET),
+            base.copy(maxAmountRequired = "999999"),
+            base.copy(decimals = 9),
+            base.copy(tokenProgram = Programs.TOKEN_2022_PROGRAM),
+        )) {
+            assertEquals(devnetRecipient, offer.effectivePayTo)
+            assertEquals(Mints.USDC_DEVNET, offer.effectiveAsset)
+            assertEquals(6, offer.effectiveDecimals)
+            assertEquals(Programs.TOKEN_PROGRAM, offer.effectiveTokenProgram)
+            buildPayment(signer, offer, fixedBlockhash, { "0011223344556677" })
+        }
     }
 
     @Test
-    fun effectiveAssetPrefersCurrencyOverAsset() {
+    fun topLevelOnlyTermsAreNotRead() {
         val offer = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_DEVNET,
-            asset = Mints.USDC_DEVNET,
-            currency = Mints.USDT_MAINNET,
+            currency = Mints.USDC_DEVNET,
             amount = "1000",
             payTo = devnetRecipient,
+            decimals = 9,
+            tokenProgram = Programs.TOKEN_PROGRAM,
+            recentBlockhash = "11111111111111111111111111111111",
         )
-        // `currency` wins over `asset` when both are present, matching the rust
-        // spine `currency.or_else(asset)` (types.rs:340-342). Before the parity
-        // fix Kotlin used `asset ?: currency` and selected the wrong mint here.
-        assertEquals(Mints.USDT_MAINNET, offer.effectiveAsset)
+        assertNull(offer.effectiveAsset)
+        assertNull(offer.effectiveDecimals)
+        assertNull(offer.effectiveTokenProgram)
+        assertNull(offer.effectiveRecentBlockhash)
     }
 
     @Test
@@ -555,14 +576,9 @@ class BuildPaymentTest {
     // ── Top-level managed fee payer (PR #152 fix 2) ────────────────────────────
 
     @Test
-    fun honorsTopLevelFeePayerKeyOfferShape() {
-        // Regression for PR #152 fix 2: the rust spine parses a top-level
-        // `feePayerKey` (+ optional `feePayer` toggle) managed-fee-payer offer
-        // shape. The Kotlin client used to read only the nested extra.feePayer,
-        // so a top-level-only offer silently fell back to the signer as fee
-        // payer. After the fix the effective fee payer comes from the top-level
-        // field, which changes the v0 account layout (fee payer is account 0),
-        // so the transaction bytes must differ from the signer-pays case.
+    fun topLevelFeePayerKeyAloneNamesNoSponsor() {
+        // RULINGS X1: only `extra.feePayer` names the sponsor; a top-level
+        // `feePayerKey` is ignored and never becomes the transaction fee payer.
         val facilitator = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
         val topLevelOffer = X402AcceptsEntry(
             scheme = "exact",
@@ -572,26 +588,16 @@ class BuildPaymentTest {
             payTo = devnetRecipient,
             feePayerKey = facilitator,
         )
-        // feePayerKey present implies the managed fee payer is selected even
-        // without an explicit feePayer flag (rust parser normalization).
-        assertEquals(facilitator, topLevelOffer.effectiveFeePayerKey)
-
-        val withTopLevel = buildPayment(signer, topLevelOffer, fixedBlockhash, { "0011223344556677" })
-        val signerPays = buildPayment(signer, solOffer(feePayer = null), fixedBlockhash, { "0011223344556677" })
-        val rawTopLevel = decodeTransaction(withTopLevel.payload.transaction!!)
-        val rawSignerPays = decodeTransaction(signerPays.payload.transaction!!)
-        assertTrue(
-            !rawTopLevel.contentEquals(rawSignerPays),
-            "top-level feePayerKey offer must use the managed fee payer (different account layout)",
+        assertNull(topLevelOffer.effectiveFeePayerKey)
+        val raw = decodeTransaction(
+            buildPayment(signer, topLevelOffer, fixedBlockhash, { "0011223344556677" }).payload.transaction!!,
         )
-        // The facilitator pubkey bytes must appear in the v0 message (it is the
-        // fee payer at account index 0).
         val facilitatorBytes = Base58.decode(facilitator)
-        val found = rawTopLevel.indices.any { idx ->
-            idx + facilitatorBytes.size <= rawTopLevel.size &&
-                rawTopLevel.copyOfRange(idx, idx + facilitatorBytes.size).contentEquals(facilitatorBytes)
+        val found = raw.indices.any { idx ->
+            idx + facilitatorBytes.size <= raw.size &&
+                raw.copyOfRange(idx, idx + facilitatorBytes.size).contentEquals(facilitatorBytes)
         }
-        assertTrue(found, "facilitator (top-level feePayerKey) pubkey must appear in the transaction")
+        assertTrue(!found, "a top-level feePayerKey must not appear in the transaction")
     }
 
     @Test
@@ -611,19 +617,18 @@ class BuildPaymentTest {
     }
 
     @Test
-    fun topLevelFeePayerKeyTakesPrecedenceOverExtraAlias() {
-        // Top-level feePayerKey wins over the nested extra.feePayer alias.
-        val topLevel = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+    fun topLevelFeePayerKeyIsIgnored() {
+        // Only `extra.feePayer` names the sponsor (RULINGS X1).
         val offer = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_DEVNET,
             asset = "SOL",
             amount = "1000",
             payTo = devnetRecipient,
-            feePayerKey = topLevel,
+            feePayerKey = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ",
             extra = X402Extra(feePayer = devnetRecipient),
         )
-        assertEquals(topLevel, offer.effectiveFeePayerKey)
+        assertEquals(devnetRecipient, offer.effectiveFeePayerKey)
     }
 
     // ── extra.feePayer (nested alias) + feePayer boolean toggle (regression) ─────

@@ -25,7 +25,14 @@ use toml::Value;
 
 /// Vector intents an SDK may claim. A claim outside this list is a typo that
 /// would otherwise leave every vector of the intended intent unclaimed.
-pub const VECTOR_INTENTS: [&str; 3] = ["charge", "x402-exact", "session"];
+pub const VECTOR_INTENTS: [&str; 6] = [
+    "charge",
+    "x402-exact",
+    "session",
+    "x402-upto",
+    "x402-batch-settlement",
+    "subscription",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]

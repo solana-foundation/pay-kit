@@ -69,6 +69,8 @@ module PayKit
             settlement_headers: result.headers || {},
             raw: authorization
           )
+        when ::PayKit::Protocols::Mpp::SettlementPending
+          raise ::PayKit::SettlementInProgress.new(result.reason)
         when ::PayKit::Protocols::Mpp::Challenge
           spec_code = result.body.is_a?(Hash) ? result.body["code"] : nil
           raise InvalidProof.new(:payment_required, result.reason || "payment required", spec_code: spec_code)

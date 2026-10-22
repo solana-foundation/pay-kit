@@ -21,6 +21,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -30,6 +32,18 @@ from solana_pay_kit._paycore.errors import PaymentError
 
 class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
+
+
+class PreflightRejectedError(_RpcError):
+    """``sendTransaction`` failed preflight simulation (JSON-RPC -32002).
+
+    The one send failure that proves the node did not forward the
+    transaction; every other send error leaves the outcome unknown.
+    """
+
+
+#: JSON-RPC error code of a ``sendTransaction`` preflight failure.
+_PREFLIGHT_FAILURE_CODE = -32002
 
 
 class _RpcResponse:
@@ -104,7 +118,11 @@ class SolanaRpc:
             duplicate = method == "sendTransaction" and (
                 "already been processed" in message.lower() or "transaction already processed" in message.lower()
             )
-            raise _RpcError(message, code="signature_consumed" if duplicate else "payment_invalid")
+            if duplicate:
+                raise _RpcError(message, code="signature_consumed")
+            if method == "sendTransaction" and err.get("code") == _PREFLIGHT_FAILURE_CODE:
+                raise PreflightRejectedError(message, code="payment_invalid")
+            raise _RpcError(message, code="payment_invalid")
         return data.get("result")
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any:
@@ -173,8 +191,17 @@ class SolanaRpc:
             return None
         return raw, owner
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
-        result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[Any]:
+        """``getSignatureStatuses``. The default reads the node's recent
+        status cache, enough right after a send; a read that reconciles an
+        earlier payment sets ``search_transaction_history`` so a payment that
+        has left that cache is still found on a node that keeps history."""
+        result = await self._call(
+            "getSignatureStatuses",
+            [signatures, {"searchTransactionHistory": search_transaction_history}],
+        )
         return (result or {}).get("value") or []
 
     async def confirm_transaction(self, signature: Any, *_args: Any, **_kwargs: Any) -> Any:
@@ -212,6 +239,8 @@ class SolanaRpc:
         signature: str,
         attempts: int = 40,
         delay_seconds: float = 0.25,
+        *,
+        search_transaction_history: bool = False,
     ) -> None:
         """Poll getSignatureStatuses until the signature reaches at least
         confirmed. Raises PaymentError with discriminated codes:
@@ -227,19 +256,72 @@ class SolanaRpc:
         changes.
         """
         for _ in range(attempts):
-            statuses = await self.get_signature_statuses([signature])
-            status = statuses[0] if statuses else None
-            if isinstance(status, dict):
-                err = status.get("err")
-                if err is not None:
-                    raise PaymentError(
-                        f"transaction {signature} failed on-chain: {err}",
-                        code="transaction-failed",
-                    )
-                if status.get("confirmationStatus") in {"confirmed", "finalized"}:
-                    return
+            statuses = await self.get_signature_statuses(
+                [signature], search_transaction_history=search_transaction_history
+            )
+            outcome = settlement_outcome(statuses[0] if statuses else None)
+            if outcome.state is SettlementState.FAILED:
+                raise PaymentError(
+                    f"transaction {signature} failed on-chain: {outcome.detail}",
+                    code="transaction-failed",
+                )
+            if outcome.state is SettlementState.CONFIRMED:
+                return
             await asyncio.sleep(delay_seconds)
         raise PaymentError(
             f"timed out awaiting confirmation for {signature}",
             code="transaction-not-found",
         )
+
+
+class SettlementState(Enum):
+    """What a status read proves about a payment that may have been sent."""
+
+    #: Confirmed or finalized without an error.
+    CONFIRMED = "confirmed"
+    #: Included in a block with an error: it moved nothing.
+    FAILED = "failed"
+    #: Anything else: no status, not yet confirmed, or the read itself
+    #: failed. Never proof that the payment did not land.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class SettlementOutcome:
+    state: SettlementState
+    #: The on-chain error for ``FAILED``, a diagnostic otherwise.
+    detail: object = None
+
+
+def settlement_outcome(status: object) -> SettlementOutcome:
+    """Classify one ``getSignatureStatuses`` entry."""
+    if not isinstance(status, dict):
+        return SettlementOutcome(SettlementState.UNKNOWN, "no status")
+    err = status.get("err")
+    if err is not None:
+        return SettlementOutcome(SettlementState.FAILED, err)
+    if status.get("confirmationStatus") in {"confirmed", "finalized"}:
+        return SettlementOutcome(SettlementState.CONFIRMED)
+    return SettlementOutcome(SettlementState.UNKNOWN, "not confirmed yet")
+
+
+async def reconcile_settlement(rpc: Any, signature: str) -> SettlementOutcome:
+    """One status read for a payment sent by an earlier request.
+
+    Searches the node's transaction history (a retry can come after the
+    payment left the recent status cache), and a read that fails (a JSON-RPC
+    error, a transport error) is ``UNKNOWN``: a node outage is never proof
+    that the payment did not land, so the caller keeps it pending.
+    """
+    try:
+        statuses = await rpc.get_signature_statuses([signature], search_transaction_history=True)
+    except Exception as exc:  # noqa: BLE001 - any failed read leaves the outcome unknown
+        return SettlementOutcome(SettlementState.UNKNOWN, f"status read failed: {exc}")
+    return settlement_outcome(statuses[0] if statuses else None)
+
+
+def proves_settlement_failed(exc: BaseException) -> bool:
+    """Whether an error raised while confirming a sent payment proves it
+    failed on-chain. Only ``transaction-failed`` does; a timeout, a JSON-RPC
+    error or a transport error leaves the payment possibly landed."""
+    return isinstance(exc, PaymentError) and exc.code == "transaction-failed"

@@ -313,6 +313,32 @@ describe('server open verification binds to the challenged recentSlot', () => {
     });
 });
 
+describe('server open verification separates the channel payer from the sponsor', () => {
+    test('rejects an open whose payer is the sponsored fee payer', async () => {
+        const sponsor = await generateKeyPairSigner();
+        const { method, signer } = await methodFor({ feePayer: true, feePayerSigner: sponsor, rpc: blockhashRpc() });
+        const credential = openCredential(challengeRequest(signer.address), {
+            ...(await openPayloadFor(signer, CHALLENGED_SLOT.toString())),
+            payer: sponsor.address,
+        });
+        await expect(method.verify({ credential, request: credential.challenge.request } as never)).rejects.toThrow(
+            /payer must differ from the sponsored fee payer/,
+        );
+    });
+
+    test('a distinct payer passes the role check', async () => {
+        const sponsor = await generateKeyPairSigner();
+        const { method, signer } = await methodFor({ feePayer: true, feePayerSigner: sponsor, rpc: blockhashRpc() });
+        const credential = openCredential(
+            challengeRequest(signer.address),
+            await openPayloadFor(signer, CHALLENGED_SLOT.toString()),
+        );
+        await expect(method.verify({ credential, request: credential.challenge.request } as never)).rejects.not.toThrow(
+            /sponsored fee payer/,
+        );
+    });
+});
+
 async function clientOpenFixture() {
     const payer = await generateKeyPairSigner();
     const sessionSigner = await generateKeyPairSigner();

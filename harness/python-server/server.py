@@ -65,10 +65,15 @@ from solana_pay_kit import (  # noqa: E402
     Signer,
     Stablecoin,
 )
-from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
+from solana_pay_kit._paycore.errors import (  # noqa: E402
+    CODE_SETTLEMENT_IN_PROGRESS,
+    PaymentError,
+    canonical_code,
+    settlement_in_progress_response,
+)
 from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
 from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
-from solana_pay_kit.errors import InvalidProofError  # noqa: E402
+from solana_pay_kit.errors import InvalidProofError, SettlementInProgressError  # noqa: E402
 from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID as PAYMENT_CHANNELS_PROGRAM_ID  # noqa: E402
@@ -525,6 +530,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
             return
         try:
             payment = asyncio.run(adapter.adapter.verify_and_settle(gate, request))
+        except SettlementInProgressError as err:
+            self._send_settlement_in_progress(str(err))
+            return
         except InvalidProofError as err:
             self._send_json(
                 402,
@@ -629,6 +637,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
             receipt = asyncio.run(_verify_with_fresh_rpc())
         except PaymentError as err:
+            if canonical_code(err.code) == CODE_SETTLEMENT_IN_PROGRESS:
+                self._send_settlement_in_progress(str(err))
+                return
             self._issue_mpp_challenge(
                 adapter, amount, options, message=str(err) or "verification failed", code=err.code
             )
@@ -646,6 +657,10 @@ class HarnessHandler(BaseHTTPRequestHandler):
                 adapter.settlement_header: receipt.reference,
             },
         )
+
+    def _send_settlement_in_progress(self, message: str) -> None:
+        response = settlement_in_progress_response(message)
+        self._send_json(response["status_code"], response["body"], extra_headers=response["headers"])
 
     def _issue_mpp_challenge(
         self,

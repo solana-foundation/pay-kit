@@ -204,16 +204,25 @@ async def test_metered_sse_usage_overrides_amount_never_delivery_id() -> None:
     assert transport.commits[0].delivery_id == "stream-1"
 
 
-async def test_metered_sse_accepts_usage_before_directive() -> None:
-    # The usage event may arrive before the directive (rust state-machine
-    # parity): it cannot be validated yet and still overrides the amount.
+async def test_metered_sse_refuses_usage_before_directive_or_above_reservation() -> None:
     consumer = _consumer()
     stream = MeteredSseSession(consumer)
-    stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"33"}'))
+    with pytest.raises(ValueError, match="before the mpp.metering"):
+        stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"1"}'))
+
     directive = _directive(consumer.session.channel_id_string)
     stream.accept_event(_event("mpp.metering", json.dumps(directive.to_dict())))
+    with pytest.raises(ValueError, match="exceeds the reserved metering amount 1000"):
+        stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"1001"}'))
+    transport = consumer.transport
+    assert isinstance(transport, _RecordingTransport)
+    assert transport.commits == []
+
+    # Usage equal to the reservation is still accepted and committed.
+    stream.accept_event(_event("mpp.usage", '{"deliveryId":"stream-1","amount":"1000"}'))
     receipt = await stream.ack()
-    assert receipt.amount == "33"
+    assert receipt.amount == "1000"
+    assert consumer.session.cumulative == 1000
 
 
 # -- HttpCommitTransport ---------------------------------------------------------

@@ -104,7 +104,7 @@
   },
   {
     "bugType": "auth-bypass",
-    "description": "Divergence class: fee-payer-as-authority. When the fee payer signs as the transfer authority, the verifier must reject so a server fee payer cannot also be drained as the funding source. The pinned transaction is the kit's build for a challenge whose feePayerKey is the client itself.",
+    "description": "Divergence class: fee-payer-as-authority. When the fee payer signs as the transfer authority, the verifier must reject so a server fee payer cannot also be drained as the funding source. The challenge names the client itself as feePayerKey; the pinned transaction is the kit's client-paid build of the same charge (fee payer = authority = client), because the kit's client refuses to build a sponsored charge whose sponsor is the signer.",
     "expect": {
       "outcome": "reject",
       "rejectCode": "fee-payer-not-authority",

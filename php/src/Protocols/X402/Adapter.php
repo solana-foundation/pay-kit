@@ -6,6 +6,7 @@ namespace PayKit\Protocols\X402;
 
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
+use PayKit\Exception\TransactionFailedException;
 use PayKit\Gate;
 use PayKit\Payment;
 use PayKit\Protocol;
@@ -13,12 +14,13 @@ use PayKit\PayCore\Rpc\RpcGateway;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\X402\Exact\PaymentExtensions;
 use PayKit\Protocols\X402\Exact\Verifier;
+use PayKit\Store\ConsumedSignatures;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
 use Psr\Http\Message\ServerRequestInterface;
-use RuntimeException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
+use PayKit\PayCore\Solana\SignatureConfirmation;
 use PayKit\PayCore\Solana\TransactionWire;
 use Throwable;
 
@@ -46,7 +48,6 @@ final class Adapter
     private const X402_VERSION             = 2;
     private const X402_VERSION_V1          = 1;
     private const EXACT_SCHEME             = 'exact';
-    private const REPLAY_KEY_PREFIX        = 'x402-svm-exact:consumed:';
 
     // Canonical CAIP-2 chain identifiers (match Network::caip2() + the rust
     // spine types.rs). Used to normalize a legacy v1 plain network slug
@@ -61,7 +62,7 @@ final class Adapter
 
     private ?RpcGateway $rpc = null;
 
-    private readonly Store $replayStore;
+    private readonly ConsumedSignatures $consumedSignatures;
 
     /**
      * @param ?Store $replayStore Replay-protection store. When null (the
@@ -95,7 +96,7 @@ final class Adapter
             self::warnDefaultReplayStore();
             $replayStore = new MemoryStore();
         }
-        $this->replayStore = $replayStore;
+        $this->consumedSignatures = new ConsumedSignatures($replayStore);
         $this->recentBlockhashProvider = $recentBlockhashProvider;
         $this->rpc = $rpc;
     }
@@ -271,6 +272,15 @@ final class Adapter
         }
         $kp = Keypair::fromSecretKey($signer->secretKey());
         $tx->partialSign($kp);
+        // Every slot, the facilitator's included, must verify before the
+        // transaction is sent (RULINGS SIG1).
+        try {
+            $tx->assertSignaturesVerify();
+        } catch (Throwable $error) {
+            throw new InvalidProofException(
+                'invalid_exact_svm_payload_transaction_signature: ' . $error->getMessage(),
+            );
+        }
         $cosignedWire = $tx->serialize(verifySignatures: false);
 
         return $this->broadcastAndConfirm($header, $envelope, $payload, $version, $cosignedWire);
@@ -387,9 +397,7 @@ final class Adapter
         // rather than re-settling. Mirrors the MPP SolanaChargeHandler
         // (settle() reserves between sendRawTransaction and
         // awaitConfirmation; PR #85 Greptile P1 / audit gap G05).
-        if (!$this->replayStore->putIfAbsent(self::REPLAY_KEY_PREFIX . $sig, true)) {
-            throw new InvalidProofException('pay_kit: signature_consumed');
-        }
+        $this->consumeSignature($sig);
 
         // Confirm BEFORE returning the payment-response success. RPC
         // acceptance is not settlement: the transaction can still fail or
@@ -397,13 +405,26 @@ final class Adapter
         // finalized, throwing on on-chain failure or timeout so callers
         // never receive a success header for an unsettled transaction.
         // Closes main-audit finding 3 (PHP x402 confirm-before-success).
+        // Only a reported execution error rejects the payment. A status that
+        // cannot be read or is not confirmed in time leaves it pending
+        // (SettlementInProgressException, a retryable 409): the transaction
+        // may already have landed, so a fresh challenge would let the client
+        // pay twice.
         try {
-            $this->awaitConfirmation($sig);
-        } catch (Throwable $e) {
+            SignatureConfirmation::await(
+                $this->rpc(),
+                $sig,
+                $this->confirmationAttempts,
+                $this->confirmationDelayMicros,
+            );
+        } catch (TransactionFailedException $e) {
             throw new InvalidProofException(
                 'pay_kit: invalid proof: settlement not confirmed: ' . $e->getMessage(),
             );
         }
+        // Authorized at most once across protocols: an MPP retry reconciling
+        // the same signature cannot also be granted a response.
+        $this->authorizeSignature($sig);
 
         // Echo the network the credential committed to in the settlement
         // response: the canonical wire's `accepted.network` (CAIP-2) or the
@@ -434,30 +455,25 @@ final class Adapter
     }
 
     /**
-     * Poll `getSignatureStatuses` through the PayCore {@see RpcGateway}
-     * until the broadcast transaction is confirmed or finalized. Throws on
-     * on-chain failure (`err`) or when the confirmation budget is exhausted.
+     * Claim the signature in the ledger shared with MPP charge, so a payment
+     * settled through either protocol authorizes one request.
      */
-    private function awaitConfirmation(string $signature): void
+    private function consumeSignature(string $signature): void
     {
-        $rpc = $this->rpc();
-        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
-            $statuses = $rpc->getSignatureStatuses([$signature]);
-            $status = $statuses[0] ?? null;
-            if (is_array($status)) {
-                if (($status['err'] ?? null) !== null) {
-                    throw new RuntimeException(
-                        "Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR),
-                    );
-                }
-                $confirmationStatus = $status['confirmationStatus'] ?? null;
-                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
-                    return;
-                }
-            }
-            usleep($this->confirmationDelayMicros);
+        if (!$this->consumedSignatures->claim($signature)) {
+            throw new InvalidProofException('pay_kit: signature_consumed');
         }
-        throw new RuntimeException("Timed out waiting for transaction $signature");
+    }
+
+    /**
+     * Record that the confirmed signature authorized this response, at most
+     * once across protocols.
+     */
+    private function authorizeSignature(string $signature): void
+    {
+        if (!$this->consumedSignatures->authorize($signature)) {
+            throw new InvalidProofException('pay_kit: signature_consumed');
+        }
     }
 
     private function caip2(): string

@@ -11,7 +11,7 @@ const { mockFetch } = vi.hoisted(() => {
     return { mockFetch };
 });
 
-import { createPayKitClient, PermissionDeniedError } from '../client/index.js';
+import { ClientPermissions, createPayKitClient, PermissionDeniedError } from '../client/index.js';
 import { ConfigurationError } from '../errors.js';
 
 const RPC_URL = 'http://127.0.0.1:8899';
@@ -235,5 +235,85 @@ describe('createPayKitClient', () => {
 
             expect(envelope.extensions).toEqual({ 'payment-identifier': { info: { required: false } } });
         });
+    });
+
+    it('denies an MPP split to a recipient outside the allowlist before signing', async () => {
+        const mint = resolveStablecoinMint('USDC', 'mainnet');
+        if (!mint) throw new Error('missing mainnet USDC mint');
+        const merchant = await generateKeyPairSigner();
+        const attacker = await generateKeyPairSigner();
+        const challenge = Challenge.serialize({
+            id: 'split',
+            intent: 'charge',
+            method: 'solana',
+            realm: 'test',
+            request: {
+                amount: '1000',
+                currency: mint,
+                methodDetails: {
+                    decimals: 6,
+                    feePayer: false,
+                    network: 'mainnet',
+                    splits: [{ amount: '400', recipient: attacker.address }],
+                },
+                recipient: merchant.address,
+            },
+        });
+        mockFetch.mockResolvedValue(response(402, { 'www-authenticate': challenge }));
+        const signTransactions = vi.fn(signer.signTransactions.bind(signer));
+        const trackingSigner = new Proxy(signer, {
+            get: (target, property, receiver) =>
+                property === 'signTransactions' ? signTransactions : Reflect.get(target, property, receiver),
+        });
+        const client = await createPayKitClient({
+            accept: ['mpp'],
+            permissions: ClientPermissions.builder().allowRecipient(merchant.address).build(),
+            rpcUrl: RPC_URL,
+            signer: trackingSigner,
+        });
+
+        const error: unknown = await client.fetch('https://api.test/paid').catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(PermissionDeniedError);
+        expect((error as PermissionDeniedError).rejections).toEqual([
+            expect.objectContaining({
+                code: 'recipient_not_allowed',
+                message: expect.stringContaining(attacker.address),
+            }),
+        ]);
+        expect(signTransactions).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies an x402 payTo outside the recipient allowlist before signing', async () => {
+        const merchant = await generateKeyPairSigner();
+        const paymentRequired = btoa(
+            JSON.stringify({
+                accepts: [
+                    {
+                        amount: '500000',
+                        asset: resolveStablecoinMint('USDC', 'mainnet'),
+                        extra: {},
+                        maxTimeoutSeconds: 60,
+                        network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+                        payTo: signer.address,
+                        scheme: 'exact',
+                    },
+                ],
+                x402Version: 2,
+            }),
+        );
+        mockFetch.mockResolvedValue(response(402, { 'payment-required': paymentRequired }));
+        const client = await createPayKitClient({
+            accept: ['x402'],
+            permissions: ClientPermissions.builder().allowRecipient(merchant.address).build(),
+            rpcUrl: RPC_URL,
+            signer,
+        });
+
+        const error: unknown = await client.fetch('https://api.test/paid').catch((caught: unknown) => caught);
+        expect((error as PermissionDeniedError).rejections).toEqual([
+            expect.objectContaining({ code: 'recipient_not_allowed' }),
+        ]);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 });

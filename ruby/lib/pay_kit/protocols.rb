@@ -11,10 +11,9 @@ module PayKit
   #   #verify_and_settle(gate, req) -> Payment    (raises InvalidProof on failure)
   #   #detect?(request)             -> Boolean   (does this request carry our envelope?)
   #
-  # Adapters are stateless aside from the frozen config. Replay state
-  # lives inside the wrapped server
-  # (`PayKit::Protocols::X402::Server::Exact::SettlementCache`,
-  # `PayKit::Protocols::Mpp::Server`'s store).
+  # Adapters are stateless aside from the frozen config. Replay state is
+  # the one `PayCore::ConsumedSignatures` ledger the Rack middleware owns
+  # and hands to both the x402 config and every MPP server.
   module Protocols
     # Sentinel returned by `PayKit::Protocols::X402Adapter.exact` so gates can
     # express `accept: PayKit::Protocols::X402Adapter.exact` even though the

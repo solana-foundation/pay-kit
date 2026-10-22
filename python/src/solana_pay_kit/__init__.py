@@ -51,6 +51,7 @@ from solana_pay_kit.errors import (
     PaymentRequiredError,
     ProtocolIncompatibleError,
     ProtocolNotSupportedError,
+    SettlementInProgressError,
 )
 from solana_pay_kit.fee import Fee
 from solana_pay_kit.gate import Gate
@@ -117,6 +118,7 @@ __all__ = [
     "ChallengeExpiredError",
     "PaymentRequiredError",
     "ProtocolNotSupportedError",
+    "SettlementInProgressError",
     # expiry helpers (re-exported from solana_pay_kit.protocols.mpp)
     "seconds",
     "minutes",

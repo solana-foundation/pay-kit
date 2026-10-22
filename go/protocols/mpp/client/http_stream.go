@@ -217,16 +217,17 @@ func ParseMeteredSseEvent(event SseEvent) (MeteredSseEvent, error) {
 	}
 }
 
-// meteredStreamState pairs the live metering directive with the optional final
-// usage amount.
+// meteredStreamState pairs the live metering directive with the directive
+// settled against the stream's final usage.
 type meteredStreamState struct {
 	// directive is the latest mpp.metering directive seen on the stream;
 	// nil until one arrives, which makes committing an error.
 	directive *intents.MeteringDirective
 
-	// finalAmount is the usage-reported final amount in token base units;
+	// settled is directive settled against the stream's mpp.usage; only ever
+	// built by MeteringDirective.Settle, so it never exceeds the reservation.
 	// nil commits the directive's reserved amount instead.
-	finalAmount *uint64
+	settled *intents.MeteringDirective
 
 	// done is set once the stream signals completion via a done event, a
 	// [DONE] sentinel message, or EOF.
@@ -234,8 +235,8 @@ type meteredStreamState struct {
 }
 
 // applyEvent folds one SSE event into the state, returning the raw application
-// message when the event carries one. A usage event must reference the live
-// directive's deliveryId; it may override only the amount.
+// message when the event carries one. A usage event must follow a directive,
+// reference its deliveryId and stay within its reserved amount.
 func (s *meteredStreamState) applyEvent(event SseEvent) (json.RawMessage, error) {
 	parsed, err := ParseMeteredSseEvent(event)
 	if err != nil {
@@ -243,19 +244,20 @@ func (s *meteredStreamState) applyEvent(event SseEvent) (json.RawMessage, error)
 	}
 	switch parsed.Kind {
 	case MeteredSseEventMetering:
+		// Usage settles the directive it was reported against; a new
+		// reservation starts over.
 		s.directive = parsed.Metering
+		s.settled = nil
 		return nil, nil
 	case MeteredSseEventUsage:
-		if s.directive != nil && parsed.Usage.DeliveryID != s.directive.DeliveryID {
-			return nil, fmt.Errorf(
-				"usage delivery %s does not match directive %s",
-				parsed.Usage.DeliveryID, s.directive.DeliveryID)
+		if s.directive == nil {
+			return nil, fmt.Errorf("mpp.usage arrived before the mpp.metering event")
 		}
-		amount, err := parsed.Usage.AmountBaseUnits()
+		settled, err := s.directive.Settle(*parsed.Usage)
 		if err != nil {
 			return nil, err
 		}
-		s.finalAmount = &amount
+		s.settled = &settled
 		return nil, nil
 	case MeteredSseEventMessage:
 		return parsed.Message, nil
@@ -267,17 +269,17 @@ func (s *meteredStreamState) applyEvent(event SseEvent) (json.RawMessage, error)
 	}
 }
 
-// directiveForCommit returns the live directive with the final usage amount
-// applied, erroring when the stream never emitted a metering event.
+// directiveForCommit returns the directive settled against the final usage,
+// else the reserved directive, erroring when the stream never emitted a
+// metering event.
 func (s *meteredStreamState) directiveForCommit() (intents.MeteringDirective, error) {
+	if s.settled != nil {
+		return *s.settled, nil
+	}
 	if s.directive == nil {
 		return intents.MeteringDirective{}, fmt.Errorf("stream did not include mpp.metering event")
 	}
-	directive := *s.directive
-	if s.finalAmount != nil {
-		directive.Amount = strconv.FormatUint(*s.finalAmount, 10)
-	}
-	return directive, nil
+	return *s.directive, nil
 }
 
 // MeteredSseSession is a transport-neutral state machine for one metered SSE

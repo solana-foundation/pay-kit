@@ -353,11 +353,11 @@ crate::registry! {
             "Transaction Payload Security",
             "A malicious client could craft a transaction that transfers funds FROM the server's fee payer account rather than simply paying fees.",
         ),
-        "Divergence class: fee-payer-as-authority. When the fee payer signs as the transfer authority, the verifier must reject so a server fee payer cannot also be drained as the funding source. The pinned transaction is the kit's build for a challenge whose feePayerKey is the client itself.",
+        "Divergence class: fee-payer-as-authority. When the fee payer signs as the transfer authority, the verifier must reject so a server fee payer cannot also be drained as the funding source. The challenge names the client itself as feePayerKey; the pinned transaction is the kit's client-paid build of the same charge (fee payer = authority = client), because the kit's client refuses to build a sponsored charge whose sponsor is the signer.",
         Input::ChargeTransaction {
             base: input(spl_request("1000", json!({ "feePayer": true, "feePayerKey": CLIENT }))),
             mutation: None,
-            built_from: None,
+            built_from: Some(input(spl_request("1000", json!({})))),
         },
         reject(
             RejectCode::FeePayerNotAuthority,

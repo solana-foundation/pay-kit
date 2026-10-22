@@ -197,6 +197,15 @@ export async function buildChargeTransaction(
     if (serverPaysFees && !feePayerKey) {
         throw new Error('feePayer=true requires feePayerKey in methodDetails');
     }
+    // draft-solana-charge-00 fee sponsorship: "The client's account is the
+    // transfer authority but NOT the fee payer." A sponsor naming the signer
+    // would have the signer fund fees and split ATA rent while looking sponsored.
+    if (serverPaysFees && feePayerKey === signer.address) {
+        throw new Error(
+            'Fee payer cannot authorize the payment: feePayerKey names the signer; ' +
+                'a sponsored charge needs a separate server fee payer',
+        );
+    }
 
     const useServerFeePayer = serverPaysFees === true;
 

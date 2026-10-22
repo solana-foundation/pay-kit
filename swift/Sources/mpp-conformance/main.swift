@@ -316,6 +316,11 @@ private func classifyReject(_ message: String) -> String? {
         || (has("tokenprogram omitted") && has("no rpcclient")) {
         return "invalid-challenge"
     }
+    // The SDK's decoder refusing an offer that lacks a required field (an
+    // x402 offer without `network`): the challenge, not the payload.
+    if has("keynotfound") {
+        return "invalid-challenge"
+    }
     if has("invalid") || has("malformed") || has("decode") || has("payload") {
         return "invalid-payload"
     }

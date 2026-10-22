@@ -23,6 +23,7 @@ reqwest = { version = "0.12.28", optional = true, default-features = false, feat
 solana-pay-kit ={ path = "../kit", features = ["mpp", "x402", "client", "server", "testkit"] }
 base64 = "0.22"
 bs58 = "0.5"
+borsh = "1.0"
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,3 +39,7 @@ solana-rpc-client = { version = "4.1", default-features = false }
 solana-rpc-client-api = { version = "4.1", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+# Subscription fixture accounts are encoded with the kit's generated (borsh)
+# account types.
+solana-address = { version = "2", default-features = false }
+time = { version = "0.3", features = ["formatting"] }

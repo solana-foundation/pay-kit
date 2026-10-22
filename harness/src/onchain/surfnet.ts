@@ -8,6 +8,7 @@
  * which is how settlement-class regressions (e.g. the `TreasuryAccountMismatch`
  * that silently 402'd `upto`) get caught.
  */
+import { getAddressDecoder } from "@solana/kit";
 import { Surfnet } from "@solana/surfpool";
 
 /** Live mainnet deployment the playground/clients settle against. */
@@ -43,18 +44,34 @@ export interface OnchainSurfnet {
   stop(): void;
 }
 
-async function getAccount(rpcUrl: string, pubkey: string): Promise<unknown> {
+interface AccountInfo {
+  executable?: boolean;
+  owner?: string;
+  data?: [string, string];
+}
+
+async function getAccount(rpcUrl: string, pubkey: string, withData = false): Promise<AccountInfo | null> {
+  const config = withData ? { encoding: "base64" } : { encoding: "base64", dataSlice: { offset: 0, length: 0 } };
   const r = await fetch(rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getAccountInfo",
-      params: [pubkey, { encoding: "base64", dataSlice: { offset: 0, length: 0 } }],
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccountInfo", params: [pubkey, config] }),
   });
   return (await r.json())?.result?.value ?? null;
+}
+
+const UPGRADEABLE_LOADER = "BPFLoaderUpgradeab1e11111111111111111111111";
+
+/**
+ * The ProgramData account of an upgradeable-loader program: its `Program`
+ * state is a u32 tag (2) followed by the ProgramData address. `null` for a
+ * program that keeps its code in its own account.
+ */
+function programDataAddress(program: AccountInfo): string | null {
+  if (program.owner !== UPGRADEABLE_LOADER || !program.data) return null;
+  const bytes = Buffer.from(program.data[0], "base64");
+  if (bytes.length < 36 || bytes.readUInt32LE(0) !== 2) return null;
+  return getAddressDecoder().decode(bytes.subarray(4, 36));
 }
 
 /**
@@ -82,15 +99,32 @@ export async function startOnchainSurfnet(opts?: {
     surfnet,
     fundSol: (address, lamports) => surfnet.fundSol(address, lamports),
     fundUsdc: (owner, amount) => surfnet.fundToken(owner, USDC_MINT, amount, TOKEN_PROGRAM),
+    // An upgradeable program executes only once its ProgramData account (the
+    // code) is on the fork too; the program account alone resolving made the
+    // first settlement fail with InvalidProgramForExecution.
     async awaitProgram(programId, timeoutMs = 15_000) {
       const deadline = Date.now() + timeoutMs;
-      for (;;) {
-        surfnet.drainEvents();
-        const v = (await getAccount(rpcUrl, programId)) as { executable?: boolean } | null;
-        if (v?.executable) return;
-        if (Date.now() >= deadline) throw new Error(`program ${programId} not resolved from datasource ${datasourceRpc}`);
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      const wait = async (what: string, ready: () => Promise<boolean>) => {
+        for (;;) {
+          surfnet.drainEvents();
+          if (await ready()) return;
+          if (Date.now() >= deadline) throw new Error(`${what} not resolved from datasource ${datasourceRpc}`);
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      };
+      let program: AccountInfo | null = null;
+      await wait(`program ${programId}`, async () => {
+        program = await getAccount(rpcUrl, programId, true);
+        return program?.executable === true;
+      });
+      const programData = programDataAddress(program!);
+      if (programData === null) return;
+      surfnet.streamAccount(programData);
+      await wait(`program data ${programData} of ${programId}`, async () => {
+        // Past the 45-byte ProgramData header, there is code to run.
+        const data = await getAccount(rpcUrl, programData, true);
+        return data?.data !== undefined && Buffer.from(data.data[0], "base64").length > 45;
+      });
     },
     stop: () => surfnet.stop(),
   };

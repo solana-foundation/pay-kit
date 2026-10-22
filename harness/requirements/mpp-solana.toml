@@ -1,0 +1,250 @@
+repo = "mpp-specs-solana"
+commit = "5c4a528ce113815a2fb0b79801bd62bb2471a0e8"
+files = [
+  "specs/methods/solana/draft-solana-subscription-*",
+]
+
+# Solana method drafts pinned from solana-foundation/mpp-specs
+# (feat/solana-subscriptions) until they merge into tempoxyz/mpp-specs.
+# Same id scheme as mpp.toml: id = "MPP-" + sha256(normalised text)[:10].
+# `required = true`: `pkc req-lint` fails if no case maps the id any more.
+
+[[requirement]]
+id = "MPP-0a7c7d7791"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "When granting access in a later billing period, servers MUST:"
+required = true
+
+[[requirement]]
+id = "MPP-0e0da9c6a6"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "If source is present, servers MUST verify that it uses the did:pkh:solana: method and that its address matches the subscriber signer extracted from the activation transaction."
+required = true
+
+[[requirement]]
+id = "MPP-11cddfe4f2"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The subscriber-signed activation transaction MUST:"
+required = true
+
+[[requirement]]
+id = "MPP-12c23b8418"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST pin its deployment address in methodDetails.subscriptionProgram, and clients MUST validate that address before signing."
+required = true
+
+[[requirement]]
+id = "MPP-1d44630921"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The non-zero entries in plan.destinations MUST consist of exactly one address, and that address MUST equal recipient."
+required = true
+
+[[requirement]]
+id = "MPP-1ec64dcbc6"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST re-check subscription usability for every presentation; signature verification alone is insufficient."
+required = true
+
+[[requirement]]
+id = "MPP-2bbba2b551"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The Solana profile elevates recipient from OPTIONAL to REQUIRED and constrains the values that periodUnit may take."
+required = true
+
+[[requirement]]
+id = "MPP-327d9b66ba"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "MUST be plan.owner or appear in plan.pullers |"
+required = true
+
+[[requirement]]
+id = "MPP-42cf63c8b8"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The request JSON MUST be serialized using JSON Canonicalization Scheme (JCS) {{RFC8785}} and base64url-encoded without padding per {{I-D.httpauth-payment}}."
+required = true
+
+[[requirement]]
+id = "MPP-449b853cb2"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST reject activation transactions that pull funds through broader scopes than those required above."
+required = true
+
+[[requirement]]
+id = "MPP-45b8ba4317"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| type | string | REQUIRED | The string \"transaction\" |"
+required = true
+
+[[requirement]]
+id = "MPP-463ea35304"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| methodDetails.puller | string | REQUIRED | Base58 of the server's puller pubkey."
+required = true
+
+[[requirement]]
+id = "MPP-4a9406cfcb"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Clients MUST parse and verify the request payload before signing:"
+required = true
+
+[[requirement]]
+id = "MPP-4a98642d3c"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "MUST equal the on-chain plan.mint |"
+required = true
+
+[[requirement]]
+id = "MPP-52f835b76c"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| authentication | object | REQUIRED | Reusable payer proof defined in {{subscription-bearer-proof}} |"
+required = true
+
+[[requirement]]
+id = "MPP-58828c88cd"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST reject request objects where the mapped per-billing- period interval is zero or exceeds 8760 hours."
+required = true
+
+[[requirement]]
+id = "MPP-5d14dd20cb"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Implementations MUST treat currency and methodDetails.mint as the same value; servers MUST reject request objects where they differ."
+required = true
+
+[[requirement]]
+id = "MPP-60413f3bf6"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| methodDetails.decimals | number | REQUIRED | Decimal precision of the mint |"
+required = true
+
+[[requirement]]
+id = "MPP-62866c1462"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Clients MUST NOT sign an activation transaction whose on-chain Plan does not match the challenge."
+required = true
+
+[[requirement]]
+id = "MPP-634239a4f5"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The value MUST be the SPL Token program or the SPL Token-2022 program |"
+required = true
+
+[[requirement]]
+id = "MPP-6739698bb1"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The amount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace."
+required = true
+
+[[requirement]]
+id = "MPP-7ebd75eefc"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| methodDetails.planAddress | string | REQUIRED | Base58 address of the on-chain Plan account |"
+required = true
+
+[[requirement]]
+id = "MPP-83bfc235ab"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Clients and servers MUST reject credentials whose activation transaction uses a receiver ATA owned by any other address."
+required = true
+
+[[requirement]]
+id = "MPP-89be025a89"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "When validating a Solana subscription credential, servers MUST verify that the activation transaction:"
+required = true
+
+[[requirement]]
+id = "MPP-8a193ab322"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The subscriber-signed activation transaction MUST NOT contain SPL Token Approve or any other non-subscriptions-program instruction that could move the subscriber's tokens outside the per-period limit, and MUST NOT reference writable accounts that could redirect funds away from recipient."
+required = true
+
+[[requirement]]
+id = "MPP-9255227955"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "When the server receives a Solana \"subscription\" credential, it MUST:"
+required = true
+
+[[requirement]]
+id = "MPP-95dab3a64d"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Leading zeros MUST NOT be used."
+required = true
+
+[[requirement]]
+id = "MPP-98987d4454"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| transaction | string | REQUIRED | Standard-base64 of the activation transaction signed by the subscriber."
+required = true
+
+[[requirement]]
+id = "MPP-9dab72f223"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST NOT submit renewal charges for billing periods after cancellation takes effect."
+required = true
+
+[[requirement]]
+id = "MPP-9edde7b556"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "| type | string | REQUIRED | The string \"proof\" |"
+required = true
+
+[[requirement]]
+id = "MPP-aadffadc90"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The periodCount value MUST be a string representation of a positive integer in base 10 with no sign, decimal point, exponent, or surrounding whitespace."
+required = true
+
+[[requirement]]
+id = "MPP-afd07e174b"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST determine the payer identity from the activation transaction itself, by extracting the subscriber signer (the signer whose role corresponds to the delegator field of the resulting SubscriptionDelegation)."
+required = true
+
+[[requirement]]
+id = "MPP-b87a0cd7d3"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Before deserializing or mutating any account, implementations MUST validate the expected program owner for:"
+required = true
+
+[[requirement]]
+id = "MPP-cdbcb3a843"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The value MUST be day or week |"
+required = true
+
+[[requirement]]
+id = "MPP-d063521350"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST reject periodUnit=\"month\"."
+required = true
+
+[[requirement]]
+id = "MPP-dcaa3d63c8"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "The server MUST verify the proof against the delegation and the activation binding before granting access."
+required = true
+
+[[requirement]]
+id = "MPP-e0965cb0fe"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers MUST NOT treat activation as successful if subscriptionExpires is present and the activation transaction settles at or after that timestamp."
+required = true
+
+[[requirement]]
+id = "MPP-ef1bb057fc"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "During activation, the server MUST verify that:"
+required = true
+
+[[requirement]]
+id = "MPP-f90bd07116"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "REQUIRED when feePayer is true |"
+required = true
+
+[[requirement]]
+id = "MPP-fc9334823a"
+doc = "specs/methods/solana/draft-solana-subscription-00.md"
+text = "Servers and clients MUST reject request objects referencing a plan with an empty destination whitelist, more than one non-zero destination, or a destination different from recipient."
+required = true

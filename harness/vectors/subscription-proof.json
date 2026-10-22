@@ -1,0 +1,205 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "A proof by the subscriber over (challengeId, payer, delegation) verifies against that delegation.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "subscription-proof-valid",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8",
+      "MPP-ef1bb057fc"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The same proof presented for another delegation.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid",
+      "rejectReason": "the proof does not verify for this delegation"
+    },
+    "id": "subscription-proof-other-delegation-reject",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "8Ma17n7Pb4npgadqmZyGyoFpnobHJa4t9mXauN6FTpnA"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "Signed by another key, but naming the subscriber as payer.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid",
+      "rejectReason": "the proof does not verify for this delegation"
+    },
+    "id": "subscription-proof-other-signer-reject",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "signature": "3KDAkPFSxrSNjNZmhTjvPA16bVx8AAqmJUBoPzV3A7qr7YmVsBUpx46bzvMMYu9tceJ5JrAbK6JrUZAaPxaXBKb3",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "One byte of the signature flipped.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid",
+      "rejectReason": "the proof does not verify for this delegation"
+    },
+    "id": "subscription-proof-tampered-signature-reject",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "signature": "52NZwEJRwyTdsWrpFzC5i5owc3D8vfS9ZP3M7ACjhJXFbtjsiefn4xebgMmkv5zkdKvZ6N5eJQL5tz1RJam4NSN7",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "challengeId changed after signing: the signed subscriptionChallengeId no longer matches.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid",
+      "rejectReason": "the proof does not verify for this delegation"
+    },
+    "id": "subscription-proof-challenge-id-altered-reject",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "c3ViX3NvbGFuYV8wMQ",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "payer is not a base58 Ed25519 public key.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid",
+      "rejectReason": "the proof does not verify for this delegation"
+    },
+    "id": "subscription-proof-invalid-payer-reject",
+    "input": {
+      "subscriptionProof": {
+        "authentication": {
+          "challengeId": "qT8wErYuI3oPlKjH6gFdSa",
+          "payer": "not-a-public-key",
+          "signature": "52NZwEJRwyTdsWgVh7cg7BWbPWY2wYQ1Nj76GsPjrEn5DBn2JXYgcyPN4e2522KT9tA9PSg8RZapPpjX8FbCmzvo",
+          "type": "proof"
+        },
+        "subscriptionDelegation": "AwCtiXLhCLxYytJ9Gz5qQBd8GxY6GrwfRdeevPysEgJy"
+      }
+    },
+    "intent": "subscription",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dcaa3d63c8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-solana/specs/methods/solana/draft-solana-subscription-00.md",
+      "quote": "the Ed25519 signature verifies over the exact JCS object above.",
+      "section": "Subscription Bearer Proof"
+    },
+    "tier": "offline"
+  }
+]
