@@ -42,9 +42,13 @@ use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
 };
 use crate::x402::protocol::schemes::upto::{
-    assert_settlement_within_ceiling, verify_upto_payload, UptoExtra, UptoRequiredEnvelope,
-    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, UPTO_SCHEME,
+    assert_settlement_within_ceiling, verify_upto_payload, MaxChannelLifetime, Slot, UptoExtra,
+    UptoRequiredEnvelope, UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope,
+    UPTO_SCHEME,
 };
+
+/// The channel account for `payload.channelId` already exists (Phase 3 step 4).
+pub const ERR_CHANNEL_ALREADY_OPEN: &str = "invalid_upto_svm_channel_already_open";
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
@@ -81,6 +85,10 @@ pub struct UptoConfig {
     pub description: Option<String>,
     /// Completion window in seconds.
     pub max_timeout_seconds: u64,
+    /// The facilitator's `maxChannelLifetimeSecs`: verify refuses a route
+    /// whose `maxTimeoutSeconds`, or a payload whose `expiresAt - now`,
+    /// exceeds it, so a sponsored channel's rent is never locked longer.
+    pub max_channel_lifetime: MaxChannelLifetime,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
     /// Channel forced-close delay, in seconds. Defaults to the payment-channel
@@ -491,7 +499,7 @@ impl X402Upto {
             requirement.extra.recent_blockhash = Some(hint.blockhash.clone());
             requirement.extra.last_valid_block_height =
                 Some(hint.last_valid_block_height.to_string());
-            requirement.extra.recent_slot = Some(hint.slot.to_string());
+            requirement.extra.recent_slot = Some(Slot::new(hint.slot));
             accepts.push(requirement);
         }
 
@@ -574,7 +582,13 @@ impl X402Upto {
 
         let requirements = match_offered_requirement(offered, &envelope.accepted)?.clone();
 
-        verify_upto_payload(payload, &requirements, &self.receiver_authorizer(), now)?;
+        verify_upto_payload(
+            payload,
+            &requirements,
+            &self.receiver_authorizer(),
+            self.config.max_channel_lifetime,
+            now,
+        )?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
         // PaymentRequirements), not at the envelope level.
         let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());
@@ -636,6 +650,10 @@ impl X402Upto {
             )
         })?;
         let tx = decode_transaction(open_tx_b64)?;
+        // Phase 3 step 4: deposit settle opens the channel itself, so an
+        // account already at the PDA (an out-of-band open, a prior deposit,
+        // a replayed authorization) is refused before anything is signed.
+        self.ensure_channel_absent(&channel_id)?;
         // SECURITY: the operator co-signs as fee payer, so it must only ever
         // sign the expected channel-open instruction - never an arbitrary
         // operator-authorized instruction (e.g. a SystemProgram transfer that
@@ -649,12 +667,13 @@ impl X402Upto {
                 token_program: &token_program,
                 channel_id: &channel_id,
                 max_amount: max,
-                payload_nonce: &payload.nonce,
-                payload_open_slot: &payload.open_slot,
+                payload_nonce: payload.nonce.get(),
+                payload_open_slot: payload.open_slot.get(),
                 memo: requirements.extra.memo.as_deref(),
                 recipients: &expected_distribution,
             },
         )?;
+        verify_payer_signature(&tx, &payer)?;
         Ok(PreparedOpen {
             tx,
             expires_at: payload.expires_at,
@@ -1174,6 +1193,23 @@ impl X402Upto {
         now_unix().saturating_add(i64::try_from(ttl).unwrap_or(i64::MAX))
     }
 
+    /// Refuse a channel PDA that already holds an account. A failed read is
+    /// a refusal too: the check must not fail open.
+    fn ensure_channel_absent(&self, channel_id: &Pubkey) -> Result<(), Error> {
+        let existing = self
+            .rpc
+            .get_account_with_commitment(channel_id, self.rpc.commitment())
+            .map_err(|e| Error::Rpc(format!("channel account read failed: {e}")))?
+            .value;
+        if existing.is_some() {
+            return Err(Error::Other(format!(
+                "{ERR_CHANNEL_ALREADY_OPEN}: channel {} already exists; deposit settle must open it",
+                pc::pubkey_string(channel_id)
+            )));
+        }
+        Ok(())
+    }
+
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
         let data = self
             .rpc
@@ -1243,8 +1279,8 @@ struct ExpectedOpen<'a> {
     token_program: &'a Pubkey,
     channel_id: &'a Pubkey,
     max_amount: u64,
-    payload_nonce: &'a str,
-    payload_open_slot: &'a str,
+    payload_nonce: u64,
+    payload_open_slot: u64,
     memo: Option<&'a str>,
     recipients: &'a [pc::Distribution],
 }
@@ -1421,6 +1457,108 @@ fn find_canonical_open_instruction<'tx>(
     )?)
 }
 
+/// Account positions of the canonical `open` (scheme_upto_svm.md
+/// “Canonical open instruction”).
+const OPEN_ACCOUNT_COUNT: usize = 14;
+
+/// The `open` positions that must be writable: payer, rent_payer, channel,
+/// payer_token_account, channel_token_account.
+const OPEN_WRITABLE_POSITIONS: [usize; 5] = [0, 1, 5, 6, 7];
+
+/// The `open` positions that must sign: payer and rent_payer.
+const OPEN_SIGNER_POSITIONS: [usize; 2] = [0, 1];
+
+/// Message and signer rules plus the open's privilege table: the required
+/// signers are exactly `{ payload.from, extra.feePayer }`, the writable and
+/// signer roles carry their privileges, and no key outside the writable
+/// roles is writable anywhere in the message (an equal-key union with a
+/// writable role, such as `payee == rent_payer`, is that role).
+fn check_open_privileges(
+    tx: &VersionedTransaction,
+    keys: &[Pubkey],
+    ix: &CompiledInstruction,
+    payer: &Pubkey,
+    fee_payer: &Pubkey,
+) -> Result<(), Error> {
+    let header = tx.message.header();
+    let signed = usize::from(header.num_required_signatures);
+    let readonly_signed = usize::from(header.num_readonly_signed_accounts);
+    let readonly_unsigned = usize::from(header.num_readonly_unsigned_accounts);
+    if signed > keys.len() || readonly_signed > signed || readonly_unsigned > keys.len() - signed {
+        return Err(Error::Other(
+            "invalid open transaction header: signer counts exceed the account keys".into(),
+        ));
+    }
+    let is_signer = |i: usize| i < signed;
+    let is_writable = |i: usize| {
+        if i < signed {
+            i < signed - readonly_signed
+        } else {
+            i < keys.len() - readonly_unsigned
+        }
+    };
+
+    for key in &keys[..signed] {
+        if key != payer && key != fee_payer {
+            return Err(Error::Other(format!(
+                "open requires an unexpected signer {}: the required signers must be exactly payload.from and extra.feePayer",
+                pc::pubkey_string(key)
+            )));
+        }
+    }
+
+    let index_at = |pos: usize| ix.accounts[pos] as usize;
+    for pos in OPEN_SIGNER_POSITIONS {
+        if !is_signer(index_at(pos)) {
+            return Err(Error::Other(format!(
+                "open instruction account #{pos} must be a signer"
+            )));
+        }
+    }
+    for pos in OPEN_WRITABLE_POSITIONS {
+        if !is_writable(index_at(pos)) {
+            return Err(Error::Other(format!(
+                "open instruction account #{pos} must be writable"
+            )));
+        }
+    }
+    let writable_roles: Vec<usize> = OPEN_WRITABLE_POSITIONS
+        .iter()
+        .map(|&p| index_at(p))
+        .collect();
+    if let Some(i) = (0..keys.len()).find(|&i| is_writable(i) && !writable_roles.contains(&i)) {
+        return Err(Error::Other(format!(
+            "open instruction leaves {} writable outside the open's writable roles",
+            pc::pubkey_string(&keys[i])
+        )));
+    }
+    Ok(())
+}
+
+/// The `payload.from` signature must be present and valid before the fee
+/// payer co-signs (“Message and signer rules”): otherwise the sponsor signs,
+/// and pays to broadcast, a transaction that cannot land.
+fn verify_payer_signature(tx: &VersionedTransaction, payer: &Pubkey) -> Result<(), Error> {
+    let signed = usize::from(tx.message.header().num_required_signatures);
+    let index = tx.message.static_account_keys()
+        [..signed.min(tx.message.static_account_keys().len())]
+        .iter()
+        .position(|key| key == payer)
+        .ok_or_else(|| {
+            Error::Other("invalid payload: payload.from does not sign the open".into())
+        })?;
+    let valid = tx
+        .signatures
+        .get(index)
+        .is_some_and(|signature| signature.verify(payer.as_ref(), &tx.message.serialize()));
+    if !valid {
+        return Err(Error::Other(
+            "invalid payload: the payload.from signature on the open is missing or invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Assert `tx` carries the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
 // Each account slot is an independent expected key (rentPayer vs
@@ -1440,8 +1578,8 @@ pub(crate) fn validate_open_instruction(
     channel_id: &Pubkey,
     max_amount: Option<u64>,
     expected_grace_period: Option<u32>,
-    payload_nonce: Option<&str>,
-    payload_open_slot: Option<&str>,
+    payload_nonce: Option<u64>,
+    payload_open_slot: Option<u64>,
     recent_slot: Option<u64>,
     expected_memo: Option<&str>,
     expected_recipients: Option<&[pc::Distribution]>,
@@ -1456,10 +1594,13 @@ pub(crate) fn validate_open_instruction(
     // resolves accounts via `static_account_keys()`), size within the version's
     // limit; then the version-1 header config against the ComputeBudget caps.
     crate::core::tx::check_envelope(tx, accepted_versions)?;
-    crate::core::tx::check_v1_budget_caps(
+    // x402-txv1 scheme_upto_svm.md: “loadedAccountsDataSizeLimit MUST be
+    // present”, not pinned to the maximum.
+    crate::core::tx::check_v1_budget_caps_with(
         &tx.message,
         pc::OPEN_MAX_COMPUTE_UNIT_LIMIT,
         pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        crate::core::tx::LoadedDataLimitRule::Present,
     )?;
 
     let keys = tx.message.static_account_keys();
@@ -1472,6 +1613,14 @@ pub(crate) fn validate_open_instruction(
     // gasless `upto` both are the operator, in gasless `batch` rentPayer is the
     // operator while authorized_signer is the payer, so each slot is checked
     // against its own expected key rather than a single conflated one.
+    // Exactly the 14 canonical positions: a remaining account is one more
+    // key the sponsor's signature would carry into the program.
+    if ix.accounts.len() != OPEN_ACCOUNT_COUNT {
+        return Err(Error::Other(format!(
+            "open instruction has {} accounts; it must have exactly {OPEN_ACCOUNT_COUNT} and no remaining accounts",
+            ix.accounts.len()
+        )));
+    }
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -1514,6 +1663,7 @@ pub(crate) fn validate_open_instruction(
         "event_authority",
     )?;
     expect(13, program_id, "self_program")?;
+    check_open_privileges(tx, keys, ix, payer, rent_payer)?;
 
     // [discriminator u8][OpenArgs], decoded whole: trailing or malformed bytes
     // are refused, and the recipients — not a PDA seed, so free to differ
@@ -1544,16 +1694,16 @@ pub(crate) fn validate_open_instruction(
         }
     }
     if let Some(payload_nonce) = payload_nonce {
-        if payload_nonce != salt.to_string() {
+        if payload_nonce != salt {
             return Err(Error::Other(format!(
-                "open salt {salt} does not match payload nonce {payload_nonce:?}"
+                "open salt {salt} does not match payload nonce {payload_nonce}"
             )));
         }
     }
     if let Some(payload_open_slot) = payload_open_slot {
-        if payload_open_slot != open_slot.to_string() {
+        if payload_open_slot != open_slot {
             return Err(Error::Other(format!(
-                "open slot {open_slot} does not match payload openSlot {payload_open_slot:?}"
+                "open slot {open_slot} does not match payload openSlot {payload_open_slot}"
             )));
         }
     }
@@ -1712,7 +1862,7 @@ mod tests {
         );
         let params = open_params(payer, payee, mint, operator);
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
 
         assert!(validate_open_instruction(
             &tx,
@@ -1734,6 +1884,197 @@ mod tests {
             None,
         )
         .is_ok());
+    }
+
+    /// The validator over `tx` with the `open_params` bindings.
+    fn validate_params_tx(
+        tx: &VersionedTransaction,
+        params: &OpenChannelParams,
+        memo: Option<&str>,
+    ) -> Result<(), Error> {
+        let channel = derive_channel_addresses(params).channel;
+        validate_open_instruction(
+            tx,
+            &[TxVersion::V0],
+            &pc::default_program_id(),
+            &params.rent_payer,
+            &params.authorized_signer,
+            &params.payer,
+            &params.payee,
+            &params.mint,
+            &token_program(),
+            &channel,
+            None,
+            None,
+            None,
+            None,
+            None,
+            memo,
+            None,
+        )
+    }
+
+    fn sponsored_params() -> OpenChannelParams {
+        let operator = Pubkey::new_unique();
+        let mut params = open_params(
+            Pubkey::new_unique(),
+            operator,
+            Pubkey::new_unique(),
+            operator,
+        );
+        params.payee = operator;
+        params
+    }
+
+    #[test]
+    fn the_required_signers_are_exactly_the_payer_and_the_fee_payer() {
+        let params = sponsored_params();
+        let open = build_open_instruction(&params);
+        let tx = unsigned_tx_with_fee_payer(std::slice::from_ref(&open), params.rent_payer);
+        assert!(validate_params_tx(&tx, &params, None).is_ok());
+
+        // A third key required to sign (here on the memo) is refused.
+        let stranger = Pubkey::new_unique();
+        let mut memo = memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60");
+        memo.accounts
+            .push(solana_instruction::AccountMeta::new_readonly(
+                stranger, true,
+            ));
+        let tx = unsigned_tx_with_fee_payer(&[open, memo], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("unexpected signer"), "{err}");
+    }
+
+    #[test]
+    fn the_open_privileges_follow_the_table() {
+        let params = sponsored_params();
+        // The mint made writable.
+        let mut open = build_open_instruction(&params);
+        open.accounts[3].is_writable = true;
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("writable outside"), "{err}");
+
+        // A writable account on a suffix instruction.
+        let open = build_open_instruction(&params);
+        let mut memo = memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60");
+        memo.accounts.push(solana_instruction::AccountMeta::new(
+            Pubkey::new_unique(),
+            false,
+        ));
+        let tx = unsigned_tx_with_fee_payer(&[open, memo], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("writable outside"), "{err}");
+
+        // The channel demoted to read-only.
+        let mut open = build_open_instruction(&params);
+        open.accounts[5].is_writable = false;
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("#5 must be writable"), "{err}");
+    }
+
+    #[test]
+    fn the_open_has_no_remaining_accounts() {
+        let params = sponsored_params();
+        let mut open = build_open_instruction(&params);
+        open.accounts
+            .push(solana_instruction::AccountMeta::new_readonly(
+                Pubkey::new_unique(),
+                false,
+            ));
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("exactly 14"), "{err}");
+    }
+
+    #[test]
+    fn an_unbound_open_admits_several_memos_a_bound_one_exactly_one() {
+        let params = sponsored_params();
+        let open = build_open_instruction(&params);
+        let memos = [
+            memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60"),
+            memo_ix("wallet-note"),
+        ];
+        let tx = unsigned_tx_with_fee_payer(
+            &[open.clone(), memos[0].clone(), memos[1].clone()],
+            params.rent_payer,
+        );
+        assert!(validate_params_tx(&tx, &params, None).is_ok());
+
+        let declared = X402Upto::route_memo("GET /a");
+        let tx = unsigned_tx_with_fee_payer(
+            &[open, memo_ix(&declared), memo_ix(&declared)],
+            params.rent_payer,
+        );
+        assert!(validate_params_tx(&tx, &params, Some(&declared)).is_err());
+    }
+
+    #[test]
+    fn the_payer_signature_must_be_present_and_valid() {
+        use ed25519_dalek::Signer as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let payer = Pubkey::from(key.verifying_key().to_bytes());
+        let operator = Pubkey::new_unique();
+        let mut params = open_params(payer, operator, Pubkey::new_unique(), operator);
+        params.payee = operator;
+        let mut tx =
+            unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], params.rent_payer);
+        let index = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|k| *k == payer)
+            .unwrap();
+
+        let err = verify_payer_signature(&tx, &payer).unwrap_err();
+        assert!(err.to_string().contains("missing or invalid"), "{err}");
+
+        let signature = key.sign(&tx.message.serialize());
+        tx.signatures[index] = Signature::from(signature.to_bytes());
+        assert!(verify_payer_signature(&tx, &payer).is_ok());
+
+        let mut bytes = signature.to_bytes();
+        bytes[0] ^= 1;
+        tx.signatures[index] = Signature::from(bytes);
+        let err = verify_payer_signature(&tx, &payer).unwrap_err();
+        assert!(err.to_string().contains("missing or invalid"), "{err}");
+    }
+
+    #[test]
+    fn an_existing_channel_account_is_refused_and_a_failed_read_fails_closed() {
+        let engine = |rpc: RpcClient| {
+            let mut engine = multi_currency_engine(&["USDC"]);
+            engine.rpc = Arc::new(rpc);
+            engine
+        };
+        let channel = Pubkey::new_unique();
+        let answering = |value: serde_json::Value| {
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": value }),
+            );
+            RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+        };
+        let account = serde_json::json!({
+            "lamports": 1_000_000,
+            "data": ["", "base64"],
+            "owner": pc::PAYMENT_CHANNELS_PROGRAM_ID,
+            "executable": false,
+            "rentEpoch": 0,
+            "space": 0,
+        });
+        let err = engine(answering(account))
+            .ensure_channel_absent(&channel)
+            .unwrap_err();
+        assert!(err.to_string().contains(ERR_CHANNEL_ALREADY_OPEN), "{err}");
+        assert!(engine(answering(serde_json::Value::Null))
+            .ensure_channel_absent(&channel)
+            .is_ok());
+        assert!(engine(RpcClient::new_mock("fails".to_string()))
+            .ensure_channel_absent(&channel)
+            .is_err());
     }
 
     #[test]
@@ -1762,7 +2103,7 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
 
         // Correct expectations (rentPayer = operator, authorized_signer = payer).
         assert!(validate_open_instruction(
@@ -1826,7 +2167,7 @@ mod tests {
         );
         let params = open_params(payer, payee, mint, operator);
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
         let check = |channel: &Pubkey, max_amount: Option<u64>, recent_slot: Option<u64>| {
             validate_open_instruction(
                 &tx,
@@ -1872,7 +2213,7 @@ mod tests {
         let err = check(&other, Some(1_000_000), Some(314)).unwrap_err();
         assert!(err.to_string().contains("channel"), "{err}");
 
-        let strict = |withdraw_delay: u32, payload_nonce: &str, payload_open_slot: &str| {
+        let strict = |withdraw_delay: u32, payload_nonce: u64, payload_open_slot: u64| {
             validate_open_instruction(
                 &tx,
                 &[TxVersion::V0],
@@ -1893,12 +2234,12 @@ mod tests {
                 None,
             )
         };
-        assert!(strict(900, "7", "314").is_ok());
-        let err = strict(901, "7", "314").unwrap_err();
+        assert!(strict(900, 7, 314).is_ok());
+        let err = strict(901, 7, 314).unwrap_err();
         assert!(err.to_string().contains("withdraw delay"), "{err}");
-        let err = strict(900, "8", "314").unwrap_err();
+        let err = strict(900, 8, 314).unwrap_err();
         assert!(err.to_string().contains("payload nonce"), "{err}");
-        let err = strict(900, "7", "315").unwrap_err();
+        let err = strict(900, 7, 315).unwrap_err();
         assert!(err.to_string().contains("payload openSlot"), "{err}");
     }
 
@@ -2063,7 +2404,7 @@ mod tests {
                 }
             })
             .collect();
-        let tx = unsigned_tx(&wrapped);
+        let tx = unsigned_tx_with_fee_payer(&wrapped, operator);
         validate_open_instruction(
             &tx,
             &[TxVersion::V0],
@@ -2314,6 +2655,7 @@ mod tests {
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
+            max_channel_lifetime: MaxChannelLifetime::ONE_HOUR,
             program_id: None,
             withdraw_delay: 900,
             fee_payer_signer: std::sync::Arc::new(TestSigner(receiver_authorizer)),
@@ -2498,7 +2840,7 @@ mod tests {
         assert_ne!(memo_a, memo_b);
         let validate = |instructions: &[Instruction], expected: Option<&str>| {
             validate_open_instruction(
-                &unsigned_tx(instructions),
+                &unsigned_tx_with_fee_payer(instructions, operator),
                 &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
@@ -2614,7 +2956,7 @@ mod tests {
             let mut open = build_open_instruction(params);
             open.data.extend_from_slice(data_suffix);
             validate_open_instruction(
-                &unsigned_tx(&[open]),
+                &unsigned_tx_with_fee_payer(&[open], operator),
                 &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
@@ -2662,6 +3004,7 @@ mod tests {
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
+            max_channel_lifetime: MaxChannelLifetime::ONE_HOUR,
             program_id: None,
             withdraw_delay: 900,
             fee_payer_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
@@ -2707,8 +3050,8 @@ mod tests {
         // Both carry the same fetched blockhash + recentSlot.
         assert_eq!(usdc.extra.recent_blockhash, pyusd.extra.recent_blockhash);
         assert!(usdc.extra.recent_blockhash.is_some());
-        assert_eq!(usdc.extra.recent_slot.as_deref(), Some("314"));
-        assert_eq!(pyusd.extra.recent_slot.as_deref(), Some("314"));
+        assert_eq!(usdc.extra.recent_slot, Some(Slot::new(314)));
+        assert_eq!(pyusd.extra.recent_slot, Some(Slot::new(314)));
     }
 
     /// The matcher selects the offered requirement whose currency the client
@@ -2807,7 +3150,7 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], fee_payer);
 
         let check = |payee: &Pubkey| {
             validate_open_instruction(

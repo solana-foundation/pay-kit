@@ -22,7 +22,7 @@ use solana_pay_kit::x402::client::upto::build_upto_header;
 use solana_pay_kit::x402::server::upto::testkit::verify_open_pre_broadcast;
 use solana_pay_kit::x402::server::upto::{UptoConfig, UptoPayout, X402Upto};
 use solana_pay_kit::x402::server::CurrencyConfig;
-use solana_pay_kit::x402::upto::UptoRequirements;
+use solana_pay_kit::x402::upto::{MaxChannelLifetime, UptoRequirements};
 use solana_pubkey::Pubkey;
 
 use super::{fixture_rpc, Outcome, Rejection};
@@ -44,7 +44,20 @@ fn code_for(message: &str) -> Option<&'static str> {
     let m = message.to_ascii_lowercase();
     let has = |n: &str| m.contains(n);
     Some(
-        if has("is not accepted; accepted versions") || has("signer signs up to version") {
+        // The scheme's own error codes (scheme_upto_svm.md §7) first.
+        if has("invalid_upto_svm_payload_unexpected_voucher") {
+            "unexpected-voucher"
+        } else if has("invalid_upto_svm_payload_type") {
+            "unexpected-type"
+        } else if has("invalid_upto_svm_channel_already_open") {
+            "channel-already-open"
+        } else if has("invalid_upto_svm_payload_channel_lifetime_exceeded") {
+            "channel-lifetime-exceeded"
+        } else if has("invalid_upto_svm_payload_expires_at_mismatch") {
+            "expires-at-mismatch"
+        } else if has("unexpected signer") {
+            "unexpected-instruction"
+        } else if has("is not accepted; accepted versions") || has("signer signs up to version") {
             "unsupported-version"
         } else if has("compute unit price") && (has("exceed") || has("maximum")) {
             "compute-price-over-cap"
@@ -224,6 +237,10 @@ async fn verify(input: &Value) -> Result<Outcome, Rejection> {
         resource: String::new(),
         description: None,
         max_timeout_seconds: number("x402ServerMaxTimeoutSeconds")?,
+        max_channel_lifetime: MaxChannelLifetime::from_secs(number(
+            "x402ServerMaxChannelLifetimeSeconds",
+        )?)
+        .ok_or("server config: maxChannelLifetimeSecs must be positive")?,
         program_id: None,
         withdraw_delay: number("x402ServerWithdrawDelay")? as u32,
         fee_payer_signer: Arc::new(signer(input, "x402ServerFeePayerSecretKey")?),

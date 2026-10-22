@@ -276,3 +276,18 @@ pattern = "vector/session-open-*"
 id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
 reason = "the x402 exact verifier caps the unit price alone (go/protocols/x402/verify.go:21), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
 tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"
+
+[[known_failing]]
+ids = [
+  "interop/x402-upto-basic/go/rust",
+  "interop/x402-upto-zero-actual/go/rust",
+]
+reason = "the Go upto client adapter signs expiresAt = now + 1 h (harness/go-client/main.go:168) against a 300 s maxTimeoutSeconds; the Rust server now refuses it (scheme_upto_svm.md Phase 3 step 7: \"Reject ... when expiresAt is later than now + maxTimeoutSeconds (plus clock skew)\")"
+tracking = "FINDINGS.md#go-upto-client-expires-beyond-timeout"
+
+[[known_failing]]
+ids = [
+  "interop/x402-upto-basic/rust/go",
+]
+reason = "the Go upto server refuses any open with more than one instruction (go/protocols/x402/upto.go:795), so the random-nonce Memo every client MUST now include is rejected"
+tracking = "FINDINGS.md#go-upto-server-memo-suffix-refused"

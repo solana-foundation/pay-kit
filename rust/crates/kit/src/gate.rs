@@ -275,6 +275,7 @@ impl PayKit {
                     resource: String::new(),
                     description: None,
                     max_timeout_seconds: UPTO_MAX_TIMEOUT_SECONDS,
+                    max_channel_lifetime: crate::x402::upto::MaxChannelLifetime::ONE_HOUR,
                     program_id: None,
                     withdraw_delay: 0,
                     fee_payer_signer: signer.clone(),

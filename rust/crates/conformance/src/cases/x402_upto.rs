@@ -261,6 +261,28 @@ fn verify_case(
     builder.build()
 }
 
+/// An accept a stricter-than-spec verifier would refuse.
+fn accept_lenient(
+    id: &str,
+    file: &'static str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    vspec: VerifySpec,
+) -> Case {
+    verify_case(
+        id,
+        file,
+        spec,
+        reqs,
+        BugType::Defaults,
+        description,
+        vspec,
+        Expect::Accept(Pin::Outcome),
+        None,
+    )
+}
+
 fn accept(
     id: &str,
     file: &'static str,
@@ -279,29 +301,6 @@ fn accept(
         vspec,
         Expect::Accept(Pin::Outcome),
         None,
-    )
-}
-
-/// An accept the spec requires and the kit refuses.
-fn accept_authored(
-    id: &str,
-    file: &'static str,
-    spec: SpecRef,
-    reqs: &[&str],
-    description: &str,
-    vspec: VerifySpec,
-    divergence: &str,
-) -> Case {
-    verify_case(
-        id,
-        file,
-        spec,
-        reqs,
-        BugType::Defaults,
-        description,
-        vspec,
-        Expect::AcceptAuthored(json!({})),
-        Some(divergence),
     )
 }
 
@@ -426,20 +425,6 @@ fn ra() -> String {
     key(RECEIVER_AUTHORIZER_SEED).to_string()
 }
 
-const KIT_NO_CLIENT_FIELD_REJECT: &str = "UptoPayload deserializes with serde, which ignores keys it does not model; verify_open never looks for voucherSignature or type (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_NO_LIFETIME: &str = "X402Upto has no maxChannelLifetimeSecs and never bounds expiresAt by now + maxTimeoutSeconds; verify_upto_payload checks only validAfter <= now < expiresAt (rust/crates/kit/src/x402/protocol/schemes/upto/verify.rs)";
-const KIT_NO_CHANNEL_EXISTS: &str = "verify_open_for_route does not read the channel account before co-signing; an existing channel only fails at broadcast (rust/crates/kit/src/x402/server/upto.rs prepare_open)";
-const KIT_NO_SIGNATURE_CHECK: &str = "prepare_open never verifies the payer's signature before the fee payer co-signs (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_NO_SIGNER_SET: &str = "the open policy never compares the required-signer set with { payload.from, extra.feePayer } (rust/crates/kit/src/core/payment_channel/v1.rs scan_channel_tx_layout)";
-const KIT_NO_PRIVILEGES: &str = "validate_open_instruction compares account keys only, never writable flags (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_REMAINING_ACCOUNTS: &str = "validate_open_instruction checks positions 0..=13 and ignores remaining accounts (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_ONE_MEMO: &str = "MemoPolicy::Optional still refuses a second Memo, though an undeclared memo leaves the four-instruction suffix free (rust/crates/kit/src/core/payment_channel/v1.rs scan_channel_tx_layout)";
-const KIT_TEXTUAL_SEEDS: &str = "the kit compares payload.nonce / payload.openSlot with the open arguments as text and reports a binding mismatch, never that the field is not a decimal u64 (rust/crates/kit/src/x402/server/upto.rs validate_open_instruction)";
-const KIT_SLOT_STRING: &str = "UptoPayload.open_slot is a String, so the spec's numeric openSlot fails to deserialize (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_RECENT_SLOT_STRING: &str = "UptoExtra.recent_slot is an Option<String>, so the spec example's numeric recentSlot fails to deserialize (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_NO_MEMO_NONCE: &str = "build_upto_payload emits a bare open when the challenge declares no memo (rust/crates/kit/src/x402/client/upto/payment.rs OpenTxOptions)";
-const KIT_V1_LOADED_LIMIT: &str = "check_v1_budget_caps requires loadedAccountsDataSizeLimit to equal the 64 MiB maximum rather than be present (rust/crates/kit/src/core/tx/policy.rs)";
-
 crate::registry! {
     // ── wire goldens ───────────────────────────────────────────────────────
     x402_upto_voucher_message_golden => wire_case(
@@ -553,23 +538,21 @@ crate::registry! {
         "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000 sit exactly at the absolute ceilings and are accepted.",
         with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
     );
-    x402_upto_verify_two_memos_unbound_accept => accept_authored(
+    x402_upto_verify_two_memos_unbound_accept => accept_lenient(
         "x402-upto-verify-two-memos-unbound-accept",
         POLICY_FILE,
         spec(SVM, "Top-level instruction layout", "An optional suffix of at most four instructions, each invoking either Lighthouse (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95) or SPL Memo (MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr)."),
         &[LAYOUT],
         "The route declares no extra.memo, so the suffix is only bounded at four Lighthouse/Memo instructions; two memos are allowed.",
         with(base(), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), memo_ix("second-memo-0123456789abcdef")])),
-        KIT_ONE_MEMO,
     );
-    x402_upto_verify_open_slot_number_accept => accept_authored(
+    x402_upto_verify_open_slot_number_accept => accept_lenient(
         "x402-upto-verify-open-slot-number-accept",
         VERIFY_FILE,
         spec(SVM, "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)", "| openSlot | number | u64 slot encoded in the open instruction and used as a channel PDA seed. |"),
         &[OPEN_ENCODES],
         "payload.openSlot as the JSON number the pinned table types it as (every fixture elsewhere uses the decimal string all SDKs emit; RULINGS.md U1).",
         with(base(), Tamper::PayloadValue("openSlot", json!(SLOT))),
-        KIT_SLOT_STRING,
     );
 
     // ── verify: payload and requirement bindings ───────────────────────────
@@ -582,7 +565,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("voucherSignature", json!("5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW")),
         RejectCode::UnexpectedVoucher,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_client_voucher_empty_reject => reject(
         "x402-upto-verify-client-voucher-empty-reject",
@@ -593,7 +576,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("voucherSignature", json!("")),
         RejectCode::UnexpectedVoucher,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_client_type_reject => reject(
         "x402-upto-verify-client-type-reject",
@@ -604,7 +587,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("type", json!("deposit")),
         RejectCode::UnexpectedType,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_max_amount_mismatch_reject => reject(
         "x402-upto-verify-max-amount-mismatch-reject",
@@ -703,7 +686,7 @@ crate::registry! {
         "payload.nonce is not a decimal u64 (\"abc\"): the payload is malformed, rejected as invalid-payload.",
         with(base(), Tamper::PayloadValue("nonce", json!("abc"))),
         Expect::Reject { code: RejectCode::InvalidPayload, reason: Some("nonce is not a decimal u64".into()) },
-        Some(KIT_TEXTUAL_SEEDS),
+        None,
     );
     x402_upto_verify_open_slot_not_decimal_reject => verify_case(
         "x402-upto-verify-open-slot-not-decimal-reject",
@@ -714,7 +697,7 @@ crate::registry! {
         "payload.openSlot is not an integer (\"abc\"): the payload is malformed, rejected as invalid-payload.",
         with(base(), Tamper::PayloadValue("openSlot", json!("abc"))),
         Expect::Reject { code: RejectCode::InvalidPayload, reason: Some("openSlot is not a u64".into()) },
-        Some(KIT_TEXTUAL_SEEDS),
+        None,
     );
     x402_upto_verify_missing_open_transaction_reject => verify_case(
         "x402-upto-verify-missing-open-transaction-reject",
@@ -850,7 +833,7 @@ crate::registry! {
             s
         },
         Expect::Reject { code: RejectCode::ExpiresAtMismatch, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
     x402_upto_verify_timeout_over_lifetime_reject => verify_case(
         "x402-upto-verify-timeout-over-lifetime-reject",
@@ -861,7 +844,7 @@ crate::registry! {
         "The route's maxTimeoutSeconds (7200) exceeds the facilitator's maxChannelLifetimeSecs (3600): rejected as channel-lifetime-exceeded even though expiresAt is near.",
         with(VerifySpec::honest(Route { max_timeout_seconds: 7_200, ..Route::default() }), Tamper::ExpiresAt(300)),
         Expect::Reject { code: RejectCode::ChannelLifetimeExceeded, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
     x402_upto_verify_expires_over_lifetime_reject => verify_case(
         "x402-upto-verify-expires-over-lifetime-reject",
@@ -872,7 +855,7 @@ crate::registry! {
         "expiresAt - now (86400) exceeds maxChannelLifetimeSecs (3600) by far more than any clock skew: rejected as channel-lifetime-exceeded.",
         with(base(), Tamper::ExpiresAt(86_400)),
         Expect::Reject { code: RejectCode::ChannelLifetimeExceeded, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
 
     // ── verify: replay ─────────────────────────────────────────────────────
@@ -885,7 +868,7 @@ crate::registry! {
         base(),
         Tamper::ChannelExists,
         RejectCode::ChannelAlreadyOpen,
-        Some(KIT_NO_CHANNEL_EXISTS),
+        None,
     );
 
     // ── open policy: message and signers ───────────────────────────────────
@@ -920,7 +903,7 @@ crate::registry! {
         base(),
         Tamper::ExtraSigner,
         RejectCode::UnexpectedInstruction,
-        Some(KIT_NO_SIGNER_SET),
+        None,
     );
     x402_upto_verify_missing_payer_signature_reject => reject(
         "x402-upto-verify-missing-payer-signature-reject",
@@ -931,7 +914,7 @@ crate::registry! {
         base(),
         Tamper::Signature(PayerSignature::Missing),
         RejectCode::InvalidPayload,
-        Some(KIT_NO_SIGNATURE_CHECK),
+        None,
     );
     x402_upto_verify_invalid_payer_signature_reject => reject(
         "x402-upto-verify-invalid-payer-signature-reject",
@@ -942,7 +925,7 @@ crate::registry! {
         base(),
         Tamper::Signature(PayerSignature::Invalid),
         RejectCode::InvalidPayload,
-        Some(KIT_NO_SIGNATURE_CHECK),
+        None,
     );
 
     // ── open policy: layout ────────────────────────────────────────────────
@@ -1209,7 +1192,7 @@ crate::registry! {
         base(),
         Tamper::OpenExtraAccount,
         RejectCode::OpenBindingMismatch,
-        Some(KIT_REMAINING_ACCOUNTS),
+        None,
     );
     x402_upto_verify_open_missing_account_reject => reject(
         "x402-upto-verify-open-missing-account-reject",
@@ -1341,7 +1324,7 @@ crate::registry! {
         base(),
         Tamper::OpenWritableMint,
         RejectCode::OpenBindingMismatch,
-        Some(KIT_NO_PRIVILEGES),
+        None,
     );
     x402_upto_verify_deposit_arg_above_reject => reject(
         "x402-upto-verify-deposit-arg-above-reject",
@@ -1483,7 +1466,7 @@ crate::registry! {
         "The offer declares no memo: the client still emits one Memo carrying a random nonce of at least 16 bytes, hex encoded.",
         build_input(Route::default().offer()),
         Expect::AcceptAuthored(json!({"exactBytes": {"openMemo": "nonce"}})),
-        Some(KIT_NO_MEMO_NONCE),
+        None,
     );
     x402_upto_build_memo_max_length => build_case(
         "x402-upto-build-memo-max-length",
@@ -1557,7 +1540,7 @@ crate::registry! {
         "extra.recentSlot as the JSON number the pinned table and its examples use (\"recentSlot\": 341000000): the client builds the open (RULINGS.md U1).",
         build_input(offer_with(|o| o["extra"]["recentSlot"] = json!(SLOT))),
         Expect::AcceptAuthored(json!({"exactBytes": {"openMessageVersion": 0}})),
-        Some(KIT_RECENT_SLOT_STRING),
+        None,
     );
     x402_upto_build_zero_withdraw_delay_reject => build_case(
         "x402-upto-build-zero-withdraw-delay-reject",
@@ -1734,14 +1717,13 @@ crate::registry! {
         Expect::Reject { code: RejectCode::InvalidPayload, reason: None },
         None,
     );
-    x402_upto_verify_v1_small_loaded_limit_accept => accept_authored(
+    x402_upto_verify_v1_small_loaded_limit_accept => accept_lenient(
         "x402-upto-verify-v1-small-loaded-limit-accept",
         TXV1_FILE,
         s_txv1_budget(),
         &[TV_V1_CAPS],
         "A version-1 open whose loadedAccountsDataSizeLimit is present but below the runtime maximum (1 MiB): the spec requires presence only, so it is accepted.",
         with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1), loaded_accounts_data_size_limit: Some(1024 * 1024) })),
-        KIT_V1_LOADED_LIMIT,
     );
     x402_upto_verify_v0_oversize_reject => verify_case(
         "x402-upto-verify-v0-oversize-reject",

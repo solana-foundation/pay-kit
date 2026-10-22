@@ -118,6 +118,7 @@ fn read_state(
         resource: resource_path.clone(),
         description: Some("Surfpool-backed usage endpoint".to_string()),
         max_timeout_seconds: 300,
+        max_channel_lifetime: solana_pay_kit::x402::upto::MaxChannelLifetime::ONE_HOUR,
         program_id,
         withdraw_delay: 900,
         fee_payer_signer,

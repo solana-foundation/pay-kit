@@ -1054,7 +1054,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-ce3692afe0"
     ],
@@ -1589,7 +1589,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-9af8f33cd6"
     ],
@@ -1767,7 +1767,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-bcbf7025e5"
     ],
@@ -1945,7 +1945,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-bcbf7025e5"
     ],
@@ -6055,7 +6055,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-e829ad118e"
     ],
@@ -8198,7 +8198,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-e829ad118e",
       "X402-14b8b2b598"

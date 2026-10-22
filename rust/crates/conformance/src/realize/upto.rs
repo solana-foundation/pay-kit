@@ -36,7 +36,7 @@ use solana_pay_kit::x402::client::upto::build_upto_header;
 use solana_pay_kit::x402::server::upto::testkit::verify_open_pre_broadcast;
 use solana_pay_kit::x402::server::upto::{UptoConfig, UptoPayout, X402Upto};
 use solana_pay_kit::x402::server::CurrencyConfig;
-use solana_pay_kit::x402::upto::UptoRequirements;
+use solana_pay_kit::x402::upto::{MaxChannelLifetime, UptoRequirements};
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
@@ -915,7 +915,20 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
     let m = message.to_ascii_lowercase();
     let has = |n: &str| m.contains(n);
     Some(
-        if has("is not accepted; accepted versions") || has("signer signs up to version") {
+        // The scheme's own error codes (scheme_upto_svm.md §7) first.
+        if has("invalid_upto_svm_payload_unexpected_voucher") {
+            UnexpectedVoucher
+        } else if has("invalid_upto_svm_payload_type") {
+            UnexpectedType
+        } else if has("invalid_upto_svm_channel_already_open") {
+            ChannelAlreadyOpen
+        } else if has("invalid_upto_svm_payload_channel_lifetime_exceeded") {
+            ChannelLifetimeExceeded
+        } else if has("invalid_upto_svm_payload_expires_at_mismatch") {
+            ExpiresAtMismatch
+        } else if has("unexpected signer") {
+            UnexpectedInstruction
+        } else if has("is not accepted; accepted versions") || has("signer signs up to version") {
             UnsupportedVersion
         } else if has("compute unit price") && (has("exceed") || has("maximum")) {
             ComputePriceOverCap
@@ -1235,6 +1248,10 @@ fn server(input: &Value, rpc_url: &str) -> Result<X402Upto, String> {
         resource: String::new(),
         description: None,
         max_timeout_seconds: number("x402ServerMaxTimeoutSeconds")?,
+        max_channel_lifetime: MaxChannelLifetime::from_secs(number(
+            "x402ServerMaxChannelLifetimeSeconds",
+        )?)
+        .ok_or("server config: maxChannelLifetimeSecs must be positive")?,
         program_id: None,
         withdraw_delay: number("x402ServerWithdrawDelay")? as u32,
         fee_payer_signer: Arc::new(fee_payer),
@@ -1326,40 +1343,6 @@ pub fn verify_input_for_offer(build_input: &Value, header: &str) -> Result<Value
         input["x402ServerTransactionVersions"] = versions.clone();
     }
     Ok(input)
-}
-
-/// The kit types `extra.recentSlot` as a string while the spec's table and
-/// examples use a number (RULINGS.md U1). The judge reads a numeric slot as
-/// its decimal string, so that divergence alone is bypassed: every other
-/// field reaches the kit's verifier and reference build unchanged.
-fn stringify_recent_slot(value: &mut Value, pointer: &str) {
-    if let Some(slot) = value.pointer_mut(pointer) {
-        if let Some(n) = slot.as_u64() {
-            *slot = json!(n.to_string());
-        }
-    }
-}
-
-/// The vector input as the kit's client can read it, for the reference build.
-fn kit_reference_input(input: &Value) -> Value {
-    let mut input = input.clone();
-    stringify_recent_slot(&mut input, "/x402Offer/extra/recentSlot");
-    input
-}
-
-/// The SDK's header as the kit's verifier can read it; the open transaction
-/// is untouched.
-fn kit_reference_header(header: &str) -> Result<String, String> {
-    let mut envelope = decode_header(header)?;
-    if !envelope
-        .pointer("/accepted/extra/recentSlot")
-        .is_some_and(Value::is_u64)
-    {
-        return Ok(header.to_string());
-    }
-    stringify_recent_slot(&mut envelope, "/accepted/extra/recentSlot");
-    let bytes = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 fn decode_header(header: &str) -> Result<Value, String> {
@@ -1465,10 +1448,8 @@ fn with_route_memo(header: &str) -> Result<String, String> {
 /// offer; and the open instruction equals the kit's own build modulo the
 /// values a client chooses freely (salt, hence channel and its token
 /// account) — accounts, privileges, deposit, grace period, open slot and
-/// distribution must match. Authored vectors get the same checks: the
-/// reference build reads them through [`kit_reference_input`], which bypasses
-/// only the recorded kit divergence, and the summary pins what the spec asks
-/// for where the kit differs (the memo).
+/// distribution must match. Authored vectors get the same checks, and the
+/// summary pins what the spec asks for (the memo).
 pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure> {
     let offer = vector
         .input()
@@ -1527,9 +1508,9 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     // offer, re-signed with the harness keys, so the envelope, budget caps,
     // expiry, slot window and instruction allowlist are judged too.
     let header = if server_can_offer {
-        kit_reference_header(artifact)
+        Ok(artifact.to_string())
     } else {
-        kit_reference_header(artifact).and_then(|h| with_route_memo(&h))
+        with_route_memo(artifact)
     }
     .map_err(Failure::new)?;
     let mut offered = vector.input().clone();
@@ -1553,7 +1534,7 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         }
         Err(e) => return Err(Failure::new(format!("verify setup: {e}"))),
     }
-    let reference = match build(&kit_reference_input(vector.input())).await {
+    let reference = match build(vector.input()).await {
         Ok(Observed::Accept(output)) => output.header.unwrap_or_default(),
         Ok(other) => {
             return Err(Failure::new(format!(
@@ -1577,19 +1558,26 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             ));
         }
     }
-    for key in [
-        "from",
-        "maxAmount",
-        "deposit",
-        "authorizedSigner",
-        "openSlot",
-    ] {
+    for key in ["from", "maxAmount", "deposit", "authorizedSigner"] {
         if got["payload"].get(key) != want["payload"].get(key) {
             problems.push(format!(
                 "payload.{key} {} (Rust: {})",
                 got["payload"][key], want["payload"][key]
             ));
         }
+    }
+    // openSlot as the number the scheme types it as or the decimal string
+    // every SDK emits (RULINGS.md U1): compared as a u64.
+    let slot_of = |v: &Value| match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+            s.parse().ok()
+        }
+        _ => None,
+    };
+    let (got_slot, want_slot) = (&got["payload"]["openSlot"], &want["payload"]["openSlot"]);
+    if slot_of(got_slot).is_none() || slot_of(got_slot) != slot_of(want_slot) {
+        problems.push(format!("payload.openSlot {got_slot} (Rust: {want_slot})"));
     }
     let (want_accounts, want_data, _) = open_of(&want).map_err(Failure::new)?;
     let (got_accounts, got_data, got_tx) = open_of(&got).map_err(Failure::new)?;
@@ -1657,8 +1645,8 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
         problems.push("the transaction fee payer is not extra.feePayer".into());
     }
     // The client signs its own slots; only the sponsoring fee payer's slot is
-    // left for the facilitator. Judged here because the kit's verifier does
-    // not check the payer's signature (FINDINGS.md).
+    // left for the facilitator (the verifier checks the payer's signature;
+    // this also pins every slot's state).
     let fee_payer = offer.pointer("/extra/feePayer").and_then(Value::as_str);
     let required = got_tx.message.header().num_required_signatures as usize;
     if got_tx.signatures.len() != required {
@@ -1708,10 +1696,9 @@ mod tests {
             .unwrap()
     }
 
-    /// The kit's build of an authored vector (read past its recorded
-    /// divergence), decoded, edited by `edit`, re-encoded.
+    /// The kit's build of a vector, decoded, edited by `edit`, re-encoded.
     fn edited_build(rt: &tokio::runtime::Runtime, v: &Vector, edit: impl Fn(&mut Value)) -> String {
-        let header = match rt.block_on(build(&kit_reference_input(v.input()))) {
+        let header = match rt.block_on(build(v.input())) {
             Ok(Observed::Accept(output)) => output.header.unwrap(),
             other => panic!("{}: {other:?}", v.id),
         };
@@ -1736,12 +1723,15 @@ mod tests {
             }
             e["payload"]["openTransaction"] = json!(encode_b64(&tx).unwrap());
         });
+        // The kit's verifier refuses an open the payer did not sign.
         let failure = rt.block_on(judge_build(&v, &unsigned)).unwrap_err();
-        assert!(
-            failure.message.contains("signature slot"),
+        assert_eq!(
+            failure.path.as_deref(),
+            Some("verify"),
             "{}",
             failure.message
         );
+        assert!(failure.message.contains("signature"), "{}", failure.message);
 
         let underfunded = edited_build(&rt, &v, |e| e["payload"]["deposit"] = json!("1"));
         let failure = rt.block_on(judge_build(&v, &underfunded)).unwrap_err();

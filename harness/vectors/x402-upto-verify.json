@@ -701,7 +701,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-d75fb10a6f"
     ],
@@ -879,7 +879,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-aaee5a4f5b",
       "X402-f747c74e76"
@@ -1058,7 +1058,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-aaee5a4f5b"
     ],
@@ -1236,7 +1236,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-4c364688fc"
     ],
@@ -2841,7 +2841,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-d75fb10a6f"
     ],
@@ -3020,7 +3020,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-d75fb10a6f"
     ],
@@ -5159,7 +5159,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-e4509fb732"
     ],
@@ -5337,7 +5337,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-e4509fb732"
     ],
@@ -5515,7 +5515,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-e4509fb732"
     ],
@@ -5699,7 +5699,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402-865b05c15d",
       "X402-076bb2bdc3",
