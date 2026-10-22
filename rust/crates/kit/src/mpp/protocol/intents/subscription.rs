@@ -6,9 +6,14 @@
 //! billing-period charge; renewals are server-driven on-chain transactions
 //! and do not produce HTTP credentials.
 
+use std::num::NonZeroU64;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
+use solana_pubkey::Pubkey;
 
 use crate::mpp::error::Error;
+use crate::mpp::program::subscriptions::parse_pubkey;
 
 /// Domain separator for reusable subscription authentication proofs.
 pub const SUBSCRIPTION_AUTHENTICATION_DOMAIN: &str = "mpp-subscription-auth-v1";
@@ -156,72 +161,305 @@ pub struct SubscriptionRequest {
 }
 
 impl SubscriptionRequest {
-    /// Decode and validate `methodDetails`, requiring the fields the
-    /// activation transaction is built from to match the request fields a
-    /// wallet displays: mint, amount, recipient and period.
-    pub fn validated_method_details(&self) -> Result<SubscriptionMethodDetails, Error> {
-        let method_details = self
-            .method_details
-            .as_ref()
-            .ok_or_else(|| Error::Other("Subscription request is missing methodDetails".into()))?;
-        let method_details = SubscriptionMethodDetails::from_json(method_details)?;
-        method_details.validate()?;
-        if method_details.mint != self.currency {
-            return Err(Error::Other(
-                "Subscription currency must match methodDetails.mint".into(),
-            ));
-        }
-        if method_details.amount.as_deref() != Some(self.amount.as_str()) {
-            return Err(Error::Other(
-                "Subscription methodDetails.amount must match amount".into(),
-            ));
-        }
-        let recipient = method_details
-            .recipient
-            .as_deref()
-            .unwrap_or(&method_details.puller);
-        if recipient != self.recipient {
-            return Err(Error::Other(
-                "Subscription methodDetails.recipient must match recipient".into(),
-            ));
-        }
-        if method_details
-            .expected_period_hours
-            .is_some_and(|hours| Some(hours) != self.period_hours().ok())
-        {
-            return Err(Error::Other(
-                "Subscription methodDetails.expectedPeriodHours must match the billing period"
-                    .into(),
-            ));
-        }
-        Ok(method_details)
+    /// Parse the request into [`SubscriptionTerms`]: the only form the
+    /// activation builder accepts. Every field the profile constrains is
+    /// checked here, once: the amount and period formats, the period
+    /// mapping, `currency == methodDetails.mint`, the token program, the
+    /// REQUIRED `methodDetails` and the addresses.
+    pub fn terms(&self) -> Result<SubscriptionTerms, Error> {
+        SubscriptionTerms::parse(self)
     }
 
-    /// Parse `period_count` as a `u64`.
+    /// Parse `period_count`: a positive base-10 integer with no sign,
+    /// leading zero, decimal point, exponent or whitespace.
     pub fn parse_period_count(&self) -> Result<u64, Error> {
-        self.period_count
-            .parse()
-            .map_err(|_| Error::Other(format!("Invalid periodCount: {}", self.period_count)))
+        parse_positive_integer(&self.period_count, "periodCount").map(NonZeroU64::get)
     }
 
-    /// Parse `amount` as a `u64`.
+    /// Parse `amount`: a positive base-10 integer with no sign, leading
+    /// zero, decimal point, exponent or whitespace.
     pub fn parse_amount(&self) -> Result<u64, Error> {
-        self.amount
-            .parse()
-            .map_err(|_| Error::Other(format!("Invalid amount: {}", self.amount)))
+        SubscriptionAmount::from_str(&self.amount).map(SubscriptionAmount::get)
     }
 
     /// Compute the on-chain `period_hours` for this request, validating both
     /// the period mapping and the program-level bound `[1, 8760]`.
     pub fn period_hours(&self) -> Result<u64, Error> {
-        let count = self.parse_period_count()?;
-        let hours = self.period_unit.to_period_hours(count)?;
+        BillingPeriod::parse(self.period_unit, &self.period_count).map(|period| period.hours())
+    }
+}
+
+/// Parse a positive base-10 integer in the profile's canonical form
+/// (draft-solana-subscription-00 §Optional Fields): ASCII digits only, no
+/// sign, decimal point, exponent or surrounding whitespace, no leading zero.
+fn parse_positive_integer(value: &str, field: &str) -> Result<NonZeroU64, Error> {
+    let invalid = |why: &str| Error::Other(format!("Invalid {field} {value:?}: {why}"));
+    if value.is_empty() {
+        return Err(invalid("empty"));
+    }
+    if !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid(
+            "must be a base-10 integer with no sign, decimal point, exponent or whitespace",
+        ));
+    }
+    if value.starts_with('0') {
+        return Err(invalid("must be positive with no leading zero"));
+    }
+    let parsed: u64 = value.parse().map_err(|_| invalid("out of range"))?;
+    NonZeroU64::new(parsed).ok_or_else(|| invalid("must be positive"))
+}
+
+/// A per-period amount in base units: positive, parsed from its canonical
+/// decimal form only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionAmount(NonZeroU64);
+
+impl SubscriptionAmount {
+    /// The amount in base units.
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl FromStr for SubscriptionAmount {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Error> {
+        parse_positive_integer(value, "amount").map(Self)
+    }
+}
+
+impl std::fmt::Display for SubscriptionAmount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A billing period the Solana profile can represent exactly: `day` or
+/// `week` units, mapped to `[1, 8760]` hours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BillingPeriod {
+    unit: SubscriptionPeriodUnit,
+    count: u64,
+    hours: u64,
+}
+
+impl BillingPeriod {
+    /// Parse `periodCount` in its canonical form and map it to hours.
+    pub fn parse(unit: SubscriptionPeriodUnit, count: &str) -> Result<Self, Error> {
+        let count = parse_positive_integer(count, "periodCount")?.get();
+        let hours = unit.to_period_hours(count)?;
         if hours == 0 || hours > 8760 {
             return Err(Error::Other(format!(
                 "period_hours {hours} out of [1, 8760] range"
             )));
         }
-        Ok(hours)
+        Ok(Self { unit, count, hours })
+    }
+
+    pub fn unit(&self) -> SubscriptionPeriodUnit {
+        self.unit
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// The program's `period_hours` for this period.
+    pub fn hours(&self) -> u64 {
+        self.hours
+    }
+}
+
+/// The token programs `methodDetails.tokenProgram` may name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptionTokenProgram {
+    /// SPL Token.
+    Token,
+    /// SPL Token-2022.
+    Token2022,
+}
+
+impl SubscriptionTokenProgram {
+    /// Parse a base58 program id; anything but SPL Token or Token-2022 is
+    /// refused.
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        use crate::mpp::protocol::solana::programs::{TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
+        let program = parse_pubkey(value, "tokenProgram")?;
+        if program == Pubkey::from_str_const(TOKEN_PROGRAM) {
+            Ok(Self::Token)
+        } else if program == Pubkey::from_str_const(TOKEN_2022_PROGRAM) {
+            Ok(Self::Token2022)
+        } else {
+            Err(Error::Other(format!(
+                "methodDetails.tokenProgram {value} is neither SPL Token nor Token-2022"
+            )))
+        }
+    }
+
+    pub fn program_id(self) -> Pubkey {
+        use crate::mpp::protocol::solana::programs::{TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
+        match self {
+            Self::Token => Pubkey::from_str_const(TOKEN_PROGRAM),
+            Self::Token2022 => Pubkey::from_str_const(TOKEN_2022_PROGRAM),
+        }
+    }
+}
+
+/// Who pays the activation transaction's fees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationFeePayer {
+    /// The subscriber (`feePayer` absent or `false`).
+    Subscriber,
+    /// The server's `methodDetails.feePayerKey` (`feePayer: true`).
+    Server(Pubkey),
+}
+
+/// A subscription request that passed every format and consistency check
+/// of draft-solana-subscription-00 §Request Schema. Built only by
+/// [`SubscriptionRequest::terms`]; it reads the spec's fields only, never
+/// a server's `methodDetails` extensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionTerms {
+    amount: SubscriptionAmount,
+    mint: Pubkey,
+    period: BillingPeriod,
+    recipient: Pubkey,
+    subscription_expires: Option<String>,
+    external_id: Option<String>,
+    plan_address: Pubkey,
+    token_program: SubscriptionTokenProgram,
+    decimals: u8,
+    puller: Pubkey,
+    subscription_program: Pubkey,
+    network: String,
+    fee_payer: ActivationFeePayer,
+    recent_blockhash: Option<solana_hash::Hash>,
+    transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
+}
+
+impl SubscriptionTerms {
+    fn parse(request: &SubscriptionRequest) -> Result<Self, Error> {
+        let amount = SubscriptionAmount::from_str(&request.amount)?;
+        let period = BillingPeriod::parse(request.period_unit, &request.period_count)?;
+        let recipient = parse_pubkey(&request.recipient, "recipient")?;
+        let details = request
+            .method_details
+            .as_ref()
+            .ok_or_else(|| Error::Other("Subscription request is missing methodDetails".into()))?;
+        let details = SubscriptionMethodDetails::from_json(details)?;
+        details.validate()?;
+        let mint = parse_pubkey(&details.mint, "methodDetails.mint")?;
+        if parse_pubkey(&request.currency, "currency")? != mint {
+            return Err(Error::Other(
+                "Subscription currency must match methodDetails.mint".into(),
+            ));
+        }
+        let decimals = details
+            .decimals
+            .ok_or_else(|| Error::Other("methodDetails.decimals is required".into()))?;
+        let fee_payer = if details.fee_payer {
+            ActivationFeePayer::Server(parse_pubkey(
+                details.fee_payer_key.as_deref().ok_or_else(|| {
+                    Error::Other(
+                        "methodDetails.feePayerKey is required when feePayer is true".into(),
+                    )
+                })?,
+                "feePayerKey",
+            )?)
+        } else {
+            ActivationFeePayer::Subscriber
+        };
+        let recent_blockhash = details
+            .recent_blockhash
+            .as_deref()
+            .map(|value| {
+                value
+                    .parse::<solana_hash::Hash>()
+                    .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))
+            })
+            .transpose()?;
+        Ok(Self {
+            amount,
+            mint,
+            period,
+            recipient,
+            subscription_expires: request.subscription_expires.clone(),
+            external_id: request.external_id.clone(),
+            plan_address: parse_pubkey(&details.plan_address, "planAddress")?,
+            token_program: SubscriptionTokenProgram::parse(&details.token_program)?,
+            decimals,
+            puller: parse_pubkey(&details.puller, "puller")?,
+            subscription_program: parse_pubkey(
+                details.subscription_program.as_deref().unwrap_or_default(),
+                "subscriptionProgram",
+            )?,
+            network: details.network.unwrap_or_else(|| "mainnet".into()),
+            fee_payer,
+            recent_blockhash,
+            transaction_versions: details.transaction_versions,
+        })
+    }
+
+    pub fn amount(&self) -> SubscriptionAmount {
+        self.amount
+    }
+
+    pub fn mint(&self) -> Pubkey {
+        self.mint
+    }
+
+    pub fn period(&self) -> BillingPeriod {
+        self.period
+    }
+
+    pub fn recipient(&self) -> Pubkey {
+        self.recipient
+    }
+
+    pub fn subscription_expires(&self) -> Option<&str> {
+        self.subscription_expires.as_deref()
+    }
+
+    pub fn external_id(&self) -> Option<&str> {
+        self.external_id.as_deref()
+    }
+
+    pub fn plan_address(&self) -> Pubkey {
+        self.plan_address
+    }
+
+    pub fn token_program(&self) -> SubscriptionTokenProgram {
+        self.token_program
+    }
+
+    pub fn decimals(&self) -> u8 {
+        self.decimals
+    }
+
+    pub fn puller(&self) -> Pubkey {
+        self.puller
+    }
+
+    pub fn subscription_program(&self) -> Pubkey {
+        self.subscription_program
+    }
+
+    /// `methodDetails.network`, `mainnet` when omitted.
+    pub fn network(&self) -> &str {
+        &self.network
+    }
+
+    pub fn fee_payer(&self) -> ActivationFeePayer {
+        self.fee_payer
+    }
+
+    pub fn recent_blockhash(&self) -> Option<solana_hash::Hash> {
+        self.recent_blockhash
+    }
+
+    pub fn transaction_versions(&self) -> Option<&[crate::core::tx::TxVersion]> {
+        self.transaction_versions.as_deref()
     }
 }
 
@@ -238,7 +476,7 @@ pub enum SubscriptionAction {
 /// Activation payload. Mirrors the Solana charge profile's two-mode shape:
 /// `type="transaction"` (server broadcasts) or `type="signature"`
 /// (client already broadcast).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivatePayload {
     /// Payload type discriminator: `"transaction"` or `"signature"`.
@@ -255,9 +493,8 @@ pub struct ActivatePayload {
     pub signature: Option<String>,
 
     /// Reusable subscriber proof bound to the activation challenge and
-    /// resulting `SubscriptionDelegation` PDA.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authentication: Option<SubscriptionAuthentication>,
+    /// resulting `SubscriptionDelegation` PDA. REQUIRED on the wire.
+    pub authentication: SubscriptionAuthentication,
 }
 
 /// Credential payload for later access under an active subscription.
@@ -409,6 +646,9 @@ impl SubscriptionMethodDetails {
         if self.puller.is_empty() {
             return Err(Error::Other("methodDetails.puller is required".into()));
         }
+        if self.decimals.is_none() {
+            return Err(Error::Other("methodDetails.decimals is required".into()));
+        }
         if self
             .subscription_program
             .as_deref()
@@ -542,12 +782,13 @@ mod tests {
             payload_type: "transaction".into(),
             transaction: Some("AQAAAA==".into()),
             signature: None,
-            authentication: None,
+            authentication: sample_authentication(),
         });
         let json = serde_json::to_string(&action).unwrap();
         assert!(json.contains("\"action\":\"activate\""));
         assert!(json.contains("\"type\":\"transaction\""));
-        assert!(!json.contains("\"signature\""));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("signature").is_none());
         let _back: SubscriptionAction = serde_json::from_str(&json).unwrap();
     }
 
@@ -557,7 +798,7 @@ mod tests {
             payload_type: "signature".into(),
             transaction: None,
             signature: Some("5J8KKKKK".into()),
-            authentication: None,
+            authentication: sample_authentication(),
         });
         let json = serde_json::to_string(&action).unwrap();
         assert!(json.contains("\"type\":\"signature\""));
@@ -609,12 +850,23 @@ mod tests {
         assert!(bad.period_hours().is_err());
     }
 
+    fn sample_authentication() -> SubscriptionAuthentication {
+        SubscriptionAuthentication {
+            kind: SubscriptionAuthenticationType::Proof,
+            challenge_id: "challenge-1".into(),
+            payer: "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ".into(),
+            signature: "5J8KKKKK".into(),
+        }
+    }
+
+    // draft-solana-subscription-00 §Payload: `authentication` is REQUIRED.
     #[test]
-    fn activate_payload_default() {
-        let p = ActivatePayload::default();
-        assert!(p.transaction.is_none());
-        assert!(p.signature.is_none());
-        assert_eq!(p.payload_type, "");
+    fn activate_payload_requires_authentication() {
+        let without = serde_json::json!({"type": "transaction", "transaction": "AQAB"});
+        assert!(serde_json::from_value::<ActivatePayload>(without).is_err());
+        let mut with = serde_json::json!({"type": "transaction", "transaction": "AQAB"});
+        with["authentication"] = serde_json::to_value(sample_authentication()).unwrap();
+        assert!(serde_json::from_value::<ActivatePayload>(with).is_ok());
     }
 
     #[test]
@@ -663,11 +915,9 @@ mod tests {
                 "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
                 "mint": mint,
                 "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "decimals": 6,
                 "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
-                "recipient": recipient,
-                "amount": "10000000",
                 "subscriptionProgram": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
-                "expectedPeriodHours": 720
             })),
             ..Default::default()
         }
@@ -679,46 +929,114 @@ mod tests {
         request
     }
 
-    #[test]
-    fn validated_method_details_accepts_consistent_request() {
-        let details = consistent_request().validated_method_details().unwrap();
-        assert_eq!(details.amount.as_deref(), Some("10000000"));
-    }
-
-    #[test]
-    fn validated_method_details_rejects_mint_differing_from_currency() {
-        let request = with_detail(
-            "mint",
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into(),
-        );
-        let err = request.validated_method_details().unwrap_err();
-        assert!(err.to_string().contains("currency"), "{err}");
-    }
-
-    #[test]
-    fn validated_method_details_rejects_other_display_mismatches() {
-        assert!(with_detail("amount", "10000001".into())
-            .validated_method_details()
-            .is_err());
-        assert!(with_detail(
-            "recipient",
-            "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()
-        )
-        .validated_method_details()
-        .is_err());
-        assert!(with_detail("expectedPeriodHours", 168.into())
-            .validated_method_details()
-            .is_err());
-        let mut no_recipient = consistent_request();
-        no_recipient
+    fn without_detail(key: &str) -> SubscriptionRequest {
+        let mut request = consistent_request();
+        request
             .method_details
             .as_mut()
             .unwrap()
             .as_object_mut()
             .unwrap()
-            .remove("recipient");
-        // Without a recipient the builder pays the puller, which is not what
-        // the request shows.
-        assert!(no_recipient.validated_method_details().is_err());
+            .remove(key);
+        request
+    }
+
+    #[test]
+    fn terms_accept_a_spec_shaped_request() {
+        let terms = consistent_request().terms().unwrap();
+        assert_eq!(terms.amount().get(), 10_000_000);
+        assert_eq!(terms.period().hours(), 720);
+        assert_eq!(terms.decimals(), 6);
+        assert_eq!(terms.token_program(), SubscriptionTokenProgram::Token);
+        assert_eq!(terms.fee_payer(), ActivationFeePayer::Subscriber);
+        assert_eq!(terms.network(), "mainnet");
+    }
+
+    #[test]
+    fn terms_reject_mint_differing_from_currency() {
+        let request = with_detail(
+            "mint",
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into(),
+        );
+        let err = request.terms().unwrap_err();
+        assert!(err.to_string().contains("currency"), "{err}");
+    }
+
+    // draft-solana-subscription-00 §Optional Fields: amount and periodCount
+    // are positive base-10 integers with no sign, leading zero, decimal
+    // point, exponent or whitespace.
+    #[test]
+    fn terms_reject_non_canonical_amounts_and_period_counts() {
+        for bad in [
+            "010000000",
+            "0",
+            "+10000000",
+            "-1",
+            "1e7",
+            "1.0",
+            " 1",
+            "1 ",
+            "",
+        ] {
+            let mut request = consistent_request();
+            request.amount = bad.into();
+            assert!(request.terms().is_err(), "amount {bad:?}");
+            assert!(request.parse_amount().is_err(), "amount {bad:?}");
+        }
+        for bad in ["030", "+30", "0", "30.0", "3e1", " 30", "30 ", ""] {
+            let mut request = consistent_request();
+            request.period_count = bad.into();
+            assert!(request.terms().is_err(), "periodCount {bad:?}");
+            assert!(request.period_hours().is_err(), "periodCount {bad:?}");
+        }
+    }
+
+    #[test]
+    fn terms_require_an_spl_token_program() {
+        assert!(
+            with_detail("tokenProgram", "11111111111111111111111111111111".into())
+                .terms()
+                .is_err()
+        );
+        let terms = with_detail(
+            "tokenProgram",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".into(),
+        )
+        .terms()
+        .unwrap();
+        assert_eq!(terms.token_program(), SubscriptionTokenProgram::Token2022);
+    }
+
+    #[test]
+    fn terms_require_every_required_method_detail() {
+        for key in [
+            "planAddress",
+            "mint",
+            "tokenProgram",
+            "decimals",
+            "puller",
+            "subscriptionProgram",
+        ] {
+            assert!(without_detail(key).terms().is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn terms_require_fee_payer_key_when_sponsored() {
+        assert!(with_detail("feePayer", true.into()).terms().is_err());
+        let mut request = with_detail("feePayer", true.into());
+        request.method_details.as_mut().unwrap()["feePayerKey"] =
+            "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into();
+        assert!(matches!(
+            request.terms().unwrap().fee_payer(),
+            ActivationFeePayer::Server(_)
+        ));
+    }
+
+    // Kit-only methodDetails extensions are ignored, not required.
+    #[test]
+    fn terms_ignore_unknown_method_details() {
+        let request = with_detail("expectedPeriodHours", 168.into());
+        assert_eq!(request.terms().unwrap().period().hours(), 720);
     }
 }
