@@ -128,6 +128,9 @@ pub struct TransactionExpectations<'a> {
     pub receiver: &'a Pubkey,
     /// `extra.memo`, when the seller declared one.
     pub memo: Option<&'a str>,
+    /// `extra.receiverAuthorizer`: the key every `open` must bind with its
+    /// receiver-binding Memo (spec §3).
+    pub receiver_authorizer: &'a Pubkey,
     /// Transaction message versions the sponsor accepts; see `core::tx`.
     pub accepted_versions: &'a [crate::core::tx::TxVersion],
 }
@@ -158,20 +161,30 @@ pub fn validate_setup_transaction(
     let tx = decode(transaction_b64, label)?;
     let payer = check_envelope(&tx, expected, label)?;
     let keys = tx.message.static_account_keys();
+    // The Memo is required so the sponsor can correlate the transaction it
+    // paid for; when the seller declared `extra.memo` its bytes are pinned.
+    // An `open` also carries exactly one receiver-binding Memo; a top-up does
+    // not re-bind.
+    let memo_policy = match form {
+        SetupForm::Open => pc::MemoPolicy::RequiredWithBinding {
+            memo: expected.memo,
+            binding_prefix: super::RECEIVER_BINDING_MEMO_PREFIX,
+        },
+        SetupForm::TopUp => pc::MemoPolicy::Required(expected.memo),
+    };
     let ix = pc::scan_channel_tx_layout(
         &tx,
         keys,
         expected.program_id,
         form.discriminator(),
         label,
-        // The Memo is required so the sponsor can correlate the transaction it
-        // paid for; when the seller declared `extra.memo` its bytes are pinned.
-        pc::MemoPolicy::Required(expected.memo),
+        memo_policy,
     )
     .map_err(|e| BatchError::new(errors::INVALID_SETUP_TRANSACTION, e.to_string()))?;
 
     match form {
         SetupForm::Open => {
+            check_receiver_binding(&tx, keys, expected)?;
             check_open_accounts(ix, keys, &payer, expected, label)?;
             check_open_args(ix, expected, deposit_amount, recent_slot)?;
             // Positions 2 (payee) and 4 (authorized_signer) are deliberately
@@ -226,8 +239,15 @@ pub fn validate_request_close_transaction(
     let label = "request_close";
     let tx = decode(transaction_b64, label)
         .map_err(|e| BatchError::new(errors::INVALID_REFUND_TRANSACTION, e.detail))?;
-    let payer = check_envelope(&tx, expected, label)
-        .map_err(|e| BatchError::new(errors::INVALID_REFUND_TRANSACTION, e.detail))?;
+    // A refund transaction's own failures are `refund_transaction`, except an
+    // unadvertised message version, which keeps its standard code.
+    let payer = check_envelope(&tx, expected, label).map_err(|e| {
+        if e.code == errors::UNSUPPORTED_TRANSACTION_VERSION {
+            e
+        } else {
+            BatchError::new(errors::INVALID_REFUND_TRANSACTION, e.detail)
+        }
+    })?;
     let keys = tx.message.static_account_keys();
     let ix = pc::scan_channel_tx_layout(
         &tx,
@@ -296,12 +316,26 @@ fn check_envelope(
     // could be satisfied while the real instruction touched something else),
     // size within the version's limit. Then the version-1 header config is held
     // to the caps the ComputeBudget prefix gets on version 0.
+    // An unadvertised version is refused "before inspecting any instruction,
+    // with `unsupported_transaction_version`" (x402-txv1).
+    let version = crate::core::tx::TxVersion::of(&tx.message)
+        .map_err(|e| err(format!("{label} transaction: {e}")))?;
+    if !expected.accepted_versions.contains(&version) {
+        return Err(BatchError::new(
+            errors::UNSUPPORTED_TRANSACTION_VERSION,
+            format!("{label} transaction is version {version}, which this sponsor does not accept"),
+        ));
+    }
     crate::core::tx::check_envelope(tx, expected.accepted_versions)
         .map_err(|e| err(format!("{label} transaction: {e}")))?;
-    crate::core::tx::check_v1_budget_caps(
+    // x402-txv1: "`loadedAccountsDataSizeLimit` MUST be present" — a sponsor
+    // tightens only the caps the spec names, so any present value up to the
+    // runtime maximum is accepted.
+    crate::core::tx::check_v1_budget_caps_with(
         &tx.message,
         pc::OPEN_MAX_COMPUTE_UNIT_LIMIT,
         pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        crate::core::tx::LoadedDataLimitRule::Present,
     )
     .map_err(|e| err(format!("{label} transaction: {e}")))?;
 
@@ -355,6 +389,47 @@ fn check_envelope(
         )));
     }
     Ok(payer)
+}
+
+/// Bind the `open`'s receiver-binding Memo to `extra.receiverAuthorizer`.
+///
+/// The layout scan already required exactly one binding Memo; this is the
+/// server's own check that it names this server's key ("The server MUST
+/// reject an open whose binding Memo is not its own key before forwarding the
+/// deposit."). The payer signs the open, so the binding is fixed for the
+/// channel's lifetime.
+fn check_receiver_binding(
+    tx: &VersionedTransaction,
+    keys: &[Pubkey],
+    expected: &TransactionExpectations<'_>,
+) -> Result<()> {
+    let memo_program = pc::memo_program_id();
+    let mut bound = tx
+        .message
+        .instructions()
+        .iter()
+        .filter(|ix| keys.get(usize::from(ix.program_id_index)) == Some(&memo_program))
+        .filter_map(|ix| super::parse_receiver_binding_memo(&ix.data));
+    let key = match (bound.next(), bound.next()) {
+        (Some(key), None) => key?,
+        _ => {
+            return Err(BatchError::new(
+                errors::INVALID_SETUP_TRANSACTION,
+                "open transaction must carry exactly one receiver-binding Memo",
+            ))
+        }
+    };
+    if key != *expected.receiver_authorizer {
+        return Err(BatchError::new(
+            errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+            format!(
+                "open binds receiver authorizer {}, not extra.receiverAuthorizer {}",
+                pc::pubkey_string(&key),
+                pc::pubkey_string(expected.receiver_authorizer)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 // ── Account tables ──
@@ -735,6 +810,7 @@ mod tests {
         receiver: Pubkey,
         channel_id: Pubkey,
         config: BatchChannelConfig,
+        receiver_authorizer: Pubkey,
     }
 
     fn fixture() -> Fixture {
@@ -756,11 +832,12 @@ mod tests {
             341_000_000,
             &program_id,
         );
+        let receiver_authorizer = Pubkey::new_unique();
         let config = BatchChannelConfig {
             payer: pc::pubkey_string(&payer),
             payer_authorizer: pc::pubkey_string(&payer),
             receiver: PAY_TO.to_string(),
-            receiver_authorizer: None,
+            receiver_authorizer: Some(pc::pubkey_string(&receiver_authorizer)),
             token: MINT.to_string(),
             withdraw_delay: 3600,
             salt: "42".to_string(),
@@ -777,6 +854,7 @@ mod tests {
             receiver,
             channel_id,
             config,
+            receiver_authorizer,
         }
     }
 
@@ -790,11 +868,19 @@ mod tests {
                 token_program: &self.token_program,
                 receiver: &self.receiver,
                 memo: None,
+                receiver_authorizer: &self.receiver_authorizer,
                 accepted_versions: &[
                     crate::core::tx::TxVersion::V0,
                     crate::core::tx::TxVersion::V1,
                 ],
             }
+        }
+
+        /// The receiver-binding Memo every `open` carries.
+        fn binding(&self) -> Instruction {
+            memo_ix(&super::super::receiver_binding_memo(
+                &self.receiver_authorizer,
+            ))
         }
 
         fn open_params(&self, deposit: u64) -> pc::OpenChannelParams {
@@ -889,6 +975,7 @@ mod tests {
         let ixs = [
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ];
         let tx = f.sign_v1(&ixs, crate::core::tx::ComputeBudget::new(90_000, 1_000));
         let validated = validate_setup_transaction(
@@ -929,7 +1016,24 @@ mod tests {
             Some(341_000_100),
         )
         .unwrap_err();
-        assert!(err.detail.contains("not accepted"), "{}", err.detail);
+        assert_eq!(
+            err.code,
+            errors::UNSUPPORTED_TRANSACTION_VERSION,
+            "{}",
+            err.detail
+        );
+        // So is an unadvertised request_close, which keeps the standard code.
+        let close = pc::build_request_close_instruction(&f.payer, &f.channel_id, &f.program_id);
+        let tx = f.sign_v1(
+            &[close, nonce_memo()],
+            crate::core::tx::ComputeBudget::new(90_000, 1),
+        );
+        assert_eq!(
+            validate_request_close_transaction(&tx, &expectations)
+                .unwrap_err()
+                .code,
+            errors::UNSUPPORTED_TRANSACTION_VERSION
+        );
     }
 
     fn encode(tx: &VersionedTransaction) -> String {
@@ -965,6 +1069,7 @@ mod tests {
             cu_limit_ix(90_000),
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ]);
         let validated = validate_setup_transaction(
             &tx,
@@ -992,6 +1097,7 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             memo_ix("hello"),
+            f.binding(),
         ]);
         assert!(
             validate_setup_transaction(&tx, SetupForm::Open, &f.expectations(), 100_000, None)
@@ -1004,6 +1110,7 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             memo_ix("invoice-124"),
+            f.binding(),
         ]);
         assert!(
             validate_setup_transaction(&tx, SetupForm::Open, &expected, 100_000, None).is_err()
@@ -1011,8 +1118,61 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             memo_ix("invoice-123"),
+            f.binding(),
         ]);
         assert!(validate_setup_transaction(&tx, SetupForm::Open, &expected, 100_000, None).is_ok());
+    }
+
+    #[test]
+    fn open_carries_exactly_one_binding_memo_naming_the_receiver_authorizer() {
+        let f = fixture();
+        let open = || pc::build_open_instruction(&f.open_params(100_000));
+        let validate = |tx: &str| {
+            validate_setup_transaction(tx, SetupForm::Open, &f.expectations(), 100_000, None)
+        };
+        // The spec's open: the seller memo and the binding memo, either order.
+        assert!(validate(&f.sign(&[open(), nonce_memo(), f.binding()])).is_ok());
+        assert!(validate(&f.sign(&[open(), f.binding(), nonce_memo()])).is_ok());
+
+        // Unbound: the channel would be bound to no receiver authorizer.
+        let err = validate(&f.sign(&[open(), nonce_memo()])).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_SETUP_TRANSACTION);
+        assert!(err.detail.contains("binding Memo"), "{}", err.detail);
+        // The binding alone does not replace the seller memo.
+        let err = validate(&f.sign(&[open(), f.binding()])).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_SETUP_TRANSACTION);
+        // Two bindings, even both to our key, are not exactly one.
+        let err = validate(&f.sign(&[open(), nonce_memo(), f.binding(), f.binding()])).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_SETUP_TRANSACTION);
+
+        // Bound to another key: refused with the dedicated code.
+        let foreign = memo_ix(&super::super::receiver_binding_memo(&Pubkey::new_unique()));
+        let err = validate(&f.sign(&[open(), nonce_memo(), foreign])).unwrap_err();
+        assert_eq!(err.code, errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH);
+        // A binding prefix with no valid key binds nothing.
+        let garbage = memo_ix(&format!(
+            "{}not-a-key",
+            super::super::RECEIVER_BINDING_MEMO_PREFIX
+        ));
+        assert!(validate(&f.sign(&[open(), nonce_memo(), garbage])).is_err());
+
+        // A top-up does not re-bind: a binding memo there is not its memo.
+        let top_up = pc::build_top_up_instruction(
+            &f.payer,
+            &f.channel_id,
+            &f.mint,
+            25_000,
+            &f.token_program,
+            &f.program_id,
+        );
+        assert!(validate_setup_transaction(
+            &f.sign(&[top_up, nonce_memo(), f.binding()]),
+            SetupForm::TopUp,
+            &f.expectations(),
+            25_000,
+            None
+        )
+        .is_err());
     }
 
     #[test]
@@ -1021,6 +1181,7 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ]);
         // The payload's declared deposit must be what the instruction escrows,
         // or the server would cap vouchers against a deposit that never landed.
@@ -1036,7 +1197,11 @@ mod tests {
         // code: the client's escape hatch is exactly that value.
         let mut params = f.open_params(100_000);
         params.grace_period = 1800;
-        let tx = f.sign(&[pc::build_open_instruction(&params), nonce_memo()]);
+        let tx = f.sign(&[
+            pc::build_open_instruction(&params),
+            nonce_memo(),
+            f.binding(),
+        ]);
         let err =
             validate_setup_transaction(&tx, SetupForm::Open, &f.expectations(), 100_000, None)
                 .unwrap_err();
@@ -1069,7 +1234,11 @@ mod tests {
             // Recompute the channel for the params so the failure is the
             // distribution, not the PDA.
             let expectations = f.expectations();
-            let tx = f.sign(&[pc::build_open_instruction(&params), nonce_memo()]);
+            let tx = f.sign(&[
+                pc::build_open_instruction(&params),
+                nonce_memo(),
+                f.binding(),
+            ]);
             let err =
                 validate_setup_transaction(&tx, SetupForm::Open, &expectations, 100_000, None)
                     .unwrap_err();
@@ -1088,6 +1257,7 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ]);
         // Ahead of the chain.
         assert!(validate_setup_transaction(
@@ -1121,6 +1291,7 @@ mod tests {
         let tx = f.sign(&[
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
             drain,
         ]);
         let err =
@@ -1133,6 +1304,7 @@ mod tests {
             pc::build_open_instruction(&f.open_params(100_000)),
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ]);
         assert!(
             validate_setup_transaction(&tx, SetupForm::Open, &f.expectations(), 100_000, None)
@@ -1146,6 +1318,7 @@ mod tests {
         let ixs = [
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ];
 
         // Fee payer is not the sponsor.
@@ -1195,6 +1368,7 @@ mod tests {
             cu_limit_ix(90_000),
             pc::build_open_instruction(&f.open_params(100_000)),
             nonce_memo(),
+            f.binding(),
         ]);
         let validated = validate_setup_transaction(
             &tx,

@@ -814,6 +814,10 @@ pub struct OpenTxOptions {
     /// requires exactly one matching Memo, so the text is passed through
     /// verbatim.
     pub memo: Option<String>,
+    /// A second SPL Memo emitted after `memo`: the x402 `batch-settlement`
+    /// receiver-binding memo, which every `open` of that scheme carries in
+    /// addition to the seller memo. Unused by other schemes.
+    pub binding_memo: Option<String>,
     /// Message version to build. Version 1 requires `compute_budget`.
     pub version: TxVersion,
     /// Compute budget: a ComputeBudget prefix on version 0, the header config
@@ -899,7 +903,10 @@ pub async fn build_open_payment_channel_tx_with_options(
     };
     let channel_id = derive_channel_addresses(&params).channel;
     let mut instructions = vec![build_open_instruction(&params)];
-    if let Some(memo) = options.memo.as_deref() {
+    for memo in [options.memo.as_deref(), options.binding_memo.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         if memo.len() > OPEN_MAX_MEMO_BYTES {
             return Err(Error::Other(format!(
                 "channel open memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
@@ -964,6 +971,25 @@ pub enum MemoPolicy<'a> {
     /// `None` instead requires a random nonce of at least
     /// [`MIN_MEMO_NONCE_BYTES`] bytes encoded as hexadecimal text.
     Required(Option<&'a str>),
+    /// [`MemoPolicy::Required`] plus exactly one more Memo whose UTF-8 data
+    /// starts with `binding_prefix`: the x402 `batch-settlement` `open`, which
+    /// carries the seller memo and a receiver-binding memo. The binding
+    /// memo's payload (the bound key) is not inspected here; the caller binds
+    /// it to the key it expects.
+    RequiredWithBinding {
+        memo: Option<&'a str>,
+        binding_prefix: &'a str,
+    },
+}
+
+impl MemoPolicy<'_> {
+    /// How many Memo instructions the suffix may carry.
+    fn max_memos(&self) -> usize {
+        match self {
+            MemoPolicy::Optional | MemoPolicy::Required(_) => 1,
+            MemoPolicy::RequiredWithBinding { .. } => 2,
+        }
+    }
 }
 
 /// Enforce the sponsor's top-level instruction allowlist and return the single
@@ -1087,11 +1113,15 @@ pub fn scan_channel_tx_layout<'tx>(
     let memo_program = memo_program_id();
     let lighthouse = lighthouse_program_id();
     let (mut lighthouse_count, mut optional_count, mut memo_count) = (0usize, 0usize, 0usize);
+    let mut binding_count = 0usize;
+    // The binding memo rides beside the seller memo, so it widens the suffix
+    // by exactly one instruction and nothing else.
+    let max_suffix = OPEN_MAX_OPTIONAL_SUFFIX + memo.max_memos() - 1;
     while let Some(ix) = instructions.get(index) {
         optional_count += 1;
-        if optional_count > OPEN_MAX_OPTIONAL_SUFFIX {
+        if optional_count > max_suffix {
             return Err(Error::Other(format!(
-                "{label} transaction allows at most {OPEN_MAX_OPTIONAL_SUFFIX} instructions after {label}"
+                "{label} transaction allows at most {max_suffix} instructions after {label}"
             )));
         }
         let program = program_of(ix)?;
@@ -1104,14 +1134,43 @@ pub fn scan_channel_tx_layout<'tx>(
             }
             reject_fee_payer(ix, "Lighthouse")?;
         } else if program == memo_program {
-            memo_count += 1;
-            if memo_count > 1 && matches!(memo, MemoPolicy::Required(_)) {
-                return Err(Error::Other(format!(
-                    "{label} transaction allows at most one Memo instruction"
-                )));
-            }
             reject_fee_payer(ix, "Memo")?;
-            check_memo_data(&ix.data, label, memo)?;
+            match memo {
+                MemoPolicy::RequiredWithBinding { binding_prefix, .. }
+                    if ix.data.starts_with(binding_prefix.as_bytes()) =>
+                {
+                    binding_count += 1;
+                    if binding_count > 1 {
+                        return Err(Error::Other(format!(
+                            "{label} transaction must carry exactly one binding Memo"
+                        )));
+                    }
+                    // Bounded and UTF-8 like the seller memo; its key is the
+                    // caller's to bind.
+                    memo_text(&ix.data, label)?;
+                }
+                MemoPolicy::RequiredWithBinding { .. } => {
+                    memo_count += 1;
+                    if memo_count > 1 {
+                        return Err(Error::Other(format!(
+                            "{label} transaction allows at most one Memo instruction besides \
+                             the binding Memo"
+                        )));
+                    }
+                    check_memo_data(&ix.data, label, memo)?;
+                }
+                MemoPolicy::Optional | MemoPolicy::Required(_) => {
+                    memo_count += 1;
+                    // An unbound route may carry several Memos; a declared
+                    // memo admits exactly one.
+                    if memo_count > 1 && matches!(memo, MemoPolicy::Required(_)) {
+                        return Err(Error::Other(format!(
+                            "{label} transaction allows at most one Memo instruction"
+                        )));
+                    }
+                    check_memo_data(&ix.data, label, memo)?;
+                }
+            }
         } else {
             return Err(Error::Other(format!(
                 "{label} transaction instruction after {label} must be Lighthouse or Memo, found {}",
@@ -1120,28 +1179,46 @@ pub fn scan_channel_tx_layout<'tx>(
         }
         index += 1;
     }
-    if memo_count == 0 && matches!(memo, MemoPolicy::Required(_)) {
+    if memo_count == 0
+        && matches!(
+            memo,
+            MemoPolicy::Required(_) | MemoPolicy::RequiredWithBinding { .. }
+        )
+    {
         return Err(Error::Other(format!(
             "{label} transaction must carry exactly one Memo instruction"
+        )));
+    }
+    if binding_count == 0 && matches!(memo, MemoPolicy::RequiredWithBinding { .. }) {
+        return Err(Error::Other(format!(
+            "{label} transaction must carry exactly one binding Memo"
         )));
     }
 
     Ok(primary)
 }
 
-/// Apply a [`MemoPolicy`] to one Memo instruction's data.
-fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
-    let MemoPolicy::Required(expected) = memo else {
-        return Ok(());
-    };
+/// A Memo's data as bounded UTF-8 text.
+fn memo_text<'d>(data: &'d [u8], label: &str) -> Result<&'d str> {
     if data.len() > OPEN_MAX_MEMO_BYTES {
         return Err(Error::Other(format!(
             "{label} transaction memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
             data.len()
         )));
     }
-    let text = std::str::from_utf8(data)
-        .map_err(|_| Error::Other(format!("{label} transaction memo is not valid UTF-8")))?;
+    std::str::from_utf8(data)
+        .map_err(|_| Error::Other(format!("{label} transaction memo is not valid UTF-8")))
+}
+
+/// Apply a [`MemoPolicy`] to one Memo instruction's data.
+fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
+    let expected = match memo {
+        MemoPolicy::Optional => return Ok(()),
+        MemoPolicy::Required(expected) | MemoPolicy::RequiredWithBinding { memo: expected, .. } => {
+            expected
+        }
+    };
+    let text = memo_text(data, label)?;
     match expected {
         Some(expected) => {
             if text != expected {

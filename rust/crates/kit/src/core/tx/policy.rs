@@ -673,6 +673,11 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("loaded accounts data size"));
+            // The present-only rule admits a smaller positive limit and
+            // nothing else.
+            let present =
+                check_v1_budget_caps_with(&msg, 200_000, 5_000_000, LoadedDataLimitRule::Present);
+            assert_eq!(present.is_ok(), loaded == Some(1), "{loaded:?}");
         }
         // Under the presence rule any nonzero limit up to the maximum passes.
         for (loaded, ok) in [

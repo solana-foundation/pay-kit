@@ -84,6 +84,9 @@ pub fn code_for(wire: &str) -> Option<RejectCode> {
         codes::INVALID_CHANNEL_STATE => ChannelState,
         codes::INVALID_REFUND_TRANSACTION => RefundTransaction,
         codes::INVALID_CHANNEL_CLOSING => ChannelClosing,
+        codes::INVALID_RECEIVER_BINDING_UNAVAILABLE => ReceiverBindingUnavailable,
+        codes::INVALID_X402_VERSION | codes::UNSUPPORTED_TRANSACTION_VERSION => UnsupportedVersion,
+        codes::INVALID_PAYMENT_REQUIREMENTS => AcceptedMismatch,
         codes::DUPLICATE_SETTLEMENT => DuplicateSettlement,
         _ => return None,
     })
@@ -204,15 +207,55 @@ fn canonical(input: &Value) -> Result<Observed, String> {
             },
         );
     }
-    if input.get("batchCloseAuthorizationDigest").is_some() {
-        return Ok(Observed::NotExpressible(
-            "the Rust kit has no CloseAuthorization encoder: it refuses cooperative closes".into(),
-        ));
+    if let Some(cd) = input.get("batchCloseAuthorizationDigest") {
+        let key = |k: &str| pc::parse_pubkey(super::str_field(cd, k));
+        let (program_id, fee_payer, channel_id) =
+            match (key("programId"), key("feePayer"), key("channelId")) {
+                (Ok(p), Ok(f), Ok(c)) => (p, f, c),
+                _ => {
+                    return Ok(invalid(
+                        "close authorization addresses must be base58 pubkeys",
+                    ))
+                }
+            };
+        let Ok(max_claimable_amount) = super::str_field(cd, "maxClaimableAmount").parse::<u64>()
+        else {
+            return Ok(invalid("maxClaimableAmount must be a decimal u64"));
+        };
+        let (Some(voucher_expires_at), Some(valid_before)) = (
+            cd.get("voucherExpiresAt").and_then(Value::as_i64),
+            cd.get("validBefore").and_then(Value::as_i64),
+        ) else {
+            return Ok(invalid("voucherExpiresAt and validBefore must be integers"));
+        };
+        let scope = scheme::CloseAuthorizationScope {
+            network: super::str_field(cd, "network"),
+            program_id: &program_id,
+            fee_payer: &fee_payer,
+            channel_id: &channel_id,
+            max_claimable_amount,
+            voucher_expires_at,
+        };
+        return Ok(
+            match scheme::close_authorization_digest(&scope, valid_before) {
+                Ok(digest) => {
+                    set_bytes(&mut exact, &digest);
+                    accept_exact(exact)
+                }
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
-    if input.get("batchReceiverBindingMemo").is_some() {
-        return Ok(Observed::NotExpressible(
-            "the Rust kit exposes no receiver-binding memo encoder".into(),
-        ));
+    if let Some(binding) = input.get("batchReceiverBindingMemo") {
+        return Ok(
+            match pc::parse_pubkey(super::str_field(binding, "receiverAuthorizer")) {
+                Ok(key) => {
+                    set_bytes(&mut exact, scheme::receiver_binding_memo(&key).as_bytes());
+                    accept_exact(exact)
+                }
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
     if let Some(ci) = input.get("batchChannelId") {
         let config: BatchChannelConfig =
@@ -434,7 +477,14 @@ async fn client_build(input: &Value) -> Result<Observed, String> {
     let c = input.get("batchClient").ok_or("batchClient missing")?;
     let requirements: BatchRequirements = match serde_json::from_value(c["requirements"].clone()) {
         Ok(r) => r,
-        Err(e) => return Ok(reject(Some(RejectCode::InvalidChallenge), e.to_string())),
+        // A requirement that does not parse is a refused challenge, unless
+        // the kit tagged the refusal with a spec code (a non-integer
+        // withdrawDelay is out of range).
+        Err(e) => {
+            return Ok(client_reject(&solana_pay_kit::x402::Error::Other(
+                e.to_string(),
+            )))
+        }
     };
     let payer = signer(c, "secretKey")?;
     let fixtures = Fixtures::from_input(input)?;
@@ -481,7 +531,7 @@ async fn client_build(input: &Value) -> Result<Observed, String> {
         }
         "refund" => {
             let channel = tracker(&c["channel"], &requirements)?;
-            client::build_refund(&payer, &channel, &terms, blockhash()?).await
+            client::build_refund(&payer, &channel, &terms).await
         }
         other => return Err(format!("unknown batchClient.operation {other:?}")),
     };
@@ -919,6 +969,14 @@ fn judge_refund(
     let accepted = solana_pay_kit::core::tx::accepted_versions(
         requirements.extra.transaction_versions.as_deref(),
     );
+    let receiver_authorizer = pc::parse_pubkey(
+        requirements
+            .extra
+            .receiver_authorizer
+            .as_deref()
+            .ok_or_else(|| fail("the requirements advertise no receiverAuthorizer"))?,
+    )
+    .map_err(|e| fail(e.to_string()))?;
     let expectations = scheme::TransactionExpectations {
         program_id: &program_id,
         fee_payer: &fee_payer,
@@ -928,6 +986,7 @@ fn judge_refund(
         token_program: &token_program,
         receiver: &receiver,
         memo: requirements.extra.memo.as_deref(),
+        receiver_authorizer: &receiver_authorizer,
     };
     scheme::validate_request_close_transaction(transaction, &expectations)
         .map(|_| ())
@@ -1467,23 +1526,14 @@ mod tests {
         engine.encode(serde_json::to_vec(&envelope).unwrap())
     }
 
-    // The kit's deposit build is a known failure (FINDINGS.md
-    // #batch-open-binding-memo: no binding memo), which the judge reports
-    // last; an inflated declared deposit must fail first, on the deposit.
+    // The kit's deposit build passes the judge; an inflated declared deposit
+    // fails it, on the deposit.
     #[test]
     fn a_declared_deposit_the_open_does_not_fund_fails_the_build_judge() {
         let rt = runtime();
         let v = vector("batch-build-deposit-open");
         let honest = edited_build(&rt, &v, |_| {});
-        let kit = rt.block_on(judge_build(&v, &honest)).unwrap_err();
-        assert_eq!(kit.path.as_deref(), Some("open.memos"), "{}", kit.message);
-        assert!(
-            kit.expected
-                .as_ref()
-                .is_some_and(|e| e.to_string().contains("rcvauth")),
-            "{:?}",
-            kit.expected
-        );
+        rt.block_on(judge_build(&v, &honest)).unwrap();
         let inflated = edited_build(&rt, &v, |e| {
             let declared = u64_field(&e["payload"]["deposit"], "amount").unwrap();
             e["payload"]["deposit"]["amount"] = json!((declared + 1).to_string());
@@ -1619,11 +1669,20 @@ mod tests {
             .unwrap()
             .to_string();
         let binding = fx::binding_memo(&authorizer);
-        let complete = edited_build(&rt, &v, |e| {
-            with_memos(e, seed, std::slice::from_ref(&binding))
-        });
+        // The kit's own open already carries the seller and binding memos.
+        let complete = edited_build(&rt, &v, |_| {});
         rt.block_on(judge_build(&v, &complete)).unwrap();
 
+        for memos in [vec!["a second memo".to_string()], vec![binding.clone()]] {
+            let extra = edited_build(&rt, &v, |e| with_memos(e, seed, &memos));
+            let failure = rt.block_on(judge_build(&v, &extra)).unwrap_err();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some("open.memos"),
+                "{}",
+                failure.message
+            );
+        }
         let extra = edited_build(&rt, &v, |e| {
             with_memos(e, seed, &[binding.clone(), "a second memo".into()])
         });
@@ -1640,7 +1699,6 @@ mod tests {
             ("payerAuthorizer", json!(fx::stranger())),
         ] {
             let off = edited_build(&rt, &v, |e| {
-                with_memos(e, seed, std::slice::from_ref(&binding));
                 e["payload"]["channelConfig"][field] = value.clone();
             });
             let failure = rt.block_on(judge_build(&v, &off)).unwrap_err();

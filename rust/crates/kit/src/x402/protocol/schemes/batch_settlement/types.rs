@@ -49,6 +49,28 @@ fn batch_scheme() -> String {
     BATCH_SETTLEMENT_SCHEME.to_string()
 }
 
+/// `extra.withdrawDelay`: "MUST be an integer from `900` through `2592000`".
+/// Any JSON number parses here so a fractional or negative value is refused
+/// with the range code rather than as a malformed challenge; the range itself
+/// is enforced by `check_withdraw_delay`.
+fn withdraw_delay_seconds<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Number::deserialize(deserializer)?;
+    value
+        .as_u64()
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .ok_or_else(|| {
+            D::Error::custom(format!(
+                "{}: withdrawDelay {value} is not an integer number of seconds from \
+                 {MIN_WITHDRAW_DELAY_SECONDS} through {MAX_WITHDRAW_DELAY_SECONDS}",
+                super::errors::INVALID_WITHDRAW_DELAY_OUT_OF_RANGE
+            ))
+        })
+}
+
 /// Parse an atomic-unit amount carried on the wire as a decimal string.
 fn parse_amount(value: &str, field: &str) -> Result<u64, Error> {
     value
@@ -91,7 +113,9 @@ pub struct BatchExtra {
     /// Forced-close grace period in seconds, encoded exactly as the program
     /// `grace_period`. Must be in
     /// [`MIN_WITHDRAW_DELAY_SECONDS`]`..=`[`MAX_WITHDRAW_DELAY_SECONDS`] and at
-    /// least `maxTimeoutSeconds`.
+    /// least `maxTimeoutSeconds`. A non-integer value does not parse, and
+    /// the refusal carries `invalid_batch_settlement_svm_withdraw_delay_out_of_range`.
+    #[serde(deserialize_with = "withdraw_delay_seconds")]
     pub withdraw_delay: u32,
 
     /// SPL Token or Token-2022 program that owns `asset`. The client and
@@ -323,13 +347,16 @@ pub struct BatchAuthorization {
     pub signature: String,
 }
 
-/// A server signature authorizing an immediate cooperative close.
+/// The receiver authorizer's signature binding one exact cooperative close
+/// (`seal`, or a server-enriched `refund`), spec §4.2.
 ///
-/// Defined for wire completeness. This SDK never produces one and rejects any
-/// it receives: as channel `payee` it seals a closing channel directly with its
-/// own latest voucher (see the server's `finalize_close`), and a facilitator
-/// must not honor a receiver-authorizer key merely because it appeared in an
-/// untrusted request.
+/// The signed bytes are the SHA-256 digest from
+/// [`super::close_authorization_digest`]. A client never authors one: the
+/// resource server adds it before forwarding a close to a separate
+/// facilitator, and the facilitator verifies it against the channel's bound
+/// key ([`super::verify_close_authorization`]), never against a key that merely
+/// appears in the request. This SDK's server self-facilitates, so it closes a
+/// channel bound to its own key without producing one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseAuthorization {
@@ -397,29 +424,137 @@ pub enum BatchPayload {
         authorization: BatchAuthorization,
     },
 
-    /// Start a payer-forced channel close. A payment operation, not a paid
-    /// request — the resource handler MUST be bypassed. It carries no `amount`:
-    /// the program returns all unused escrow or nothing.
-    Refund {
-        channel_config: BatchChannelConfig,
-        /// Base64 client-signed `request_close` transaction, whose Solana fee
-        /// payer MUST be `extra.feePayer`.
-        transaction: String,
-        /// Optional hint for an immediate cooperative close. Never applied
-        /// unless an authenticated server confirms it is the latest accepted
-        /// voucher; this SDK rejects it outright.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        voucher: Option<BatchVoucher>,
-        /// Optional server authorization for that shortcut. Rejected here.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        close_authorization: Option<CloseAuthorization>,
-        /// A partial-refund amount, which this scheme does not support: its
-        /// presence is refused with
-        /// `invalid_batch_settlement_svm_close_amount_unsupported`. Never set
-        /// when building a payload.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        amount: Option<String>,
-    },
+    /// Close the channel and return its unused escrow (spec §3, §4.3). A
+    /// payment operation, not a paid request — the resource handler MUST be
+    /// bypassed.
+    Refund(BatchRefund),
+}
+
+/// Who authorizes a `refund`: exactly one of the client-mode voucher or the
+/// server-mode payer proof (spec §4.3). A refund carrying neither, or both,
+/// does not parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefundSigner {
+    /// Client mode: the server's accepted cumulative, signed by
+    /// `channelConfig.payerAuthorizer` (`expiresAt` `0`).
+    Client(BatchVoucher),
+    /// Server mode: the payer's close-intent proof (`authorizedAmount` `"0"`).
+    Server(BatchAuthorization),
+}
+
+/// The body of a `refund` payload.
+///
+/// A refund is a cooperative close by default: the facilitator applies the
+/// accepted voucher with `settle_and_seal` and a sealed `distribute`,
+/// returning `deposit - settled` to the payer at once. `transaction` is the
+/// retry after `invalid_batch_settlement_svm_receiver_binding_unavailable`: a
+/// payer-signed `request_close` the facilitator co-signs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawRefund", into = "RawRefund")]
+pub struct BatchRefund {
+    pub channel_config: BatchChannelConfig,
+    pub signer: RefundSigner,
+    /// Base64 payer-signed `request_close` whose Solana fee payer is
+    /// `extra.feePayer`. Omitted unless retrying after the binding was
+    /// unavailable.
+    pub transaction: Option<String>,
+    /// Added by the server before forwarding to a separate facilitator; never
+    /// client-authored.
+    pub close_authorization: Option<CloseAuthorization>,
+    /// A partial-refund amount, which this scheme does not support: its
+    /// presence is refused with
+    /// `invalid_batch_settlement_svm_close_amount_unsupported`. Never set when
+    /// building a payload.
+    pub amount: Option<String>,
+}
+
+impl BatchRefund {
+    /// A client-mode cooperative refund at `voucher` (the accepted cumulative).
+    pub fn client(channel_config: BatchChannelConfig, voucher: BatchVoucher) -> Self {
+        Self {
+            channel_config,
+            signer: RefundSigner::Client(voucher),
+            transaction: None,
+            close_authorization: None,
+            amount: None,
+        }
+    }
+
+    /// The client-mode voucher, when this is a client-mode refund.
+    pub fn voucher(&self) -> Option<&BatchVoucher> {
+        match &self.signer {
+            RefundSigner::Client(voucher) => Some(voucher),
+            RefundSigner::Server(_) => None,
+        }
+    }
+}
+
+/// The wire shape of [`BatchRefund`], before the signer union is enforced.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRefund {
+    channel_config: BatchChannelConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voucher: Option<BatchVoucher>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authorization: Option<BatchAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    close_authorization: Option<CloseAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    amount: Option<String>,
+}
+
+impl TryFrom<RawRefund> for BatchRefund {
+    type Error = String;
+
+    fn try_from(raw: RawRefund) -> Result<Self, Self::Error> {
+        let signer = match (raw.voucher, raw.authorization) {
+            (Some(voucher), None) => RefundSigner::Client(voucher),
+            (None, Some(authorization)) => RefundSigner::Server(authorization),
+            // The spec code travels in the message, so a server refusing the
+            // payload reports it rather than a generic parse failure.
+            (None, None) => {
+                return Err(format!(
+                    "{}: a refund carries the accepted voucher in client mode or the \
+                     payer authorization in server mode, and this one carries neither",
+                    super::errors::INVALID_PAYLOAD_TYPE
+                ))
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "{}: a refund carries a voucher (client mode) or an authorization \
+                     (server mode), not both",
+                    super::errors::INVALID_PAYLOAD_TYPE
+                ))
+            }
+        };
+        Ok(Self {
+            channel_config: raw.channel_config,
+            signer,
+            transaction: raw.transaction,
+            close_authorization: raw.close_authorization,
+            amount: raw.amount,
+        })
+    }
+}
+
+impl From<BatchRefund> for RawRefund {
+    fn from(refund: BatchRefund) -> Self {
+        let (voucher, authorization) = match refund.signer {
+            RefundSigner::Client(voucher) => (Some(voucher), None),
+            RefundSigner::Server(authorization) => (None, Some(authorization)),
+        };
+        Self {
+            channel_config: refund.channel_config,
+            voucher,
+            authorization,
+            transaction: refund.transaction,
+            close_authorization: refund.close_authorization,
+            amount: refund.amount,
+        }
+    }
 }
 
 impl BatchPayload {
@@ -429,19 +564,19 @@ impl BatchPayload {
             BatchPayload::Deposit { channel_config, .. }
             | BatchPayload::Voucher { channel_config, .. }
             | BatchPayload::Authorization { channel_config, .. }
-            | BatchPayload::Refund { channel_config, .. } => channel_config,
+            | BatchPayload::Refund(BatchRefund { channel_config, .. }) => channel_config,
         }
     }
 
     /// The paid-request voucher, when this payload authorizes a charge.
-    /// `refund` returns `None` — its optional voucher is a close hint, not an
-    /// authorization to serve — and so does `authorization`, which carries a
+    /// `refund` returns `None` — its voucher fixes the close watermark, it
+    /// authorizes no charge — and so does `authorization`, which carries a
     /// payer proof rather than a voucher.
     pub fn charge_voucher(&self) -> Option<&BatchVoucher> {
         match self {
             BatchPayload::Deposit { voucher, .. } => voucher.as_ref(),
             BatchPayload::Voucher { voucher, .. } => Some(voucher),
-            BatchPayload::Authorization { .. } | BatchPayload::Refund { .. } => None,
+            BatchPayload::Authorization { .. } | BatchPayload::Refund(_) => None,
         }
     }
 
@@ -451,7 +586,7 @@ impl BatchPayload {
             BatchPayload::Deposit { .. } => "deposit",
             BatchPayload::Voucher { .. } => "voucher",
             BatchPayload::Authorization { .. } => "authorization",
-            BatchPayload::Refund { .. } => "refund",
+            BatchPayload::Refund(_) => "refund",
         }
     }
 }
@@ -497,6 +632,60 @@ pub struct BatchSettleChannel {
     pub channel_config: BatchChannelConfig,
 }
 
+/// One to [`MAX_CLAIMS_PER_BATCH`] redemption entries: the only batch sizes a
+/// `claim` or `settle` payload may carry (spec §4.5, "`claims[]` MUST contain
+/// between one and four entries so the instruction pairs fit in a legacy
+/// Solana transaction without address lookup tables").
+///
+/// The bound is enforced at construction and at parse time, so an empty or
+/// oversized batch never exists as a value: a facilitator cannot silently
+/// truncate a batch it was never able to receive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<T>", into = "Vec<T>")]
+#[serde(bound(
+    serialize = "T: Serialize + Clone",
+    deserialize = "T: Deserialize<'de>"
+))]
+pub struct RedemptionBatch<T>(Vec<T>);
+
+impl<T> RedemptionBatch<T> {
+    /// Wrap `entries`, refusing an empty batch or one over
+    /// [`MAX_CLAIMS_PER_BATCH`].
+    pub fn new(entries: Vec<T>) -> Result<Self, Error> {
+        if entries.is_empty() || entries.len() > MAX_CLAIMS_PER_BATCH {
+            return Err(Error::Other(format!(
+                "a redemption batch must carry 1 through {MAX_CLAIMS_PER_BATCH} entries, got {}",
+                entries.len()
+            )));
+        }
+        Ok(Self(entries))
+    }
+
+    /// The entries, in submission order.
+    pub fn entries(&self) -> &[T] {
+        &self.0
+    }
+
+    /// Consume the batch into its entries.
+    pub fn into_entries(self) -> Vec<T> {
+        self.0
+    }
+}
+
+impl<T> TryFrom<Vec<T>> for RedemptionBatch<T> {
+    type Error = String;
+
+    fn try_from(entries: Vec<T>) -> Result<Self, Self::Error> {
+        Self::new(entries).map_err(|e| e.to_string())
+    }
+}
+
+impl<T> From<RedemptionBatch<T>> for Vec<T> {
+    fn from(batch: RedemptionBatch<T>) -> Self {
+        batch.0
+    }
+}
+
 /// The redemption payloads a server (or its batch worker) authors.
 ///
 /// `claim` advances the onchain `settled` watermark from stored vouchers;
@@ -512,10 +701,14 @@ pub struct BatchSettleChannel {
 pub enum BatchRedemptionPayload {
     /// One to [`MAX_CLAIMS_PER_BATCH`] channels to claim in one transaction;
     /// program `settle`.
-    Claim { claims: Vec<BatchVoucherClaim> },
+    Claim {
+        claims: RedemptionBatch<BatchVoucherClaim>,
+    },
     /// One to [`MAX_CLAIMS_PER_BATCH`] channels to distribute in one
     /// transaction; program `distribute`.
-    Settle { channels: Vec<BatchSettleChannel> },
+    Settle {
+        channels: RedemptionBatch<BatchSettleChannel>,
+    },
     /// Apply the server's latest voucher to a `Closing` channel with
     /// `settle_and_seal` and pay out with a sealed `distribute`, before the
     /// payer's grace period ends. A standalone facilitator authenticates the
@@ -802,24 +995,48 @@ mod tests {
         };
         assert_eq!(serde_json::to_value(&steady).unwrap()["type"], "voucher");
 
-        let refund = BatchPayload::Refund {
-            channel_config: channel_config(),
-            transaction: "b64".to_string(),
-            voucher: None,
-            close_authorization: None,
-            amount: None,
-        };
+        // The default refund is cooperative: the accepted voucher, no
+        // transaction.
+        let refund = BatchPayload::Refund(BatchRefund::client(channel_config(), voucher("5000")));
         let json = serde_json::to_value(&refund).unwrap();
         assert_eq!(json["type"], "refund");
+        assert_eq!(json["voucher"]["maxClaimableAmount"], "5000");
         assert!(json.get("closeAuthorization").is_none());
-        assert!(json.get("voucher").is_none());
+        assert!(json.get("transaction").is_none());
+        assert!(json.get("authorization").is_none());
         assert!(json.get("amount").is_none());
-        // A refund's voucher is a close hint, never an authorization to serve.
+        // A refund's voucher fixes the close, it never authorizes a serve.
         assert!(refund.charge_voucher().is_none());
         assert_eq!(refund.channel_config().salt().unwrap(), 42);
 
-        let back: BatchPayload = serde_json::from_value(json).unwrap();
-        assert!(matches!(back, BatchPayload::Refund { .. }));
+        let back: BatchPayload = serde_json::from_value(json.clone()).unwrap();
+        assert!(
+            matches!(back, BatchPayload::Refund(ref r) if r.voucher() == Some(&voucher("5000")))
+        );
+
+        // The voucher is REQUIRED in client mode: a request_close alone is not
+        // a refund, and the refusal carries the payload-type code.
+        let mut bare = json.clone();
+        bare.as_object_mut().unwrap().remove("voucher");
+        bare["transaction"] = serde_json::json!("b64");
+        let err = serde_json::from_value::<BatchPayload>(bare).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(super::super::errors::INVALID_PAYLOAD_TYPE),
+            "{err}"
+        );
+        // Both a voucher and a server-mode proof are not one variant either.
+        let mut both = json;
+        both["authorization"] = serde_json::json!({
+            "type": "proof",
+            "channelId": CHANNEL,
+            "payer": "Payer111111111111111111111111111111111111",
+            "requestId": "refund-1",
+            "authorizedAmount": "0",
+            "expiresAt": 1_758_215_100,
+            "signature": "sig"
+        });
+        assert!(serde_json::from_value::<BatchPayload>(both).is_err());
 
         // A server-mode request parses, so the server can refuse it by name.
         let authorization: BatchPayload = serde_json::from_value(serde_json::json!({
@@ -869,11 +1086,14 @@ mod tests {
         let partial: BatchPayload = serde_json::from_value(serde_json::json!({
             "type": "refund",
             "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+            "voucher": serde_json::to_value(voucher("5000")).unwrap(),
             "transaction": "b64",
             "amount": "1500"
         }))
         .unwrap();
-        assert!(matches!(partial, BatchPayload::Refund { amount: Some(ref a), .. } if a == "1500"));
+        assert!(
+            matches!(partial, BatchPayload::Refund(BatchRefund { amount: Some(ref a), .. }) if a == "1500")
+        );
     }
 
     #[test]
@@ -964,11 +1184,12 @@ mod tests {
     #[test]
     fn redemption_payloads_share_one_entry_shape() {
         let claim = BatchRedemptionPayload::Claim {
-            claims: vec![BatchVoucherClaim {
+            claims: RedemptionBatch::new(vec![BatchVoucherClaim {
                 channel_id: CHANNEL.to_string(),
                 channel_config: channel_config(),
                 voucher: voucher("5000"),
-            }],
+            }])
+            .unwrap(),
         };
         let json = serde_json::to_value(&claim).unwrap();
         assert_eq!(json["type"], "claim");
@@ -981,10 +1202,11 @@ mod tests {
         assert!(json["claims"][0]["voucher"].get("channelConfig").is_none());
 
         let settle = BatchRedemptionPayload::Settle {
-            channels: vec![BatchSettleChannel {
+            channels: RedemptionBatch::new(vec![BatchSettleChannel {
                 channel_id: CHANNEL.to_string(),
                 channel_config: channel_config(),
-            }],
+            }])
+            .unwrap(),
         };
         let json = serde_json::to_value(&settle).unwrap();
         assert_eq!(json["type"], "settle");
@@ -1007,6 +1229,55 @@ mod tests {
         assert_eq!(json["closeAuthorization"]["validBefore"], 1_785_341_100);
         let back: BatchRedemptionPayload = serde_json::from_value(json).unwrap();
         assert!(matches!(back, BatchRedemptionPayload::Seal(body) if body.channel_id == CHANNEL));
+    }
+
+    #[test]
+    fn redemption_batches_carry_one_to_four_entries() {
+        let entry = || {
+            serde_json::json!({
+                "channelId": CHANNEL,
+                "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+                "voucher": serde_json::to_value(voucher("5000")).unwrap(),
+            })
+        };
+        let claim = |n: usize| serde_json::json!({ "type": "claim", "claims": (0..n).map(|_| entry()).collect::<Vec<_>>() });
+        for n in 1..=MAX_CLAIMS_PER_BATCH {
+            let parsed: BatchRedemptionPayload = serde_json::from_value(claim(n)).unwrap();
+            assert!(
+                matches!(parsed, BatchRedemptionPayload::Claim { claims } if claims.entries().len() == n)
+            );
+        }
+        // Below the minimum and above the transaction-size bound never parse.
+        for n in [0, MAX_CLAIMS_PER_BATCH + 1] {
+            let err = serde_json::from_value::<BatchRedemptionPayload>(claim(n)).unwrap_err();
+            assert!(err.to_string().contains("1 through 4"), "{err}");
+        }
+        let settle = serde_json::json!({ "type": "settle", "channels": [] });
+        assert!(serde_json::from_value::<BatchRedemptionPayload>(settle).is_err());
+        assert!(RedemptionBatch::<u8>::new(vec![]).is_err());
+        assert!(RedemptionBatch::new(vec![0u8; 5]).is_err());
+    }
+
+    #[test]
+    fn a_non_integer_withdraw_delay_is_refused_with_the_range_code() {
+        let mut json = serde_json::to_value(requirements()).unwrap();
+        for bad in [
+            serde_json::json!(900.5),
+            serde_json::json!(-900),
+            serde_json::json!(4_294_967_296u64),
+        ] {
+            json["extra"]["withdrawDelay"] = bad.clone();
+            let err = serde_json::from_value::<BatchRequirements>(json.clone()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(super::super::errors::INVALID_WITHDRAW_DELAY_OUT_OF_RANGE),
+                "{bad}: {err}"
+            );
+        }
+        // Positive control: an integer parses (its range is checked later).
+        json["extra"]["withdrawDelay"] = serde_json::json!(899);
+        let parsed: BatchRequirements = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.extra.withdraw_delay, 899);
     }
 
     #[test]
