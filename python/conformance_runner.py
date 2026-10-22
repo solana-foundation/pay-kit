@@ -578,6 +578,13 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
             return {"id": vector_id, "outcome": "unsupported-mode", "error": "unsupported-mode: session verify input"}
         return _run_session_voucher_verify(vector)
 
+    if vector.get("intent") == "session" and mode == "build-transaction":
+        return {
+            "id": vector_id,
+            "outcome": "unsupported-mode",
+            "error": "unsupported-mode: no session client open builder path (input.sessionOpenBuild)",
+        }
+
     if mode == "canonical-bytes":
         return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}
 

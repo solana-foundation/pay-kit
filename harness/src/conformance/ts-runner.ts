@@ -423,6 +423,13 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.mode === "build-transaction" && vector.input.signerMaxTransactionVersion !== undefined) {
     return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
   }
+  if (vector.intent === "session" && vector.mode === "build-transaction") {
+    return {
+      error: "unsupported-mode: no session client open builder path (input.sessionOpenBuild)",
+      id: vector.id,
+      outcome: "unsupported-mode",
+    };
+  }
   if (vector.intent === "session" && vector.mode === "verify-transaction") {
     if (!vector.input.sessionVoucherVerify) {
       return { error: "unsupported-mode: session verify input", id: vector.id, outcome: "unsupported-mode" };

@@ -776,6 +776,14 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
             }
         }
 
+        if vector.intent == "session" && vector.mode == "build-transaction" {
+            return RunnerResult(
+                id: vector.id,
+                outcome: "unsupported-mode",
+                error: "unsupported-mode: no session client open builder path (input.sessionOpenBuild)"
+            )
+        }
+
         switch vector.mode {
         case "canonical-bytes":
             let eb = try runCanonicalBytes(vector, rawValue: rawValue)

@@ -78,5 +78,49 @@ ids = [
 ]
 
 [[unsupported]]
-reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session open verify (input.sessionOpenVerify)"
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session open verify (input.sessionOpenVerify, input.sessionServerVerify)"
 pattern = "vector/session-open-*"
+
+# draft-solana-session-00 server, client build and strict wire vectors
+# (rust/crates/conformance/src/cases/session_server.rs).
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session server verify (input.sessionServerVerify)"
+pattern = "vector/session-voucher-verify-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session server verify (input.sessionServerVerify)"
+pattern = "vector/session-topup-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session server verify (input.sessionServerVerify)"
+pattern = "vector/session-close-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session client open build (input.sessionOpenBuild)"
+pattern = "vector/session-build-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner only supports the session voucherPreimage canonical-bytes vector"
+ids = [
+  "vector/session-wire-action-open-bump-reject",
+  "vector/session-wire-action-open-initial-voucher-reject",
+  "vector/session-wire-action-open-numeric-open-slot-reject",
+  "vector/session-wire-action-open-numeric-salt-reject",
+  "vector/session-wire-action-open-missing-transaction-reject",
+  "vector/session-wire-action-voucher-missing-channel-id-reject",
+  "vector/session-wire-action-voucher-signature-type-reject",
+  "vector/session-wire-action-voucher-numeric-cumulative-reject",
+  "vector/session-wire-action-voucher-missing-signature-type-reject",
+  "vector/session-wire-action-topup-frozen",
+  "vector/session-wire-action-topup-missing-amount-reject",
+  "vector/session-wire-action-use-frozen",
+  "vector/session-wire-action-use-proof-type-reject",
+  "vector/session-wire-action-close-operator-frozen",
+  "vector/session-wire-request-operator-sponsored-frozen",
+  "vector/session-wire-request-missing-network-reject",
+  "vector/session-wire-request-numeric-recent-slot-reject",
+  "vector/session-wire-request-voucher-signer-unknown-reject",
+  "vector/session-wire-request-missing-channel-program-reject",
+  "vector/session-wire-authentication-message-frozen",
+]

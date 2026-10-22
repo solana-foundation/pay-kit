@@ -245,6 +245,23 @@ other x402 verifier caps the unit price alone:
   (`typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246`).
   SOLA1-340 bounded the product in the TypeScript MPP charge only.
 
+## session-open-initial-voucher-accepted
+
+**Case:** `vector/session-wire-action-open-initial-voucher-reject`
+**SDKs:** typescript, python
+
+draft-solana-session-00 §Action "open": “`Action: "open"` MUST NOT carry an
+initial voucher. The first voucher is exchanged off-chain in a subsequent
+metered request, after the channel is confirmed on-chain.” Both session
+wire schemas special-case the forbidden `bump` field (TypeScript:
+`bump: z.optional(z.never())` in `typescript/packages/mpp/src/Methods.ts`;
+Python: `open payload must not include bump` in
+`python/src/solana_pay_kit/protocols/mpp/intents/session.py`) but drop or
+ignore every other unknown key, so an open carrying a `voucher` parses and
+re-encodes without it. Rust's `OpenPayload` is `deny_unknown_fields`. Fix:
+refuse a `voucher` key on the open payload (or refuse unknown keys
+outright).
+
 ## Interop findings (`pkc run --tier interop`, 2026-10-20)
 
 Recorded by the first run of the interop tier with every adapter paired
