@@ -167,63 +167,6 @@ ids = [
 ]
 reason = "requires a version-1 loadedAccountsDataSizeLimit equal to 64 MiB rather than present"
 tracking = "FINDINGS.md#upto-v1-loaded-limit-strict"
-# subscription (draft-solana-subscription-00) vectors
-
-[[known_failing]]
-ids = [
-  "vector/subscription-build-spec-request",
-]
-reason = "the client needs the kit's own methodDetails extensions (amount, recipient, planIdNumeric, planBump, expectedPeriodHours, expectedCreatedAt) and refuses a spec-shaped challenge (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:176, rust/crates/kit/src/mpp/client/subscription.rs:266); the case records the kit divergence"
-tracking = "FINDINGS.md#subscription-rust-client-kit-extensions"
-
-[[known_failing]]
-ids = [
-  "vector/subscription-build-amount-leading-zero-reject",
-  "vector/subscription-build-zero-amount-reject",
-  "vector/subscription-build-period-count-leading-zero-reject",
-  "vector/subscription-period-count-leading-zero-reject",
-  "vector/subscription-period-count-sign-reject",
-  "vector/subscription-build-token-program-not-spl-reject",
-  "vector/subscription-build-no-decimals-reject",
-]
-reason = "the request's amount / periodCount formats, tokenProgram and decimals are never validated: u64::from_str accepts \"010000000\", \"0\", \"030\", \"+30\" (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:201-212), any tokenProgram is used (rust/crates/kit/src/mpp/client/subscription.rs:224) and decimals is optional (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:322); the cases record the kit divergence"
-tracking = "FINDINGS.md#subscription-rust-request-format"
-
-[[known_failing]]
-ids = [
-  "vector/subscription-build-plan-missing-reject",
-  "vector/subscription-build-plan-amount-mismatch-reject",
-  "vector/subscription-build-plan-period-mismatch-reject",
-  "vector/subscription-build-plan-mint-mismatch-reject",
-  "vector/subscription-build-plan-puller-unauthorized-reject",
-  "vector/subscription-build-plan-no-destination-reject",
-  "vector/subscription-build-plan-two-destinations-reject",
-  "vector/subscription-build-plan-other-destination-reject",
-]
-reason = "the client never reads the on-chain Plan: it signs SubscribeData built from methodDetails (rust/crates/kit/src/mpp/client/subscription.rs:266), so a plan that does not match the challenge (terms, pullers, destinations, or no plan at all) is signed; the cases record the kit divergence"
-tracking = "FINDINGS.md#subscription-rust-client-plan-unread"
-
-[[known_failing]]
-ids = [
-  "vector/subscription-verify-source-other-address-reject",
-  "vector/subscription-verify-source-other-method-reject",
-]
-reason = "verify_credential never reads credential.source (rust/crates/kit/src/mpp/server/subscription.rs:420); the cases record the kit divergence"
-tracking = "FINDINGS.md#subscription-source-not-verified"
-
-[[known_failing]]
-ids = [
-  "vector/subscription-verify-sponsor-not-fee-payer-reject",
-]
-reason = "with feePayer=true the server looks for the subscriber after the sponsor slot and reports \"Could not identify subscriber\" (invalid-payload) before it checks the fee payer (rust/crates/kit/src/mpp/server/subscription.rs:1867); the case records the kit divergence"
-tracking = "FINDINGS.md#subscription-rust-sponsor-fee-payer-code"
-
-[[known_failing]]
-ids = [
-  "vector/subscription-wire-activation-no-authentication-reject",
-]
-reason = "ActivatePayload.authentication is Option (rust/crates/kit/src/mpp/protocol/intents/subscription.rs:260): the wire type accepts an activation without the REQUIRED proof, verify_credential refuses it later; the case records the kit divergence"
-tracking = "FINDINGS.md#subscription-rust-wire-optional-authentication"
 # ── x402 batch-settlement (SVM) ──
 
 [[unsupported]]

@@ -563,7 +563,7 @@ crate::registry! {
         reject(RejectCode::InvalidChallenge, "leading zero in periodCount"),
     )
     .requirements(&[R_PERIOD_COUNT_FORMAT, R_LEADING_ZEROS])
-    .authored(Some("SubscriptionRequest::period_hours parses periodCount with u64::from_str, which accepts leading zeros (\"030\" -> 30)"))
+    .authored(None)
     .build();
     subscription_period_count_sign_reject => canonical_case(
         "subscription-period-count-sign-reject",
@@ -575,7 +575,7 @@ crate::registry! {
         reject(RejectCode::InvalidChallenge, "sign in periodCount"),
     )
     .requirements(&[R_PERIOD_COUNT_FORMAT])
-    .authored(Some("SubscriptionRequest::period_hours parses periodCount with u64::from_str, which accepts a leading '+' (\"+30\" -> 30)"))
+    .authored(None)
     .build();
     subscription_period_count_decimal_point_reject => canonical_case(
         "subscription-period-count-decimal-point-reject",
@@ -832,7 +832,7 @@ crate::registry! {
         reject(RejectCode::InvalidPayload, "authentication missing"),
     )
     .requirements(&[R_AUTHENTICATION_REQUIRED])
-    .authored(Some("ActivatePayload.authentication is Option<_>; the kit's wire type accepts an activation without a proof and only verify_credential refuses it later"))
+    .authored(None)
     .build();
     subscription_wire_access_payload => canonical_case(
         "subscription-wire-access-payload",
@@ -959,7 +959,7 @@ crate::registry! {
         Expect::AcceptAuthored(json!({})),
     )
     .requirements(&[R_SHARED_FIELDS])
-    .authored(Some("the kit's client requires its own methodDetails extensions (amount, recipient, planIdNumeric, planBump, expectedPeriodHours, expectedCreatedAt) instead of reading the on-chain plan, so it refuses a spec-shaped challenge (validated_method_details: methodDetails.amount must match amount)"))
+    .authored(None)
     .build();
     subscription_build_fee_payer_without_key_reject => build_reject(
         "subscription-build-fee-payer-without-key-reject",
@@ -1023,7 +1023,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_AMOUNT_FORMAT, R_LEADING_ZEROS])
-    .authored(Some("the kit's client never validates the amount format: the builder parses methodDetails.amount with u64::from_str, which accepts \"010000000\""))
+    .authored(None)
     .build();
     subscription_build_zero_amount_reject => build_reject(
         "subscription-build-zero-amount-reject",
@@ -1038,7 +1038,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_AMOUNT_FORMAT])
-    .authored(Some("the kit's client never validates the amount format and builds a zero-amount activation"))
+    .authored(None)
     .build();
     subscription_build_period_count_leading_zero_reject => build_reject(
         "subscription-build-period-count-leading-zero-reject",
@@ -1047,7 +1047,7 @@ crate::registry! {
         build_input(kit_request(|r| r["periodCount"] = json!("030")), default_chain()),
     )
     .requirements(&[R_PERIOD_COUNT_FORMAT, R_LEADING_ZEROS])
-    .authored(Some("the kit parses periodCount with u64::from_str, which accepts \"030\""))
+    .authored(None)
     .build();
     subscription_build_token_program_not_spl_reject => build_reject(
         "subscription-build-token-program-not-spl-reject",
@@ -1059,7 +1059,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_TOKEN_PROGRAM])
-    .authored(Some("the kit's client accepts any tokenProgram and derives the ATAs under it"))
+    .authored(None)
     .build();
     subscription_build_no_plan_address_reject => build_reject(
         "subscription-build-no-plan-address-reject",
@@ -1099,7 +1099,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_DECIMALS_REQUIRED])
-    .authored(Some("SubscriptionMethodDetails.decimals is Option<u8> and validate() does not require it"))
+    .authored(None)
     .build();
     subscription_build_invalid_plan_address_reject => build_reject(
         "subscription-build-invalid-plan-address-reject",
@@ -1120,7 +1120,7 @@ crate::registry! {
         }),
     )
     .requirements(&[R_PLAN_MATCHES, R_CLIENT_VERIFY])
-    .authored(Some("the kit's client never reads the Plan account: it builds SubscribeData from its methodDetails extensions"))
+    .authored(None)
     .build();
     subscription_build_plan_amount_mismatch_reject => build_reject(
         "subscription-build-plan-amount-mismatch-reject",
@@ -1129,7 +1129,7 @@ crate::registry! {
         build_input(kit_request(|_| {}), plan_chain(PlanSpec { amount: 5_000_000, ..PlanSpec::default() })),
     )
     .requirements(&[R_PLAN_MATCHES, R_CLIENT_VERIFY])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
     subscription_build_plan_period_mismatch_reject => build_reject(
         "subscription-build-plan-period-mismatch-reject",
@@ -1138,7 +1138,7 @@ crate::registry! {
         build_input(kit_request(|_| {}), plan_chain(PlanSpec { period_hours: 168, ..PlanSpec::default() })),
     )
     .requirements(&[R_PLAN_MATCHES, R_CLIENT_VERIFY])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
     subscription_build_plan_mint_mismatch_reject => build_reject(
         "subscription-build-plan-mint-mismatch-reject",
@@ -1152,7 +1152,7 @@ crate::registry! {
         }),
     )
     .requirements(&[R_PLAN_MINT, R_PLAN_MATCHES])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
     subscription_build_plan_puller_unauthorized_reject => build_reject(
         "subscription-build-plan-puller-unauthorized-reject",
@@ -1164,7 +1164,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_PULLER_AUTHORIZED, R_CLIENT_VERIFY])
-    .authored(Some("the kit's client never reads the Plan account, so it cannot check plan.owner / plan.pullers"))
+    .authored(None)
     .build();
     subscription_build_plan_no_destination_reject => build_reject(
         "subscription-build-plan-no-destination-reject",
@@ -1173,7 +1173,7 @@ crate::registry! {
         build_input(kit_request(|_| {}), plan_chain(PlanSpec { destinations: vec![], ..PlanSpec::default() })),
     )
     .requirements(&[R_REJECT_DESTINATIONS])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
     subscription_build_plan_two_destinations_reject => build_reject(
         "subscription-build-plan-two-destinations-reject",
@@ -1185,7 +1185,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_REJECT_DESTINATIONS])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
     subscription_build_plan_other_destination_reject => build_reject(
         "subscription-build-plan-other-destination-reject",
@@ -1197,7 +1197,7 @@ crate::registry! {
         ),
     )
     .requirements(&[R_ONE_DESTINATION, R_REJECT_DESTINATIONS])
-    .authored(Some("the kit's client never reads the Plan account"))
+    .authored(None)
     .build();
 
     // ── verify (server): accepts ───────────────────────────────────────────
@@ -1484,7 +1484,7 @@ crate::registry! {
         reject(RejectCode::SourceMismatch, "source is not the subscriber"),
     )
     .requirements(&[R_SOURCE])
-    .authored(Some("SubscriptionServer::verify_credential never reads credential.source"))
+    .authored(None)
     .build();
     subscription_verify_source_other_method_reject => verify_case(
         "subscription-verify-source-other-method-reject",
@@ -1495,7 +1495,7 @@ crate::registry! {
         reject(RejectCode::SourceMismatch, "source is not did:pkh:solana"),
     )
     .requirements(&[R_SOURCE])
-    .authored(Some("SubscriptionServer::verify_credential never reads credential.source"))
+    .authored(None)
     .build();
 
     // ── verify (server): activation scope ──────────────────────────────────
@@ -1634,7 +1634,7 @@ crate::registry! {
         reject(RejectCode::FeePayerMismatch, "fee payer is not feePayerKey"),
     )
     .requirements(&[R_ACTIVATION_MUST])
-    .authored(Some("the kit server looks for the subscriber among the signers after the sponsor slot and reports \"Could not identify subscriber\" (invalid-payload) before checking the fee payer"))
+    .authored(None)
     .build();
 
     // ── verify (server): on-chain usability at a pinned clock ──────────────
