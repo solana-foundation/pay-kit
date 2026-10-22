@@ -117,11 +117,14 @@ impl TxVersion {
 pub const DEFAULT_ACCEPTED_VERSIONS: &[TxVersion] = &[TxVersion::V0];
 
 /// Resolve an optional advertised `transactionVersions` list to the accepted
-/// set, applying the protocol default when absent.
+/// set, applying the protocol default only when the field is absent. A
+/// present, empty list accepts nothing (RULINGS T2: MPP "Defaults to `[0]`
+/// when omitted", x402 "When the field is absent, the accepted set is
+/// `[0]`").
 pub fn accepted_versions(advertised: Option<&[TxVersion]>) -> &[TxVersion] {
     match advertised {
-        Some(list) if !list.is_empty() => list,
-        _ => DEFAULT_ACCEPTED_VERSIONS,
+        Some(list) => list,
+        None => DEFAULT_ACCEPTED_VERSIONS,
     }
 }
 
@@ -140,9 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn absent_advertisement_means_version_zero_only() {
+    fn only_an_absent_advertisement_means_version_zero() {
         assert_eq!(accepted_versions(None), &[TxVersion::V0]);
-        assert_eq!(accepted_versions(Some(&[])), &[TxVersion::V0]);
+        // Present and empty is not absent (RULINGS T2).
+        assert!(accepted_versions(Some(&[])).is_empty());
         assert_eq!(accepted_versions(Some(&[TxVersion::V1])), &[TxVersion::V1]);
     }
 

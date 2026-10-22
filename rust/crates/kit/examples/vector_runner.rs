@@ -40,7 +40,7 @@ use solana_pay_kit::core::session::accept_voucher;
 use solana_pay_kit::core::store::{
     ChannelState, ChannelStore, MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION,
 };
-use solana_pay_kit::core::tx::{accepted_versions, TxV1Mode, TxVersion};
+use solana_pay_kit::core::tx::{accepted_versions, TxVersion};
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
 };
@@ -851,32 +851,25 @@ async fn x402_verify(input: &Value) -> Result<Outcome, Rejection> {
         payment_identifier,
         ..Default::default()
     };
-    // The sponsor's accepted versions (`[0]` when absent). The kit's server
-    // takes `TxV1Mode::Off` (`[0]`) or `TxV1Mode::On` (`[0, 1]`, no gate
-    // probe); any other set is not configurable.
-    let mut versions: Vec<TxVersion> = match input.get("x402ServerTransactionVersions") {
-        None | Some(Value::Null) => vec![TxVersion::V0],
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|e| format!("invalid x402ServerTransactionVersions: {e}"))?,
-    };
-    versions.sort();
-    versions.dedup();
-    let tx_v1 = match versions.as_slice() {
-        [TxVersion::V0] => TxV1Mode::Off,
-        [TxVersion::V0, TxVersion::V1] => TxV1Mode::On,
-        other => {
-            return Ok(Outcome::Unsupported(format!(
-                "the Rust x402 server cannot accept exactly {other:?} (TxV1Mode is [0] or [0, 1])"
-            )))
-        }
-    };
-    let server = X402::new(config)
-        .map_err(|e| format!("server config: {e}"))?
-        .with_tx_v1(tx_v1);
+    // The sponsor's transactionVersions, which the route copies into its
+    // offer unchanged (§1.5); absent leaves the kit's default (`[0]`, not
+    // advertised).
+    let mut server = X402::new(config).map_err(|e| format!("server config: {e}"))?;
+    if let Some(value) = input
+        .get("x402ServerTransactionVersions")
+        .filter(|v| !v.is_null())
+    {
+        let versions: Vec<TxVersion> = serde_json::from_value(value.clone())
+            .map_err(|e| format!("invalid x402ServerTransactionVersions: {e}"))?;
+        server = server
+            .with_transaction_versions(versions)
+            .map_err(|e| format!("server config: {e}"))?;
+    }
     // The vector carries the route amount in base units; the server API
     // takes a human decimal price and converts it with `core::parse_units`.
     let base_units = str_field(input, "x402ServerAmount");
-    let price = human_price(base_units, decimals)?;
+    let price = solana_pay_kit::core::format_units(base_units, decimals)
+        .map_err(|e| format!("invalid x402ServerAmount {base_units}: {e}"))?;
     // The route's extra.memo, which the verifier enforces on the transaction.
     let options = ExactOptions {
         memo: input.get("x402ServerMemo").and_then(Value::as_str),
@@ -914,30 +907,6 @@ fn fixture_rpc_url(input: &Value) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "driver did not inject input.rpcUrl".to_string())
-}
-
-/// Render base units as the decimal price the server API expects, and prove
-/// the conversion with the kit's own `parse_units` (round trip must be exact).
-fn human_price(base_units: &str, decimals: u8) -> Result<String, String> {
-    let units: u128 = base_units
-        .parse()
-        .map_err(|_| format!("invalid x402ServerAmount {base_units}"))?;
-    let scale = 10u128.pow(u32::from(decimals));
-    let whole = units / scale;
-    let frac = units % scale;
-    let price = if frac == 0 {
-        whole.to_string()
-    } else {
-        let frac = format!("{frac:0width$}", width = decimals as usize);
-        format!("{whole}.{}", frac.trim_end_matches('0'))
-    };
-    let back = solana_pay_kit::core::parse_units(&price, decimals).map_err(|e| e.to_string())?;
-    if back != base_units {
-        return Err(format!(
-            "unit conversion {base_units} -> {price} -> {back} is not exact"
-        ));
-    }
-    Ok(price)
 }
 
 /// Decode a base64(JSON) payment header into the X402EnvelopeShape oracle
@@ -1026,6 +995,7 @@ fn classify_reject(message: &str) -> Option<&'static str> {
     let code = if (has("transaction version") && has("not accepted"))
         || has("unsupported_transaction_version")
         || has("signs up to version")
+        || has("advertises no transaction version")
     {
         // A message version the server does not accept, or a client whose
         // signer can build no advertised version.

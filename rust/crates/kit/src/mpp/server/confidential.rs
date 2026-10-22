@@ -1119,7 +1119,7 @@ pub(crate) fn verify_confidential_bundle_tx(
     const ZK_CLOSE_CONTEXT_STATE: u8 = 0;
     const RECORD_CLOSE_ACCOUNT: u8 = 3;
 
-    crate::core::tx::check_envelope(tx, accepted_versions)
+    crate::core::tx::check_envelope_without_legacy(tx, accepted_versions)
         .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
     crate::core::tx::check_v1_budget_caps(
         &tx.message,

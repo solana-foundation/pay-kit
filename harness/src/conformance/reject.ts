@@ -50,7 +50,7 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // envelope rules: a ComputeBudget instruction in a version-1 charge, an
   // incomplete header config, a size over the version's limit, a lookup
   // table. Checked first: the messages also contain generic words.
-  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version/i, "unsupported-version"],
+  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version|advertises no transaction version/i, "unsupported-version"],
   // RULINGS SIG1: a client signature that does not verify over the message,
   // or a signature list short of the required signers.
   [/signature verification failed|signature slots do not match|invalid client transaction signature/i, "invalid-payload"],

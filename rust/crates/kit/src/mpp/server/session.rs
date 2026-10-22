@@ -2668,7 +2668,7 @@ async fn prepare_open_transaction(
     // Envelope: accepted version, no address lookup tables, size within the
     // version's limit; then the version-1 header config against the same caps
     // the ComputeBudget prefix gets on version 0.
-    crate::core::tx::check_envelope(&tx, accepted_versions)?;
+    crate::core::tx::check_envelope_without_legacy(&tx, accepted_versions)?;
     crate::core::tx::check_v1_budget_caps(
         &tx.message,
         crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
@@ -3009,7 +3009,7 @@ async fn verify_submit_and_fetch_topup(
     // Envelope: accepted version, no address lookup tables, size within the
     // version's limit; then the version-1 header config against the same caps
     // the ComputeBudget prefix gets on version 0.
-    crate::core::tx::check_envelope(&tx, accepted_versions)?;
+    crate::core::tx::check_envelope_without_legacy(&tx, accepted_versions)?;
     crate::core::tx::check_v1_budget_caps(
         &tx.message,
         crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,

@@ -36,7 +36,7 @@ pub mod tx_pipeline;
 pub mod units;
 pub mod voucher;
 
-pub use units::{parse_units, MAX_DECIMALS};
+pub use units::{format_units, parse_units, MAX_DECIMALS};
 
 /// Errors produced by the shared pay-kit core helpers.
 #[derive(Debug, thiserror::Error)]

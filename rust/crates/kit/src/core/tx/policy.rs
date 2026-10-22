@@ -76,6 +76,15 @@ pub fn negotiate(
     max_signable: Option<TxVersion>,
 ) -> Result<TxVersion> {
     let accepted = super::version::accepted_versions(advertised);
+    if accepted.is_empty() {
+        // RULINGS T2: present and empty is not absent. MPP "Clients MUST
+        // build one of the advertised versions"; x402 "MUST fail with
+        // unsupported_transaction_version when the intersection is empty".
+        return Err(Error::Other(
+            "the counterparty advertises no transaction version (transactionVersions is empty)"
+                .into(),
+        ));
+    }
     accepted
         .iter()
         .copied()
@@ -307,6 +316,35 @@ pub fn check_envelope(tx: &VersionedTransaction, accepted: &[TxVersion]) -> Resu
     Ok(version)
 }
 
+/// [`check_envelope`] for the MPP methods (charge, session), which do not
+/// support legacy messages (draft-solana-charge-00, Transaction Versions:
+/// "servers MUST NOT advertise \"legacy\" and MUST reject a legacy
+/// message"). x402 keeps the legacy-as-version-0 tolerance (§1.5) and calls
+/// [`check_envelope`] directly.
+pub fn check_envelope_without_legacy(
+    tx: &VersionedTransaction,
+    accepted: &[TxVersion],
+) -> Result<TxVersion> {
+    refuse_legacy(&tx.message, accepted)?;
+    check_envelope(tx, accepted)
+}
+
+/// A legacy (unprefixed) message, refused with the same "not accepted"
+/// diagnostic an unadvertised version gets.
+fn refuse_legacy(message: &VersionedMessage, accepted: &[TxVersion]) -> Result<()> {
+    if matches!(message, VersionedMessage::Legacy(_)) {
+        return Err(Error::Other(format!(
+            "legacy transaction version is not accepted; accepted versions: {}",
+            accepted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(())
+}
+
 /// Verify every signature a client already placed on a transaction the server
 /// is about to co-sign, before it signs, simulates or pays for anything.
 ///
@@ -346,6 +384,26 @@ pub fn require_presigned(
     Ok(())
 }
 
+/// [`check_reported_version`] for the MPP methods: a transaction the RPC
+/// reports as `legacy` is refused rather than policed as version 0 (see
+/// [`check_envelope_without_legacy`]).
+pub fn check_reported_version_without_legacy(
+    reported: Option<&TransactionVersion>,
+    accepted: &[TxVersion],
+) -> Result<TxVersion> {
+    if matches!(reported, Some(TransactionVersion::Legacy(_))) {
+        return Err(Error::Other(format!(
+            "legacy transaction version is not accepted; accepted versions: {}",
+            accepted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    check_reported_version(reported, accepted)
+}
+
 /// Version policy for a transaction read back from the RPC by signature.
 /// `maxSupportedTransactionVersion` only bounds what the node returns; the
 /// server still accepts only its configured versions, exactly as for a
@@ -381,6 +439,15 @@ pub fn check_reported_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RULINGS T2: an empty advertisement offers nothing to build; only an
+    /// absent one defaults to version 0.
+    #[test]
+    fn negotiate_refuses_an_empty_advertisement() {
+        let err = negotiate(Some(&[]), None).unwrap_err().to_string();
+        assert!(err.contains("advertises no transaction version"), "{err}");
+        assert_eq!(negotiate(None, None).unwrap(), TxVersion::V0);
+    }
 
     #[test]
     fn negotiate_picks_the_highest_version_the_signer_can_sign() {
@@ -436,6 +503,49 @@ mod tests {
     use solana_pubkey::Pubkey;
     use solana_signature::Signature;
     use solana_system_interface::instruction as system_instruction;
+
+    /// MPP (draft-solana-charge-00, Transaction Versions): "MUST reject a
+    /// legacy message", even where version 0 is accepted. The same transfer
+    /// as version 0 passes; x402's `check_envelope` keeps the tolerance.
+    #[test]
+    fn mpp_envelope_refuses_legacy_messages() {
+        let payer = Pubkey::new_unique();
+        let ixs = [system_instruction::transfer(
+            &payer,
+            &Pubkey::new_unique(),
+            1,
+        )];
+        let legacy = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::Legacy(solana_message::Message::new(&ixs, Some(&payer))),
+        };
+        let v0 = build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), None).unwrap();
+        let both = [TxVersion::V0, TxVersion::V1];
+        let err = check_envelope_without_legacy(&legacy, &both)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("legacy transaction version is not accepted"),
+            "{err}"
+        );
+        assert_eq!(
+            check_envelope_without_legacy(&v0, &both).unwrap(),
+            TxVersion::V0
+        );
+        assert_eq!(check_envelope(&legacy, &both).unwrap(), TxVersion::V0);
+
+        use solana_transaction::versioned::Legacy;
+        assert!(check_reported_version_without_legacy(
+            Some(&TransactionVersion::Legacy(Legacy::Legacy)),
+            &both
+        )
+        .is_err());
+        assert_eq!(
+            check_reported_version_without_legacy(Some(&TransactionVersion::Number(0)), &both)
+                .unwrap(),
+            TxVersion::V0
+        );
+    }
 
     #[test]
     fn envelope_enforces_the_advertised_set() {

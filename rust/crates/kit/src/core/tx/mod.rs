@@ -26,7 +26,8 @@ pub use build::{
     build_unsigned, build_unsigned_fitting, build_unsigned_unchecked, check_limits, measure,
 };
 pub use policy::{
-    advertised, check_envelope, check_priority_fee, check_reported_version, check_v0_budget_caps,
+    advertised, check_envelope, check_envelope_without_legacy, check_priority_fee,
+    check_reported_version, check_reported_version_without_legacy, check_v0_budget_caps,
     check_v1_budget_caps, highest, negotiate, require_budget_prefix, require_presigned,
     require_static_accounts, tx_v1_active, TxV1Mode, MAX_SPONSORED_PRIORITY_FEE_LAMPORTS,
     TX_V1_FEATURE_GATE,
