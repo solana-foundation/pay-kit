@@ -360,6 +360,7 @@ pub async fn build_prepared_charge(
         ));
     }
     validate_challenge_details(currency, method_details)?;
+    check_client_policy(total_amount, recipient, method_details, options)?;
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
         return Err(Error::TooManySplits);
@@ -485,34 +486,7 @@ pub async fn build_charge_transaction_with_options(
 
     // Audit #10: client-side policy gates. Run before any signing work so
     // we never produce a signature for an out-of-policy challenge.
-    if let Some(cap) = options.max_amount_base_units {
-        if total_amount > cap {
-            return Err(Error::Other(format!(
-                "Challenge amount {total_amount} exceeds client max_amount_base_units {cap}"
-            )));
-        }
-    }
-    if let Some(expected) = options.expected_network.as_deref() {
-        // An omitted network is the protocol's documented mainnet default.
-        // Compare canonical values so the guard agrees with offer selection
-        // (`mainnet-beta` is the legacy spelling of `mainnet`).
-        let actual = method_details.network.as_deref().unwrap_or("mainnet");
-        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
-            && matches!(expected, "mainnet" | "mainnet-beta");
-        if actual != expected && !both_mainnet {
-            return Err(Error::Other(format!(
-                "Challenge network `{actual}` does not match client expected_network `{expected}`"
-            )));
-        }
-    }
-
-    if let Some(expected) = options.expected_recipient.as_deref() {
-        if recipient != expected {
-            return Err(Error::Other(format!(
-                "Challenge recipient `{recipient}` does not match client expected_recipient `{expected}`"
-            )));
-        }
-    }
+    check_client_policy(total_amount, recipient, method_details, &options)?;
 
     // Confidential charges settle via an encrypted, multi-transaction bundle,
     // not the plaintext transfer this function builds. Validate the spec
@@ -1092,6 +1066,46 @@ fn decode_charge_challenge(
 /// (draft-solana-charge-00, Method Details): the cluster is one of the three
 /// defined ones, `tokenProgram` is absent for native SOL, and a sponsored
 /// challenge (`feePayer: true`) names its `feePayerKey`.
+/// The caller's pins on what the wallet will sign (Audit #10; core, Amount
+/// Verification: "Clients MUST verify before authorizing payment"). Shared by
+/// every public builder so no entry point skips them.
+fn check_client_policy(
+    total_amount: u64,
+    recipient: &str,
+    method_details: &MethodDetails,
+    options: &BuildChargeTransactionOptions,
+) -> Result<(), Error> {
+    if let Some(cap) = options.max_amount_base_units {
+        if total_amount > cap {
+            return Err(Error::Other(format!(
+                "Challenge amount {total_amount} exceeds client max_amount_base_units {cap}"
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_network.as_deref() {
+        // An omitted network is the protocol's documented mainnet default.
+        // Compare canonical values so the guard agrees with offer selection
+        // (`mainnet-beta` is the legacy spelling of `mainnet`).
+        let actual = method_details.network.as_deref().unwrap_or("mainnet");
+        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
+            && matches!(expected, "mainnet" | "mainnet-beta");
+        if actual != expected && !both_mainnet {
+            return Err(Error::Other(format!(
+                "Challenge network `{actual}` does not match client expected_network `{expected}`"
+            )));
+        }
+    }
+
+    if let Some(expected) = options.expected_recipient.as_deref() {
+        if recipient != expected {
+            return Err(Error::Other(format!(
+                "Challenge recipient `{recipient}` does not match client expected_recipient `{expected}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_challenge_details(currency: &str, method_details: &MethodDetails) -> Result<(), Error> {
     require_supported_network(method_details)?;
     if currency.eq_ignore_ascii_case("sol") && method_details.token_program.is_some() {
@@ -3915,6 +3929,59 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(selected.id, "good");
+    }
+
+    /// `build_prepared_charge` is public and takes the same options, so it
+    /// enforces the same recipient, network and amount pins as the signing
+    /// builder; each pin's positive control builds.
+    #[tokio::test]
+    async fn build_prepared_charge_enforces_the_client_pins() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("localnet".to_string()),
+            ..Default::default()
+        };
+        let other = Pubkey::new_unique().to_string();
+        let cases = [
+            (
+                BuildChargeTransactionOptions {
+                    expected_recipient: Some(RECIPIENT.to_string()),
+                    ..Default::default()
+                },
+                "expected_recipient",
+            ),
+            (
+                BuildChargeTransactionOptions {
+                    expected_network: Some("devnet".to_string()),
+                    ..Default::default()
+                },
+                "expected_network",
+            ),
+            (
+                BuildChargeTransactionOptions {
+                    max_amount_base_units: Some(999),
+                    ..Default::default()
+                },
+                "max_amount_base_units",
+            ),
+        ];
+        for (options, pin) in cases {
+            let err = build_prepared_charge(signer_pk, &rpc, 1000, "sol", &other, &md, &options)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains(pin), "{pin}: {err}");
+        }
+        let pinned = BuildChargeTransactionOptions {
+            expected_recipient: Some(RECIPIENT.to_string()),
+            expected_network: Some("localnet".to_string()),
+            max_amount_base_units: Some(1000),
+            ..Default::default()
+        };
+        build_prepared_charge(signer_pk, &rpc, 1000, "sol", RECIPIENT, &md, &pinned)
+            .await
+            .unwrap();
     }
 
     /// Core, Amount Verification: "Recipient/address is expected". A pinned

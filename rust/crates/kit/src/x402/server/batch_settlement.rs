@@ -1615,6 +1615,12 @@ impl X402BatchSettlement {
                 ),
             ));
         }
+        // A retry of a refund this server already closed (its response was
+        // lost): the channel is gone or `Distributed` now, so the live checks
+        // below would refuse it. `cooperative_close` replays the saved result.
+        if recorded_cooperative_close(&state).is_some_and(|done| done.cumulative == max_claimable) {
+            return Ok(max_claimable);
+        }
 
         let program_id = self.program_id()?;
         let token_program = self.token_program()?;
@@ -2351,6 +2357,11 @@ impl X402BatchSettlement {
         outcome: BatchOutcome,
     ) -> Result<BatchSettlementResponse, Error> {
         let network = outcome.requirements.network.clone();
+        if let BatchPayload::Refund(_) = &outcome.payload {
+            if let Some(replayed) = self.replay_cooperative_close(&outcome).await? {
+                return Ok(replayed);
+            }
+        }
         match &outcome.payload {
             BatchPayload::Refund(BatchRefund {
                 transaction: None, ..
@@ -2442,7 +2453,7 @@ impl X402BatchSettlement {
         let config = &refund.channel_config;
         let cumulative = outcome.max_claimable;
         let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
-        let onchain = self.fetch_channel(&channel_id).await?;
+        let mut onchain = self.fetch_channel(&channel_id).await?;
         if onchain.status == CHANNEL_STATUS_CLOSING {
             // "A refund for a channel that is already `Closing` reports that
             // close."
@@ -2466,23 +2477,44 @@ impl X402BatchSettlement {
         self.fence_cooperative_close(&outcome.channel_id, cumulative)
             .await?;
 
-        let instructions = self.cooperative_close_instructions(
-            &channel_id,
-            &onchain,
-            &pc::parse_pubkey(&config.payer_authorizer)?,
-            voucher,
-            cumulative,
-            &outcome.requirements.pay_to,
-        )?;
-        let signatures = self
-            .submit_groups(
-                vec![ChannelInstructionGroup {
-                    channel_id: outcome.channel_id.clone(),
-                    instructions,
-                }],
-                1,
-            )
-            .await?;
+        let authorized_signer = pc::parse_pubkey(&config.payer_authorizer)?;
+        let deposit = onchain.deposit;
+        let mut rebuilt = false;
+        let signature = loop {
+            let instructions = self.cooperative_close_instructions(
+                &channel_id,
+                &onchain,
+                &authorized_signer,
+                voucher,
+                cumulative,
+                &outcome.requirements.pay_to,
+            )?;
+            let submitted = self
+                .submit_groups(
+                    vec![ChannelInstructionGroup {
+                        channel_id: outcome.channel_id.clone(),
+                        instructions,
+                    }],
+                    1,
+                )
+                .await;
+            let err = match submitted {
+                Ok(signatures) => break signatures.into_iter().next().unwrap_or_default(),
+                Err(err) => err,
+            };
+            // The close was built from a read that a concurrent `claim` can
+            // overtake: once it lands at `cumulative`, the voucher no longer
+            // raises `settled` and the close fails. Read again and decide.
+            let after = self.lookup_channel(&channel_id).await?;
+            match close_retry_step(&onchain, after.as_ref(), cumulative, rebuilt) {
+                CloseRetry::Rebuild => {
+                    rebuilt = true;
+                    onchain = after.expect("Rebuild is chosen only for a present channel");
+                }
+                CloseRetry::Closed => break String::new(),
+                CloseRetry::Fail => return Err(err),
+            }
+        };
         // The sealed distribute either deallocates the channel or leaves it
         // `Distributed`; anything else did not close.
         match self.lookup_channel(&channel_id).await? {
@@ -2498,6 +2530,14 @@ impl X402BatchSettlement {
                 ))
             }
         }
+        // Saved with the seal so a retried refund whose response was lost
+        // gets this result back instead of a refusal of the closed channel.
+        let refunded = deposit.saturating_sub(cumulative).to_string();
+        let completed = CompletedClose {
+            cumulative,
+            transaction: signature.clone(),
+            refunded: refunded.clone(),
+        };
         let state = self
             .store
             .update_channel(
@@ -2509,18 +2549,33 @@ impl X402BatchSettlement {
                     state.sealed = true;
                     state.settled_on_chain = state.settled_on_chain.max(cumulative);
                     state.last_activity_at = now_unix();
+                    record_cooperative_close(&mut state, &completed);
                     Ok(state)
                 }),
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let refunded = onchain.deposit.saturating_sub(cumulative);
-        Ok(self.close_response(
-            outcome,
-            signatures.into_iter().next().unwrap_or_default(),
-            refunded.to_string(),
-            &state,
-        ))
+        Ok(self.close_response(outcome, signature, refunded, &state))
+    }
+
+    /// The saved result of the cooperative close this refund already completed
+    /// (its response was lost), if any. The channel is `Distributed` or gone by
+    /// then, so a retry must get this back rather than run the close again.
+    async fn replay_cooperative_close(
+        &self,
+        outcome: &BatchOutcome,
+    ) -> Result<Option<BatchSettlementResponse>, Error> {
+        let Some(state) = self
+            .store
+            .get_channel(&outcome.channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+        else {
+            return Ok(None);
+        };
+        Ok(recorded_cooperative_close(&state)
+            .filter(|done| done.cumulative == outcome.max_claimable)
+            .map(|done| self.close_response(outcome, done.transaction, done.refunded, &state)))
     }
 
     /// The cooperative close of `channel_id` at `cumulative`: the voucher's
@@ -3882,6 +3937,68 @@ fn record_receiver_binding(state: &mut ChannelState, receiver_authorizer: &Pubke
         RECEIVER_BINDING_KEY.to_string(),
         pc::pubkey_string(receiver_authorizer).into(),
     );
+}
+
+/// Where a record keeps the result of its completed cooperative close,
+/// inside [`ChannelState::extra`].
+const COOPERATIVE_CLOSE_KEY: &str = "x402BatchCooperativeClose";
+
+/// A cooperative close this server completed: replayed to a retry of the same
+/// refund, whose channel no longer passes the live close checks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletedClose {
+    cumulative: u64,
+    /// The close signature; empty when the close was observed landed after
+    /// its submission reported an error.
+    transaction: String,
+    refunded: String,
+}
+
+fn recorded_cooperative_close(state: &ChannelState) -> Option<CompletedClose> {
+    serde_json::from_value(state.extra.get(COOPERATIVE_CLOSE_KEY)?.clone()).ok()
+}
+
+fn record_cooperative_close(state: &mut ChannelState, close: &CompletedClose) {
+    state.extra.insert(
+        COOPERATIVE_CLOSE_KEY.to_string(),
+        serde_json::to_value(close).expect("CompletedClose serializes"),
+    );
+}
+
+/// What a failed cooperative close submission leads to.
+#[derive(Debug, PartialEq, Eq)]
+enum CloseRetry {
+    /// A concurrent claim moved `settled` up to at most the voucher while the
+    /// channel stayed `Open`: rebuild against the new read and submit once more.
+    Rebuild,
+    /// The channel is `Distributed` or deallocated: the close landed.
+    Closed,
+    /// Anything else: report the submission error.
+    Fail,
+}
+
+/// Decide from the channel read after a failed close submission. `before` is
+/// the read the failed close was built from; one rebuild at most.
+fn close_retry_step(
+    before: &Channel,
+    after: Option<&Channel>,
+    cumulative: u64,
+    rebuilt: bool,
+) -> CloseRetry {
+    match after {
+        None => CloseRetry::Closed,
+        Some(after) if after.status == CHANNEL_STATUS_DISTRIBUTED => CloseRetry::Closed,
+        Some(after)
+            if !rebuilt
+                && after.status == CHANNEL_STATUS_OPEN
+                && after.settlement.settled != before.settlement.settled
+                && after.settlement.settled <= cumulative =>
+        {
+            CloseRetry::Rebuild
+        }
+        Some(_) => CloseRetry::Fail,
+    }
 }
 
 /// The voucher a payload authorizes with, if any.
@@ -6316,6 +6433,135 @@ mod tests {
             "settle_and_seal (has_voucher = 0), distribute"
         );
         assert!(equal.iter().all(|ix| ix.program_id != ed25519));
+    }
+
+    /// A refund retried after its cooperative close completed (the response
+    /// was lost) gets the saved result back, with no chain read: the channel
+    /// is `Distributed` or gone by then and would fail every live check. A
+    /// record without a saved close still goes to the chain.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_retried_refund_replays_its_completed_close() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        record_receiver_binding(&mut state, &handler.receiver_authorizer);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let refund = || {
+            header(
+                &requirements,
+                BatchPayload::Refund(BatchRefund::client(
+                    config.clone(),
+                    voucher(&key, &channel, 1_000),
+                )),
+            )
+        };
+
+        // Control: no saved close, so verification reaches the chain reads
+        // (none are served here).
+        let err = handler
+            .verify_payment(&refund(), "0.001")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("settlement ATA"), "{err}");
+
+        let completed = CompletedClose {
+            cumulative: 1_000,
+            transaction: "closeSig".to_string(),
+            refunded: "4000".to_string(),
+        };
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(move |current| {
+                    let mut state = current.unwrap();
+                    state.sealed = true;
+                    record_cooperative_close(&mut state, &completed);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let outcome = handler
+            .verify_payment(&refund(), "0.001")
+            .await
+            .expect("a retry of the completed refund verifies");
+        let response = handler.settle_payment(outcome).await.unwrap();
+        assert!(response.success);
+        assert_eq!(response.transaction, "closeSig");
+        assert_eq!(response.amount, "4000");
+    }
+
+    /// After a failed close submission, a concurrent claim that moved
+    /// `settled` up to the voucher triggers one rebuild; a channel that is
+    /// distributed or gone has closed; anything else reports the failure.
+    #[test]
+    fn a_failed_cooperative_close_rebuilds_once_after_a_concurrent_claim() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, _) = client(&fee_payer, &requirements);
+        let at = |status: u8, settled: u64| {
+            let mut channel = onchain_channel(&config, &fee_payer, 5_000);
+            channel.status = status;
+            channel.settlement.settled = settled;
+            channel
+        };
+        let before = at(CHANNEL_STATUS_OPEN, 1_000);
+        let step = |after: Option<Channel>, rebuilt: bool| {
+            close_retry_step(&before, after.as_ref(), 3_000, rebuilt)
+        };
+        // The claim landed at the voucher's cumulative.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 3_000)), false),
+            CloseRetry::Rebuild
+        );
+        // Only once.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 3_000)), true),
+            CloseRetry::Fail
+        );
+        // Nothing moved: the failure has another cause.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 1_000)), false),
+            CloseRetry::Fail
+        );
+        // Settled past the voucher: the refund is behind the chain.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 4_000)), false),
+            CloseRetry::Fail
+        );
+        // A forced close started meanwhile.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_CLOSING, 3_000)), false),
+            CloseRetry::Fail
+        );
+        // The close landed although its submission reported an error.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_DISTRIBUTED, 3_000)), false),
+            CloseRetry::Closed
+        );
+        assert_eq!(step(None, false), CloseRetry::Closed);
+
+        // The rebuilt close against the claimed read drops the voucher, which
+        // would no longer raise `settled`.
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let rebuilt = handler
+            .cooperative_close_instructions(
+                &channel,
+                &at(CHANNEL_STATUS_OPEN, 3_000),
+                &pc::parse_pubkey(&config.payer_authorizer).unwrap(),
+                &voucher(&key, &channel, 3_000),
+                3_000,
+                &requirements.pay_to,
+            )
+            .unwrap();
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "settle_and_seal (has_voucher = 0), distribute"
+        );
     }
 
     /// The cooperative close fences the record in one transition: refused
