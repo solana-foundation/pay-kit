@@ -2301,7 +2301,7 @@
     },
     "intent": "x402-upto",
     "mode": "verify-transaction",
-    "provenance": "authored",
+    "provenance": "generated",
     "requirements": [
       "X402TX-0f874a9c63"
     ],

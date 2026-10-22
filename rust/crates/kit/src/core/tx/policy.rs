@@ -113,6 +113,31 @@ pub fn check_v1_budget_caps(
     max_unit_limit: u32,
     max_unit_price_micro_lamports: u64,
 ) -> Result<Option<DeclaredBudget>> {
+    check_v1_budget_caps_with(
+        message,
+        max_unit_limit,
+        max_unit_price_micro_lamports,
+        LoadedDataLimitRule::Maximum,
+    )
+}
+
+/// What a version-1 header's `loadedAccountsDataSizeLimit` must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadedDataLimitRule {
+    /// Exactly the runtime maximum (64 MiB), what version 0 always gets.
+    Maximum,
+    /// Present and nonzero, any size up to the maximum (x402-txv1
+    /// scheme_upto_svm.md: “loadedAccountsDataSizeLimit MUST be present”).
+    Present,
+}
+
+/// [`check_v1_budget_caps`] with the loaded-data rule spelled out.
+pub fn check_v1_budget_caps_with(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+    loaded: LoadedDataLimitRule,
+) -> Result<Option<DeclaredBudget>> {
     if TxVersion::of(message)? != TxVersion::V1 {
         return Ok(None);
     }
@@ -137,10 +162,23 @@ pub fn check_v1_budget_caps(
     }
     // An absent or smaller loaded-data limit can fail the transaction at
     // load time, after fees are charged; version 0 always gets the maximum.
-    if declared.loaded_accounts_data_size_limit != Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES) {
-        return Err(Error::Other(format!(
-            "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
-        )));
+    let loaded_limit = declared.loaded_accounts_data_size_limit;
+    let accepted = match loaded {
+        LoadedDataLimitRule::Maximum => loaded_limit == Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES),
+        // Zero loads nothing, so the transaction fails after the fee is
+        // charged, like a zero compute-unit limit.
+        LoadedDataLimitRule::Present => loaded_limit
+            .is_some_and(|limit| limit > 0 && limit <= MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES),
+    };
+    if !accepted {
+        return Err(Error::Other(match loaded {
+            LoadedDataLimitRule::Maximum => format!(
+                "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            ),
+            LoadedDataLimitRule::Present => format!(
+                "version 1 loaded accounts data size limit must be present, nonzero and at most {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            ),
+        }));
     }
     Ok(Some(declared))
 }
@@ -635,6 +673,30 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("loaded accounts data size"));
+        }
+        // Under the presence rule any nonzero limit up to the maximum passes.
+        for (loaded, ok) in [
+            (Some(1), true),
+            (Some(1024 * 1024), true),
+            (Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES), true),
+            (Some(0), false),
+            (Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES + 1), false),
+            (None, false),
+        ] {
+            let mut config = budget.v1_config();
+            config.loaded_accounts_data_size_limit = loaded;
+            let msg = VersionedMessage::V1(
+                solana_message::v1::Message::try_compile_with_config(
+                    &payer,
+                    &ixs,
+                    Hash::default(),
+                    config,
+                )
+                .unwrap(),
+            );
+            let result =
+                check_v1_budget_caps_with(&msg, 200_000, 5_000_000, LoadedDataLimitRule::Present);
+            assert_eq!(result.is_ok(), ok, "{loaded:?}: {result:?}");
         }
         let zero = ComputeBudget::new(0, 0);
         let tx = build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), Some(&zero)).unwrap();

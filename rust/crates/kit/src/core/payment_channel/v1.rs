@@ -951,10 +951,12 @@ pub const MIN_MEMO_NONCE_BYTES: usize = 16;
 /// How [`scan_channel_tx_layout`] polices the Memo suffix.
 #[derive(Debug, Clone, Copy)]
 pub enum MemoPolicy<'a> {
-    /// A Memo may appear at most once and its contents are not inspected.
+    /// Memos are neither required nor inspected; only the suffix bounds
+    /// apply (at most [`OPEN_MAX_OPTIONAL_SUFFIX`] instructions).
     ///
-    /// Used by an unbound `upto` challenge, which declares no `extra.memo`, so any memo
-    /// the client chose is acceptable.
+    /// Used by an unbound `upto` challenge, which declares no `extra.memo`:
+    /// exactly one Memo is required only “If extra.memo is present”, so any
+    /// memos the client or its wallet chose are acceptable.
     Optional,
     /// Exactly one Memo is required.
     ///
@@ -975,7 +977,8 @@ pub enum MemoPolicy<'a> {
 /// 2. Exactly one instruction on `program_id` whose first data byte is
 ///    `discriminator`.
 /// 3. A suffix of at most [`OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS`] Lighthouse
-///    assertions plus a Memo governed by `memo`, capped at
+///    assertions plus Memos governed by `memo` (exactly one when
+///    required, any number when optional), capped at
 ///    [`OPEN_MAX_OPTIONAL_SUFFIX`] instructions in total.
 ///
 /// No wrapper instruction may name the transaction fee payer among its
@@ -1102,7 +1105,7 @@ pub fn scan_channel_tx_layout<'tx>(
             reject_fee_payer(ix, "Lighthouse")?;
         } else if program == memo_program {
             memo_count += 1;
-            if memo_count > 1 {
+            if memo_count > 1 && matches!(memo, MemoPolicy::Required(_)) {
                 return Err(Error::Other(format!(
                     "{label} transaction allows at most one Memo instruction"
                 )));

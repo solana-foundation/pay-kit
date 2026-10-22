@@ -19,7 +19,8 @@ use crate::core::payment_channels as pc;
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::upto::{
-    UptoPayload, UptoRequiredEnvelope, UptoRequirements, UptoSignatureEnvelope, UPTO_SCHEME,
+    Slot, UptoNonce, UptoPayload, UptoRequiredEnvelope, UptoRequirements, UptoSignatureEnvelope,
+    UPTO_SCHEME,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
@@ -79,18 +80,15 @@ pub async fn build_upto_payload(
     // upto spec, so fall back to one `getLatestBlockhash` call when either is
     // absent — its response context carries the current slot, covering both.
     let hint_blockhash = requirements.extra.recent_blockhash.as_deref();
-    let hint_slot = requirements.extra.recent_slot.as_deref();
+    let hint_slot = requirements.extra.recent_slot.map(Slot::get);
     let (blockhash_str, open_slot) = match (hint_blockhash, hint_slot) {
-        (Some(blockhash), Some(slot)) => (blockhash.to_string(), parse_open_slot(slot)?),
+        (Some(blockhash), Some(slot)) => (blockhash.to_string(), slot),
         _ => {
             let fetched = fetch_blockhash_with_slot(rpc, rpc.commitment()).map_err(Error::Rpc)?;
             let blockhash = hint_blockhash
                 .map(str::to_string)
                 .unwrap_or(fetched.blockhash);
-            let open_slot = match hint_slot {
-                Some(slot) => parse_open_slot(slot)?,
-                None => fetched.slot,
-            };
+            let open_slot = hint_slot.unwrap_or(fetched.slot);
             (blockhash, open_slot)
         }
     };
@@ -98,10 +96,17 @@ pub async fn build_upto_payload(
         .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
 
     let salt = salt_for_nonce(&nonce);
-    // A seller that declares `extra.memo` requires exactly one matching Memo
-    // after `open`; without the declaration the transaction stays a bare open.
+    // “Clients MUST include a Memo instruction containing either the value
+    // of extra.memo (when present) or a random nonce (at least 16 bytes,
+    // hex-encoded)”: the memo keeps concurrent opens with identical
+    // parameters distinct transactions.
+    let memo = requirements
+        .extra
+        .memo
+        .clone()
+        .unwrap_or_else(random_memo_nonce);
     let options = pc::OpenTxOptions {
-        memo: requirements.extra.memo.clone(),
+        memo: Some(memo),
         version: crate::core::tx::negotiate(
             requirements.extra.transaction_versions.as_deref(),
             max_tx_version,
@@ -132,11 +137,11 @@ pub async fn build_upto_payload(
         max_amount: max.to_string(),
         expires_at,
         valid_after: requirements.extra.valid_after.unwrap_or(0),
-        nonce: salt.to_string(),
+        nonce: UptoNonce::new(salt),
         channel_id: pc::pubkey_string(&open.channel_id),
         deposit: max.to_string(),
         authorized_signer: pc::pubkey_string(&receiver_authorizer),
-        open_slot: open_slot.to_string(),
+        open_slot: Slot::new(open_slot),
         open_transaction: Some(open.transaction),
     })
 }
@@ -155,10 +160,11 @@ fn salt_for_nonce(nonce: &str) -> u64 {
     u64::from_le_bytes(digest[..8].try_into().expect("8-byte prefix"))
 }
 
-fn parse_open_slot(value: &str) -> Result<u64, Error> {
-    value
-        .parse()
-        .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))
+/// A fresh memo nonce: [`pc::MIN_MEMO_NONCE_BYTES`] CSPRNG bytes, hex encoded.
+fn random_memo_nonce() -> String {
+    let mut bytes = [0u8; pc::MIN_MEMO_NONCE_BYTES];
+    getrandom::fill(&mut bytes).expect("getrandom CSPRNG failure");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Wrap a payload in a `PAYMENT-SIGNATURE` envelope and base64-encode it.
@@ -279,7 +285,7 @@ mod tests {
                 withdraw_delay: 900,
                 recent_blockhash: Some(Hash::default().to_string()),
                 last_valid_block_height: None,
-                recent_slot: Some("314".to_string()),
+                recent_slot: Some(Slot::new(314)),
                 valid_after: None,
                 memo: None,
                 transaction_versions: None,
@@ -293,11 +299,11 @@ mod tests {
             max_amount: "1000000".to_string(),
             expires_at: 4_102_444_800,
             valid_after: 0,
-            nonce: "n-1".to_string(),
+            nonce: UptoNonce::new(7),
             channel_id: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             deposit: "1000000".to_string(),
             authorized_signer: RECEIVER_AUTHORIZER.to_string(),
-            open_slot: "314".to_string(),
+            open_slot: Slot::new(314),
             open_transaction: Some("tx".to_string()),
         }
     }
@@ -352,7 +358,7 @@ mod tests {
             build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
                 .await
                 .expect("payload from embedded hints");
-        assert_eq!(payload.open_slot, "314");
+        assert_eq!(payload.open_slot, Slot::new(314));
         assert!(payload.open_transaction.is_some());
     }
 
@@ -394,7 +400,7 @@ mod tests {
         .await
         .expect("payload from RPC fallback");
         // MockSender's getLatestBlockhash reports context slot 1.
-        assert_eq!(payload.open_slot, "1");
+        assert_eq!(payload.open_slot, Slot::new(1));
         assert!(payload.open_transaction.is_some());
     }
 
@@ -407,14 +413,13 @@ mod tests {
         let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
             .await
             .expect("payload with fetched slot");
-        assert_eq!(payload.open_slot, "1");
+        assert_eq!(payload.open_slot, Slot::new(1));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn build_payload_emits_the_declared_memo_after_open() {
         // A seller that declares extra.memo requires exactly one matching Memo
-        // after open, so the client emits it; without the declaration the
-        // transaction stays a bare open.
+        // after open, so the client emits it.
         let signer = make_signer();
         let rpc = RpcClient::new_mock("fails".to_string());
         let mut req = requirements();
@@ -436,14 +441,35 @@ mod tests {
         assert_eq!(keys[memo.program_id_index as usize], pc::memo_program_id());
         assert_eq!(memo.data.as_slice(), b"order-4711");
 
-        // Bare open when the challenge declares no memo.
-        let bare = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
+        // Without a declared memo the client still emits one Memo carrying a
+        // random hex nonce of at least 16 bytes, fresh on every build.
+        let nonce_memo = |payload: &UptoPayload| {
+            let tx = pc::decode_transaction(
+                payload
+                    .open_transaction
+                    .as_deref()
+                    .expect("open transaction"),
+            )
+            .expect("decodable open transaction");
+            let keys = tx.message.static_account_keys().to_vec();
+            let instructions = tx.message.instructions();
+            assert_eq!(instructions.len(), 2);
+            let memo = &instructions[1];
+            assert_eq!(keys[memo.program_id_index as usize], pc::memo_program_id());
+            String::from_utf8(memo.data.clone()).expect("utf-8 memo")
+        };
+        let first = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
             .await
-            .expect("payload without a memo");
-        let bare_tx =
-            pc::decode_transaction(bare.open_transaction.as_deref().expect("open transaction"))
-                .expect("decodable open transaction");
-        assert_eq!(bare_tx.message.instructions().len(), 1);
+            .expect("payload without a declared memo");
+        let second =
+            build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
+                .await
+                .expect("payload without a declared memo");
+        let (a, b) = (nonce_memo(&first), nonce_memo(&second));
+        assert!(a.len() >= 2 * pc::MIN_MEMO_NONCE_BYTES, "{a}");
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, b, "the nonce memo is random");
+        assert_eq!(first.channel_id, second.channel_id);
 
         // An over-long memo fails at build time rather than at the facilitator.
         req.extra.memo = Some("x".repeat(pc::OPEN_MAX_MEMO_BYTES + 1));
