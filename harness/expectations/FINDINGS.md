@@ -592,96 +592,19 @@ that recorded them. Rust divergences are recorded on the cases
 (`authored(Some(reason))`), so fixing the kit fails the case until the note
 is removed.
 
-## subscription-rust-client-kit-extensions
-
-**Case:** `vector/subscription-build-spec-request`
-**SDKs:** rust
-
-The Rust client builds `SubscribeData` from methodDetails fields only the
-Rust server emits (`amount`, `recipient`, `merchant`, `planIdNumeric`,
-`planBump`, `expectedPeriodHours`, `expectedCreatedAt`) and refuses a
-challenge without them
-(`rust/crates/kit/src/mpp/protocol/intents/subscription.rs:176`,
-`rust/crates/kit/src/mpp/client/subscription.rs:266`). A spec-shaped
-challenge, which is what `@solana/mpp`'s server issues, carries none of
-them: the plan terms are on-chain. The Rust client cannot activate against
-the TypeScript server. Fix: read the Plan account (as the TypeScript client
-does) and treat the extensions as an optimisation that must agree with it.
-
-## subscription-rust-request-format
-
-**Cases:** `vector/subscription-build-amount-leading-zero-reject`,
-`-zero-amount-reject`, `-period-count-leading-zero-reject`,
-`-token-program-not-spl-reject`, `-no-decimals-reject`,
-`vector/subscription-period-count-leading-zero-reject`, `-sign-reject`
-**SDKs:** rust
-
-“The amount value MUST be a string representation of a positive integer in
-base 10 with no sign, decimal point, exponent, or surrounding whitespace.
-Leading zeros MUST NOT be used.” (the same holds for periodCount). The kit
-parses both with `u64::from_str`, which accepts `"010000000"`, `"0"`, `"030"`
-and `"+30"` (`rust/crates/kit/src/mpp/protocol/intents/subscription.rs:201-212`).
-The builder accepts any `tokenProgram` (“The value MUST be the SPL Token
-program or the SPL Token-2022 program”,
-`rust/crates/kit/src/mpp/client/subscription.rs:224`), and `decimals` is
-optional (`rust/crates/kit/src/mpp/protocol/intents/subscription.rs:322`)
-though the table marks it REQUIRED. Two encodings of one set of terms break
-the uniqueness of the challenge's canonical bytes.
-
-## subscription-rust-client-plan-unread
-
-**Cases:** `vector/subscription-build-plan-missing-reject`,
-`-plan-amount-mismatch-reject`, `-plan-period-mismatch-reject`,
-`-plan-mint-mismatch-reject`, `-plan-puller-unauthorized-reject`,
-`-plan-no-destination-reject`, `-plan-two-destinations-reject`,
-`-plan-other-destination-reject`
-**SDKs:** rust (all eight); typescript for the puller and destination cases
-(`subscription-ts-plan-pullers-destinations`)
-
-“Clients MUST NOT sign an activation transaction whose on-chain Plan does not
-match the challenge.” and “Servers and clients MUST reject request objects
-referencing a plan with an empty destination whitelist, more than one non-zero
-destination, or a destination different from recipient.” The Rust client
-never reads the Plan. The program's `Subscribe` re-checks the terms it is
-handed, but nothing catches a plan whose destinations or pullers differ from
-what the wallet displays.
-
 ## subscription-source-not-verified
 
 **Cases:** `vector/subscription-verify-source-other-address-reject`,
 `vector/subscription-verify-source-other-method-reject`
-**SDKs:** rust, typescript
+**SDKs:** typescript (Rust fixed: `verify_credential_source` in
+`rust/crates/kit/src/mpp/server/subscription.rs`)
 
 “If source is present, servers MUST verify that it uses the did:pkh:solana:
 method and that its address matches the subscriber signer extracted from the
-activation transaction.” Neither server reads `credential.source`
-(`rust/crates/kit/src/mpp/server/subscription.rs:420`,
-`typescript/packages/mpp/src/server/Subscription.ts:230`). Both derive the
-payer from the transaction, so payment is unaffected, but an application that
-logs or keys on `source` trusts an unverified value.
-
-## subscription-rust-sponsor-fee-payer-code
-
-**Case:** `vector/subscription-verify-sponsor-not-fee-payer-reject`
-**SDKs:** rust
-
-A sponsored challenge whose activation names the subscriber as fee payer is
-rejected as “Could not identify subscriber among transaction signers”
-(`rust/crates/kit/src/mpp/server/subscription.rs:1867`) rather than as a fee
-payer mismatch: `extract_subscriber_from_tx` skips signer 0 assuming it is the
-sponsor and runs before the fee-payer check in `validate_activation_scope`.
-The verdict is right, the category is not.
-
-## subscription-rust-wire-optional-authentication
-
-**Case:** `vector/subscription-wire-activation-no-authentication-reject`
-**SDKs:** rust
-
-`ActivatePayload.authentication` is an `Option`
-(`rust/crates/kit/src/mpp/protocol/intents/subscription.rs:260`), so the wire
-type accepts an activation without the REQUIRED proof; `verify_credential`
-rejects it later. Making the field required moves the check to the parse
-boundary.
+activation transaction.” The TypeScript server does not read
+`credential.source` (`typescript/packages/mpp/src/server/Subscription.ts:230`).
+It derives the payer from the transaction, so payment is unaffected, but an
+application that logs or keys on `source` trusts an unverified value.
 
 ## subscription-ts-recipient-ata
 

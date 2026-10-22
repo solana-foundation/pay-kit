@@ -292,8 +292,10 @@ impl Scenario {
         challenge: &PaymentChallenge,
     ) -> (PaymentCredential, String) {
         let request: SubscriptionRequest = challenge.request.decode().unwrap();
-        let details =
-            SubscriptionMethodDetails::from_json(request.method_details.as_ref().unwrap()).unwrap();
+        let details = crate::mpp::client::subscription::assume_plan(
+            &request,
+            parse_pubkey(&self.config("http://127.0.0.1:1").puller, "puller").unwrap(),
+        );
         let CredentialPayload::Transaction { transaction } =
             build_subscription_activation_transaction_with_options(
                 &self.signer,
@@ -323,7 +325,7 @@ impl Scenario {
                 payload_type: "transaction".into(),
                 transaction: Some(transaction),
                 signature: None,
-                authentication: Some(authentication),
+                authentication,
             },
         );
         (credential, signature)
@@ -930,7 +932,7 @@ fn issued_challenge_passes_client_method_details_validation() {
     let server = scenario.server("http://127.0.0.1:1");
     let challenge = server.subscription_challenge(&AMOUNT.to_string()).unwrap();
     let request: SubscriptionRequest = challenge.request.decode().unwrap();
-    request.validated_method_details().unwrap();
+    request.terms().unwrap();
 }
 
 // ── SOLA1-199: challenges are bound to the server's network ────────────────
