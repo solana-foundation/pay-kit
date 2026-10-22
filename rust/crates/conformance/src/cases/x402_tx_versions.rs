@@ -292,7 +292,7 @@ crate::registry! {
         build_with(v1_offer(json!([])), json!({})),
         reject(RejectCode::UnsupportedVersion, "unsupported_transaction_version: empty advertisement"),
     )
-    .authored(Some("the kit treats an empty transactionVersions like an absent one (core::tx::accepted_versions) and builds version 0"))
+    .authored(None)
     .build();
     x402_build_legacy_only_reject => build(
         "x402-build-legacy-only-reject",
@@ -302,7 +302,7 @@ crate::registry! {
         build_with(v1_offer(json!(["legacy"])), json!({})),
         reject(RejectCode::UnsupportedVersion, "unsupported_transaction_version: legacy is never built"),
     )
-    .authored(Some("the kit refuses the offer while parsing it (extra.transactionVersions: unsupported entry), which classifies as invalid-payload, not unsupported_transaction_version"))
+    .authored(None)
     .build();
 
     // ── sponsor: version admission ─────────────────────────────────────────
@@ -402,7 +402,7 @@ crate::registry! {
         layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1DropLoadedAccountsDataSizeLimit)),
         from_table(&Mutation::V1DropLoadedAccountsDataSizeLimit),
     )
-    .authored(Some("the kit rejects it, but maps every check_v1_budget_caps error to invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high (compute-price-over-cap)"))
+    .authored(None)
     .build();
     x402_verify_v1_compute_limit_at_cap_accept => verify(
         "x402-verify-v1-compute-limit-at-cap-accept",

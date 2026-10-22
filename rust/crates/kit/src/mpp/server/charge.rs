@@ -1794,8 +1794,8 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        // Canonical decode: legacy (policed as version 0), version 0 or 1, no
-        // trailing bytes.
+        // Canonical decode: legacy, version 0 or 1, no trailing bytes. A
+        // legacy message is refused by the envelope check (MPP txv1).
         let mut tx = crate::core::tx::decode_bytes(&tx_bytes)
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
@@ -2155,7 +2155,7 @@ impl Mpp {
 
         // The RPC returns whatever version we asked for; the server decides
         // what it accepts, exactly as for a transaction credential.
-        crate::core::tx::check_reported_version(
+        crate::core::tx::check_reported_version_without_legacy(
             tx.transaction.version.as_ref(),
             &self.accepted_versions,
         )
@@ -2431,7 +2431,7 @@ fn verify_versioned_transaction_pre_broadcast(
     // Envelope first: accepted version, no lookup tables, size within the
     // version's limit. Then, for version 1, the header compute config is held
     // to the same caps the ComputeBudget instructions get on version 0.
-    crate::core::tx::check_envelope(tx, accepted_versions)
+    crate::core::tx::check_envelope_without_legacy(tx, accepted_versions)
         .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
     let fee_sponsored = method_details.fee_payer.unwrap_or(false);
     let max_price = if fee_sponsored {
@@ -5652,6 +5652,39 @@ mod tests {
             &[TxVersion::V0]
         )
         .is_ok());
+    }
+
+    /// draft-solana-charge-00 (txv1): servers "MUST reject a legacy
+    /// message", even when version 0 is accepted. The same transfer as
+    /// version 0 passes (`v0_sol_transfer_without_lookup_tables_passes`).
+    #[test]
+    fn legacy_message_rejected_where_v0_is_accepted() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 1_000_000u64;
+        let message = Message::new_with_blockhash(
+            &[system_transfer_ix(&sender, &recipient, amount)],
+            Some(&sender),
+            &Hash::default(),
+        );
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::Legacy(message),
+        };
+        let request = charge_request(amount, "SOL", &recipient);
+        let err = verify_versioned_transaction_pre_broadcast(
+            &tx,
+            &request,
+            &MethodDetails::default(),
+            &[TxVersion::V0, TxVersion::V1],
+        )
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("legacy transaction version is not accepted"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

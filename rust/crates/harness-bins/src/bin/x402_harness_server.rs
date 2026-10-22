@@ -13,13 +13,10 @@ use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::exact::{PaymentRequiredEnvelope, PaymentRequirements},
     server::{
-        exact::PaymentOption, Config, CurrencyConfig, ExactOptions, PaymentIdentifierPolicy,
-        VerifiedExactPayment, X402,
+        exact::PaymentOption, Config, CurrencyConfig, ExactOptions, PaymentIdentifierPolicy, X402,
     },
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V2,
 };
-use solana_rpc_client::rpc_client::RpcClient;
-use solana_transaction::versioned::VersionedTransaction;
 
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
 const HEALTH_PATH: &str = "/health";
@@ -37,7 +34,6 @@ struct Route {
 #[derive(Clone)]
 struct HarnessState {
     x402: X402,
-    rpc_url: String,
     fee_payer: Arc<MemorySigner>,
     /// Paid routes this server mounts: the scenario route first, then the
     /// optional replay-source route (`MPP_HARNESS_REPLAY_SOURCE_PATH`), each
@@ -144,14 +140,13 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             recipient: pay_to,
             currencies,
             network,
-            rpc_url: Some(rpc_url.clone()),
+            rpc_url: Some(rpc_url),
             resource: resource_path.clone(),
             description: Some("Surfpool-backed protected content".to_string()),
             max_age: Some(60),
             fee_payer_key: Some(fee_payer.pubkey().to_string()),
             payment_identifier: PaymentIdentifierPolicy::NotAdvertised,
         })?,
-        rpc_url,
         fee_payer,
         routes,
         settlement_header: env::var("X402_HARNESS_SETTLEMENT_HEADER")
@@ -361,28 +356,9 @@ fn settle_payment(
             .process_payment_with_options(payment_header, offered),
     )?;
 
-    match verified {
-        VerifiedExactPayment::Transaction(tx) => {
-            let signed_tx = runtime.block_on(sign_fee_payer(tx, state.fee_payer.as_ref()))?;
-            let rpc = RpcClient::new(state.rpc_url.clone());
-            let simulation = rpc.simulate_transaction(&signed_tx)?;
-            if let Some(error) = simulation.value.err {
-                return Err(format!("transaction simulation failed: {error:?}").into());
-            }
-            Ok(rpc.send_and_confirm_transaction(&signed_tx)?.to_string())
-        }
-        VerifiedExactPayment::Signature(signature) => Ok(signature),
-    }
-}
-
-async fn sign_fee_payer(
-    mut tx: VersionedTransaction,
-    fee_payer: &MemorySigner,
-) -> Result<VersionedTransaction, Box<dyn std::error::Error + Send + Sync>> {
-    let fee_payer_key = fee_payer.pubkey();
-    solana_pay_kit::core::signing::cosign_versioned_fee_payer(fee_payer, &fee_payer_key, &mut tx)
-        .await?;
-    Ok(tx)
+    // The kit's settlement: co-sign, broadcast and confirm under the replay
+    // ledger, so one payment authorizes one request.
+    Ok(runtime.block_on(state.x402.settle_exact(verified, state.fee_payer.as_ref()))?)
 }
 
 fn write_json_response(

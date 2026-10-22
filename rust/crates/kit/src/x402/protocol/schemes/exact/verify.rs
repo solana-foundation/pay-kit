@@ -294,17 +294,23 @@ pub fn verify_exact_versioned_transaction(
                 "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high",
             );
         }
+        if declared
+            .unit_price_micro_lamports
+            .is_some_and(|price| price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)
+        {
+            return invalid(
+                "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+            );
+        }
+        // The limit and price caps are checked above with their own reasons;
+        // what is left (a zero unit limit, a missing or short
+        // loadedAccountsDataSizeLimit) is a malformed version-1 header.
         crate::core::tx::check_v1_budget_caps(
             &tx.message,
             MAX_COMPUTE_UNIT_LIMIT,
             MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
         )
-        .map_err(|_| {
-            Error::Other(
-                "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
-                    .into(),
-            )
-        })?;
+        .map_err(|e| Error::Other(format!("invalid_exact_svm_payload_transaction: {e}")))?;
     }
     verify_exact_instructions(
         tx.message.static_account_keys(),
@@ -1610,6 +1616,35 @@ mod tests {
                 "{units}: {err:?}"
             );
         }
+    }
+
+    /// A version-1 header without loadedAccountsDataSizeLimit is a malformed
+    /// payload, not a price-cap violation: each budget rule keeps its own
+    /// reason (x402-txv1 §1.5).
+    #[test]
+    fn verify_exact_v1_budget_errors_keep_their_reason() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let mut tx = build_exact_v1_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![memo_ix()],
+            crate::core::tx::ComputeBudget::new(20_000, 1),
+        );
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).is_ok());
+        let solana_message::VersionedMessage::V1(message) = &mut tx.message else {
+            panic!("version-1 message expected");
+        };
+        message.config.loaded_accounts_data_size_limit = None;
+        let err = verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        let reason = err.to_string();
+        assert!(
+            reason.starts_with("invalid_exact_svm_payload_transaction: ")
+                && reason.contains("loaded accounts data size limit"),
+            "{reason}"
+        );
     }
 
     #[test]

@@ -404,12 +404,9 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             bool_field(object, "feePayer").or_else(|| fee_payer_key.as_ref().map(|_| true));
         let transaction_versions = extra_object
             .and_then(|extra| extra.get("transactionVersions"))
-            .map(|value| {
-                serde_json::from_value::<Vec<crate::core::tx::TxVersion>>(value.clone()).map_err(
-                    |e| serde::de::Error::custom(format!("extra.transactionVersions: {e}")),
-                )
-            })
-            .transpose()?;
+            .map(buildable_transaction_versions)
+            .transpose()
+            .map_err(serde::de::Error::custom)?;
         let max_age =
             u64_field(object, "maxTimeoutSeconds").or_else(|| u64_field(object, "maxAge"));
 
@@ -448,6 +445,31 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             resource_info: None,
         })
     }
+}
+
+/// `extra.transactionVersions` intersected with what the kit can build.
+///
+/// §1.5: clients intersect the advertisement with the versions they can
+/// build, so an entry the kit never builds (`"legacy"`, an unknown version)
+/// is dropped rather than refusing the offer; an advertisement with nothing
+/// buildable left then fails negotiation with `unsupported_transaction_version`
+/// (RULINGS T1, T2). A value that is not an array is malformed. The wire
+/// object stays in `accepted`, so the echoed offer is unchanged.
+fn buildable_transaction_versions(
+    value: &serde_json::Value,
+) -> Result<Vec<crate::core::tx::TxVersion>, String> {
+    let entries = value
+        .as_array()
+        .ok_or("extra.transactionVersions must be an array")?;
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .as_u64()
+                .and_then(|n| u8::try_from(n).ok())
+                .and_then(|n| crate::core::tx::TxVersion::try_from(n).ok())
+        })
+        .collect())
 }
 
 fn normalize_network_identifier(network: &str) -> String {
@@ -1414,5 +1436,42 @@ mod tests {
 
         let requirement: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
         assert_eq!(requirement.network, SOLANA_MAINNET);
+    }
+
+    /// §1.5: the client intersects `extra.transactionVersions` with what it
+    /// can build. `"legacy"` is never buildable, so `["legacy"]` leaves an
+    /// empty intersection (negotiation then fails with
+    /// unsupported_transaction_version) instead of failing to parse.
+    #[test]
+    fn transaction_versions_keep_only_buildable_entries() {
+        use crate::core::tx::TxVersion;
+        let with_versions = |versions: serde_json::Value| {
+            let mut offer = v2_offer();
+            offer["extra"]["transactionVersions"] = versions;
+            serde_json::from_value::<PaymentRequirements>(offer)
+        };
+        let legacy = with_versions(serde_json::json!(["legacy"])).unwrap();
+        assert_eq!(legacy.transaction_versions, Some(vec![]));
+        let err = crate::core::tx::negotiate(legacy.transaction_versions.as_deref(), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("advertises no transaction version"), "{err}");
+        assert_eq!(
+            with_versions(serde_json::json!([1, "legacy", 7]))
+                .unwrap()
+                .transaction_versions,
+            Some(vec![TxVersion::V1])
+        );
+        assert!(with_versions(serde_json::json!("0")).is_err());
+        let mut absent = v2_offer();
+        if let Some(extra) = absent["extra"].as_object_mut() {
+            extra.remove("transactionVersions");
+        }
+        assert_eq!(
+            serde_json::from_value::<PaymentRequirements>(absent)
+                .unwrap()
+                .transaction_versions,
+            None
+        );
     }
 }

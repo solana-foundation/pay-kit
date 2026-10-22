@@ -231,7 +231,7 @@ crate::registry! {
         Some(Mutation::ToFormat { format: MessageFormat::Legacy }),
         Expect::Reject { code: RejectCode::UnsupportedVersion, reason: Some("legacy messages are not supported".into()) },
     )
-    .authored(Some("the kit polices a legacy message as version 0 (core::tx::TxVersion::of) and accepts it wherever version 0 is accepted"))
+    .authored(None)
     .build();
     session_open_v1_compute_budget_instruction_reject => open_case(
         "session-open-v1-compute-budget-instruction-reject",

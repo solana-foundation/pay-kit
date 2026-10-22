@@ -67,27 +67,29 @@ on a party outside the client and the sponsor.
 ## charge-client-sol-token-program-ignored
 
 **Case:** `vector/charge-build-sol-token-program-reject`
-**SDKs:** go, python, rust, swift, typescript
+**SDKs:** go, python, swift, typescript
 
 draft-solana-charge-00 Method Details, tokenProgram: “MUST NOT be present when
-currency is "sol".” Every client builds the SOL transfer and ignores the
-field: Rust `rust/crates/kit/src/mpp/client/charge.rs:376`, TypeScript
+currency is "sol".” Rust refuses (`validate_challenge_details`,
+`rust/crates/kit/src/mpp/client/charge.rs`). The others build the SOL
+transfer and ignore the field: TypeScript
 `typescript/packages/mpp/src/client/Charge.ts:331`, Go
 `go/protocols/mpp/client/charge.go:92`, Python
 `python/src/solana_pay_kit/protocols/mpp/client/charge.py:208`, Swift
 `swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:319`. A client
 that cannot tell a malformed challenge from a valid one pays challenges a
-server never meant to issue (the Rust case carries a `kit_divergence`).
+server never meant to issue.
 
 ## charge-client-fee-payer-without-key
 
 **Case:** `vector/charge-build-fee-payer-without-key-reject`
-**SDKs:** go, python, rust
+**SDKs:** go, python
 
 Method Details, feePayer: “When true, the feePayerKey field MUST also be
-present.” TypeScript (`typescript/packages/mpp/src/client/Charge.ts:197`) and
+present.” TypeScript (`typescript/packages/mpp/src/client/Charge.ts:197`),
 Swift (`swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:216`)
-refuse; Rust (`rust/crates/kit/src/mpp/client/charge.rs:333`), Go
+and Rust (`validate_challenge_details`,
+`rust/crates/kit/src/mpp/client/charge.rs`) refuse; Go
 (`go/protocols/mpp/client/charge.go:87`) and Python
 (`python/src/solana_pay_kit/protocols/mpp/client/charge.py:169`) silently fall
 back to a client-paid transaction, so the client pays fees the challenge
@@ -254,35 +256,38 @@ side the gap belongs to. The SDK sources were not changed.
 
 ## charge-client-network-not-checked
 
-**Cases:** `charge-client-wrong-network/{go,kotlin,rust,swift,typescript}/rust`
+**Cases:** `charge-client-wrong-network/{go,kotlin,swift,typescript}/rust`
 
 The fault proxy rewrites the Rust server's challenge to `methodDetails.network
-= "mainnet"` while the client pays a localnet validator. Every client builds
-and submits a credential. draft-solana-charge-00: “Clients MUST reject
-challenges whose network does not match their configured cluster.” Only the
-TypeScript adapter receives a network (`MPP_HARNESS_NETWORK`), and its SDK
-does not compare it either.
+= "mainnet"` while the client pays a localnet validator. These clients build
+and submit a credential. draft-solana-charge-00: “Clients MUST reject
+challenges whose network does not match their configured cluster.” Every
+client adapter receives the cluster (`MPP_HARNESS_NETWORK`); the Rust client
+passes it as `BuildChargeTransactionOptions::expected_network` and refuses.
+The TypeScript SDK does not compare it.
 
 ## charge-client-request-not-verified
 
 **Cases:** `charge-client-over-asking-price/*/rust`,
-`charge-client-mis-signed-challenge/*/rust` (go, kotlin, rust, swift, typescript)
+`charge-client-mis-signed-challenge/*/rust` (go, kotlin, swift, typescript)
 
 The proxy multiplies the challenged amount by 10 000, or swaps the recipient,
-after the server bound the challenge id. Every client pays. Core: “Clients
+after the server bound the challenge id. These clients pay. Core: “Clients
 MUST verify before authorizing payment: 1. Requested amount is reasonable for
-the resource 2. Recipient/address is expected”. No client SDK exposes an
-expected amount or recipient, and the adapter contract passes none; in pull
-mode the server's challenge binding is what keeps the funds safe (the
-proxy-observed credential never settles).
+the resource 2. Recipient/address is expected”. Client adapters receive the
+scenario amount and recipient (`MPP_HARNESS_AMOUNT`, `MPP_HARNESS_PAY_TO`);
+the Rust client pins them (`max_amount_base_units`, `expected_recipient`) and
+refuses. In pull mode the server's challenge binding is what keeps the funds
+safe (the proxy-observed credential never settles).
 
 ## x402-client-network-not-checked
 
-**Cases:** `x402-exact-client-wrong-network/{go,kotlin,python,rust,swift}/rust`
+**Cases:** `x402-exact-client-wrong-network/{go,kotlin,python,swift}/rust`
 
 The proxy rewrites every `accepts[].network` to solana mainnet while the
 client is configured (`X402_HARNESS_NETWORK`) for the devnet CAIP-2 id. These
-clients still pay; the TypeScript client refuses.
+clients still pay; the TypeScript and Rust clients refuse (Rust: a configured
+`ChallengeSelection::network` never falls back to another network).
 
 ## charge-canonical-codes-php-lua
 
@@ -302,11 +307,11 @@ route a cross-route credential comes from returns 404. Adapter gap.
 
 ## charge-decimals-9-servers
 
-**Cases:** `charge-decimals-9/*/rust`, `charge-decimals-9/rust/{go,lua,php}`
+**Cases:** `charge-decimals-9/rust/{go,lua,php}`
 
-A 9-decimal mint at amount 1000: the Rust harness server prices
-`price × 10^decimals` (1 000 000, not the scenario's 1000), Go and Lua exit
-before readiness, PHP answers 402. Previously masked by `serverIds:
+A 9-decimal mint at amount 1000: Go and Lua exit before readiness, PHP answers
+402. (The Rust adapter priced `MPP_HARNESS_PRICE × 10^decimals`, 1 000 000; it
+now charges `MPP_HARNESS_AMOUNT` like every other server.) Previously masked by `serverIds:
 ["typescript", "ruby"]`.
 
 ## charge-sol-native-servers
@@ -328,12 +333,11 @@ TypeScript x402 servers serve it. Adapter gap; the case never ran before
 
 ## x402-canonical-codes
 
-**Cases:** `x402-exact-idempotent-resubmit/*/rust` and
-`/rust/{go,lua,php,ruby,ruby-x402-server}`,
+**Cases:** `x402-exact-idempotent-resubmit/rust/{go,lua,php,ruby,ruby-x402-server}`,
 `x402-exact-cross-route-replay/rust/typescript`
 
 A second presentation of a settled x402 payment is refused (402) without the
-canonical `signature_consumed`: Rust says `payment_invalid`, Go returns a
+canonical `signature_consumed`: Go returns a
 fresh challenge with no code, Lua and PHP `invalid_proof`, Ruby a raw RPC
 error. TypeScript rejects a cross-route payment with `payment_invalid`
 (sdkCode `accepted_mismatch`) instead of `charge_request_mismatch`. x402 has
@@ -520,68 +524,6 @@ advertises, and its facilitator cannot decode a version-1 message (it throws
 reading the absent lookup-table list), so neither
 `unsupported_transaction_version` nor the version-1 budget rules are reachable.
 Resolved by bumping the vendored x402 packages once PR 3710 lands.
-## txv1-rust-legacy-accepted
-
-**Cases:** `vector/charge-verify-legacy-reject`, `vector/charge-verify-legacy-default-reject`, `vector/session-open-legacy-reject`
-**SDKs:** rust
-
-The MPP txv1 draft (draft-solana-charge-00, Transaction Versions): “Legacy
-messages are not supported: servers MUST NOT advertise "legacy" and MUST
-reject a legacy message.” The kit polices a legacy message as version 0
-(`rust/crates/kit/src/core/tx/version.rs`, `TxVersion::of`) and its charge
-verifier accepts one wherever version 0 is accepted. That reading matches
-x402 (§1.5, a facilitator MAY keep accepting legacy), not MPP. The fix is a
-protocol-aware envelope check: MPP charge and session refuse
-`VersionedMessage::Legacy`; x402 keeps the tolerance.
-
-## txv1-rust-empty-advertisement
-
-**Cases:** `vector/charge-build-empty-advertisement-reject`, `vector/x402-build-empty-advertisement-reject`
-**SDKs:** rust
-
-`transactionVersions: []` is read as the absent default `[0]`
-(`core::tx::accepted_versions`) and the client builds version 0. Only an
-omitted field defaults (RULINGS T2); x402 §1.5: “It MUST fail with
-unsupported_transaction_version when the intersection is empty.”
-
-## txv1-rust-x402-legacy-offer-code
-
-**Case:** `vector/x402-build-legacy-only-reject`
-**SDKs:** rust
-
-An offer whose `extra.transactionVersions` is `["legacy"]` fails to parse
-(`PaymentRequirements` deserialization, `invalid-payload`). §1.5 says the
-client intersects and, legacy never being buildable, fails with
-`unsupported_transaction_version`. The refusal is right; the code is not.
-
-## txv1-rust-x402-budget-codes
-
-**Case:** `vector/x402-verify-v1-missing-loaded-data-limit-reject`
-**SDKs:** rust
-
-`verify_exact_versioned_transaction`
-(`rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs`) maps every
-`check_v1_budget_caps` error to
-`invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high`,
-so a version-1 header without `loadedAccountsDataSizeLimit` (or with a zero
-limit) is reported as a price-cap violation. The transaction is rejected;
-only the reason is wrong.
-
-## txv1-rust-x402-advertisement-fixed
-
-**Cases:** `cross/x402-build-v0-advertised/*/rust`, `cross/x402-build-duplicate-advertisement/*/rust`
-**SDKs:** rust
-
-§1.5: “the server MUST copy that value into
-PaymentRequirements.extra.transactionVersions.” The kit's x402 server
-generates the field itself from `TxV1Mode` (`core::tx::advertised`): `[0, 1]`
-or nothing. Fronting a facilitator that advertises `[0]` (or `[1, 0, 1]`),
-its route carries a different value than the offer the client echoed, and
-the accepted match (“a hint the credential does echo must still equal the
-route's”, `rust/crates/kit/src/x402/server/exact.rs` `drop_hints_not_echoed`)
-refuses a valid payment. The builds verify against a route that copies the
-offer's value (the build judge's sponsor).
-
 ## txv1-ts-mpp-no-transaction-versions
 
 **Cases:** `vector/charge-wire-transaction-versions-*`, `vector/session-wire-transaction-versions-*`
