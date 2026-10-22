@@ -155,6 +155,72 @@ Open-slot freshness against the challenged slot is program-enforced (“The open
 instruction still enforces the program's slot window.”), so no vector requires
 a verifier to pre-check it.
 
+## MPP session (Solana)
+
+Pinned `specs/methods/solana/draft-solana-session-00.md` in
+`external/mpp-specs` at `782abae`; the session server and client cases are
+`rust/crates/conformance/src/cases/session_server.rs`.
+
+**SS1. A close voucher below `acceptedCumulative` is refused.** Close
+authentication reads “A voucher with `cumulativeAmount > settled` advances
+settlement. A voucher at or below `settled` MUST equal the server's
+`acceptedCumulative`, authenticates close only, and MUST NOT be submitted as a
+settlement update.” and the procedure “use the supplied voucher only when
+`cumulativeAmount > settled`; otherwise treat it only as close authentication
+after verifying it equals `acceptedCumulative`.” The text is silent on a
+voucher strictly between the on-chain `settled` and the server's
+`acceptedCumulative`. Settling it would seal below what the server already
+accepted, and voucher verification is against the durable watermark: “Verify
+`cumulativeAmount > acceptedCumulative` using the server's durable watermark,
+even when on-chain `settled` lags.” So a close voucher either exceeds
+`acceptedCumulative` (and advances settlement) or is the accepted voucher
+itself (and only authenticates); anything else is refused
+(`cumulative-amount-mismatch`). Upstream: say `acceptedCumulative` where the
+close text says `settled`.
+
+**SS2. A single-shot voucher has no idempotent replay.** “Voucher submissions
+with `cumulativeAmount <= acceptedCumulative` and no matching cached
+idempotent response MUST be rejected and MUST NOT reduce channel state.” A
+verify vector carries no `Idempotency-Key` and no cached response, so the
+exact highest voucher presented again is a reject
+(`cumulative-amount-mismatch`); the testee drives the SDK's metered voucher
+acceptance at the challenged `amount` (Rust: `verify_voucher_for_amount`).
+Retries with an idempotency key are an interop scenario.
+
+**SS3. Codes the spec does not name.** The spec fixes only the problem types
+(“Servers MUST use the standard problem types defined in
+{{I-D.ryan-httpauth-payment-01}}: `malformed-credential`,
+`invalid-challenge`, and `verification-failed`.”), so the vectors refine
+them: an `open` envelope that disagrees with the challenge or with the
+decoded transaction (payee, mint, splits, grace period, deposit argument,
+`openSlot` window, idle-timeout selection, accounts, privileges, blockhash,
+`authorizedSigner`) is `open-binding-mismatch`; a declared or decoded channel
+that is not the PDA derived from the open parameters is `channel-id-mismatch`
+(as is a voucher, close or top-up bound to another channel than the one it
+names); an instruction outside the open or top-up is `unexpected-instruction`;
+a fee payer other than the policy's is `fee-payer-mismatch`; a deposit below
+`minimumDeposit` or zero, a top-up amount that disagrees or is zero, and a
+voucher increment below the challenged price are `amount-mismatch`; the
+bearer proof is `authentication-invalid` (also a voucher action on an
+operator-signed channel); a close that carries the wrong authentication field
+for its mode is `close-authorization`; a voucher signature or signer is
+`voucher-signature`; monotonicity is `cumulative-amount-mismatch`, the deposit
+ceiling `cumulative-exceeds-deposit`; a pending forced close is
+`channel-closing`, a sealed channel `close-state`, an unknown channel
+`channel-state`; a credential that does not parse is `invalid-payload`; and a
+client refusing a challenge is `invalid-challenge`.
+
+**SS4. Offline open verify stops before the broadcast.** Vectors judge every
+check the server makes before it signs, pays fees or broadcasts, against the
+challenged `recentSlot` (“satisfies the open-slot window relative to both the
+challenged `recentSlot` ... and the window against the server's current view
+of the cluster slot”). The live-slot window and the post-confirmation
+channel-state checks (step 14) need a validator and are interop scenarios.
+No session vector pins a version-0 address lookup table: the base draft
+resolves them (“Validate the complete compiled message — resolving any
+version-0 address-lookup-table entries — not just the channel
+instruction.”), the transaction-versions draft rejects them.
+
 ## MPP subscription (Solana)
 
 Pinned as the submodule `external/mpp-specs-solana` at `5c4a528`

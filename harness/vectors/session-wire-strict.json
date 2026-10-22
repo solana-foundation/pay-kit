@@ -1,0 +1,838 @@
+[
+  {
+    "bugType": "wire",
+    "description": "The frozen open payload plus bump: 254. The SDK's open schema must refuse it (malformed credential), not ignore the field.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "open payload with a bump field"
+    },
+    "id": "session-wire-action-open-bump-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "bump": 254,
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": "7777",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-427162b59f",
+      "MPP-2f056735f6"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Action: \"open\" MUST NOT carry a bump field.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The frozen open payload plus a signed voucher.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "open payload with an initial voucher"
+    },
+    "id": "session-wire-action-open-initial-voucher-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": "7777",
+          "transaction": "AQID",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-89f2059960"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Action: \"open\" MUST NOT carry an initial voucher.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "openSlot as a JSON number instead of a decimal string.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "numeric openSlot"
+    },
+    "id": "session-wire-action-open-numeric-open-slot-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": 250000000,
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": "7777",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| openSlot | string | REQUIRED | Decimal u64 per-incarnation epoch encoded into the open instruction as open_slot; MUST be no greater than the challenge's methodDetails.recentSlot and MUST satisfy the on-chain window rule of {{channel-closure}} when the transaction executes.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "salt as a JSON number instead of a decimal string.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "numeric salt"
+    },
+    "id": "session-wire-action-open-numeric-salt-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": 7777,
+          "transaction": "AQID"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a9eb047d07"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| salt | string | REQUIRED | Decimal u64 PDA disambiguator |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The frozen open payload without transaction.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "open payload without transaction"
+    },
+    "id": "session-wire-action-open-missing-transaction-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": "7777"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a5edb594a1"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The frozen voucher action without its top-level channelId routing key.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "voucher action without channelId"
+    },
+    "id": "session-wire-action-voucher-missing-channel-id-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-389a42bd5e"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| channelId | string | REQUIRED | Existing channel identifier |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "signatureType secp256r1: the base specification defines ed25519 only.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "signatureType other than ed25519"
+    },
+    "id": "session-wire-action-voucher-signature-type-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "secp256r1",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-54d28c98f1"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| signatureType | string | REQUIRED | \"ed25519\" |",
+      "section": "Signed Voucher"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "cumulativeAmount as a JSON number instead of a string.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "numeric cumulativeAmount"
+    },
+    "id": "session-wire-action-voucher-numeric-cumulative-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": 250,
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d26228ea73"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| cumulativeAmount | string | REQUIRED | Total authorized spend (base units) |",
+      "section": "Voucher Data"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The signed voucher without signatureType.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "signed voucher without signatureType"
+    },
+    "id": "session-wire-action-voucher-missing-signature-type-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-54d28c98f1"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| signatureType | string | REQUIRED | \"ed25519\" |",
+      "section": "Signed Voucher"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "topUp action payload (channelId, additionalAmount as a decimal string, transaction), frozen byte-for-byte through the SDK's session action schema.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJ0b3BVcCIsImFkZGl0aW9uYWxBbW91bnQiOiI1MDAiLCJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwidHJhbnNhY3Rpb24iOiJBUUlEIn0",
+        "canonicalJson": "{\"action\":\"topUp\",\"additionalAmount\":\"500\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"transaction\":\"AQID\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-topup-frozen",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-4d3fa28dc4",
+      "MPP-3e70e39f13",
+      "MPP-dfaa074bfa"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| additionalAmount | string | REQUIRED | Amount to add in base units |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "topUp without additionalAmount.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "topUp without additionalAmount"
+    },
+    "id": "session-wire-action-topup-missing-amount-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "topUp",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3e70e39f13"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| additionalAmount | string | REQUIRED | Amount to add in base units |",
+      "section": "Action: \"topUp\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "use action payload with the bearer proof (type proof, challengeId, payer, signature), frozen through the SDK's session action schema.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJ1c2UiLCJhdXRoZW50aWNhdGlvbiI6eyJjaGFsbGVuZ2VJZCI6ImNfc2Vzc2lvbl9jb25mb3JtYW5jZV8wMDAxIiwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInNpZ25hdHVyZSI6IkFLQWg5TFVvV0ZHMnN4QU1vdHptTE5wS3dQVENpRzZRNFlUd0FpblpNbmt2WUtQQUtWUHdZU2ZvUURwOFhMS1d6cGJDTng2NlhCMUJyY0QxWlVQcVUzOSIsInR5cGUiOiJwcm9vZiJ9LCJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIn0",
+        "canonicalJson": "{\"action\":\"use\",\"authentication\":{\"challengeId\":\"c_session_conformance_0001\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"type\":\"proof\"},\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-use-frozen",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "type": "proof"
+          },
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-06150f0fd1",
+      "MPP-3a413603bc",
+      "MPP-2d5c87a7f3",
+      "MPP-9edde7b556"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| authentication | object | REQUIRED | Reusable proof bound at open, as defined in {{session-bearer-proof}} |",
+      "section": "Action: \"use\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A use action whose authentication type is \"signature\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "authentication type other than proof"
+    },
+    "id": "session-wire-action-use-proof-type-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "type": "signature"
+          },
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-9edde7b556"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| type | string | REQUIRED | The string \"proof\" |",
+      "section": "Session Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "An operator close: the bearer proof and no voucher, frozen through the SDK's session action schema.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhY3Rpb24iOiJjbG9zZSIsImF1dGhlbnRpY2F0aW9uIjp7ImNoYWxsZW5nZUlkIjoiY19zZXNzaW9uX2NvbmZvcm1hbmNlXzAwMDEiLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwic2lnbmF0dXJlIjoiQUtBaDlMVW9XRkcyc3hBTW90em1MTnBLd1BUQ2lHNlE0WVR3QWluWk1ua3ZZS1BBS1ZQd1lTZm9RRHA4WExLV3pwYkNOeDY2WEIxQnJjRDFaVVBxVTM5IiwidHlwZSI6InByb29mIn0sImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4ifQ",
+        "canonicalJson": "{\"action\":\"close\",\"authentication\":{\"challengeId\":\"c_session_conformance_0001\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"type\":\"proof\"},\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-action-close-operator-frozen",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "close",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "type": "proof"
+          },
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-bcea8a5303",
+      "MPP-146a845b55"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| authentication | object | Conditionally REQUIRED | Reusable proof; REQUIRED for operator and MUST be absent for client |",
+      "section": "Action: \"close\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A sponsored operator-signed challenge (feePayer, feePayerKey, voucherSigner operator, operator, idleTimeoutOptionsSeconds, distributionSplits, minVoucherDelta), frozen through the SDK's session request schema.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIyNSIsImN1cnJlbmN5IjoiVVNEQyIsIm1ldGhvZERldGFpbHMiOnsiY2hhbm5lbFByb2dyYW0iOiJDSE5MeFl2VkEyOE1KUDlQckZ1RFhjY3VvR1hBeDdqQmFjZkxFa2FoeUdzWCIsImRlY2ltYWxzIjo2LCJkaXN0cmlidXRpb25TcGxpdHMiOlt7InJlY2lwaWVudCI6IlZvdGUxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJzaGFyZUJwcyI6NTAwfV0sImZlZVBheWVyIjp0cnVlLCJmZWVQYXllcktleSI6Ijd2NTROV2RCdGtqdUFGSnJMR3NTMlNYbnVrOG5LYW04MW1aSmVlWXhWRmk5IiwiZ3JhY2VQZXJpb2RTZWNvbmRzIjo5MDAsImlkbGVUaW1lb3V0T3B0aW9uc1NlY29uZHMiOls2MCwzMDAsOTAwXSwibWluVm91Y2hlckRlbHRhIjoiMjUiLCJuZXR3b3JrIjoiZGV2bmV0Iiwib3BlcmF0b3IiOiI3djU0TldkQnRranVBRkpyTEdzUzJTWG51azhuS2FtODFtWkplZVl4VkZpOSIsInJlY2VudEJsb2NraGFzaCI6IkVrU25OV2lkMmN2d0VWblZ4OWFCcWF3bm1pQ05pRGdwM2dVZGtEUFRLTjFOIiwicmVjZW50U2xvdCI6IjI1MDAwMDAwMCIsInZvdWNoZXJTaWduZXIiOiJvcGVyYXRvciJ9LCJyZWNpcGllbnQiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSJ9",
+        "canonicalJson": "{\"amount\":\"25\",\"currency\":\"USDC\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"distributionSplits\":[{\"recipient\":\"Vote111111111111111111111111111111111111111\",\"shareBps\":500}],\"feePayer\":true,\"feePayerKey\":\"7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9\",\"gracePeriodSeconds\":900,\"idleTimeoutOptionsSeconds\":[60,300,900],\"minVoucherDelta\":\"25\",\"network\":\"devnet\",\"operator\":\"7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"voucherSigner\":\"operator\"},\"recipient\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-request-operator-sponsored-frozen",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "25",
+          "currency": "USDC",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "distributionSplits": [
+              {
+                "recipient": "Vote111111111111111111111111111111111111111",
+                "shareBps": 500
+              }
+            ],
+            "feePayer": true,
+            "feePayerKey": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "gracePeriodSeconds": 900,
+            "idleTimeoutOptionsSeconds": [
+              60,
+              300,
+              900
+            ],
+            "minVoucherDelta": "25",
+            "network": "devnet",
+            "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "voucherSigner": "operator"
+          },
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-5eae297bd5",
+      "MPP-d5da84fe70"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Conditionally REQUIRED when voucherSigner is operator.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A session request without methodDetails.network.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "request without network"
+    },
+    "id": "session-wire-request-missing-network-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-bb80675c8e"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "There is no default; the challenge MUST state the cluster explicitly.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "recentSlot as a JSON number instead of a decimal string.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "numeric recentSlot"
+    },
+    "id": "session-wire-request-numeric-recent-slot-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": 250000000,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-69c0a4f95f"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Conditionally REQUIRED when channelId is absent and MUST be absent when resuming an existing channel.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "voucherSigner \"server\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "voucherSigner other than client or operator"
+    },
+    "id": "session-wire-request-voucher-signer-unknown-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "server"
+          },
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-391cb5b326"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "MUST be either client or operator.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A session request without methodDetails.channelProgram.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "request without channelProgram"
+    },
+    "id": "session-wire-request-missing-channel-program-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "methodDetails": {
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ecdf5de619"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients MUST verify this matches their expected program for that cluster before depositing funds.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The bearer-proof message the payer signs: the JCS serialization of { channelId, domain: \"mpp-session-auth-v1\", payer, sessionChallengeId }. Frozen byte-for-byte; a key out of order, a renamed key or another domain string diverges and no verifier accepts the proof.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiZG9tYWluIjoibXBwLXNlc3Npb24tYXV0aC12MSIsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJzZXNzaW9uQ2hhbGxlbmdlSWQiOiJjX3Nlc3Npb25fY29uZm9ybWFuY2VfMDAwMSJ9",
+        "canonicalJson": "{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"domain\":\"mpp-session-auth-v1\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"sessionChallengeId\":\"c_session_conformance_0001\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-wire-authentication-message-frozen",
+    "input": {
+      "sessionAuthenticationMessage": {
+        "challengeId": "c_session_conformance_0001",
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b23323ead0",
+      "MPP-f8ce7faac8",
+      "MPP-d7767fee2b"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| challengeId | string | REQUIRED | Session challenge ID signed as sessionChallengeId |",
+      "section": "Session Bearer Proof"
+    },
+    "tier": "offline"
+  }
+]

@@ -515,6 +515,9 @@ func runVector(vector Vector) RunnerResult {
 		}
 		return result
 	}
+	if vector.Intent == "session" && vector.Mode == "build-transaction" {
+		return RunnerResult{ID: vector.ID, Outcome: "unsupported-mode", Error: "unsupported-mode: no session client open builder path (input.sessionOpenBuild)"}
+	}
 	switch vector.Mode {
 	case "canonical-bytes":
 		if vector.Input.SessionAuthenticationMessage != nil || vector.Input.SessionWire != nil {

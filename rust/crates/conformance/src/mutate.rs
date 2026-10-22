@@ -194,7 +194,7 @@ impl Mutation {
             }
             (
                 DropSignature | ForgeSignature | TruncateSignatures { .. },
-                Suite::Charge | Suite::X402Exact,
+                Suite::Charge | Suite::X402Exact | Suite::Session,
             ) => Some(InvalidPayload),
             (DropTransfer { .. }, Suite::Charge | Suite::X402Exact) => Some(NoMatchingTransfer),
             (ExtraTransfer { .. }, Suite::Charge | Suite::X402Exact) => Some(UnexpectedInstruction),
@@ -207,14 +207,16 @@ impl Mutation {
                 Some(FeePayerNotAuthority)
             }
             (FeePayerAsSolSource { .. }, Suite::Charge) => Some(FeePayerIsFundsSource),
-            (FeePayerSystemTransfer { .. }, Suite::Charge) => Some(UnexpectedInstruction),
+            (FeePayerSystemTransfer { .. }, Suite::Charge | Suite::Session) => {
+                Some(UnexpectedInstruction)
+            }
             (FeePayerSystemTransfer { .. }, Suite::X402Exact) => Some(FeePayerNotAuthority),
             (AddCreateAta { .. }, Suite::Charge) => Some(UnexpectedInstruction),
             (EditCreateAta { .. } | DropCreateAta { .. }, Suite::Charge) => Some(InvalidPayload),
             (AddComputeBudget { .. }, Suite::X402Exact) => Some(InvalidPayload),
             (AddComputeBudget { .. }, Suite::Charge) => Some(UnexpectedInstruction),
             (SetComputeBudgetData { .. }, Suite::X402Exact) => Some(InvalidPayload),
-            (AddProgramInstruction { .. }, Suite::Charge | Suite::X402Exact) => {
+            (AddProgramInstruction { .. }, Suite::Charge | Suite::X402Exact | Suite::Session) => {
                 Some(UnexpectedInstruction)
             }
             (ExtraSigner { .. }, Suite::X402Exact) => Some(UnexpectedInstruction),

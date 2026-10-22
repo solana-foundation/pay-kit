@@ -1,0 +1,1864 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "A voucher for cumulative 125 signed by the channel's authorized signer: a 25 increment over the accepted 100, the challenged price. The baseline every voucher reject pairs with. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-voucher-verify-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d",
+      "MPP-89a6d0c5d7",
+      "MPP-13061769bf"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST verify each voucher:",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The voucher omits expiresAt (never expires). Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-voucher-verify-no-expiry-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "4PoeREtS6cP9mR385hypPMZEY2eLP3QAbx1XCNg7L8Z4ZXCFchvB94LhfHoAPjS1zxc4XRuYKKkfFMf4X8MuLvTr",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125"
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| expiresAt | integer | OPTIONAL | Voucher expiration as a Unix timestamp in seconds (i64); 0 or omitted means no expiration.",
+      "section": "Voucher Data"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "cumulative 1000 equals the escrowed deposit (cumulativeAmount <= escrowedAmount). The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-voucher-verify-up-to-deposit-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "22W5WN7oX2pmEjbmwEmCmpFBxdqhAEHvJN5yNNyxmTKS6fZmx9eAbYQPXWNT3RjpJX5ZPBQMjKcwEb5eb8xk81zq",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "1000",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST verify each voucher:",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The first voucher on a fresh channel (nothing accepted yet) for exactly the challenged price. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-voucher-verify-first-voucher-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "0",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "0",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "2hEU8vQtQWA4KqnjephuE4hBVXYWLVcPi3dUWWAmcNXQBB6SMdtLpqK2hVxo6BpEnpXphfkvaReH4YuLWo3R96iC",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "25",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d",
+      "MPP-13061769bf"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST verify each voucher:",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The channel's authorizedSigner is the payer and the payer signs. Pair: session-voucher-verify-wrong-signer-reject. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-voucher-verify-payer-signer-accept",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "channelId": "ADBrpWacLn5d6nqa6sfhAKVvJ17gSXeZdXkFCEDNSPDH",
+          "escrowedAmount": "1000",
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "ADBrpWacLn5d6nqa6sfhAKVvJ17gSXeZdXkFCEDNSPDH",
+          "voucher": {
+            "signature": "272qKqbbEbUspfMGAkcxM5yRVT21Yy7nzTtfHorHKTE6kFFwNjiPn474FuieXF2DK4bekmRCfFQJGARAUBrqkxE8",
+            "signatureType": "ed25519",
+            "signer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "voucher": {
+              "channelId": "ADBrpWacLn5d6nqa6sfhAKVvJ17gSXeZdXkFCEDNSPDH",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-89a6d0c5d7"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Once a channel is opened, vouchers for that channel MUST verify under the channel's authorizedSigner.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The action's top-level channelId routes to another channel than the one the signed voucher names. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /channelId set to \"4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-voucher-verify-channel-id-mismatch-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-895f62e266",
+      "MPP-389a42bd5e",
+      "MPP-ebee0156c7"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Implementations MUST NOT accept vouchers for channels whose identity cannot be recomputed from the program ID and channel open parameters.",
+      "section": "Voucher Data"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A voucher (and routing key) for a channel the server never opened. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-state"
+    },
+    "id": "session-voucher-verify-unknown-channel-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ",
+          "voucher": {
+            "signature": "3SFd1SYvgZHKLMrLqUUmtcKtpykV9wPwVp1FWTgrKtw9uKaheVD68WjDhjvqTJVe7bN7p3YL94vKHhyco98P8m16",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-895f62e266"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Implementations MUST NOT accept vouchers for channels whose identity cannot be recomputed from the program ID and channel open parameters.",
+      "section": "Voucher Data"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer, not the delegated authorized signer, signs (and names itself as signer). Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-signature"
+    },
+    "id": "session-voucher-verify-wrong-signer-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "4phUMSQ7de8WKFaYZWHZ4yrhBf5MrGPmSFXk8BacmvV1qwDxXPBTMRMoucFfKVgDqWzyiy1vRAkzwWfwzYMwfr5p",
+            "signatureType": "ed25519",
+            "signer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-89a6d0c5d7",
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Once a channel is opened, vouchers for that channel MUST verify under the channel's authorizedSigner.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer signs but the voucher claims the authorized signer as signer: the signature does not verify under it. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/signer set to \"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-signature"
+    },
+    "id": "session-voucher-verify-signer-claim-forged-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "4phUMSQ7de8WKFaYZWHZ4yrhBf5MrGPmSFXk8BacmvV1qwDxXPBTMRMoucFfKVgDqWzyiy1vRAkzwWfwzYMwfr5p",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-89a6d0c5d7",
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Once a channel is opened, vouchers for that channel MUST verify under the channel's authorizedSigner.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "Signed for 125, the JSON cumulativeAmount is raised to 200. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/voucher/cumulativeAmount set to \"200\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-signature"
+    },
+    "id": "session-voucher-verify-cumulative-tampered-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "200",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7ba6f01984",
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The HTTP JSON shape is a transport view; clients and servers MUST NOT influence what bytes are signed via the JSON.",
+      "section": "Voucher Signing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "malleability",
+    "description": "Signed with expiresAt 4102444800, the JSON drops expiresAt (never expires). Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/voucher/expiresAt removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-signature"
+    },
+    "id": "session-voucher-verify-expiry-tampered-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125"
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-7ba6f01984"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The HTTP JSON shape is a transport view; clients and servers MUST NOT influence what bytes are signed via the JSON.",
+      "section": "Voucher Signing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "replay",
+    "description": "A freshly signed voucher (another expiry) for exactly the accepted 100. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-amount-mismatch"
+    },
+    "id": "session-voucher-verify-equal-to-accepted-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "2xSCJ9uXDoazsKTzejW7vCX9B96wvWWG1WHbBDn9vTHRRkRe46YLJKE15BEo4vBfoTvgofDqNEQrgSXw3MiHPooQ",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444799
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-8ebbf6e151",
+      "MPP-ae84beeba3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Equal or lower amounts MUST be rejected for metered voucher acceptance unless they are exact idempotent replays handled per \"Concurrency and Idempotency\".",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "replay",
+    "description": "A voucher for 50, below the accepted 100. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-amount-mismatch"
+    },
+    "id": "session-voucher-verify-below-accepted-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "4FArWT8j8NwmmxZtKrvCD3xZeXpakAcnQkJ54Jczb8gYpGNBdmuu7q55WDgbcZSKC1TQtf45pNKbePYfarSHYGSE",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "50",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-8ebbf6e151",
+      "MPP-ae84beeba3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Equal or lower amounts MUST be rejected for metered voucher acceptance unless they are exact idempotent replays handled per \"Concurrency and Idempotency\".",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "replay",
+    "description": "The exact highest voucher already accepted (same cumulative 100 and signature), with no idempotency key: a new request cannot be paid with it. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-amount-mismatch"
+    },
+    "id": "session-voucher-verify-exact-replay-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ae84beeba3",
+      "MPP-8ebbf6e151"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Voucher submissions with cumulativeAmount <= acceptedCumulative and no matching cached idempotent response MUST be rejected and MUST NOT reduce channel state.",
+      "section": "Concurrency and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "cumulative 1001 against an escrowed deposit of 1000. Pair: session-voucher-verify-up-to-deposit-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-exceeds-deposit"
+    },
+    "id": "session-voucher-verify-exceeds-deposit-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "3zYcV1pjP62ppsFyPfvGiKXLYQLQt44PDCKGwfDm3oD4MAJuZF4Ez5aRYcghBohVnoMJEsEa1nNMK3JqzEdrsYed",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "1001",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST verify each voucher:",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "cumulative 110: a 10 increment for a request priced at 25. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-voucher-verify-increment-below-price-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "5h4J3kMWiMqcswyJzBGLt2ic1qXAYFYZPNcDKkwxrUJPqJDn1pGNVAnDDpDB4KYEJ9PzQAPeeKUVbodxFcg5ENCn",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "110",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-13061769bf"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The accepted increment cumulativeAmount − acceptedCumulative MUST correspond to the resource cost charged for the accompanying request, not merely be a positive advance.",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The channel has a pending forced close (closureStartedAt set). Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-closing"
+    },
+    "id": "session-voucher-verify-close-pending-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "closureStartedAt": 1800000000,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a3aff47c7c",
+      "MPP-ff8313704f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST stop accepting new service vouchers once closureStartedAt is set.",
+      "section": "Grace Period Security"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The channel is closed (sealed). Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "close-state"
+    },
+    "id": "session-voucher-verify-sealed-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "closed",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST verify each voucher:",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "expiresAt 1000000000 (2001), long past. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "voucher-expired"
+    },
+    "id": "session-voucher-verify-expired-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "2CuqDeE1X3q5Q8yPmoECrxnoSAwPcA4PvtncWJDcjW3RbwPzegN1Nd3KeFHbBbj8MKRZwe9Du95qpL2CR5VbCCmi",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 1000000000
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec9e85084d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "If expiresAt is present and non-zero, verify now < expiresAt (with configurable clock skew tolerance).",
+      "section": "Voucher Verification"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "signatureType secp256r1 on an Ed25519 voucher. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/signatureType set to \"secp256r1\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-voucher-verify-signature-type-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "secp256r1",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-54d28c98f1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| signatureType | string | REQUIRED | \"ed25519\" |",
+      "section": "Signed Voucher"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The signature is not base58. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/signature set to \"0OIl-not-base58\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-voucher-verify-signature-not-base58-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "0OIl-not-base58",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-56d8994e89"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| signature | string | REQUIRED | Base58-encoded Ed25519 signature |",
+      "section": "Signed Voucher"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "cumulativeAmount \"1.25e2\" is not a base-unit integer. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /voucher/voucher/cumulativeAmount set to \"1.25e2\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-voucher-verify-cumulative-not-decimal-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "1.25e2",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d26228ea73"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| cumulativeAmount | string | REQUIRED | Total authorized spend (base units) |",
+      "section": "Voucher Data"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "The voucher action has no top-level channelId. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25. Mutation: credential /channelId removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-voucher-verify-missing-channel-id-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "voucher",
+          "voucher": {
+            "signature": "AJLchr4KAGxSF76gnicBn4PLn2jwEbUmELDr9qAoccNDj4fBTQNsxWYE7uYtbhT51G1eX6z24rePLWPnapZE4RB",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-389a42bd5e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| channelId | string | REQUIRED | Existing channel identifier |",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "An operator-signed channel and a voucher action carrying a valid operator-signed voucher for 125 (a settlement artifact anyone could replay): it must not authenticate the request. Pair: session-voucher-verify-accept. The server's channel holds a deposit of 1000 with 100 accepted and spent; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-voucher-verify-operator-channel-reject",
+    "input": {
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "voucher",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "voucher": {
+            "signature": "3ZR5gynLAzgQbiDyn5MMR7UjpudBwqh1mW7C4eMYGdYNY8Bx2QkCXGJfiEM85SUZxqKFChZREzQDYjqxidjKjwP7",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "125",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-0fee0ce818"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "In operator mode, vouchers are operator-generated settlement artifacts and MUST NOT authenticate the caller.",
+      "section": "Action: \"voucher\""
+    },
+    "tier": "offline"
+  }
+]

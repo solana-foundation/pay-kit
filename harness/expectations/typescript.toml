@@ -609,9 +609,33 @@ ids = [
 ]
 
 [[unsupported]]
-reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify, input.sessionServerVerify)"
 pattern = "vector/session-open-*"
 [[known_failing]]
 id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
 reason = "the x402 exact verifier caps the unit price alone (typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
 tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"
+
+# draft-solana-session-00 server, client build and strict wire vectors
+# (rust/crates/conformance/src/cases/session_server.rs).
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-voucher-verify-*"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-topup-*"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-close-*"
+
+[[unsupported]]
+reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
+pattern = "vector/session-build-*"
+
+[[known_failing]]
+id = "vector/session-wire-action-open-initial-voucher-reject"
+reason = "the session open schema accepts an open payload carrying a signed voucher (typescript/packages/mpp/src/Methods.ts: the open object schema forbids `bump` but zod strips any other unknown key); draft-solana-session-00 Action open: \"MUST NOT carry an initial voucher\""
+tracking = "FINDINGS.md#session-open-initial-voucher-accepted"
