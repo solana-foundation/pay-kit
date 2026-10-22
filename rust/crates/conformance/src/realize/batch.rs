@@ -209,10 +209,16 @@ fn canonical(input: &Value) -> Result<Observed, String> {
             "the Rust kit has no CloseAuthorization encoder: it refuses cooperative closes".into(),
         ));
     }
-    if input.get("batchReceiverBindingMemo").is_some() {
-        return Ok(Observed::NotExpressible(
-            "the Rust kit exposes no receiver-binding memo encoder".into(),
-        ));
+    if let Some(binding) = input.get("batchReceiverBindingMemo") {
+        return Ok(
+            match pc::parse_pubkey(super::str_field(binding, "receiverAuthorizer")) {
+                Ok(key) => {
+                    set_bytes(&mut exact, scheme::receiver_binding_memo(&key).as_bytes());
+                    accept_exact(exact)
+                }
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
     if let Some(ci) = input.get("batchChannelId") {
         let config: BatchChannelConfig =
@@ -919,6 +925,14 @@ fn judge_refund(
     let accepted = solana_pay_kit::core::tx::accepted_versions(
         requirements.extra.transaction_versions.as_deref(),
     );
+    let receiver_authorizer = pc::parse_pubkey(
+        requirements
+            .extra
+            .receiver_authorizer
+            .as_deref()
+            .ok_or_else(|| fail("the requirements advertise no receiverAuthorizer"))?,
+    )
+    .map_err(|e| fail(e.to_string()))?;
     let expectations = scheme::TransactionExpectations {
         program_id: &program_id,
         fee_payer: &fee_payer,
@@ -928,6 +942,7 @@ fn judge_refund(
         token_program: &token_program,
         receiver: &receiver,
         memo: requirements.extra.memo.as_deref(),
+        receiver_authorizer: &receiver_authorizer,
     };
     scheme::validate_request_close_transaction(transaction, &expectations)
         .map(|_| ())
@@ -1467,23 +1482,14 @@ mod tests {
         engine.encode(serde_json::to_vec(&envelope).unwrap())
     }
 
-    // The kit's deposit build is a known failure (FINDINGS.md
-    // #batch-open-binding-memo: no binding memo), which the judge reports
-    // last; an inflated declared deposit must fail first, on the deposit.
+    // The kit's deposit build passes the judge; an inflated declared deposit
+    // fails it, on the deposit.
     #[test]
     fn a_declared_deposit_the_open_does_not_fund_fails_the_build_judge() {
         let rt = runtime();
         let v = vector("batch-build-deposit-open");
         let honest = edited_build(&rt, &v, |_| {});
-        let kit = rt.block_on(judge_build(&v, &honest)).unwrap_err();
-        assert_eq!(kit.path.as_deref(), Some("open.memos"), "{}", kit.message);
-        assert!(
-            kit.expected
-                .as_ref()
-                .is_some_and(|e| e.to_string().contains("rcvauth")),
-            "{:?}",
-            kit.expected
-        );
+        rt.block_on(judge_build(&v, &honest)).unwrap();
         let inflated = edited_build(&rt, &v, |e| {
             let declared = u64_field(&e["payload"]["deposit"], "amount").unwrap();
             e["payload"]["deposit"]["amount"] = json!((declared + 1).to_string());
@@ -1619,11 +1625,20 @@ mod tests {
             .unwrap()
             .to_string();
         let binding = fx::binding_memo(&authorizer);
-        let complete = edited_build(&rt, &v, |e| {
-            with_memos(e, seed, std::slice::from_ref(&binding))
-        });
+        // The kit's own open already carries the seller and binding memos.
+        let complete = edited_build(&rt, &v, |_| {});
         rt.block_on(judge_build(&v, &complete)).unwrap();
 
+        for memos in [vec!["a second memo".to_string()], vec![binding.clone()]] {
+            let extra = edited_build(&rt, &v, |e| with_memos(e, seed, &memos));
+            let failure = rt.block_on(judge_build(&v, &extra)).unwrap_err();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some("open.memos"),
+                "{}",
+                failure.message
+            );
+        }
         let extra = edited_build(&rt, &v, |e| {
             with_memos(e, seed, &[binding.clone(), "a second memo".into()])
         });
@@ -1640,7 +1655,6 @@ mod tests {
             ("payerAuthorizer", json!(fx::stranger())),
         ] {
             let off = edited_build(&rt, &v, |e| {
-                with_memos(e, seed, std::slice::from_ref(&binding));
                 e["payload"]["channelConfig"][field] = value.clone();
             });
             let failure = rt.block_on(judge_build(&v, &off)).unwrap_err();

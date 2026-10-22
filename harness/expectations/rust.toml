@@ -234,24 +234,6 @@ ids = [
   "vector/batch-close-authorization-digest-frozen",
 ]
 
-[[unsupported]]
-reason = "the Rust kit exposes no receiver-binding memo encoder (RECEIVER_BINDING_MEMO_PREFIX is private to x402/client/batch_settlement/payment.rs)"
-ids = [
-  "vector/batch-receiver-binding-memo-frozen",
-]
-
-[[known_failing]]
-ids = [
-  "vector/batch-build-deposit-open",
-  "vector/batch-build-terms-payment-flow-authorization",
-  "vector/batch-verify-open-accept",
-  "vector/batch-verify-open-foreign-binding-reject",
-  "vector/batch-verify-open-grace-period-mismatch-reject",
-  "vector/batch-verify-open-missing-binding-memo-reject",
-]
-reason = "the client opens a client-mode channel without the receiver-binding memo, and the server admits exactly one memo in an open, so it accepts an unbound open and refuses the spec's two-memo open (\"An open suffix also carries exactly one binding Memo from section 3.\")"
-tracking = "FINDINGS.md#batch-open-binding-memo"
-
 [[known_failing]]
 ids = [
   "vector/batch-build-refund",
@@ -277,14 +259,6 @@ tracking = "FINDINGS.md#batch-refund-superseded-shape"
 
 [[known_failing]]
 ids = [
-  "vector/batch-wire-redemption-claim-empty-reject",
-  "vector/batch-wire-redemption-claim-five-entries-reject",
-]
-reason = "BatchRedemptionPayload::Claim parses any number of claims (\"claims[] MUST contain between one and four entries\")"
-tracking = "FINDINGS.md#batch-claims-unbounded"
-
-[[known_failing]]
-ids = [
   "vector/batch-txv1-top-up-v1-not-advertised-reject",
   "vector/batch-verify-accepted-amount-mismatch-reject",
   "vector/batch-verify-accepted-network-mismatch-reject",
@@ -302,13 +276,6 @@ ids = [
 ]
 reason = "a version-1 setup transaction must set loadedAccountsDataSizeLimit to exactly 67108864; a smaller present value is refused (x402-txv1: \"loadedAccountsDataSizeLimit MUST be present\")"
 tracking = "FINDINGS.md#batch-v1-loaded-limit-pinned"
-
-[[known_failing]]
-ids = [
-  "vector/batch-verify-voucher-onchain-closed-account-reject",
-]
-reason = "a refreshed stale snapshot re-checks the channel's payee, mint, authorizer, grace period, open slot and distribution hash but not its discriminator, so a voucher against a ClosedChannel account is served (\"Confirm the channel exists, is `Open`\")"
-tracking = "FINDINGS.md#batch-voucher-onchain-bindings"
 
 [[known_failing]]
 ids = [

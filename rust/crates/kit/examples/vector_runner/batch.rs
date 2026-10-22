@@ -2,8 +2,8 @@
 //! the kit unchanged (harness/AGENTS.md "Never put logic in the testee").
 //!
 //! - canonical-bytes: the kit's voucher layout, payer-proof message, channel
-//!   PDA derivation and wire types. The kit has no CloseAuthorization or
-//!   receiver-binding-memo encoder; those report `unsupported-mode`.
+//!   PDA derivation, receiver-binding memo and wire types. The kit has no
+//!   CloseAuthorization encoder; that reports `unsupported-mode`.
 //! - verify-transaction: `X402BatchSettlement` configured from
 //!   `batchServer`, its store seeded with the record `batchServerChannel`
 //!   describes, runs `verify_and_reserve_payment` against `input.rpcUrl`;
@@ -177,10 +177,13 @@ fn canonical(input: &Value) -> Result<Outcome, Rejection> {
             "the Rust kit has no CloseAuthorization encoder (it refuses cooperative closes)".into(),
         ));
     }
-    if input.get("batchReceiverBindingMemo").is_some() {
-        return Ok(Outcome::Unsupported(
-            "the Rust kit exposes no receiver-binding memo encoder".into(),
-        ));
+    if let Some(binding) = input.get("batchReceiverBindingMemo") {
+        return Ok(
+            match pc::parse_pubkey(str_field(binding, "receiverAuthorizer")) {
+                Ok(key) => bytes_outcome(scheme::receiver_binding_memo(&key).as_bytes()),
+                Err(e) => invalid(e.to_string()),
+            },
+        );
     }
     if let Some(ci) = input.get("batchChannelId") {
         let config: BatchChannelConfig =

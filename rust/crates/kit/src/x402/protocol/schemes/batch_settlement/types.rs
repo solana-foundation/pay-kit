@@ -497,6 +497,60 @@ pub struct BatchSettleChannel {
     pub channel_config: BatchChannelConfig,
 }
 
+/// One to [`MAX_CLAIMS_PER_BATCH`] redemption entries: the only batch sizes a
+/// `claim` or `settle` payload may carry (spec §4.5, "`claims[]` MUST contain
+/// between one and four entries so the instruction pairs fit in a legacy
+/// Solana transaction without address lookup tables").
+///
+/// The bound is enforced at construction and at parse time, so an empty or
+/// oversized batch never exists as a value: a facilitator cannot silently
+/// truncate a batch it was never able to receive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<T>", into = "Vec<T>")]
+#[serde(bound(
+    serialize = "T: Serialize + Clone",
+    deserialize = "T: Deserialize<'de>"
+))]
+pub struct RedemptionBatch<T>(Vec<T>);
+
+impl<T> RedemptionBatch<T> {
+    /// Wrap `entries`, refusing an empty batch or one over
+    /// [`MAX_CLAIMS_PER_BATCH`].
+    pub fn new(entries: Vec<T>) -> Result<Self, Error> {
+        if entries.is_empty() || entries.len() > MAX_CLAIMS_PER_BATCH {
+            return Err(Error::Other(format!(
+                "a redemption batch must carry 1 through {MAX_CLAIMS_PER_BATCH} entries, got {}",
+                entries.len()
+            )));
+        }
+        Ok(Self(entries))
+    }
+
+    /// The entries, in submission order.
+    pub fn entries(&self) -> &[T] {
+        &self.0
+    }
+
+    /// Consume the batch into its entries.
+    pub fn into_entries(self) -> Vec<T> {
+        self.0
+    }
+}
+
+impl<T> TryFrom<Vec<T>> for RedemptionBatch<T> {
+    type Error = String;
+
+    fn try_from(entries: Vec<T>) -> Result<Self, Self::Error> {
+        Self::new(entries).map_err(|e| e.to_string())
+    }
+}
+
+impl<T> From<RedemptionBatch<T>> for Vec<T> {
+    fn from(batch: RedemptionBatch<T>) -> Self {
+        batch.0
+    }
+}
+
 /// The redemption payloads a server (or its batch worker) authors.
 ///
 /// `claim` advances the onchain `settled` watermark from stored vouchers;
@@ -512,10 +566,14 @@ pub struct BatchSettleChannel {
 pub enum BatchRedemptionPayload {
     /// One to [`MAX_CLAIMS_PER_BATCH`] channels to claim in one transaction;
     /// program `settle`.
-    Claim { claims: Vec<BatchVoucherClaim> },
+    Claim {
+        claims: RedemptionBatch<BatchVoucherClaim>,
+    },
     /// One to [`MAX_CLAIMS_PER_BATCH`] channels to distribute in one
     /// transaction; program `distribute`.
-    Settle { channels: Vec<BatchSettleChannel> },
+    Settle {
+        channels: RedemptionBatch<BatchSettleChannel>,
+    },
     /// Apply the server's latest voucher to a `Closing` channel with
     /// `settle_and_seal` and pay out with a sealed `distribute`, before the
     /// payer's grace period ends. A standalone facilitator authenticates the
@@ -964,11 +1022,12 @@ mod tests {
     #[test]
     fn redemption_payloads_share_one_entry_shape() {
         let claim = BatchRedemptionPayload::Claim {
-            claims: vec![BatchVoucherClaim {
+            claims: RedemptionBatch::new(vec![BatchVoucherClaim {
                 channel_id: CHANNEL.to_string(),
                 channel_config: channel_config(),
                 voucher: voucher("5000"),
-            }],
+            }])
+            .unwrap(),
         };
         let json = serde_json::to_value(&claim).unwrap();
         assert_eq!(json["type"], "claim");
@@ -981,10 +1040,11 @@ mod tests {
         assert!(json["claims"][0]["voucher"].get("channelConfig").is_none());
 
         let settle = BatchRedemptionPayload::Settle {
-            channels: vec![BatchSettleChannel {
+            channels: RedemptionBatch::new(vec![BatchSettleChannel {
                 channel_id: CHANNEL.to_string(),
                 channel_config: channel_config(),
-            }],
+            }])
+            .unwrap(),
         };
         let json = serde_json::to_value(&settle).unwrap();
         assert_eq!(json["type"], "settle");
@@ -1007,6 +1067,33 @@ mod tests {
         assert_eq!(json["closeAuthorization"]["validBefore"], 1_785_341_100);
         let back: BatchRedemptionPayload = serde_json::from_value(json).unwrap();
         assert!(matches!(back, BatchRedemptionPayload::Seal(body) if body.channel_id == CHANNEL));
+    }
+
+    #[test]
+    fn redemption_batches_carry_one_to_four_entries() {
+        let entry = || {
+            serde_json::json!({
+                "channelId": CHANNEL,
+                "channelConfig": serde_json::to_value(channel_config()).unwrap(),
+                "voucher": serde_json::to_value(voucher("5000")).unwrap(),
+            })
+        };
+        let claim = |n: usize| {
+            serde_json::json!({ "type": "claim", "claims": (0..n).map(|_| entry()).collect::<Vec<_>>() })
+        };
+        for n in 1..=MAX_CLAIMS_PER_BATCH {
+            let parsed: BatchRedemptionPayload = serde_json::from_value(claim(n)).unwrap();
+            assert!(matches!(parsed, BatchRedemptionPayload::Claim { claims } if claims.entries().len() == n));
+        }
+        // Below the minimum and above the transaction-size bound never parse.
+        for n in [0, MAX_CLAIMS_PER_BATCH + 1] {
+            let err = serde_json::from_value::<BatchRedemptionPayload>(claim(n)).unwrap_err();
+            assert!(err.to_string().contains("1 through 4"), "{err}");
+        }
+        let settle = serde_json::json!({ "type": "settle", "channels": [] });
+        assert!(serde_json::from_value::<BatchRedemptionPayload>(settle).is_err());
+        assert!(RedemptionBatch::<u8>::new(vec![]).is_err());
+        assert!(RedemptionBatch::new(vec![0u8; 5]).is_err());
     }
 
     #[test]

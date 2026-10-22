@@ -79,6 +79,11 @@ const CHANNEL_STATUS_CLOSING: u8 = 2;
 /// `ChannelStatus::Distributed` discriminant.
 const CHANNEL_STATUS_DISTRIBUTED: u8 = 3;
 
+/// `AccountDiscriminator::Channel` in the payment-channels IDL: the first byte
+/// of a live channel account. `ClosedChannel` (2) marks an account the program
+/// has closed, which no voucher can ever be redeemed against.
+const CHANNEL_ACCOUNT_DISCRIMINATOR: u8 = 1;
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -341,6 +346,22 @@ fn decode_channel_account(
             pc::pubkey_string(program_id)
         )));
     }
+    // The account layout is decoded positionally, so a `ClosedChannel` (or any
+    // other account kind) at the channel address would otherwise read as a
+    // channel. It is not one: refuse it before any field is trusted.
+    match data.first() {
+        Some(&CHANNEL_ACCOUNT_DISCRIMINATOR) => {}
+        Some(&other) => {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                format!(
+                    "account {} carries discriminator {other}, not an open payment channel",
+                    pc::pubkey_string(channel_id)
+                ),
+            ))
+        }
+        None => return Err(Error::Other("channel decode failed: empty account data".into())),
+    }
     Channel::from_bytes(data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
 }
 
@@ -432,13 +453,16 @@ pub struct BatchConfig {
     /// Seller-defined payment reference pinned into the setup transaction's
     /// Memo. When absent the client supplies a random hex nonce instead.
     pub memo: Option<String>,
-    /// Base58 server key advertised as `extra.receiverAuthorizer`.
+    /// Base58 server key advertised as `extra.receiverAuthorizer`, the key
+    /// every channel binds at open with its receiver-binding Memo (spec §3).
+    /// Defaults to the fee payer's key, which this self-facilitating server
+    /// controls.
     ///
-    /// Advertised only. This server is itself the channel `payee`, so it seals
-    /// a closing channel directly with its latest voucher (see
-    /// [`X402BatchSettlement::finalize_close`]) and never needs to sign a
+    /// This server is itself the channel `payee`, so it closes a channel bound
+    /// to this key directly (a cooperative refund, or
+    /// [`X402BatchSettlement::finalize_close`]) without signing a
     /// `CloseAuthorization` for a separate facilitator. Clients echo the key on
-    /// their `channelConfig`, and a mismatch is refused.
+    /// their `channelConfig`, and an open bound to any other key is refused.
     pub receiver_authorizer: Option<String>,
     /// Signer that co-signs client setup transactions as fee payer, holds the
     /// channel `rent_payer` and zero-share `payee` seats, and signs redemption
@@ -651,6 +675,8 @@ pub struct X402BatchSettlement {
     accepted_versions: Vec<TxVersion>,
     config: BatchConfig,
     fee_payer: Pubkey,
+    /// `extra.receiverAuthorizer`: the configured key, or the fee payer's.
+    receiver_authorizer: Pubkey,
     store: Arc<dyn ChannelStore>,
     tx_pipeline: Arc<tokio::sync::OnceCell<TxPipeline>>,
     in_flight: InFlight,
@@ -700,10 +726,11 @@ impl X402BatchSettlement {
                 "batch-settlement payTo equals the fee payer; proceeds are not isolated"
             );
         }
-        if let Some(authorizer) = &config.receiver_authorizer {
-            Pubkey::from_str(authorizer)
-                .map_err(|e| Error::Other(format!("invalid receiverAuthorizer: {e}")))?;
-        }
+        let receiver_authorizer = match &config.receiver_authorizer {
+            Some(authorizer) => Pubkey::from_str(authorizer)
+                .map_err(|e| Error::Other(format!("invalid receiverAuthorizer: {e}")))?,
+            None => fee_payer,
+        };
         let rpc_url = config
             .rpc_url
             .clone()
@@ -715,6 +742,7 @@ impl X402BatchSettlement {
             rpc,
             config,
             fee_payer,
+            receiver_authorizer,
             store,
             tx_pipeline: Arc::new(tokio::sync::OnceCell::new()),
             in_flight: InFlight::default(),
@@ -834,7 +862,7 @@ impl X402BatchSettlement {
                 // `authorization` flow.
                 payment_flow: None,
                 fee_payer: self.fee_payer(),
-                receiver_authorizer: self.config.receiver_authorizer.clone(),
+                receiver_authorizer: Some(pc::pubkey_string(&self.receiver_authorizer)),
                 withdraw_delay: self.config.withdraw_delay,
                 token_program: pc::pubkey_string(&self.token_program()?),
                 memo: self.config.memo.clone(),
@@ -1259,6 +1287,7 @@ impl X402BatchSettlement {
                     token_program: &token_program,
                     receiver: &receiver,
                     memo: self.config.memo.as_deref(),
+                    receiver_authorizer: &self.receiver_authorizer,
                 };
                 // An `open` whose transaction already landed must not be
                 // re-validated against the open-slot window: by the time the
@@ -1562,6 +1591,7 @@ impl X402BatchSettlement {
             token_program: &token_program,
             receiver: &receiver,
             memo: self.config.memo.as_deref(),
+            receiver_authorizer: &self.receiver_authorizer,
         };
         crate::x402::protocol::schemes::batch_settlement::validate_request_close_transaction(
             transaction,
@@ -3710,7 +3740,7 @@ mod tests {
             payer: payer.clone(),
             payer_authorizer: payer,
             receiver: requirements.pay_to.clone(),
-            receiver_authorizer: None,
+            receiver_authorizer: requirements.extra.receiver_authorizer.clone(),
             token: requirements.asset.clone(),
             withdraw_delay: requirements.extra.withdraw_delay,
             salt: "42".to_string(),
@@ -4443,7 +4473,7 @@ mod tests {
         let receiver = pc::parse_pubkey(&requirements.pay_to).unwrap();
         let onchain = |mutate: &dyn Fn(&mut Channel)| {
             let mut channel = Channel {
-                discriminator: 0,
+                discriminator: CHANNEL_ACCOUNT_DISCRIMINATOR,
                 version: 1,
                 bump: 0,
                 status: CHANNEL_STATUS_OPEN,
@@ -5450,7 +5480,7 @@ mod tests {
         use crate::core::payment_channels::generated::types::SettlementWatermarks;
         let receiver = pc::parse_pubkey(&config.receiver).unwrap();
         Channel {
-            discriminator: 0,
+            discriminator: CHANNEL_ACCOUNT_DISCRIMINATOR,
             version: 1,
             bump: 0,
             status: CHANNEL_STATUS_OPEN,
@@ -5592,6 +5622,44 @@ mod tests {
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
         assert!(state.onchain_observed_at() > 0);
         assert_eq!(state.onchain_observed_slot(), 600);
+    }
+
+    /// A stale snapshot refreshed from an account carrying the
+    /// `ClosedChannel` discriminator is refused with `channel_state`: every
+    /// other field may still read as the open channel the record describes,
+    /// but the account is not an open payment channel (Phase 3 step 3).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refresh_onto_a_closed_channel_account_refuses_the_voucher() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        // Last observed at the epoch: the snapshot is stale and must refresh.
+        state.record_onchain_observation(open_observation(), 0);
+        state.onchain_checked_at = 0;
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let mut closed = onchain_channel(&config, &fee_payer, 5_000);
+        closed.discriminator = 2;
+
+        let (refreshing, _) = handler(store.clone());
+        let refreshing = refreshing.with_rpc_client(chain_with(Some(&closed)));
+        let err = refreshing
+            .reconcile_channel(&channel_b58)
+            .await
+            .expect_err("a ClosedChannel account is not an open channel");
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+            codes::INVALID_CHANNEL_STATE,
+            "{err}"
+        );
+
+        // Positive control: the same account with the Channel discriminator.
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+        let (current, _) = handler(store.clone());
+        let current = current.with_rpc_client(chain_with(Some(&open)));
+        current.reconcile_channel(&channel_b58).await.unwrap();
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a

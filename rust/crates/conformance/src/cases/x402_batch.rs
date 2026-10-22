@@ -119,22 +119,15 @@ const TX_SERVER_COPIES: &str = "X402TX-f39a33ff74";
 // ── divergences recorded on authored cases ──
 
 const KIT_NO_CLOSE_DIGEST: &str = "the Rust kit has no CloseAuthorization encoder (it refuses cooperative closes outright, x402/protocol/schemes/batch_settlement/verify.rs check_no_cooperative_close)";
-const KIT_NO_BINDING_MEMO: &str = "the Rust kit exposes no receiver-binding memo encoder; its client emits the memo only for server-signed channels (x402/client/batch_settlement/payment.rs resolve_terms)";
 const KIT_REFUND_SHAPE: &str = "the Rust kit's BatchPayload::Refund requires `transaction` and treats `voucher` as optional, the superseded refund shape (types.rs); the pinned spec requires the voucher in client mode and makes the transaction a retry-only field";
 const KIT_REFUND_VOUCHER: &str = "the Rust server refuses any refund that carries a voucher with invalid_batch_settlement_svm_close_authorization (verify.rs check_no_cooperative_close), so the pinned spec's client-mode refund, which requires the voucher, never reaches request_close validation";
 const KIT_REFUND_NO_VOUCHER: &str = "the Rust server accepts a client-mode refund without a voucher (the superseded request_close-only refund); the pinned spec requires the voucher";
-const KIT_CLAIMS_BOUND: &str = "the Rust kit's BatchRedemptionPayload::Claim is an unbounded Vec: it parses an empty or five-entry claims[] (types.rs)";
-const KIT_TWO_MEMOS: &str = "the Rust server allows at most one Memo in a setup transaction (core/payment_channel/v1.rs scan_channel_tx_layout MemoPolicy::Required), so it refuses the pinned spec's open, which carries the seller memo and the binding memo";
-const KIT_NO_BINDING_REQUIRED: &str = "the Rust server accepts an open without the receiver-binding memo (MemoPolicy::Required admits exactly one memo, the seller's)";
 const KIT_ACCEPTED_CODE: &str = "the Rust server reports an accepted/requirements mismatch as invalid_batch_settlement_svm_channel_state (server/batch_settlement.rs check_accepted_matches)";
 const KIT_VERSION_CODE: &str = "the Rust server reports a non-v2 envelope as invalid_batch_settlement_svm_channel_state (server/batch_settlement.rs verify_payment)";
 const KIT_SETTLEMENT_CODE: &str = "the Rust server reports an unusable settlement ATA as invalid_batch_settlement_svm_setup_transaction (server/batch_settlement.rs check_settlement_accounts); spec §7 names settlement_simulation for settlement-readiness checks";
 const KIT_TX_VERSION_CODE: &str = "the Rust server reports an unadvertised message version as invalid_batch_settlement_svm_setup_transaction (tx_policy.rs check_envelope wraps core::tx::check_envelope); x402-txv1 requires unsupported_transaction_version";
-const KIT_OPEN_GRACE_CODE: &str = "the Rust server rejects the two-memo open at the memo scan with setup_transaction before decoding grace_period (KIT_TWO_MEMOS)";
 const KIT_V1_LOADED_LIMIT: &str = "the Rust server requires a version-1 loadedAccountsDataSizeLimit of exactly 67108864 (core/tx/budget.rs DeclaredBudget::of), refusing any smaller present value";
-const KIT_NO_ONCHAIN_REBIND: &str = "the Rust server's refreshed-snapshot binding check (server/batch_settlement.rs) compares payer, payee, rent payer, authorizer, mint, grace period, open slot and distribution hash but not the account discriminator, so a steady-state voucher against a ClosedChannel account is served";
 const KIT_FRACTIONAL_DELAY: &str = "the Rust kit types extra.withdrawDelay as u32, so a fractional value fails requirement deserialization (a malformed challenge) instead of the range check";
-const KIT_SERVER_BINDING: &str = "the Rust server rejects the open at the memo scan (setup_transaction, KIT_TWO_MEMOS) and never inspects the binding memo's key";
 
 // ── spec references ──
 
@@ -1002,7 +995,7 @@ crate::registry! {
         "The receiver-binding memo every open carries: UTF-8 x402:batch-settlement:svm:rcvauth:v1:<base58 receiverAuthorizer>.",
         json!({ "batchReceiverBindingMemo": { "receiverAuthorizer": fx::receiver_authorizer() } }),
         authored_bytes(fx::binding_memo(&fx::receiver_authorizer()).as_bytes()),
-    ).authored(Some(KIT_NO_BINDING_MEMO)).build();
+    ).authored(None).build();
     batch_channel_id_derivation_frozen => bytes_case(
         "batch-channel-id-derivation-frozen", pda_spec(), &[EVERY_PAID_REQUEST],
         "channelId = find_program_address([\"channel\", payer, extra.feePayer, token, payerAuthorizer, u64(salt).le, u64(openSlot).le], CHNL…): the 32 PDA bytes for the fixture channel.",
@@ -1116,13 +1109,13 @@ crate::registry! {
         "claims: [] is below the one-entry minimum.",
         wire("redemption", json!({ "type": "claim", "claims": [] })),
         rej(RejectCode::InvalidPayload),
-    ).authored(Some(KIT_CLAIMS_BOUND)).build();
+    ).authored(None).build();
     batch_wire_redemption_claim_five_entries_reject => wire_case(
         "batch-wire-redemption-claim-five-entries-reject", claims_spec(), &[CLAIMS_ONE_TO_FOUR],
         "Five claims exceed the four entries one legacy transaction can carry.",
         wire("redemption", json!({ "type": "claim", "claims": (0..5).map(|i| claim_entry(&with(cfg(), "salt", json!((100 + i).to_string())), 1_000)).collect::<Vec<_>>() })),
         rej(RejectCode::InvalidPayload),
-    ).authored(Some(KIT_CLAIMS_BOUND)).build();
+    ).authored(None).build();
     batch_wire_redemption_claim_entry_without_config_reject => wire_case(
         "batch-wire-redemption-claim-entry-without-config-reject", s("4.5 Facilitator Interface", "| Claim | `claims[].channelConfig` | `ChannelConfig` | Full channel configuration. |"), &[CLAIMS_ONE_TO_FOUR],
         "A claim entry without its channelConfig cannot be derived or validated.",
@@ -1412,7 +1405,7 @@ crate::registry! {
         "The account at the channel address carries the ClosedChannel discriminator (2): it is not an open channel, whatever the server's record says.",
         voucher_input(&cfg(), honest_voucher(4_000), 3_000, 10_000, ChannelAccount { discriminator: 2, ..Default::default() }),
         rej(RejectCode::ChannelState),
-    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).authored(Some(KIT_NO_ONCHAIN_REBIND)).build();
+    ).requirements(&[EVERY_PAID_REQUEST, "X402-46d0a12f84"]).authored(None).build();
     batch_verify_voucher_onchain_payee_reject => voucher_case(
         "batch-verify-voucher-onchain-payee-reject", bindings_spec(), BugType::AuthBypass,
         "The onchain channel's payee is not extra.feePayer (the sponsor does not hold the lifecycle seat this scheme requires).",
@@ -1708,19 +1701,19 @@ crate::registry! {
         "A canonical open (14 accounts, sponsor as rent_payer and payee, 100% to payTo, openSlot inside the window of the fixture slot) with the seller memo and the receiver-binding memo, and the first voucher (1000 <= 10000).",
         open_tx(honest_open(), open_suffix()),
         Expect::AcceptAuthored(json!({})),
-    ).authored(Some(KIT_TWO_MEMOS)).build();
+    ).authored(None).build();
     batch_verify_open_missing_binding_memo_reject => open_case(
         "batch-verify-open-missing-binding-memo-reject", s("Top-level instruction layout", "An `open` suffix also carries exactly one binding Memo from section 3."), &[MEMO_EXACT, BINDING_KEY],
         "The open carries only the seller memo: without the binding memo the channel is bound to no receiver authorizer.",
         open_tx(honest_open(), vec![fx::memo_ix(fx::MEMO)]),
         rej(RejectCode::SetupTransaction),
-    ).authored(Some(KIT_NO_BINDING_REQUIRED)).build();
+    ).authored(None).build();
     batch_verify_open_foreign_binding_reject => open_case(
         "batch-verify-open-foreign-binding-reject", s("3. Payment-Channel Method", "The server MUST reject an open whose binding Memo is not its own key before forwarding the deposit."), &[SERVER_REJECTS_FOREIGN_BINDING, BINDING_KEY],
         "The binding memo names a key other than the server's receiverAuthorizer.",
         open_tx(honest_open(), vec![fx::memo_ix(fx::MEMO), fx::memo_ix(&fx::binding_memo(&fx::stranger()))]),
         rej(RejectCode::ReceiverAuthorizerMismatch),
-    ).authored(Some(KIT_SERVER_BINDING)).build();
+    ).authored(None).build();
     batch_verify_open_diverting_distribution_reject => open_case(
         "batch-verify-open-diverting-distribution-reject", s("4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])", "The channel distribution for this scheme MUST NOT assign any portion of settled funds away from `payTo`."), &[NO_DIVERSION, OPEN_ENCODE],
         "The open's single distribution entry pays another receiver at 100%.",
@@ -1738,7 +1731,7 @@ crate::registry! {
         "The open's grace_period is 7200 while channelConfig.withdrawDelay is 3600 (the PDA does not depend on it).",
         open_tx(fx::open_ix(&with(cfg(), "withdrawDelay", json!(7_200)), 10_000, X402_PAY_TO), open_suffix()),
         rej(RejectCode::WithdrawDelayMismatch),
-    ).authored(Some(KIT_OPEN_GRACE_CODE)).build();
+    ).authored(None).build();
     batch_verify_open_stale_slot_reject => case(
         "batch-verify-open-stale-slot-reject", "batch-verify-open.json", Mode::VerifyTransaction, Role::Server, BugType::Settlement,
         s("Phase 1 - Open or Top Up", "The facilitator MUST reject an expired transaction blockhash and an `openSlot` outside the program's accepted window."),
@@ -1964,16 +1957,14 @@ mod tests {
     }
 
     // The open rejects pin the spec's suffix (seller memo plus binding
-    // memo), which the Rust server refuses at its one-memo scan
-    // (KIT_TWO_MEMOS) before the check each case names. With the one memo
-    // the kit admits, the kit must still refuse each open for that check, so
-    // the reference the vectors rely on exercises it.
+    // memo); the kit must refuse each one for the check its case names, not
+    // at the memo scan, so the vectors discriminate.
     #[test]
     fn the_kit_refuses_each_open_reject_for_its_own_check() {
-        let single = || vec![fx::memo_ix(fx::MEMO)];
+        
         let at_slot = |slot: u64| {
             with(
-                open_input(open_tx(honest_open(), single())),
+                open_input(open_tx(honest_open(), open_suffix())),
                 "rpcFixtures",
                 with(
                     fx::rpc_fixtures(None, Atas::Healthy, TOKEN_PROGRAM),
@@ -1983,7 +1974,7 @@ mod tests {
             )
         };
         let voucher_above = {
-            let tx = open_tx(honest_open(), single());
+            let tx = open_tx(honest_open(), open_suffix());
             let mut i = open_input(tx.clone());
             let payload = json!({ "type": "deposit", "channelConfig": cfg(), "voucher": honest_voucher(2_000), "deposit": { "amount": "10000", "transaction": tx } });
             i["x402PaymentHeader"] = json!(fx::header(&requirements(), &payload));
@@ -1994,14 +1985,14 @@ mod tests {
                 "diverting distribution",
                 open_input(open_tx(
                     fx::open_ix(&cfg(), 10_000, keys::X402_OTHER_PAY_TO),
-                    single(),
+                    open_suffix(),
                 )),
                 RejectCode::SetupTransaction,
                 "open distribution must pay 100%",
             ),
             (
                 "deposit mismatch",
-                open_input(open_tx(fx::open_ix(&cfg(), 9_000, X402_PAY_TO), single())),
+                open_input(open_tx(fx::open_ix(&cfg(), 9_000, X402_PAY_TO), open_suffix())),
                 RejectCode::SetupTransaction,
                 "open deposit 9000",
             ),
@@ -2013,7 +2004,7 @@ mod tests {
                         10_000,
                         X402_PAY_TO,
                     ),
-                    single(),
+                    open_suffix(),
                 )),
                 RejectCode::WithdrawDelayMismatch,
                 "grace_period 7200",
@@ -2041,7 +2032,7 @@ mod tests {
         let accept = rt.block_on(crate::realize::run(
             Intent::X402BatchSettlement,
             Mode::VerifyTransaction,
-            &open_input(open_tx(honest_open(), single())),
+            &open_input(open_tx(honest_open(), open_suffix())),
         ));
         assert!(
             matches!(accept, crate::realize::Observed::Accept(_)),

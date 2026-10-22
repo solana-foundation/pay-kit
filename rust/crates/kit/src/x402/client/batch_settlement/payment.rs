@@ -27,7 +27,7 @@ use crate::core::payment_channels as pc;
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
     check_corrective_voucher_state, check_token_program, check_voucher, check_withdraw_delay,
-    derive_channel_id, errors as codes, BatchAuthorization, BatchChannelConfig, BatchDeposit,
+    derive_channel_id, errors as codes, receiver_binding_memo, BatchAuthorization, BatchChannelConfig, BatchDeposit,
     BatchError, BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements,
     BatchSettlementResponse, BatchVoucher, BATCH_SETTLEMENT_SCHEME, VOUCHER_EXPIRES_AT,
 };
@@ -38,10 +38,6 @@ const MEMO_NONCE_BYTES: usize = 16;
 
 /// Domain separator for the payer proof used by server-signed channels.
 const AUTHORIZATION_DOMAIN: &[u8] = b"x402-batch-authorization-v2";
-
-/// Prefix of the payer-signed Memo that binds an open channel to the server's
-/// receiver authorizer.
-const RECEIVER_BINDING_MEMO_PREFIX: &str = "x402:batch-settlement:svm:rcvauth:v1:";
 
 /// Explicit, local trust grants for server-signed channels.
 ///
@@ -95,12 +91,15 @@ pub struct BatchTerms {
     pub withdraw_delay: u32,
     /// Per-request price, in atomic units.
     pub amount: u64,
-    /// The Memo the setup transaction must carry.
+    /// The seller Memo every setup transaction carries: `extra.memo`, or a
+    /// fresh hex correlation nonce when the seller declared none.
     pub memo: String,
-    /// Memo for follow-up transactions. Receiver binding is open-only; a
-    /// top-up or refund carries the seller memo, or a fresh correlation nonce
-    /// when the seller did not declare one.
+    /// Memo for follow-up transactions (top-up, refund). The same text as
+    /// [`Self::memo`]: receiver binding is open-only and never replaces it.
     pub continuation_memo: String,
+    /// The receiver-binding Memo the `open` carries in addition to
+    /// [`Self::memo`], binding the channel to `extra.receiverAuthorizer`.
+    pub binding_memo: String,
     /// The message version to build: the highest the sponsor advertises in
     /// `extra.transactionVersions` (`0` when it advertises none).
     pub tx_version: crate::core::tx::TxVersion,
@@ -187,13 +186,14 @@ pub fn resolve_terms_with_token_program_and_policy(
     // The seller's memo is pinned byte-for-byte when declared; otherwise the
     // sponsor requires a random hex nonce. Receiver binding is a separate,
     // open-only commitment and must not replace that nonce on later top-ups.
-    let continuation_memo = extra.memo.clone().unwrap_or_else(random_hex_nonce);
-    let memo = match (operator, extra.receiver_authorizer.as_deref()) {
-        (Some(_), Some(receiver_authorizer)) => {
-            format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
-        }
-        _ => continuation_memo.clone(),
-    };
+    let memo = extra.memo.clone().unwrap_or_else(random_hex_nonce);
+    // Every channel is bound to one receiver authorizer at open, in either
+    // voucher mode (spec §3): the open carries the binding Memo beside the
+    // seller memo, never instead of it.
+    let receiver_authorizer = extra.receiver_authorizer.as_deref().ok_or_else(|| {
+        Error::Other("batch-settlement challenge carries no extra.receiverAuthorizer".into())
+    })?;
+    let binding_memo = receiver_binding_memo(&pc::parse_pubkey(receiver_authorizer)?);
     Ok(BatchTerms {
         fee_payer,
         mint,
@@ -201,8 +201,9 @@ pub fn resolve_terms_with_token_program_and_policy(
         receiver,
         withdraw_delay: extra.withdraw_delay,
         amount: requirements.amount()?,
+        continuation_memo: memo.clone(),
         memo,
-        continuation_memo,
+        binding_memo,
         tx_version: crate::core::tx::negotiate(
             extra.transaction_versions.as_deref(),
             max_tx_version,
@@ -934,6 +935,7 @@ pub async fn build_deposit(
         blockhash,
         &pc::OpenTxOptions {
             memo: Some(terms.memo.clone()),
+            binding_memo: Some(terms.binding_memo.clone()),
             version: terms.tx_version,
             ..Default::default()
         },
@@ -1223,6 +1225,7 @@ mod tests {
     use super::*;
     use crate::x402::protocol::schemes::batch_settlement::{
         BatchExtra, BatchSettlementExtra, ChannelStateSnapshot, VoucherState,
+        RECEIVER_BINDING_MEMO_PREFIX,
     };
     use crate::x402::protocol::schemes::exact::programs;
     use async_trait::async_trait;
@@ -1282,6 +1285,11 @@ mod tests {
         }
     }
 
+    /// The server's receiver authorizer every fixture challenge advertises.
+    fn receiver_authorizer() -> Pubkey {
+        Pubkey::new_from_array([31; 32])
+    }
+
     fn requirements(fee_payer: &Pubkey) -> BatchRequirements {
         BatchRequirements {
             scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
@@ -1293,7 +1301,7 @@ mod tests {
             extra: BatchExtra {
                 payment_flow: None,
                 fee_payer: pc::pubkey_string(fee_payer),
-                receiver_authorizer: None,
+                receiver_authorizer: Some(pc::pubkey_string(&receiver_authorizer())),
                 withdraw_delay: 3600,
                 token_program: programs::TOKEN_PROGRAM.to_string(),
                 memo: Some("invoice-1".to_string()),
@@ -1443,9 +1451,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            terms.memo,
+            terms.binding_memo,
             format!("{RECEIVER_BINDING_MEMO_PREFIX}{receiver_authorizer}")
         );
+        // The binding rides beside the seller nonce, never instead of it.
+        assert_eq!(terms.memo, terms.continuation_memo);
         assert_eq!(terms.continuation_memo.len(), MEMO_NONCE_BYTES * 2);
         assert!(terms
             .continuation_memo
@@ -1660,13 +1670,26 @@ mod tests {
         assert_eq!(terms.memo, "invoice-1");
         assert_eq!(terms.continuation_memo, "invoice-1");
 
-        // Receiver binding is a server-signed open policy. Client-signed
-        // channels retain the normal declared memo even when the optional
-        // receiver authorizer is advertised.
-        requirements.extra.receiver_authorizer = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        // Every open binds the advertised receiver authorizer in a second
+        // memo, in client mode too; the seller memo is unchanged.
+        let other = Pubkey::new_unique();
+        requirements.extra.receiver_authorizer = Some(pc::pubkey_string(&other));
         let terms = resolve(&requirements);
         assert_eq!(terms.memo, "invoice-1");
         assert_eq!(terms.continuation_memo, "invoice-1");
+        assert_eq!(
+            terms.binding_memo,
+            format!("{RECEIVER_BINDING_MEMO_PREFIX}{other}")
+        );
+
+        // A challenge without the REQUIRED receiver authorizer binds nothing.
+        requirements.extra.receiver_authorizer = None;
+        assert!(resolve_terms_with_token_program(
+            &requirements,
+            pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -1719,6 +1742,7 @@ mod tests {
             token_program: &terms.token_program,
             receiver: &terms.receiver,
             memo: Some("invoice-1"),
+            receiver_authorizer: &receiver_authorizer(),
         };
         validate_setup_transaction(
             &deposit.transaction,
@@ -1728,6 +1752,24 @@ mod tests {
             Some(341_000_000),
         )
         .expect("client open passes the sponsor policy");
+
+        // Both memos, the seller's first: an unbound open would be refused.
+        let tx = pc::decode_transaction(&deposit.transaction).unwrap();
+        let keys = tx.message.static_account_keys();
+        let memos: Vec<String> = tx
+            .message
+            .instructions()
+            .iter()
+            .filter(|ix| keys[ix.program_id_index as usize] == pc::memo_program_id())
+            .map(|ix| String::from_utf8(ix.data.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            memos,
+            vec![
+                "invoice-1".to_string(),
+                receiver_binding_memo(&receiver_authorizer())
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1763,6 +1805,7 @@ mod tests {
             token_program: &terms.token_program,
             receiver: &terms.receiver,
             memo: Some("invoice-1"),
+            receiver_authorizer: &receiver_authorizer(),
         };
 
         let top_up = build_top_up(&signer, &channel, &terms, 50_000, Hash::new_unique())

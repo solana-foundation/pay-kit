@@ -29,6 +29,38 @@ fn parse_key(value: &str, field: &str) -> Result<Pubkey> {
         .map_err(|e| BatchError::new(errors::INVALID_CHANNEL_STATE, format!("{field}: {e}")))
 }
 
+/// Prefix of the receiver-binding Memo every `open` carries (spec §3): the
+/// payer-signed commitment binding the channel to one receiver authorizer.
+pub const RECEIVER_BINDING_MEMO_PREFIX: &str = "x402:batch-settlement:svm:rcvauth:v1:";
+
+/// The receiver-binding Memo data for `receiver_authorizer`:
+/// `x402:batch-settlement:svm:rcvauth:v1:<base58 receiverAuthorizer>`.
+pub fn receiver_binding_memo(receiver_authorizer: &Pubkey) -> String {
+    format!(
+        "{RECEIVER_BINDING_MEMO_PREFIX}{}",
+        pc::pubkey_string(receiver_authorizer)
+    )
+}
+
+/// The key a receiver-binding Memo binds, or `None` when `data` is not a
+/// binding memo at all. A memo with the binding prefix but no valid key
+/// binds nothing and is refused.
+pub fn parse_receiver_binding_memo(data: &[u8]) -> Option<Result<Pubkey>> {
+    let key = data.strip_prefix(RECEIVER_BINDING_MEMO_PREFIX.as_bytes())?;
+    Some(
+        std::str::from_utf8(key)
+            .ok()
+            .and_then(|key| pc::parse_pubkey(key).ok())
+            .filter(|parsed| receiver_binding_memo(parsed).as_bytes() == data)
+            .ok_or_else(|| {
+                BatchError::new(
+                    errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+                    "receiver-binding memo does not name a base58 Solana address",
+                )
+            }),
+    )
+}
+
 /// Confirm `extra.paymentFlow`, when present, is the protocol-default
 /// `authorization` flow this scheme resolves to.
 pub fn check_payment_flow(payment_flow: Option<&str>) -> Result<()> {
@@ -166,14 +198,19 @@ pub fn check_channel_config(
             ),
         ));
     }
-    // Either both sides name the receiver authorizer or neither does: a config
-    // that supplies one the requirements never advertised is not bound to any
-    // key the server actually controls.
-    if config.receiver_authorizer != extra.receiver_authorizer {
-        return Err(BatchError::new(
-            errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
-            "channelConfig.receiverAuthorizer must match extra.receiverAuthorizer",
-        ));
+    // Both sides name the receiver authorizer and agree (spec §5, "MUST both
+    // be present and equal"): every channel is bound to one at open, so a
+    // challenge or config without one describes a channel this scheme cannot
+    // close cooperatively.
+    match (&config.receiver_authorizer, &extra.receiver_authorizer) {
+        (Some(ours), Some(theirs)) if ours == theirs => {}
+        _ => {
+            return Err(BatchError::new(
+                errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+                "channelConfig.receiverAuthorizer and extra.receiverAuthorizer must both be \
+                 present and equal",
+            ))
+        }
     }
     // The voucher-signing mode is part of the channel's terms and MUST agree on
     // both sides (spec §4.2). This implementation offers client-signed vouchers
@@ -464,6 +501,8 @@ mod tests {
     const PAY_TO: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     const FEE_PAYER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+    /// The server's receiver authorizer.
+    const FEE_PAYER_AUTHORIZER: &str = "Auth1111111111111111111111111111111111111";
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -484,7 +523,7 @@ mod tests {
             extra: BatchExtra {
                 payment_flow: None,
                 fee_payer: FEE_PAYER.to_string(),
-                receiver_authorizer: None,
+                receiver_authorizer: Some(FEE_PAYER_AUTHORIZER.to_string()),
                 withdraw_delay: 3600,
                 token_program: programs::TOKEN_PROGRAM.to_string(),
                 memo: None,
@@ -503,7 +542,7 @@ mod tests {
             payer: key_b58(&key(1)),
             payer_authorizer: config_authorizer.to_string(),
             receiver: PAY_TO.to_string(),
-            receiver_authorizer: None,
+            receiver_authorizer: Some(FEE_PAYER_AUTHORIZER.to_string()),
             token: MINT.to_string(),
             withdraw_delay: 3600,
             salt: "42".to_string(),
@@ -516,6 +555,23 @@ mod tests {
     fn sign(sk: &SigningKey, channel: &Pubkey, cumulative: u64, expires_at: i64) -> String {
         let msg = pc::voucher_message_bytes(channel, cumulative, expires_at).unwrap();
         bs58::encode(sk.sign(&msg).to_bytes()).into_string()
+    }
+
+    #[test]
+    fn receiver_binding_memo_round_trips_only_a_valid_key() {
+        let key = key(4).verifying_key().to_bytes();
+        let key = Pubkey::from(key);
+        let memo = receiver_binding_memo(&key);
+        assert_eq!(
+            memo,
+            format!("x402:batch-settlement:svm:rcvauth:v1:{}", pc::pubkey_string(&key))
+        );
+        assert_eq!(parse_receiver_binding_memo(memo.as_bytes()).unwrap().unwrap(), key);
+        assert!(parse_receiver_binding_memo(b"invoice-1").is_none());
+        let err = parse_receiver_binding_memo(b"x402:batch-settlement:svm:rcvauth:v1:zz")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.code, errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH);
     }
 
     #[test]
@@ -613,6 +669,10 @@ mod tests {
                 }),
             ),
             (
+                errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+                Box::new(|c: &mut BatchChannelConfig| c.receiver_authorizer = None),
+            ),
+            (
                 errors::INVALID_FEE_PAYER_MISMATCH,
                 Box::new(|c: &mut BatchChannelConfig| c.payer = FEE_PAYER.to_string()),
             ),
@@ -627,6 +687,19 @@ mod tests {
             let err = check_channel_config(&broken, &requirements).unwrap_err();
             assert_eq!(err.code, code, "detail: {}", err.detail);
         }
+
+        // Both sides must name it: a challenge without one binds nothing,
+        // even when the config omits it too.
+        let mut unbound = requirements.clone();
+        unbound.extra.receiver_authorizer = None;
+        let mut unbound_config = config.clone();
+        unbound_config.receiver_authorizer = None;
+        assert_eq!(
+            check_channel_config(&unbound_config, &unbound)
+                .unwrap_err()
+                .code,
+            errors::INVALID_RECEIVER_AUTHORIZER_MISMATCH
+        );
 
         // Explicit client mode is the default spelled out.
         let mut explicit = config.clone();

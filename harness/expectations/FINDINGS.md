@@ -949,6 +949,15 @@ binding key. The other open-path rejects (`diverting-distribution`,
 therefore match by code only: Rust reaches the same `setup_transaction` at the
 memo scan. They become discriminating once the server accepts the binding memo.
 
+**Resolved in Rust:** the client adds the binding memo after the seller memo on
+every open (both voucher modes), and the server's open policy
+(`MemoPolicy::RequiredWithBinding`) requires exactly one seller memo and
+exactly one binding memo, refusing a binding to any key other than its
+`extra.receiverAuthorizer` with `receiver_authorizer_mismatch`. The server
+always advertises a receiver authorizer (the fee payer's key unless
+configured), and `check_channel_config` requires it on both sides. The kit
+exposes `receiver_binding_memo` / `parse_receiver_binding_memo`.
+
 ## batch-refund-superseded-shape
 
 **Cases:** `batch-build-refund`, `batch-verify-refund-*` (all but
@@ -978,6 +987,9 @@ fit in a legacy Solana transaction without address lookup tables.” The kit's
 `BatchRedemptionPayload::Claim` is an unbounded `Vec`; the server never
 receives a claim payload over the wire (it redeems through its own
 `claim()`), so this only matters to a facilitator built on the wire type.
+
+**Resolved in Rust:** `claims` and `channels` are a `RedemptionBatch`, whose
+constructor and deserializer refuse fewer than one or more than four entries.
 
 ## batch-server-reject-codes
 
@@ -1021,6 +1033,10 @@ grace period, open slot and distribution hash, so a foreign payee or a
 distribution that does not pay `payTo` is refused. It does not read the
 account discriminator: an account carrying `ClosedChannel` still serves a
 steady-state voucher.
+
+**Resolved in Rust:** `decode_channel_account` refuses any account whose
+discriminator is not `Channel` (1) with `channel_state`, so a refresh onto a
+`ClosedChannel` account refuses the voucher.
 
 ### TypeScript: vendored upstream `@x402/svm` 2.26.0
 
