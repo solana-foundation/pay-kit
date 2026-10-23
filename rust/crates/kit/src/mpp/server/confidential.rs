@@ -58,6 +58,13 @@ pub(crate) const MAX_CT_BUNDLE_FUNDED_ACCOUNTS: usize = 6;
 #[cfg(feature = "confidential")]
 pub(crate) const MAX_CT_BUNDLE_CREATE_LAMPORTS: u64 =
     MAX_CT_CREATE_ACCOUNT_LAMPORTS * MAX_CT_BUNDLE_FUNDED_ACCOUNTS as u64;
+/// The rent-exempt minimum for `space` bytes under the default rent every
+/// public cluster runs: 3,480 lamports per byte-year for two years, over the
+/// account plus its 128-byte overhead.
+#[cfg(feature = "confidential")]
+pub(crate) const fn rent_exempt_ceiling(space: u64) -> u64 {
+    (128 + space) * 3_480 * 2
+}
 /// Max base64 length of a single bundle transaction, by the largest accepted
 /// version: 1232 wire bytes (~1644 base64 chars) for version 0, 4096 (5464)
 /// for version 1. Caps decode/deserialize allocation so a client can't force
@@ -321,7 +328,7 @@ impl Mpp {
             ));
         }
 
-        verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
+        let bundle_accounts = verify_confidential_account_lifecycle(&decoded, &gateway_pubkey)?;
 
         // Recover the amount from the validity proof the transfer itself
         // consumes. An account-wide balance delta cannot attribute a credit to
@@ -348,6 +355,13 @@ impl Mpp {
         // the confidential transfer; its signature is the settlement signature.
         let mut final_sig = String::new();
         let bundle_len = decoded.len();
+        let mut cleanup = SetupCleanup {
+            rpc: std::sync::Arc::clone(&self.rpc),
+            signer: std::sync::Arc::clone(fee_payer_signer),
+            gateway: gateway_pubkey,
+            accounts: Vec::new(),
+            armed: true,
+        };
         for (idx, tx) in decoded.iter_mut().enumerate() {
             // The gateway is every bundle tx's fee payer, so it is account key
             // zero. Keep that as an `invalid_payload` diagnostic naming the tx.
@@ -400,6 +414,16 @@ impl Mpp {
                 // Claim before sending, as pull settlement does, so the
                 // transfer is recorded whatever happens after it leaves.
                 fence.begin(self, &local_signature).await?;
+                // Once the final transaction may land, it owns the closes.
+                cleanup.armed = false;
+            } else {
+                if idx == 0 {
+                    // One bundle presented for two challenges runs twice; only
+                    // the run that claims its first setup transaction sends
+                    // (and may clean up) the accounts the winner's final needs.
+                    self.claim_bundle_setup(&local_signature).await?;
+                }
+                cleanup.sending(idx, &bundle_accounts);
             }
             let signature = match crate::core::rpc::send_transaction(
                 &self.rpc,
@@ -421,6 +445,7 @@ impl Mpp {
                             });
                         }
                         fence.abandon(self).await;
+                        cleanup.armed = true;
                     }
                     return Err(error);
                 }
@@ -467,6 +492,24 @@ impl Mpp {
         }
 
         Ok(BundleSettlement::Confirmed(final_sig))
+    }
+
+    /// Claim a bundle's setup by its first transaction's (deterministic)
+    /// gateway signature, across requests and replicas sharing the store.
+    #[cfg(feature = "confidential")]
+    async fn claim_bundle_setup(&self, signature: &str) -> Result<(), VerificationError> {
+        let key = format!("{CONFIDENTIAL_SETUP_CLAIM_PREFIX}{signature}");
+        match self
+            .store
+            .put_if_absent(&key, serde_json::json!(true))
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(VerificationError::settlement_in_progress(
+                "This confidential bundle is already being settled; retry shortly",
+            )),
+            Err(e) => Err(VerificationError::new(format!("Store error: {e}"))),
+        }
     }
 
     /// Sweep gateway-owned orphaned confidential proof/record accounts left by
@@ -642,8 +685,110 @@ impl Mpp {
     }
 }
 
+/// Store key prefix of [`Mpp::claim_bundle_setup`].
 #[cfg(feature = "confidential")]
-#[derive(Clone, Copy, PartialEq, Eq)]
+const CONFIDENTIAL_SETUP_CLAIM_PREFIX: &str = "mpp:confidential-bundle-setup:";
+
+/// The gateway-funded accounts a bundle's setup transactions may have
+/// created. The final transaction closes them; when it never lands (it
+/// fails simulation or is rejected at preflight, or settlement is
+/// abandoned), dropping this guard while armed closes them back to the
+/// gateway from a spawned task instead of leaving the rent parked until the
+/// orphan sweeper's grace period ends.
+#[cfg(feature = "confidential")]
+struct SetupCleanup {
+    rpc: std::sync::Arc<solana_rpc_client::rpc_client::RpcClient>,
+    signer: std::sync::Arc<dyn solana_keychain::TransactionSigner>,
+    gateway: Pubkey,
+    accounts: Vec<BundleAccount>,
+    armed: bool,
+}
+
+#[cfg(feature = "confidential")]
+impl SetupCleanup {
+    /// Bundle transaction `tx_index` is about to be sent: the accounts it
+    /// creates may exist from here on.
+    fn sending(&mut self, tx_index: usize, bundle: &[BundleAccount]) {
+        self.accounts.extend(
+            bundle
+                .iter()
+                .filter(|account| account.created_in == tx_index),
+        );
+    }
+}
+
+#[cfg(feature = "confidential")]
+impl Drop for SetupCleanup {
+    fn drop(&mut self) {
+        if !self.armed || self.accounts.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                accounts = self.accounts.len(),
+                "no runtime to close a failed confidential bundle's accounts; leaving them to the orphan sweeper"
+            );
+            return;
+        };
+        let rpc = std::sync::Arc::clone(&self.rpc);
+        let signer = std::sync::Arc::clone(&self.signer);
+        let gateway = self.gateway;
+        let accounts = std::mem::take(&mut self.accounts);
+        runtime.spawn(async move {
+            if let Err(error) = close_setup_accounts(&rpc, signer.as_ref(), &gateway, &accounts).await
+            {
+                tracing::warn!(
+                    error = %error.message,
+                    "closing a failed confidential bundle's accounts failed; leaving them to the orphan sweeper"
+                );
+            }
+        });
+    }
+}
+
+/// Close every account in `accounts` that exists back to the gateway, in one
+/// gateway-paid transaction that must pass preflight.
+#[cfg(feature = "confidential")]
+async fn close_setup_accounts(
+    rpc: &solana_rpc_client::rpc_client::RpcClient,
+    signer: &dyn solana_keychain::TransactionSigner,
+    gateway: &Pubkey,
+    accounts: &[BundleAccount],
+) -> Result<(), VerificationError> {
+    let addresses: Vec<Pubkey> = accounts.iter().map(|account| account.address).collect();
+    let existing = rpc
+        .get_multiple_accounts(&addresses)
+        .map_err(|e| VerificationError::network_error(format!("getMultipleAccounts: {e}")))?;
+    let closes: Vec<_> = accounts
+        .iter()
+        .zip(existing)
+        .filter(|(_, account)| account.is_some())
+        .map(|(account, _)| account.close_instruction(gateway))
+        .collect();
+    if closes.is_empty() {
+        return Ok(());
+    }
+    let blockhash = rpc
+        .get_latest_blockhash()
+        .map_err(|e| VerificationError::network_error(format!("get_latest_blockhash: {e}")))?;
+    let mut tx = crate::core::tx::build_unsigned(
+        crate::core::tx::TxVersion::V0,
+        gateway,
+        &closes,
+        blockhash,
+        None,
+    )
+    .map_err(|e| VerificationError::new(format!("build close: {e}")))?;
+    crate::core::signing::cosign_versioned_fee_payer(signer, gateway, &mut tx)
+        .await
+        .map_err(|e| VerificationError::new(format!("sign close: {e}")))?;
+    crate::core::rpc::send_transaction(rpc, &tx, crate::core::rpc::preflight_config(rpc))
+        .map_err(|e| VerificationError::network_error(format!("broadcast close: {e}")))?;
+    Ok(())
+}
+
+#[cfg(feature = "confidential")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FundedAccountKind {
     ProofContext,
     Record,
@@ -657,6 +802,50 @@ struct FundedAccount {
     /// Allocated bytes, and record payload bytes written so far.
     space: u64,
     written: u64,
+    /// Index of the bundle transaction that creates it.
+    created_in: usize,
+}
+
+/// A gateway-funded temporary account of a bundle.
+#[cfg(feature = "confidential")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BundleAccount {
+    address: Pubkey,
+    kind: FundedAccountKind,
+    /// Index of the bundle transaction that creates it.
+    created_in: usize,
+}
+
+#[cfg(feature = "confidential")]
+impl BundleAccount {
+    /// The instruction closing this account back to the gateway.
+    fn close_instruction(&self, gateway: &Pubkey) -> solana_instruction::Instruction {
+        close_temporary_account(self.kind, &self.address, gateway)
+    }
+}
+
+/// Close a gateway-authorized proof context or record back to the gateway.
+#[cfg(feature = "confidential")]
+fn close_temporary_account(
+    kind: FundedAccountKind,
+    account: &Pubkey,
+    gateway: &Pubkey,
+) -> solana_instruction::Instruction {
+    match kind {
+        FundedAccountKind::Record => {
+            spl_record::instruction::close_account(account, gateway, gateway)
+        }
+        FundedAccountKind::ProofContext => {
+            let gw = solana_address::Address::from(gateway.to_bytes());
+            solana_zk_elgamal_proof_interface::instruction::close_context_state(
+                solana_zk_elgamal_proof_interface::instruction::ContextStateInfo {
+                    context_state_account: &solana_address::Address::from(account.to_bytes()),
+                    context_state_authority: &gw,
+                },
+                &gw,
+            )
+        }
+    }
 }
 
 /// The spl-record instructions a confidential bundle may carry.
@@ -705,7 +894,7 @@ impl RecordIx {
 pub(crate) fn verify_confidential_account_lifecycle(
     transactions: &[VersionedTransaction],
     gateway: &Pubkey,
-) -> Result<(), VerificationError> {
+) -> Result<Vec<BundleAccount>, VerificationError> {
     use std::collections::{HashMap, HashSet};
 
     let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
@@ -792,6 +981,7 @@ pub(crate) fn verify_confidential_account_lifecycle(
                                 closed: false,
                                 space,
                                 written: 0,
+                                created_in: tx_index,
                             },
                         )
                         .is_some()
@@ -953,7 +1143,16 @@ pub(crate) fn verify_confidential_account_lifecycle(
             "every gateway-funded temporary account must be initialized and closed back to the gateway",
         ));
     }
-    Ok(())
+    let mut accounts: Vec<BundleAccount> = funded
+        .into_iter()
+        .map(|(address, account)| BundleAccount {
+            address,
+            kind: account.kind,
+            created_in: account.created_in,
+        })
+        .collect();
+    accounts.sort_by_key(|account| account.created_in);
+    Ok(accounts)
 }
 
 /// Orphan guard. An account may be closed only through an [`orphan::OrphanConfirmed`],
@@ -998,23 +1197,11 @@ pub(crate) mod orphan {
             &self,
             gateway: &Pubkey,
         ) -> solana_instruction::Instruction {
-            match self.kind {
-                OrphanKind::Record => {
-                    spl_record::instruction::close_account(&self.pubkey, gateway, gateway)
-                }
-                OrphanKind::ProofContext => {
-                    let gw = solana_address::Address::from(gateway.to_bytes());
-                    solana_zk_elgamal_proof_interface::instruction::close_context_state(
-                        solana_zk_elgamal_proof_interface::instruction::ContextStateInfo {
-                            context_state_account: &solana_address::Address::from(
-                                self.pubkey.to_bytes(),
-                            ),
-                            context_state_authority: &gw,
-                        },
-                        &gw,
-                    )
-                }
-            }
+            let kind = match self.kind {
+                OrphanKind::Record => super::FundedAccountKind::Record,
+                OrphanKind::ProofContext => super::FundedAccountKind::ProofContext,
+            };
+            super::close_temporary_account(kind, &self.pubkey, gateway)
         }
     }
 
@@ -1199,6 +1386,16 @@ pub(crate) fn verify_confidential_bundle_tx(
                 return Err(VerificationError::credential_mismatch(
                     "create_account exceeds the allowed size/rent for a proof/record account",
                 ));
+            }
+            // A temporary account needs exactly its rent-exempt minimum; any
+            // more is gateway SOL parked in it until it is closed.
+            if let (Some(space), Some(lamports)) = (space, lamports) {
+                if lamports > rent_exempt_ceiling(space) {
+                    return Err(VerificationError::credential_mismatch(format!(
+                        "create_account funds {lamports} lamports, more than the {} rent-exempt minimum for {space} bytes",
+                        rent_exempt_ceiling(space)
+                    )));
+                }
             }
             if let Some(created) = ix.accounts.get(1).and_then(|i| keys.get(*i as usize)) {
                 created_accounts.insert(*created);
@@ -2660,5 +2857,233 @@ pub(crate) mod tests {
             "{}",
             err.message
         );
+    }
+
+    // A gateway-funded temporary account needs only its rent-exempt minimum;
+    // anything above it is gateway SOL a failed bundle would leave parked.
+    #[test]
+    fn temporary_accounts_are_funded_at_most_their_rent_exempt_minimum() {
+        let gateway = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let p = layout_pieces(&gateway, &ata);
+        let setup = |lamports: u64| {
+            let record = client_key();
+            v0_tx(
+                &gateway,
+                &[
+                    solana_system_interface::instruction::create_account(
+                        &gateway,
+                        &record,
+                        lamports,
+                        100,
+                        &spl_record::id(),
+                    ),
+                    solana_instruction::Instruction {
+                        accounts: vec![
+                            solana_instruction::AccountMeta::new(record, false),
+                            solana_instruction::AccountMeta::new_readonly(gateway, false),
+                        ],
+                        ..p.initialize.clone()
+                    },
+                ],
+            )
+        };
+        let err = accepts(&setup(rent_exempt_ceiling(100) + 1), &gateway, &ata).unwrap_err();
+        assert!(
+            err.message.contains("rent-exempt minimum"),
+            "{}",
+            err.message
+        );
+        accepts(&setup(rent_exempt_ceiling(100)), &gateway, &ata).unwrap();
+    }
+
+    /// Settlement RPC for a two-transaction bundle: confirms every broadcast,
+    /// reports every temporary account as existing, and fails the simulation
+    /// of any transaction that invokes `failing` (if set). Records the
+    /// program ids of each sent transaction.
+    async fn bundle_rpc(
+        failing: Option<Pubkey>,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<Vec<Pubkey>>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{routing::post, Json, Router};
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&sent);
+        let programs_of = |b64: &str| {
+            let tx = crate::core::tx::decode(b64).unwrap();
+            let keys = tx.message.static_account_keys().to_vec();
+            let programs: Vec<Pubkey> = tx
+                .message
+                .instructions()
+                .iter()
+                .map(|ix| keys[ix.program_id_index as usize])
+                .collect();
+            (tx.signatures[0], programs)
+        };
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    let result = match request["method"].as_str().unwrap() {
+                        "simulateTransaction" => {
+                            let (_, programs) = programs_of(request["params"][0].as_str().unwrap());
+                            let err = failing
+                                .filter(|failing| programs.contains(failing))
+                                .map(|_| serde_json::json!({ "InstructionError": [0, { "Custom": 1 }] }));
+                            serde_json::json!({
+                                "context": { "slot": 1 },
+                                "value": { "err": err, "logs": [], "accounts": null, "unitsConsumed": 0 }
+                            })
+                        }
+                        "sendTransaction" => {
+                            let (signature, programs) =
+                                programs_of(request["params"][0].as_str().unwrap());
+                            recorded.lock().unwrap().push(programs);
+                            serde_json::json!(signature.to_string())
+                        }
+                        "getSignatureStatuses" => {
+                            let statuses = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|_| {
+                                    serde_json::json!({
+                                        "slot": 1, "confirmations": null, "err": null,
+                                        "confirmationStatus": "finalized", "status": { "Ok": null }
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            serde_json::json!({ "context": { "slot": 1 }, "value": statuses })
+                        }
+                        "getMultipleAccounts" => {
+                            let accounts = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|_| {
+                                    serde_json::json!({
+                                        "lamports": 1_000, "data": ["", "base64"],
+                                        "owner": spl_record::id().to_string(),
+                                        "executable": false, "rentEpoch": 0, "space": 0
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            serde_json::json!({ "context": { "slot": 1 }, "value": accounts })
+                        }
+                        "getLatestBlockhash" => serde_json::json!({
+                            "context": { "slot": 1 },
+                            "value": {
+                                "blockhash": solana_hash::Hash::new_unique().to_string(),
+                                "lastValidBlockHeight": 100
+                            }
+                        }),
+                        method => panic!("unexpected RPC method {method}"),
+                    };
+                    Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, sent, server)
+    }
+
+    // One bundle presented for two challenges: the second run must not send
+    // its setup again, nor clean up accounts the first run's final needs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bundle_presented_twice_is_sent_and_cleaned_up_once() {
+        let token_2022 = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let system = solana_system_interface::program::ID;
+        let record = spl_record::id();
+        let (url, sent, rpc) = bundle_rpc(None).await;
+        let mut server = confidential_server(false, None, true).await;
+        server.mpp.accepted_versions = vec![TxVersion::V0];
+        server.mpp.rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(url));
+        let p = layout_pieces(&server.gateway, &server.recipient_ata);
+        let bundle = encode_bundle(&[
+            v0_tx(&server.gateway, &[p.create, p.initialize]),
+            v0_tx(&server.gateway, &[p.transfer, p.close]),
+        ]);
+        let req = request(1_000, &server.mint, server.mpp.recipient());
+        let first = server
+            .mpp
+            .settle_confidential_bundle(
+                &bundle,
+                &req,
+                &server.method_details,
+                &mut server.mpp.test_fence().await,
+            )
+            .await;
+        assert!(first.is_ok(), "{first:?}");
+        let second = server
+            .mpp
+            .settle_confidential_bundle(
+                &bundle,
+                &req,
+                &server.method_details,
+                &mut server.mpp.test_fence().await,
+            )
+            .await;
+        assert!(second.is_err(), "{second:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![vec![system, record], vec![token_2022, record]],
+            "only the first run sends anything"
+        );
+        rpc.abort();
+    }
+
+    // The final transaction closes every gateway-funded account. When it
+    // fails after the setup transactions landed, the gateway closes them
+    // straight away rather than leaving the rent for the orphan sweeper.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bundle_whose_final_transaction_fails_closes_its_landed_accounts() {
+        let token_2022 = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let system = solana_system_interface::program::ID;
+        let record = spl_record::id();
+        // (simulation failing on, expected sends: [programs of each])
+        for (failing, expected) in [
+            // Final fails: setup lands, then one cleanup closing the record.
+            (Some(token_2022), vec![vec![system, record], vec![record]]),
+            // Setup fails: nothing was sent, nothing to close.
+            (Some(system), vec![]),
+            // Positive control: the bundle settles, the final closes it all.
+            (None, vec![vec![system, record], vec![token_2022, record]]),
+        ] {
+            let (url, sent, rpc) = bundle_rpc(failing).await;
+            let mut server = confidential_server(false, None, true).await;
+            server.mpp.accepted_versions = vec![TxVersion::V0];
+            server.mpp.rpc = Arc::new(solana_rpc_client::rpc_client::RpcClient::new(url));
+            let p = layout_pieces(&server.gateway, &server.recipient_ata);
+            let bundle = encode_bundle(&[
+                v0_tx(&server.gateway, &[p.create, p.initialize]),
+                v0_tx(&server.gateway, &[p.transfer, p.close]),
+            ]);
+            let result = server
+                .mpp
+                .settle_confidential_bundle(
+                    &bundle,
+                    &request(1_000, &server.mint, server.mpp.recipient()),
+                    &server.method_details,
+                    &mut server.mpp.test_fence().await,
+                )
+                .await;
+            assert_eq!(result.is_ok(), failing.is_none(), "{failing:?}: {result:?}");
+            // The cleanup runs on its own task.
+            for _ in 0..100 {
+                if sent.lock().unwrap().len() >= expected.len() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert_eq!(*sent.lock().unwrap(), expected, "{failing:?}");
+            rpc.abort();
+        }
     }
 }
