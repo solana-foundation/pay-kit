@@ -663,3 +663,8 @@ pattern = "vector/session-build-*"
 id = "vector/session-wire-action-open-initial-voucher-reject"
 reason = "the session open schema accepts an open payload carrying a signed voucher (typescript/packages/mpp/src/Methods.ts: the open object schema forbids `bump` but zod strips any other unknown key); draft-solana-session-00 Action open: \"MUST NOT carry an initial voucher\""
 tracking = "FINDINGS.md#session-open-initial-voucher-accepted"
+
+[[known_failing]]
+id = "vector/x402-upto-build-foreign-blockhash-reject"
+reason = "the vendored upstream @x402/svm upto client signs extra.recentBlockhash without asking its RPC whether the blockhash is live on the client's cluster (resolveBlockhash in the svm mechanism's shared utils)"
+tracking = "FINDINGS.md#upto-client-blockhash-not-checked"

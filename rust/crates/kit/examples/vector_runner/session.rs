@@ -26,7 +26,7 @@ use solana_pay_kit::core::store::{
 };
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
-    create_payment_channel_session_opener, PaymentChannelOpenOptions,
+    create_payment_channel_session_opener, OpenBlockhash, PaymentChannelOpenOptions,
     PaymentChannelSessionOpenOptions,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
@@ -568,11 +568,19 @@ async fn build(input: &Value) -> Result<Outcome, Rejection> {
         .map_err(|e| refuse(format!("invalid challenge: {e}")))?;
     let payer = signer_from(input, "signerSecretKey")?;
     let session = signer_from(input, "sessionSignerSecretKey")?;
+    let rpc_url = input
+        .get("rpcUrl")
+        .and_then(Value::as_str)
+        .ok_or("driver did not inject input.rpcUrl")?;
+    let rpc = solana_rpc_client::rpc_client::RpcClient::new(rpc_url.to_string());
+    let blockhash = OpenBlockhash::verify(&rpc, &request)
+        .await
+        .map_err(|e| refuse(e.to_string()))?;
     let opened = create_payment_channel_session_opener(
         &request,
         &payer,
         Box::new(session),
-        None,
+        blockhash,
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt: u64_field(params, "salt")?,

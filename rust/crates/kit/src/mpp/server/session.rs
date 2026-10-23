@@ -4854,7 +4854,7 @@ mod tests {
         use crate::core::tx::{ComputeBudget, TxVersion};
         use crate::mpp::client::session::{
             build_open_payment_channel_transaction, BuildOpenPaymentChannelTransactionParams,
-            PaymentChannelOpenOptions,
+            OpenBlockhash, PaymentChannelOpenOptions,
         };
 
         let mut cfg = config(VoucherSigner::Client);
@@ -4877,7 +4877,7 @@ mod tests {
                         signer: payer.as_ref(),
                         authorized_signer: params.authorized_signer,
                         fee_payer: None,
-                        recent_blockhash: None,
+                        blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
                         options: PaymentChannelOpenOptions {
                             compute_budget: Some(budget),
                             salt: Some(params.salt),

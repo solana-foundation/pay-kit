@@ -583,34 +583,68 @@ pub struct BuildOpenPaymentChannelTransactionParams<'a> {
     pub signer: &'a dyn TransactionSigner,
     pub authorized_signer: Pubkey,
     pub fee_payer: Option<Pubkey>,
-    /// Blockhash for the open transaction. `None` (the default) takes the
-    /// challenge's `recentBlockhash`, which the server requires the compiled
-    /// message to use; an explicit override is for tests and custom flows
-    /// that re-issue their own challenge binding.
-    pub recent_blockhash: Option<Hash>,
+    /// Blockhash for the open transaction, checked against the client's own
+    /// cluster (see [`OpenBlockhash`]).
+    pub blockhash: OpenBlockhash,
     pub options: PaymentChannelOpenOptions,
 }
 
-/// Resolve the open transaction's blockhash: an explicit override wins,
-/// otherwise the challenged `recentBlockhash` is required — the client never
-/// fetches its own.
-fn resolve_open_blockhash(override_hash: Option<Hash>, request: &SessionRequest) -> Result<Hash> {
-    if let Some(hash) = override_hash {
-        return Ok(hash);
+/// The blockhash a client signs into a channel `open`.
+///
+/// A Solana transaction is bound to a cluster only by its blockhash, and the
+/// server requires the open to use the challenge's `recentBlockhash`. That
+/// value is untrusted: a hash from another cluster would make the signed
+/// open valid there rather than on the network the deposit was approved for.
+/// The only way to get one from a challenge is [`Self::verify`], which asks
+/// the client's own RPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenBlockhash(Hash);
+
+impl OpenBlockhash {
+    /// The challenge's `recentBlockhash`, once `rpc` (which serves the
+    /// cluster the client means to pay on) confirms it is live there.
+    pub async fn verify(
+        rpc: &solana_rpc_client::rpc_client::RpcClient,
+        request: &SessionRequest,
+    ) -> Result<Self> {
+        let challenged = request
+            .method_details
+            .recent_blockhash
+            .as_deref()
+            .ok_or_else(|| {
+                Error::Other(
+                    "session challenge is missing recentBlockhash; a new-channel challenge must \
+                     provide it"
+                        .to_string(),
+                )
+            })?;
+        // Only the nonblocking client is reachable here: a blocking call
+        // panics on a current-thread runtime.
+        crate::core::blockhash::resolve_challenge_blockhash(
+            rpc.get_inner_client(),
+            Some(challenged),
+        )
+        .await
+        .map(Self)
+        .map_err(|e| match e {
+            crate::core::blockhash::ChallengeBlockhashError::Invalid(message) => {
+                Error::Other(format!("invalid challenged recentBlockhash: {message}"))
+            }
+            crate::core::blockhash::ChallengeBlockhashError::Rpc(message) => Error::Other(format!(
+                "could not check the challenged recentBlockhash: {message}"
+            )),
+        })
     }
-    let challenged = request
-        .method_details
-        .recent_blockhash
-        .as_deref()
-        .ok_or_else(|| {
-            Error::Other(
-                "session challenge is missing recentBlockhash; a new-channel challenge must \
-                 provide it"
-                    .to_string(),
-            )
-        })?;
-    Hash::from_str(challenged)
-        .map_err(|e| Error::Other(format!("invalid challenged recentBlockhash: {e}")))
+
+    /// A blockhash the caller fetched from its own cluster. Never pass a
+    /// value read from the challenge here; use [`Self::verify`].
+    pub fn from_client_cluster(hash: Hash) -> Self {
+        Self(hash)
+    }
+
+    pub fn hash(&self) -> Hash {
+        self.0
+    }
 }
 
 pub async fn build_open_payment_channel_transaction(
@@ -652,7 +686,7 @@ pub async fn build_open_payment_channel_transaction(
             "fee payer does not match the challenge policy".to_string(),
         ));
     }
-    let recent_blockhash = resolve_open_blockhash(params.recent_blockhash, params.request)?;
+    let recent_blockhash = params.blockhash.hash();
     let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
         request: params.request,
         payer: params.signer.pubkey(),
@@ -712,10 +746,9 @@ pub async fn create_payment_channel_session_opener(
     request: &SessionRequest,
     payer_signer: &dyn TransactionSigner,
     session_signer: Box<dyn SolanaSigner>,
-    recent_blockhash: Option<Hash>,
+    blockhash: OpenBlockhash,
     options: PaymentChannelSessionOpenOptions,
 ) -> Result<PaymentChannelSessionOpen> {
-    let recent_blockhash = resolve_open_blockhash(recent_blockhash, request)?;
     let authorized_signer = match request.method_details.voucher_signer {
         Some(SessionVoucherSigner::Operator) => parse_pubkey(
             request.method_details.operator.as_deref().ok_or_else(|| {
@@ -754,7 +787,7 @@ pub async fn create_payment_channel_session_opener(
         signer: payer_signer,
         authorized_signer,
         fee_payer: Some(fee_payer),
-        recent_blockhash: Some(recent_blockhash),
+        blockhash,
         options: build_options,
     })
     .await?;
@@ -1226,7 +1259,7 @@ mod tests {
                             signer: payer.as_ref(),
                             authorized_signer: payer.pubkey(),
                             fee_payer: None,
-                            recent_blockhash: None,
+                            blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
                             options: PaymentChannelOpenOptions {
                                 compute_budget: budget,
                                 ..Default::default()
@@ -1284,13 +1317,12 @@ mod tests {
         let session_signer = signer(3);
         let payee = Pubkey::new_unique();
         let mut req = request(payee);
-        // No explicit blockhash: the challenged `recentBlockhash` is used.
         let tx = build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
             request: &req,
             signer: payer.as_ref(),
             authorized_signer: session_signer.pubkey(),
             fee_payer: None,
-            recent_blockhash: None,
+            blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(42),
                 salt: Some(7),
@@ -1304,27 +1336,16 @@ mod tests {
             crate::mpp::program::payment_channels::decode_transaction(&tx.transaction).unwrap();
         assert_eq!(*decoded.message.recent_blockhash(), test_blockhash());
 
-        // A new-channel challenge without `recentBlockhash` cannot build the
-        // open transaction unless the caller overrides the blockhash.
+        // A new-channel challenge without `recentBlockhash` gives the client
+        // no blockhash it may verify.
         let mut no_blockhash = req.clone();
         no_blockhash.method_details.recent_blockhash = None;
-        assert!(
-            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
-                request: &no_blockhash,
-                signer: payer.as_ref(),
-                authorized_signer: session_signer.pubkey(),
-                fee_payer: None,
-                recent_blockhash: None,
-                options: PaymentChannelOpenOptions {
-                    open_slot: Some(42),
-                    ..Default::default()
-                },
-            })
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        assert!(OpenBlockhash::verify(&rpc, &no_blockhash)
             .await
             .unwrap_err()
             .to_string()
-            .contains("missing recentBlockhash")
-        );
+            .contains("missing recentBlockhash"));
 
         req.method_details.fee_payer = Some(true);
         req.method_details.fee_payer_key = Some(Pubkey::new_unique().to_string());
@@ -1334,7 +1355,7 @@ mod tests {
                 signer: payer.as_ref(),
                 authorized_signer: session_signer.pubkey(),
                 fee_payer: Some(payer.pubkey()),
-                recent_blockhash: None,
+                blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
                 options: PaymentChannelOpenOptions {
                     open_slot: Some(42),
                     ..Default::default()
@@ -1358,7 +1379,9 @@ mod tests {
             &req,
             payer.as_ref(),
             session_signer,
-            None,
+            OpenBlockhash::verify(&crate::core::blockhash::mock_blockhash_rpc(true), &req)
+                .await
+                .unwrap(),
             PaymentChannelSessionOpenOptions {
                 open: PaymentChannelOpenOptions {
                     // Earlier than the challenged recentSlot (42): allowed.
@@ -1382,6 +1405,45 @@ mod tests {
             }
             _ => panic!("open action"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_challenged_blockhash_the_client_cluster_does_not_know_is_refused() {
+        let req = request(Pubkey::new_unique());
+        let foreign = crate::core::blockhash::mock_blockhash_rpc(false);
+        let error = OpenBlockhash::verify(&foreign, &req).await.unwrap_err();
+        assert!(
+            error.to_string().contains("not a live blockhash"),
+            "{error}"
+        );
+
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let blockhash = OpenBlockhash::verify(&rpc, &req).await.unwrap();
+        assert_eq!(blockhash.hash(), test_blockhash());
+        let opened = create_payment_channel_session_opener(
+            &req,
+            signer(2).as_ref(),
+            signer(3),
+            blockhash,
+            PaymentChannelSessionOpenOptions::default(),
+        )
+        .await
+        .unwrap();
+        let SessionAction::Open(payload) = opened.action else {
+            panic!("open action");
+        };
+        let decoded =
+            crate::mpp::program::payment_channels::decode_transaction(&payload.transaction)
+                .unwrap();
+        assert_eq!(*decoded.message.recent_blockhash(), test_blockhash());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_client_rpc_refuses_the_challenged_blockhash() {
+        let req = request(Pubkey::new_unique());
+        let rpc = solana_rpc_client::rpc_client::RpcClient::new("http://127.0.0.1:1".to_string());
+        let error = OpenBlockhash::verify(&rpc, &req).await.unwrap_err();
+        assert!(error.to_string().contains("could not check"), "{error}");
     }
 
     #[test]

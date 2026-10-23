@@ -1572,6 +1572,20 @@ crate::registry! {
         Expect::AcceptAuthored(json!({"exactBytes": {"openMessageVersion": 0}})),
         None,
     );
+    x402_upto_build_foreign_blockhash_reject => build_case(
+        "x402-upto-build-foreign-blockhash-reject",
+        BUILD_FILE,
+        spec(SVM, "Phase 1 - Setup", "The client builds an open transaction against the canonical payment-channels program, deposits maxAmount, sets payee and rent_payer to extra.feePayer, sets authorized_signer to extra.receiverAuthorizer, encodes grace_period = extra.withdrawDelay, and signs as channel payer."),
+        &[CLIENT_DERIVES],
+        "extra.recentBlockhash is not a live blockhash on the client's cluster (its RPC's latest is another). The blockhash alone binds the signed open to a cluster, so an open over it would escrow maxAmount on whichever cluster knows that hash rather than the offer's network: the client refuses the challenge before signing. Pair: x402-upto-build-accept.",
+        {
+            let mut input = build_input(Route::default().offer());
+            input["rpcFixtures"]["recentBlockhash"] = json!(crate::realize::session::OTHER_BLOCKHASH);
+            input
+        },
+        Expect::Reject { code: RejectCode::InvalidChallenge, reason: Some("recentBlockhash unknown to the client's cluster".into()) },
+        None,
+    );
     x402_upto_build_zero_withdraw_delay_reject => build_case(
         "x402-upto-build-zero-withdraw-delay-reject",
         BUILD_FILE,

@@ -258,11 +258,11 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 79 · 38k | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 74 · 2u · 41k |
-| vector session | 191 | 8 · 183u | 3 · 188u | — | — | 36 · 148u · 7k | — | 191 | 3 · 188u | 36 · 148u · 7k |
+| vector session | 192 | 8 · 184u | 3 · 189u | — | — | 36 · 149u · 7k | — | 192 | 3 · 189u | 36 · 149u · 7k |
 | vector subscription | 123 | — | — | — | — | — | — | 123 | — | 70 · 15u · 38k |
-| vector x402-batch-settlement | 165 | — | — | — | — | — | — | 165 | — | 66 · 27u · 72k |
+| vector x402-batch-settlement | 171 | — | — | — | — | — | — | 171 | — | 67 · 27u · 77k |
 | vector x402-exact | 73 | 47 · 26k | — | 32 · 19u · 22k | 32 · 21u · 20k | 44 · 2u · 27k | 29 · 19u · 25k | 73 | 14 · 52u · 7k | 35 · 29u · 9k |
-| vector x402-upto | 124 | — | — | — | — | — | — | 124 | — | 104 · 2u · 18k |
+| vector x402-upto | 129 | — | — | — | — | — | — | 129 | — | 105 · 2u · 22k |
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
 <!-- coverage:end -->
@@ -449,7 +449,7 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-69c0a4f95f`* | draft-solana-session-00.md § Method Details | 6 | 0 · 6u | 0 · 6u | — | — | 4 · 2u | — | 6 | 0 · 6u | 4 · 2u |
 | `MPP-a3d2da92ea`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1u | — | 1 | 0 · 1u | 0 · 1u |
 | `MPP-bb80675c8e`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
-| `MPP-d235eadc2e`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2u | — | 2 | 0 · 2u | 0 · 2u |
+| `MPP-d235eadc2e`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3u | — | 3 | 0 · 3u | 0 · 3u |
 | `MPP-d5da84fe70`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 1 · 2u | — | 3 | 0 · 3u | 1 · 2u |
 | `MPP-ecdf5de619`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 1 · 1u | — | 2 | 0 · 2u | 1 · 1u |
 | `MPP-bf87a688ef`* | draft-solana-session-00.md § Mint Allow-List | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1u | — | 1 | 0 · 1u | 0 · 1u |
@@ -660,7 +660,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-99f2a389e8`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 3 |
 | `X402-cf373442ff`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 3 |
 | `X402-d75fb10a6f`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 17 | — | — | — | — | — | — | 17 | — | 16 · 1k |
-| `X402-eace5aece9`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 4 | — | — | — | — | — | — | 4 | — | 3 · 1u |
+| `X402-eace5aece9`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 5 | — | — | — | — | — | — | 5 | — | 3 · 1u · 1k |
 | `X402-3b5914a7c5`* | scheme_upto_svm.md § 8. Security Properties | 4 | — | — | — | — | — | — | 4 | — | 2 · 2k |
 | `X402-076bb2bdc3`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
 | `X402-14b8b2b598`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | — | — | 2 | — | 2 |

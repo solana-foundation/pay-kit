@@ -14,7 +14,7 @@ use solana_keychain::TransactionSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 
-use crate::core::blockhash::fetch_blockhash_with_slot;
+use crate::core::blockhash::CachedBlockhash;
 use crate::core::payment_channels as pc;
 
 use crate::x402::error::Error;
@@ -37,7 +37,10 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 /// the program's `openSlot`, a channel-PDA seed the program only accepts
 /// within a recent window. Both hints are optional per the upto spec — when
 /// either is absent, a single `getLatestBlockhash` call against `rpc`
-/// supplies the missing value(s); `rpc` is untouched when both are present.
+/// supplies the missing value(s). A `recentBlockhash` hint is signed only
+/// once `rpc`, which serves the cluster the client pays on, confirms it is
+/// live there: a hash from another cluster would open the channel on that
+/// cluster instead.
 pub async fn build_upto_payload(
     payer_signer: &dyn TransactionSigner,
     rpc: &RpcClient,
@@ -81,19 +84,21 @@ pub async fn build_upto_payload(
     // absent — its response context carries the current slot, covering both.
     let hint_blockhash = requirements.extra.recent_blockhash.as_deref();
     let hint_slot = requirements.extra.recent_slot.map(Slot::get);
-    let (blockhash_str, open_slot) = match (hint_blockhash, hint_slot) {
-        (Some(blockhash), Some(slot)) => (blockhash.to_string(), slot),
-        _ => {
-            let fetched = fetch_blockhash_with_slot(rpc, rpc.commitment()).map_err(Error::Rpc)?;
-            let blockhash = hint_blockhash
-                .map(str::to_string)
-                .unwrap_or(fetched.blockhash);
-            let open_slot = hint_slot.unwrap_or(fetched.slot);
-            (blockhash, open_slot)
-        }
+    let fetched = match (hint_blockhash, hint_slot) {
+        (Some(_), Some(_)) => None,
+        _ => Some(fetch_blockhash_with_slot(rpc).await?),
     };
-    let blockhash = Hash::from_str(&blockhash_str)
-        .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
+    let blockhash = match (hint_blockhash, &fetched) {
+        (Some(hint), _) => verified_hint(rpc, hint).await?,
+        (None, Some(fetched)) => Hash::from_str(&fetched.blockhash)
+            .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?,
+        (None, None) => unreachable!("a missing blockhash hint fetches one"),
+    };
+    let open_slot = match (hint_slot, &fetched) {
+        (Some(slot), _) => slot,
+        (None, Some(fetched)) => fetched.slot,
+        (None, None) => unreachable!("a missing slot hint fetches one"),
+    };
 
     let salt = salt_for_nonce(&nonce);
     // “Clients MUST include a Memo instruction containing either the value
@@ -144,6 +149,48 @@ pub async fn build_upto_payload(
         open_slot: Slot::new(open_slot),
         open_transaction: Some(open.transaction),
     })
+}
+
+/// The latest blockhash and the slot it was observed at, in one
+/// `getLatestBlockhash` call (its response context carries the slot).
+async fn fetch_blockhash_with_slot(rpc: &RpcClient) -> Result<CachedBlockhash, Error> {
+    use solana_rpc_client_api::{
+        config::RpcContextConfig,
+        request::RpcRequest,
+        response::{Response, RpcBlockhash},
+    };
+    // Every call goes through the nonblocking client: mixing it with the
+    // blocking one shares a connection pool across runtimes and can stall.
+    let response: Response<RpcBlockhash> = rpc
+        .get_inner_client()
+        .send(
+            RpcRequest::GetLatestBlockhash,
+            serde_json::json!([RpcContextConfig {
+                commitment: Some(rpc.commitment()),
+                min_context_slot: None,
+            }]),
+        )
+        .await
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    Ok(CachedBlockhash {
+        blockhash: response.value.blockhash,
+        last_valid_block_height: response.value.last_valid_block_height,
+        slot: response.context.slot,
+    })
+}
+
+/// The requirement's `recentBlockhash`, once the client's cluster knows it.
+async fn verified_hint(rpc: &RpcClient, hint: &str) -> Result<Hash, Error> {
+    // Only the nonblocking client is reachable here: a blocking call panics
+    // on a current-thread runtime.
+    crate::core::blockhash::resolve_challenge_blockhash(rpc.get_inner_client(), Some(hint))
+        .await
+        .map_err(|e| match e {
+            crate::core::blockhash::ChallengeBlockhashError::Invalid(message) => {
+                Error::Other(format!("invalid extra.recentBlockhash: {message}"))
+            }
+            crate::core::blockhash::ChallengeBlockhashError::Rpc(message) => Error::Rpc(message),
+        })
 }
 
 /// The channel salt for a request `nonce`: derived from it, or random when the
@@ -348,12 +395,26 @@ mod tests {
         assert!(parse_upto_challenge(&[], None).is_none());
     }
 
+    /// An RPC that knows every blockhash and serves `succeeds` otherwise.
+    fn live_rpc() -> RpcClient {
+        use solana_rpc_client::mock_sender::MocksMap;
+        use solana_rpc_client_api::request::RpcRequest;
+        let mut mocks = MocksMap::default();
+        for _ in 0..8 {
+            mocks.insert(
+                RpcRequest::IsBlockhashValid,
+                serde_json::json!({ "context": { "slot": 1 }, "value": true }),
+            );
+        }
+        RpcClient::new_mock_with_mocks_map("succeeds", mocks)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn build_payload_uses_challenge_hints_without_rpc() {
         let signer = make_signer();
-        // A "fails" mock makes any RPC hit error loudly: with both hints
-        // embedded, the build must succeed without touching RPC at all.
-        let rpc = RpcClient::new_mock("fails".to_string());
+        // Every other RPC method errors loudly: with both hints embedded, the
+        // build only asks whether the hinted blockhash is live.
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let payload =
             build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1", None)
                 .await
@@ -367,7 +428,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_request_nonce_pins_the_channel() {
         let signer = make_signer();
-        let rpc = RpcClient::new_mock("fails".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let build = |nonce: &'static str| {
             let signer = &signer;
             let rpc = &rpc;
@@ -407,7 +468,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn build_payload_fetches_missing_slot_keeping_hinted_blockhash() {
         let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let rpc = live_rpc();
         let mut req = requirements();
         req.extra.recent_slot = None;
         let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
@@ -421,7 +482,7 @@ mod tests {
         // A seller that declares extra.memo requires exactly one matching Memo
         // after open, so the client emits it.
         let signer = make_signer();
-        let rpc = RpcClient::new_mock("fails".to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
         let mut req = requirements();
         req.extra.memo = Some("order-4711".to_string());
         let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1", None)
@@ -478,6 +539,39 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// The hinted blockhash is the only thing binding the open to a
+    /// cluster, so one the client's own cluster does not know is refused,
+    /// with or without a slot hint.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hinted_blockhash_the_client_cluster_does_not_know_is_refused() {
+        let signer = make_signer();
+        let foreign = crate::core::blockhash::mock_blockhash_rpc(false);
+        let err = build_upto_payload(
+            &*signer,
+            &foreign,
+            &requirements(),
+            4_102_444_800,
+            "n",
+            None,
+        )
+        .await
+        .expect_err("a foreign blockhash is refused");
+        assert!(err.to_string().contains("not a live blockhash"), "{err}");
+
+        let mut without_slot = requirements();
+        without_slot.extra.recent_slot = None;
+        let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+        mocks.insert(
+            solana_rpc_client_api::request::RpcRequest::IsBlockhashValid,
+            serde_json::json!({ "context": { "slot": 1 }, "value": false }),
+        );
+        let foreign = RpcClient::new_mock_with_mocks_map("succeeds", mocks);
+        let err = build_upto_payload(&*signer, &foreign, &without_slot, 4_102_444_800, "n", None)
+            .await
+            .expect_err("a foreign blockhash is refused when the slot is fetched");
+        assert!(err.to_string().contains("not a live blockhash"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

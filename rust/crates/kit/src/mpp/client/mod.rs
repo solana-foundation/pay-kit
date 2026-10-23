@@ -24,7 +24,7 @@ pub use http_stream::*;
 pub use session::{
     build_open_payment_channel_transaction, create_payment_channel_session_opener,
     derive_payment_channel_open, BuildOpenPaymentChannelTransactionParams,
-    DerivePaymentChannelOpenParams, PaymentChannelOpen, PaymentChannelOpenOptions,
+    DerivePaymentChannelOpenParams, OpenBlockhash, PaymentChannelOpen, PaymentChannelOpenOptions,
     PaymentChannelSessionOpen, PaymentChannelSessionOpenOptions, SessionPayout,
     DEFAULT_GRACE_PERIOD_SECONDS,
 };

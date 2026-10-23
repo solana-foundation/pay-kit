@@ -40,7 +40,8 @@ use solana_pay_kit::core::store::{
 use solana_pay_kit::core::tx::{ComputeBudget, TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
     create_payment_channel_session_opener, derive_payment_channel_open,
-    DerivePaymentChannelOpenParams, PaymentChannelOpenOptions, PaymentChannelSessionOpenOptions,
+    DerivePaymentChannelOpenParams, OpenBlockhash, PaymentChannelOpenOptions,
+    PaymentChannelSessionOpenOptions,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
     SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload, VoucherData,
@@ -791,11 +792,14 @@ async fn open_for_request(request: &SessionRequest, build: &OpenBuild) -> Result
             )
         }
     };
+    // The kit server's challenge carries the pinned blockhash.
+    let blockhash =
+        OpenBlockhash::from_client_cluster(Hash::from_str(BLOCKHASH).map_err(|e| e.to_string())?);
     let opened = create_payment_channel_session_opener(
         request,
         &payer,
         Box::new(session),
-        None,
+        blockhash,
         PaymentChannelSessionOpenOptions {
             open: open_options,
             authentication,
@@ -1613,6 +1617,9 @@ pub struct BuildRecipe {
     pub authorized: Authorized,
     /// Edits of the challenge `SessionRequest` JSON.
     pub edits: Vec<Edit>,
+    /// The latest blockhash of the client's cluster (`rpcFixtures`), when it
+    /// is not the challenged one.
+    pub client_blockhash: Option<&'static str>,
 }
 
 pub fn build_input(recipe: &BuildRecipe) -> Result<Value, String> {
@@ -1641,6 +1648,9 @@ pub fn build_input(recipe: &BuildRecipe) -> Result<Value, String> {
     });
     if recipe.server.sponsored {
         input["sessionServerFeePayerSecretKey"] = keys::secret_json(OPERATOR_SEED);
+    }
+    if let Some(blockhash) = recipe.client_blockhash {
+        input["rpcFixtures"] = json!({ "recentBlockhash": blockhash });
     }
     Ok(input)
 }
@@ -1703,11 +1713,17 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
     let payer = signer_from(input, "signerSecretKey")?;
     let session = signer_from(input, "sessionSignerSecretKey")?;
     let salt = u64_field(params, "salt")?;
+    let fixtures = crate::fixture_rpc::Fixtures::from_input(input)?;
+    let (rpc, _log) = crate::fixture_rpc::rpc_client(&fixtures);
+    let blockhash = match OpenBlockhash::verify(&rpc, &request).await {
+        Ok(blockhash) => blockhash,
+        Err(e) => return Ok(reject_build(e.to_string())),
+    };
     let opened = create_payment_channel_session_opener(
         &request,
         &payer,
         Box::new(session),
-        None,
+        blockhash,
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt,

@@ -77,7 +77,8 @@ pub struct Fixtures {
 impl Fixtures {
     /// Parse `input.rpcFixtures`, defaulting the blockhash to the charge
     /// request's `methodDetails.recentBlockhash` (what the retired TS driver
-    /// did, so every SDK sees the chain state it always saw).
+    /// did, so every SDK sees the chain state it always saw), or the session
+    /// open challenge's.
     pub fn from_input(input: &Value) -> Result<Self, String> {
         let raw = input.get("rpcFixtures").cloned().unwrap_or(json!({}));
         let mut mints = BTreeMap::new();
@@ -141,9 +142,13 @@ impl Fixtures {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
-                input
-                    .pointer("/request/methodDetails/recentBlockhash")
-                    .and_then(Value::as_str)
+                ["/request", "/sessionOpenBuild/request"]
+                    .iter()
+                    .find_map(|request| {
+                        input
+                            .pointer(&format!("{request}/methodDetails/recentBlockhash"))
+                            .and_then(Value::as_str)
+                    })
                     .map(str::to_string)
             });
         Ok(Self {

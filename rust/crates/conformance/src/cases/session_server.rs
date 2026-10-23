@@ -562,6 +562,7 @@ fn build_recipe(server: Server) -> BuildRecipe {
         server,
         authorized: Authorized::SessionKey,
         edits: vec![],
+        client_blockhash: None,
     }
 }
 
@@ -1755,6 +1756,17 @@ crate::registry! {
         &[R_RECENT_PAIR, R_BLOCKHASH_USE],
         "A new-channel challenge without recentBlockhash: the client has no blockhash it may use. Pair: session-build-open-client-paid.",
         build_edit(Edit::Remove("/methodDetails/recentBlockhash")),
+        invalid_challenge(),
+    ).build();
+    session_build_foreign_blockhash_reject => build_case(
+        "session-build-foreign-blockhash-reject",
+        s("Method Details", "The server MUST obtain it from the selected network, and the client MUST use it as the transaction message's recent blockhash."),
+        &[R_BLOCKHASH_USE],
+        "The challenged recentBlockhash is not a live blockhash on the client's cluster (its RPC's latest is another), so it is not from the selected network: an open signed over it would be valid on another cluster. The client refuses before signing. Pair: session-build-open-client-paid.",
+        BuildRecipe {
+            client_blockhash: Some(crate::realize::session::OTHER_BLOCKHASH),
+            ..build_recipe(server())
+        },
         invalid_challenge(),
     ).build();
     session_build_missing_recent_slot_reject => build_case(

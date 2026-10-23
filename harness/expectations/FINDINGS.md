@@ -300,6 +300,20 @@ and the transaction's blockhash before it reserves the request
 transaction, which the offline harness signer stubs, so the vector cannot
 observe it there.
 
+## upto-client-blockhash-not-checked
+
+**Case:** `vector/x402-upto-build-foreign-blockhash-reject`
+**SDKs:** typescript
+
+A signed Solana transaction is bound to a cluster only by its recent
+blockhash. The upto client signs a channel `open` over the offer's
+`extra.recentBlockhash`, so a hint taken from another cluster yields an open
+that escrows `maxAmount` there instead of on the offer's `network`. Rust signs
+the hint only once its own RPC reports it live (`isBlockhashValid`); the
+vendored upstream `@x402/svm` upto client uses any well-formed hint as is
+(`resolveBlockhash` in the svm mechanism's shared utils). Fix: check the hint
+against the client's RPC, or fetch the client's own blockhash.
+
 ## session-open-initial-voucher-accepted
 
 **Case:** `vector/session-wire-action-open-initial-voucher-reject`

@@ -1218,6 +1218,126 @@
   },
   {
     "bugType": "wire",
+    "description": "extra.recentBlockhash is not a live blockhash on the client's cluster (its RPC's latest is another). The blockhash alone binds the signed open to a cluster, so an open over it would escrow maxAmount on whichever cluster knows that hash rather than the offer's network: the client refuses the challenge before signing. Pair: x402-upto-build-accept. The client builds and signs the channel open from the challenge hints (no live RPC); the judge runs the Rust upto verifier on the SDK's header and compares the open with the kit's own build modulo the salt.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge",
+      "rejectReason": "recentBlockhash unknown to the client's cluster"
+    },
+    "id": "x402-upto-build-foreign-blockhash-reject",
+    "input": {
+      "nowSeconds": 1800000000,
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "9zrUHnA1nCByPksy3aL8tQ47vqdaG2vnFs4HrxgcZj4F",
+        "slot": 400000000
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "recentSlot": "400000000",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 900
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "upto"
+      },
+      "x402UptoExpiresAt": 1800000300,
+      "x402UptoRequestNonce": "request-7"
+    },
+    "intent": "x402-upto",
+    "mode": "build-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-eace5aece9"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
+      "quote": "The client builds an open transaction against the canonical payment-channels program, deposits maxAmount, sets payee and rent_payer to extra.feePayer, sets authorized_signer to extra.receiverAuthorizer, encodes grace_period = extra.withdrawDelay, and signs as channel payer.",
+      "section": "Phase 1 - Setup"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
     "description": "extra.withdrawDelay 0 is outside the scheme: the client refuses the challenge instead of opening a channel with no escape-hatch delay. The client builds and signs the channel open from the challenge hints (no live RPC); the judge runs the Rust upto verifier on the SDK's header and compares the open with the kit's own build modulo the salt.",
     "expect": {
       "outcome": "reject",
