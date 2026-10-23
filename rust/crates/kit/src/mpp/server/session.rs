@@ -33,7 +33,7 @@ use solana_pubkey::Pubkey;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
-use crate::core::store::{ObservedLifecycle, OnchainObservation};
+use crate::core::store::{ObservedLifecycle, OnchainObservation, MAX_COMMITTED_AUTHORIZATIONS};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
@@ -127,6 +127,10 @@ const OPENED_ELSEWHERE_ERROR: &str =
 
 /// Index of the channel PDA among the `open` instruction's accounts.
 const OPEN_CHANNEL_ACCOUNT: usize = 5;
+
+/// Longest `Idempotency-Key` an operator-signed `use` accepts, in bytes. Keys
+/// are kept on the channel record, so their size is bounded.
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 255;
 
 /// Longest a confirmed read of a channel account admits new charges on it.
 ///
@@ -1888,11 +1892,7 @@ impl<S: ChannelStore> SessionServer<S> {
     ) -> Result<UseAcceptance> {
         use ed25519_dalek::Signer;
 
-        if idempotency_key.is_empty() {
-            return Err(Error::Other(
-                "operator-signed use requires an Idempotency-Key".to_string(),
-            ));
-        }
+        check_idempotency_key(idempotency_key)?;
         if self.config.voucher_signer != VoucherSigner::Operator {
             return Err(Error::Other(
                 "use is only valid for operator-signed sessions".to_string(),
@@ -2048,11 +2048,7 @@ impl<S: ChannelStore> SessionServer<S> {
         challenge_id: &str,
         idempotency_key: &str,
     ) -> Result<AuthenticatedUse> {
-        if idempotency_key.is_empty() {
-            return Err(Error::Other(
-                "operator-signed use requires an Idempotency-Key".to_string(),
-            ));
-        }
+        check_idempotency_key(idempotency_key)?;
         if self.config.voucher_signer != VoucherSigner::Operator {
             return Err(Error::Other(
                 "use is only valid for operator-signed sessions".to_string(),
@@ -2937,6 +2933,11 @@ impl<S: ChannelStore> SessionServer<S> {
                             cached_response: None,
                             retain_until: 0,
                         });
+                        // A commit evicted here can no longer be replayed,
+                        // only refused: its delivery is no longer pending.
+                        while state.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
+                            state.committed_deliveries.pop_front();
+                        }
                         *commit_outcome.lock().unwrap() =
                             Some((actual_amount, new_cumulative, CommitStatus::Committed));
                         Ok(state)
@@ -3258,6 +3259,22 @@ const SEALED_AT_KEY: &str = "mppSealedAt";
 
 fn store_err(e: StoreError) -> Error {
     Error::Other(e.to_string())
+}
+
+/// An operator-signed `use` must name its request with a non-empty
+/// `Idempotency-Key` of at most [`MAX_IDEMPOTENCY_KEY_BYTES`].
+fn check_idempotency_key(key: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(Error::Other(
+            "operator-signed use requires an Idempotency-Key".to_string(),
+        ));
+    }
+    if key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        return Err(Error::Other(format!(
+            "Idempotency-Key exceeds {MAX_IDEMPOTENCY_KEY_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 /// Refuse a charge on a record whose last confirmed onchain read is older
@@ -8466,6 +8483,67 @@ mod tests {
             authentication: proof,
         };
         (server, payload, memory_signer(9))
+    }
+
+    #[tokio::test]
+    async fn operator_use_bounds_the_idempotency_key() {
+        let (server, payload, _) = operator_channel().await;
+        let too_long = "k".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1);
+        let error = server
+            .process_use(&payload, "use-1", &too_long)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        assert!(server
+            .authenticate_use(&payload, "use-1", &too_long)
+            .await
+            .is_err());
+        assert!(stored(&server, &payload.channel_id)
+            .await
+            .processed_uses
+            .is_empty());
+
+        let longest = "k".repeat(MAX_IDEMPOTENCY_KEY_BYTES);
+        assert!(server
+            .process_use(&payload, "use-1", &longest)
+            .await
+            .is_ok());
+        assert!(server
+            .authenticate_use(&payload, "use-2", &longest)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn committed_deliveries_keep_a_bounded_replay_window() {
+        let (server, mut session, channel_id) = client_server().await;
+        let commits = MAX_COMMITTED_AUTHORIZATIONS + 2;
+        let mut first = None;
+        for _ in 0..commits {
+            let directive = server
+                .begin_delivery(DeliveryRequest::new(channel_id.clone(), 1))
+                .await
+                .unwrap();
+            let payload = CommitPayload {
+                delivery_id: directive.delivery_id,
+                voucher: session.sign_increment(1).await.unwrap(),
+            };
+            server.process_commit(&payload).await.unwrap();
+            first.get_or_insert(payload);
+        }
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(after.cumulative, commits as u64);
+        assert_eq!(
+            after.committed_deliveries.len(),
+            MAX_COMMITTED_AUTHORIZATIONS
+        );
+
+        // An evicted commit is refused, never charged again.
+        assert!(server.process_commit(&first.unwrap()).await.is_err());
+        assert_eq!(
+            stored(&server, &channel_id).await.cumulative,
+            commits as u64
+        );
     }
 
     fn memory_signer(seed: u8) -> MemorySigner {
