@@ -259,7 +259,12 @@ buffers the whole body before answering: a streaming handler reaches the client
 in one piece at the end. Bodies over 16 MiB, or bodies that fail mid-stream, are
 not delivered; the request settles at what was metered so far and answers 502.
 If settlement is still being retried in the background when the body is ready,
-the response is served without a `PAYMENT-RESPONSE` header.
+the response is served without a `PAYMENT-RESPONSE` header. A request dropped
+after its channel opened (a client disconnect, a timeout layer) still settles
+what was metered. A settlement that lands within the program's open-slot
+window (1,500 slots) leaves the channel account `Distributed`, holding the
+fee payer's rent until a permissionless `reclaim`; the `upto` server does not
+run one.
 
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /

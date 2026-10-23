@@ -994,20 +994,96 @@ async fn upto_gate_middleware(
         reference: open.channel_id.to_string(),
     });
     req.extensions_mut().insert(charge);
+    // The channel is open from here on: if this request future is dropped
+    // (a client disconnect, a timeout layer) before the settlement below is
+    // spawned, the guard settles what was metered so the escrow and the fee
+    // payer's rent are not left in an open channel nothing remembers.
+    let open = OpenedUpto::new(&upto, open, cell.clone(), UPTO_SETTLEMENT_RETRY);
     // A lazy body may meter while it is polled, after the handler future has
     // returned, so the charge is read only once the body is complete.
     let metered = buffer_metered_response(next.run(req).await).await;
 
     // Recover from poisoning so a handler that panicked *after* recording a
     // charge still settles the amount it consumed (not a silent zero refund).
-    let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
+    let actual = metered_charge(&cell);
     let metered = metered.map(|mut resp| {
         prevent_shared_caching(&mut resp);
         resp
     });
-    ServedUpto::settle(&upto, open, actual, metered, UPTO_SETTLEMENT_RETRY)
-        .respond(&upto)
-        .await
+    ServedUpto::settle(
+        &upto,
+        open.into_open(),
+        actual,
+        metered,
+        UPTO_SETTLEMENT_RETRY,
+    )
+    .respond(&upto)
+    .await
+}
+
+/// The amount a handler metered, zero when it metered nothing.
+fn metered_charge(cell: &Mutex<Option<u64>>) -> u64 {
+    (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0)
+}
+
+/// An `upto` channel opened for a request whose settlement is not yet
+/// spawned. Dropped without [`OpenedUpto::into_open`], it spawns the
+/// settlement of what was metered so far, so a cancelled request cannot
+/// strand the channel.
+struct OpenedUpto {
+    upto: Arc<X402Upto>,
+    open: Option<crate::x402::server::VerifiedUptoOpen>,
+    cell: Arc<Mutex<Option<u64>>>,
+    retry: UptoSettlementRetry,
+}
+
+impl OpenedUpto {
+    fn new(
+        upto: &Arc<X402Upto>,
+        open: crate::x402::server::VerifiedUptoOpen,
+        cell: Arc<Mutex<Option<u64>>>,
+        retry: UptoSettlementRetry,
+    ) -> Self {
+        Self {
+            upto: Arc::clone(upto),
+            open: Some(open),
+            cell,
+            retry,
+        }
+    }
+
+    /// Hand the open to the caller, which now owns its settlement.
+    fn into_open(mut self) -> crate::x402::server::VerifiedUptoOpen {
+        self.open.take().expect("taken only here")
+    }
+}
+
+impl Drop for OpenedUpto {
+    fn drop(&mut self) {
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        let actual = metered_charge(&self.cell);
+        let upto = Arc::clone(&self.upto);
+        let retry = self.retry;
+        let channel = open.channel_id;
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                tracing::warn!(
+                    channel = %channel,
+                    actual,
+                    "upto request dropped before settlement; settling what was metered"
+                );
+                runtime.spawn(async move {
+                    settle_served_upto(&upto, open, actual, retry).await;
+                });
+            }
+            Err(_) => tracing::error!(
+                channel = %channel,
+                "upto request dropped outside a runtime; the channel is left open"
+            ),
+        }
+    }
 }
 
 /// A served `upto` request whose settlement already runs on its own task, so
@@ -2862,6 +2938,50 @@ mod tests {
             upto.is_in_flight(&channel),
             "the metered amount still settles"
         );
+    }
+
+    /// A request dropped after its channel opened but before its settlement
+    /// was spawned still settles: the channel stays reserved by the spawned
+    /// settlement instead of being forgotten with the request future.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_request_dropped_after_the_open_still_settles_its_channel() {
+        let pay = upto_paykit();
+        let upto = pay.x402_upto().expect("signer enables upto").clone();
+        let retry = UptoSettlementRetry {
+            inline_attempts: 2,
+            background_attempts: 1,
+            base_delay: std::time::Duration::from_millis(200),
+        };
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let cell = Arc::new(Mutex::new(Some(300)));
+        drop(OpenedUpto::new(
+            &upto,
+            upto.test_open(channel, 1_000),
+            cell,
+            retry,
+        ));
+        assert!(
+            upto.is_in_flight(&channel),
+            "the dropped request's settlement holds the channel"
+        );
+        for _ in 0..100 {
+            if !upto.is_in_flight(&channel) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!upto.is_in_flight(&channel));
+
+        // Positive control: handed on for settlement, the guard spawns nothing.
+        let channel = solana_pubkey::Pubkey::new_unique();
+        let opened = OpenedUpto::new(
+            &upto,
+            upto.test_open(channel, 1_000),
+            Arc::new(Mutex::new(None)),
+            retry,
+        );
+        drop(opened.into_open());
+        assert!(!upto.is_in_flight(&channel));
     }
 
     /// A client disconnect during the inline retries drops the request future;
