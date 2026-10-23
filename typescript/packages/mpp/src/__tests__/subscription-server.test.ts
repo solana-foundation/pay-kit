@@ -713,6 +713,13 @@ describe('subscription().verify() (push mode)', () => {
                 case 'simulateTransaction':
                     return rpcSuccess({ value: { err: null, logs: [] } });
                 case 'sendTransaction':
+                    // Same requirement as the charge broadcaster: the
+                    // subscription blockhash is minted at confirmed, so
+                    // preflight has to be aimed there too.
+                    expect((body as { params?: [string, unknown] }).params?.[1]).toMatchObject({
+                        preflightCommitment: 'confirmed',
+                        skipPreflight: false,
+                    });
                     return rpcSuccess(txSignature);
                 case 'getSignatureStatuses':
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
@@ -863,6 +870,13 @@ describe('subscription().verify() (push mode)', () => {
                 case 'simulateTransaction':
                     return rpcSuccess({ value: { err: null, logs: [] } });
                 case 'sendTransaction':
+                    // Same requirement as the charge broadcaster: the
+                    // subscription blockhash is minted at confirmed, so
+                    // preflight has to be aimed there too.
+                    expect((body as { params?: [string, unknown] }).params?.[1]).toMatchObject({
+                        preflightCommitment: 'confirmed',
+                        skipPreflight: false,
+                    });
                     return rpcSuccess(txSignature);
                 case 'getSignatureStatuses':
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
