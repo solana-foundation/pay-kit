@@ -507,6 +507,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	// Channel open_slot (a PDA seed), read from the verified open transaction
 	// when one is present, else from the payload's recentSlot echo.
 	openSlot := openSlotFromPayload(payload)
+	replaying := false
 
 	switch {
 	case hasTransaction:
@@ -521,62 +522,83 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
+			Splits:           s.core.config.Splits,
 		}
-		if s.openTxSubmitter == OpenTxSubmitterServer {
-			if s.rpc == nil {
-				return "", fmt.Errorf("openTxSubmitter=server requires an rpc client")
-			}
-			// Decode-only first so an idempotent replay of an
-			// already-persisted open does not rebroadcast the transaction.
-			preVerified, err := VerifyOpenTx(ctx, expected, payload, nil)
+		if s.openTxSubmitter == OpenTxSubmitterServer && s.rpc == nil {
+			return "", fmt.Errorf("openTxSubmitter=server requires an rpc client")
+		}
+		// Bind the attached transaction first, then recognize existing state
+		// before reading funding that may have changed after a top-up.
+		preVerified, err := VerifyOpenTx(ctx, expected, payload, nil)
+		if err != nil {
+			return "", err
+		}
+		existing, err := s.core.store.GetChannel(ctx, preVerified.ChannelID)
+		if err != nil {
+			return "", err
+		}
+		if existing != nil {
+			replaying = true
+			channelID = preVerified.ChannelID
+			deposit = preVerified.Deposit
+			channelPayer = preVerified.Payer
+			openSlot = preVerified.OpenSlot
+		} else if s.openTxSubmitter == OpenTxSubmitterServer {
+			submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
 			if err != nil {
 				return "", err
 			}
-			existing, err := s.core.store.GetChannel(ctx, preVerified.ChannelID)
-			if err != nil {
-				return "", err
-			}
-			if existing != nil {
-				channelID = preVerified.ChannelID
-				deposit = preVerified.Deposit
-				channelPayer = preVerified.Payer
-				openSlot = preVerified.OpenSlot
-			} else {
-				submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
+			channelID = submitted.ChannelID
+			deposit = submitted.Deposit
+			channelPayer = submitted.Payer
+			openSlot = submitted.OpenSlot
+			signature = submitted.Signature
+		} else {
+			verified := preVerified
+			if s.rpc != nil {
+				verified, err = readConfirmedOpenChannel(ctx, expected, payload, &preVerified, s.rpc)
 				if err != nil {
 					return "", err
 				}
-				channelID = submitted.ChannelID
-				deposit = submitted.Deposit
-				channelPayer = submitted.Payer
-				openSlot = submitted.OpenSlot
-				signature = submitted.Signature
-			}
-		} else {
-			verified, err := VerifyOpenTx(ctx, expected, payload, s.rpc)
-			if err != nil {
-				return "", err
 			}
 			channelID = verified.ChannelID
 			deposit = verified.Deposit
 			channelPayer = verified.Payer
 			openSlot = verified.OpenSlot
 		}
-	case mode == intents.SessionModePush:
+	case paymentChannelOpen(payload):
 		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
+		// broadcast payment-channel open (push or operator-assisted pull).
+		// With an RPC client its confirmed account is checked before persisting;
+		// without one the channelId/deposit
 		// fields are trusted as-is.
-		channelID = *payload.ChannelID
 		var err error
+		channelID, err = payload.SessionID()
+		if err != nil {
+			return "", err
+		}
 		deposit, err = payload.DepositAmount()
 		if err != nil {
 			return "", err
 		}
-		if s.rpc != nil {
-			if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
+		existing, err := s.core.store.GetChannel(ctx, channelID)
+		if err != nil {
+			return "", err
+		}
+		replaying = existing != nil
+		if !replaying && s.rpc != nil {
+			expected := VerifyOpenTxExpected{
+				AuthorizedSigner: payload.AuthorizedSigner, Currency: s.currency,
+				MaxCap: s.cap, Network: s.network, Operator: s.core.config.Operator,
+				ProgramID: s.core.config.ProgramID, Recipient: s.recipient, Splits: s.core.config.Splits,
+			}
+			verified, err := readConfirmedOpenChannel(ctx, expected, payload, nil, s.rpc)
+			if err != nil {
 				return "", err
 			}
+			channelPayer = verified.Payer
+			openSlot = verified.OpenSlot
+			deposit = verified.Deposit
 		}
 	default:
 		// Pull mode without a channel transaction: trust the
@@ -603,12 +625,17 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	// Prefer the payer read from the verified open transaction (account 0, what
 	// the channel actually records) over the client-supplied payload fields.
 	operator := operatorFromVerifiedOpen(channelPayer, payload.Owner, payload.Payer)
+	admission := openAdmissionHost
+	if s.rpc != nil {
+		admission = openAdmissionRPC
+	}
 	fresh := ChannelState{
-		ChannelID:        channelID,
-		AuthorizedSigner: payload.AuthorizedSigner,
-		Deposit:          deposit,
-		OpenSlot:         openSlot,
-		Operator:         operator,
+		OpenFundingContext: s.core.openFundingContext(payload, admission),
+		ChannelID:          channelID,
+		AuthorizedSigner:   payload.AuthorizedSigner,
+		Deposit:            deposit,
+		OpenSlot:           openSlot,
+		Operator:           operator,
 	}
 
 	// The existence check lives inside the atomic mutator so a concurrent
@@ -624,7 +651,13 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 					"open replay: authorizedSigner %s does not match existing channel %s",
 					payload.AuthorizedSigner, channelID)
 			}
+			if err := checkOpenFundingContext(current, fresh.OpenFundingContext); err != nil {
+				return ChannelState{}, err
+			}
 			return *current, nil
+		}
+		if replaying {
+			return ChannelState{}, fmt.Errorf("channel %s disappeared during open replay; retry the open", channelID)
 		}
 		return fresh, nil
 	}); err != nil {
