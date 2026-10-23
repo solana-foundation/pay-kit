@@ -250,7 +250,9 @@ and client — plus SIWX.
 after the handler runs, so it needs a `fee_payer_signer` (the fee payer signs
 the settlement as the channel's zero-share payee, and doubles as receiver
 authorizer — the voucher signer — by default) and is gated with `paid_upto_get`
-/ `paid_upto_post` rather than `paid_get` / `paid_post`.
+/ `paid_upto_post` rather than `paid_get` / `paid_post`. The recipient's token
+account for each offered currency must already exist: opens are refused until
+it does, and settlement never creates it at the fee payer's expense.
 
 The `upto` gate reads the meter only once the response body is complete, so it
 buffers the whole body before answering: a streaming handler reaches the client

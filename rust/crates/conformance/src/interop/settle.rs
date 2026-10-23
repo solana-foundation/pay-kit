@@ -279,7 +279,7 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
     let m = c.m;
     let actual = scenario.primary_delta();
     let ixs = m.instructions();
-    let expected_len = if actual == 0 { 5 } else { 6 };
+    let expected_len = if actual == 0 { 4 } else { 5 };
     if ixs.len() != expected_len {
         c.problems.push(format!(
             "x402-upto settlement has {} instructions, expected {expected_len}",
@@ -287,8 +287,8 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
         ));
         return;
     }
-    let (settle, create_payee, create_treasury, create_recipient, distribute) = if actual == 0 {
-        (&ixs[0], &ixs[1], &ixs[2], &ixs[3], &ixs[4])
+    let (settle, create_payee, create_treasury, distribute) = if actual == 0 {
+        (&ixs[0], &ixs[1], &ixs[2], &ixs[3])
     } else {
         let verify = &ixs[0];
         c.check(m.program(verify) == ED25519_PROGRAM, || {
@@ -312,7 +312,7 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
         c.check(u64_le(&verify.data, 112 + 2 + 32) == Some(actual), || {
             format!("voucher cumulative amount != {actual}")
         });
-        (&ixs[1], &ixs[2], &ixs[3], &ixs[4], &ixs[5])
+        (&ixs[1], &ixs[2], &ixs[3], &ixs[4])
     };
     c.check(m.program(settle) == PAYMENT_CHANNELS_PROGRAM, || {
         "settle_and_seal is not a payment-channels instruction".into()
@@ -340,12 +340,6 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
             PAYMENT_CHANNEL_TREASURY_OWNER,
             treasury_ata.as_str(),
             "treasury",
-        ),
-        (
-            create_recipient,
-            pay_to,
-            recipient_ata.as_str(),
-            "recipient",
         ),
     ] {
         let ok = m.program(ix) == ATA_PROGRAM

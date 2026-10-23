@@ -1130,7 +1130,7 @@ case is in no scheduled shard.
 | --- | ---: | ---: | ---: |
 | charge | 159 | 136 | 23 |
 | x402-exact | 75 | 58 | 17 |
-| x402-upto | 12 | 9 | 3 |
+| x402-upto | 12 | 8 | 4 |
 
 **charge**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
@@ -1166,7 +1166,7 @@ case is in no scheduled shard.
 | --- | :---: | :---: |
 | go | 2 · 2k | 1 · 1k |
 | kotlin | 2 |  |
-| python | 2 | 1 |
+| python | 2 | 1 · 1k |
 | rust | 2 | (control) |
 | swift | 2 |  |
 

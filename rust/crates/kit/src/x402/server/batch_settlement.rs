@@ -1529,37 +1529,14 @@ impl X402BatchSettlement {
                     format!("{role} settlement ATA {ata} is unavailable: {e}"),
                 )
             })?;
-            if pc::from_address(&account.owner) != *token_program {
-                return reject("is not owned by the declared token program".to_string());
-            }
-            let Some(decoded) = decode_token_account(&account.data) else {
-                return reject("is not an initialized token account".to_string());
-            };
-            if decoded.mint != *mint {
-                return reject(format!(
-                    "holds mint {} rather than {}",
-                    pc::pubkey_string(&decoded.mint),
-                    pc::pubkey_string(mint)
-                ));
-            }
-            if decoded.owner != owner {
-                return reject(format!(
-                    "is owned by {} rather than {}",
-                    pc::pubkey_string(&decoded.owner),
-                    pc::pubkey_string(&owner)
-                ));
-            }
-            if decoded.state == TOKEN_ACCOUNT_FROZEN {
-                return reject("is frozen".to_string());
-            }
-            if let Some(extension) = decoded.unsupported_extension {
-                return reject(format!(
-                    "carries token account extension {extension}, which this server \
-                     will not settle through"
-                ));
-            }
-            if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
-                return reject(format!("is in account state {}", decoded.state));
+            if let Some(problem) = unusable_settlement_account(
+                &pc::from_address(&account.owner),
+                &account.data,
+                &owner,
+                mint,
+                token_program,
+            ) {
+                return reject(problem);
             }
         }
         Ok(())
@@ -3882,6 +3859,55 @@ fn decode_token_account(data: &[u8]) -> Option<TokenAccount> {
         state: data[108],
         unsupported_extension: unsupported_account_extension(data),
     })
+}
+
+/// Why the account at `owner`'s associated token address for `mint`, owned
+/// by `program` and holding `data`, cannot receive a settlement payout, or
+/// `None` when it can: it must be an
+/// initialized, unfrozen account of the declared token program holding
+/// `mint` for `owner`, with no extension outside the allowlist. The program
+/// forfeits a payout to an unusable account to the treasury, so a server
+/// checks before it accepts a deposit that would settle there.
+pub(crate) fn unusable_settlement_account(
+    program: &Pubkey,
+    data: &[u8],
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Option<String> {
+    if program != token_program {
+        return Some("is not owned by the declared token program".to_string());
+    }
+    let Some(decoded) = decode_token_account(data) else {
+        return Some("is not an initialized token account".to_string());
+    };
+    if decoded.mint != *mint {
+        return Some(format!(
+            "holds mint {} rather than {}",
+            pc::pubkey_string(&decoded.mint),
+            pc::pubkey_string(mint)
+        ));
+    }
+    if decoded.owner != *owner {
+        return Some(format!(
+            "is owned by {} rather than {}",
+            pc::pubkey_string(&decoded.owner),
+            pc::pubkey_string(owner)
+        ));
+    }
+    if decoded.state == TOKEN_ACCOUNT_FROZEN {
+        return Some("is frozen".to_string());
+    }
+    if let Some(extension) = decoded.unsupported_extension {
+        return Some(format!(
+            "carries token account extension {extension}, which this server \
+             will not settle through"
+        ));
+    }
+    if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
+        return Some(format!("is in account state {}", decoded.state));
+    }
+    None
 }
 
 /// The first account extension outside the allowlist, if the account has one.

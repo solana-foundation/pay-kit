@@ -76,6 +76,13 @@ ids = [
 reason = "the x402 server adapter does not mount MPP_HARNESS_REPLAY_SOURCE_PATH, so the cheap route a cross-route payment comes from does not exist"
 tracking = "FINDINGS.md#x402-replay-route-missing"
 
+[[known_failing]]
+ids = [
+  "interop/x402-upto-basic/rust/python",
+]
+reason = "upto settlement idempotently creates every distribution recipient's token account with the fee payer as funder (python/src/solana_pay_kit/protocols/x402/upto/__init__.py:446), one instruction more than the settlement shape the Rust server now sends"
+tracking = "FINDINGS.md#upto-settlement-funds-recipient-ata"
+
 # Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
 
 [[unsupported]]

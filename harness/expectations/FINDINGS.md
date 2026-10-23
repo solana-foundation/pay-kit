@@ -267,6 +267,24 @@ field alone, so a 400,000 unit limit at 5,000,000 micro-lamports (a
 2,000,000 lamport fee) and a price-only prefix charged on the implicit limit
 are both accepted.
 
+## upto-settlement-funds-recipient-ata
+
+**Case:** `interop/x402-upto-basic/rust/python`
+**SDKs:** python
+
+An upto settlement co-signed by the fee payer that also creates each
+distribution recipient's token account pays that account's rent, even for a
+zero-amount settlement. A recipient the operator does not control can close
+the account after each settlement and keep the rent. Rust creates only the
+fee payer's payee account and the treasury account, and instead refuses an
+open whose recipients lack a usable token account (scheme_upto_svm.md Phase 3
+settlement readiness), so a payout is never forfeited to the treasury. Python
+appends `create_idempotent_associated_token_account` for every recipient
+(`python/src/solana_pay_kit/protocols/x402/upto/__init__.py:446`). Fix: drop
+the recipient creations and check recipient token accounts before co-signing
+the open; dropping the creations alone would forfeit payouts to accounts that
+do not exist.
+
 ## session-open-initial-voucher-accepted
 
 **Case:** `vector/session-wire-action-open-initial-voucher-reject`

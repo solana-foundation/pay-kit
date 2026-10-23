@@ -67,7 +67,8 @@ const MIN_SETTLEMENT_VOUCHER_TTL_SECONDS: u64 = 60;
 pub struct UptoConfig {
     /// Where settled funds go. The channel payee is always the fee payer
     /// (zero-share seat); this only decides which beneficiary the bound 100%
-    /// distribution split pays.
+    /// distribution split pays. That beneficiary's token account for each
+    /// offered currency must already exist: opens are refused until it does.
     pub payout: UptoPayout,
     /// Non-empty universe of currencies this server offers and accepts. `[0]`
     /// is the primary/default currency. The `upto` challenge advertises one
@@ -734,6 +735,7 @@ impl X402Upto {
             expires_at,
             in_flight,
         } = self.prepare_open(header, &offered, now_unix())?;
+        self.ensure_payouts_ready(&expected_mint, &token_program, &expected_distribution)?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
@@ -1006,14 +1008,9 @@ impl X402Upto {
             &open.mint,
             &open.token_program,
         ));
-        for entry in &open.distribution {
-            instructions.push(pc::build_create_associated_token_account_instruction(
-                &self.fee_payer,
-                &entry.recipient,
-                &open.mint,
-                &open.token_program,
-            ));
-        }
+        // Recipient accounts were required to exist before the open
+        // (`ensure_payouts_ready`) and are never created here: the fee payer
+        // would fund an account its owner can close for the rent.
         instructions.push(pc::build_distribute_instruction(
             &open.channel_id,
             &open.payer,
@@ -1210,6 +1207,51 @@ impl X402Upto {
         Ok(())
     }
 
+    /// Phase 3 step 8, settlement readiness: every distribution recipient's
+    /// token account must already exist and be usable before the deposit is
+    /// escrowed. Settlement never creates them at the fee payer's expense
+    /// (an owner could close and recreate the account to collect that rent),
+    /// and the program forfeits a payout to an unusable account. A failed
+    /// read is a refusal too.
+    fn ensure_payouts_ready(
+        &self,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        distribution: &[pc::Distribution],
+    ) -> Result<(), Error> {
+        // The fee payer's own account is the payee seat settlement creates
+        // itself; only accounts of other owners must already exist.
+        for entry in distribution.iter().filter(|entry| entry.recipient != self.fee_payer) {
+            let (ata, _) = pc::find_associated_token_address(&entry.recipient, mint, token_program);
+            let account = self
+                .rpc
+                .get_account_with_commitment(&ata, self.rpc.commitment())
+                .map_err(|e| Error::Rpc(format!("payout token account read failed: {e}")))?
+                .value;
+            let problem = match account {
+                None => Some("does not exist".to_string()),
+                Some(account) => {
+                    crate::x402::server::batch_settlement::unusable_settlement_account(
+                        &pc::from_address(&account.owner),
+                        &account.data,
+                        &entry.recipient,
+                        mint,
+                        token_program,
+                    )
+                }
+            };
+            if let Some(problem) = problem {
+                return Err(Error::Other(format!(
+                    "payout token account {} of {} {problem}; it must be an initialized \
+                     token account before payments settle to it",
+                    pc::pubkey_string(&ata),
+                    pc::pubkey_string(&entry.recipient)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
         let data = self
             .rpc
@@ -1245,7 +1287,8 @@ pub mod testkit {
     /// The checks [`X402Upto::verify_open_for_route`] runs before it
     /// broadcasts the open, at an explicit `now` (Unix seconds) and with the
     /// route's maximum already in base units, co-signature included (on a
-    /// local copy). `Ok` means the production path would go on to broadcast.
+    /// local copy). `Ok` means the production path would go on to its
+    /// settlement-readiness reads (`ensure_payouts_ready`) and broadcast.
     pub async fn verify_open_pre_broadcast(
         server: &X402Upto,
         header: &str,
@@ -2927,6 +2970,93 @@ mod tests {
         let accepted_a = serde_json::to_value(&a).unwrap();
         assert!(match_offered_requirement(std::slice::from_ref(&b), &accepted_a).is_err());
         assert!(match_offered_requirement(std::slice::from_ref(&a), &accepted_a).is_ok());
+    }
+
+    /// The fee payer funds no account a distribution recipient owns: the
+    /// recipient could close it after each settlement and keep the rent.
+    #[tokio::test]
+    async fn settlement_never_creates_a_recipient_account() {
+        let engine = multi_currency_engine(&["USDC"]);
+        let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        let created_for = |ixs: &[Instruction]| -> Vec<Pubkey> {
+            ixs.iter()
+                .filter(|ix| ix.program_id == pc::associated_token_program_id())
+                .map(|ix| ix.accounts[2].pubkey)
+                .collect()
+        };
+        for actual in [0, 400, 1_000] {
+            let ixs = engine
+                .build_settlement_instructions(&open, actual, true)
+                .await
+                .unwrap();
+            let created = created_for(&ixs);
+            for entry in &open.distribution {
+                assert!(!created.contains(&entry.recipient), "actual {actual}");
+            }
+            // Positive control: the fee payer's own seat and the treasury.
+            assert!(created.contains(&engine.fee_payer));
+            assert!(created.contains(&engine.treasury_owner()));
+        }
+    }
+
+    #[test]
+    fn an_open_is_refused_until_every_payout_account_is_usable() {
+        let engine = |rpc: RpcClient| {
+            let mut engine = multi_currency_engine(&["USDC"]);
+            engine.rpc = Arc::new(rpc);
+            engine
+        };
+        let answering = |value: serde_json::Value| {
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": value }),
+            );
+            RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+        };
+        let probe = multi_currency_engine(&["USDC"]);
+        let usdc = &probe.config.currencies[0];
+        let (mint, token_program) = (
+            probe.mint_for(usdc).unwrap(),
+            probe.token_program_for(usdc).unwrap(),
+        );
+        let distribution = probe.distribution().unwrap();
+        let recipient = distribution[0].recipient;
+        let token_account = |state: u8| {
+            use base64::Engine as _;
+            let mut data = vec![0u8; 165];
+            data[..32].copy_from_slice(mint.as_ref());
+            data[32..64].copy_from_slice(recipient.as_ref());
+            data[108] = state;
+            serde_json::json!({
+                "lamports": 2_039_280,
+                "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+                "owner": pc::pubkey_string(&token_program),
+                "executable": false,
+                "rentEpoch": 0,
+                "space": 165,
+            })
+        };
+        let check =
+            |engine: X402Upto| engine.ensure_payouts_ready(&mint, &token_program, &distribution);
+
+        let err = check(engine(answering(serde_json::Value::Null))).unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+        let err = check(engine(answering(token_account(2)))).unwrap_err();
+        assert!(err.to_string().contains("frozen"), "{err}");
+        assert!(check(engine(RpcClient::new_mock("fails".to_string()))).is_err());
+        // Positive control: an initialized account of the recipient.
+        check(engine(answering(token_account(1)))).expect("usable payout account");
+        // The default payout to the fee payer itself (`ReceiverKeepsAll` with
+        // no separate receiver authorizer) needs no account up front:
+        // settlement creates the fee payer's own seat.
+        let own = engine(answering(serde_json::Value::Null));
+        let to_fee_payer = [pc::Distribution {
+            recipient: own.fee_payer,
+            bps: 10_000,
+        }];
+        own.ensure_payouts_ready(&mint, &token_program, &to_fee_payer)
+            .expect("the fee payer's own payout needs no account yet");
     }
 
     /// A payer that closed its token account after the open cannot make the
