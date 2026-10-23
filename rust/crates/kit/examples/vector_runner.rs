@@ -43,6 +43,7 @@ use solana_pay_kit::core::store::{
 use solana_pay_kit::core::tx::{accepted_versions, TxVersion};
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
+    PayerFundedAtaCreation,
 };
 use solana_pay_kit::mpp::protocol::core::{base64url_decode, compute_challenge_id, Base64UrlJson};
 use solana_pay_kit::mpp::protocol::intents::session::{
@@ -335,6 +336,9 @@ async fn charge_build(input: &Value) -> Result<String, Rejection> {
     let mut options = BuildChargeTransactionOptions {
         external_id: charge.external_id.clone(),
         max_tx_version: signer_max_version(input)?,
+        // The vectors pin the spec's client-paid shape, which includes split
+        // ATA creation (RULINGS C5); the kit declines it by default.
+        payer_funded_ata_creation: PayerFundedAtaCreation::Include,
         ..Default::default()
     };
     let mut budget = ComputeBudgetOptions::default();

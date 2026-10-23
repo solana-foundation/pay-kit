@@ -46,8 +46,10 @@ sentence fixes the shape of a client-paid transaction; it does not oblige a
 client to accept the challenge, and Client-Side Verification leaves split
 acceptance to the client. A client that will not fund that rent declines the
 challenge, which is conformant; it never builds a transaction without the
-instruction. Rust's low-level builder includes the creation by default, and
-`PayKitClient`, whose spend cap covers only `amount`, declines.
+instruction. Rust's builders decline unless the caller opts in
+(`PayerFundedAtaCreation::Include`), since the rent sits outside any amount
+cap; the conformance testee opts in so the vectors can pin the client-paid
+shape.
 
 ## MPP core
 
