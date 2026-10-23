@@ -3159,6 +3159,13 @@ impl<S: ChannelStore> SessionServer<S> {
     }
 
     /// Return seal parameters for a channel ready for on-chain settlement.
+    ///
+    /// The channel's settled watermark is re-read onchain when an RPC is
+    /// configured (a failed read falls back to the stored one, so a retry
+    /// re-reads it). Once that watermark reaches the stored cumulative the
+    /// highest voucher can no longer be applied (the program requires it to
+    /// exceed `settled`), so no voucher is returned and the close seals at
+    /// the onchain watermark.
     pub async fn seal_params(&self, channel_id: &str) -> Result<SealParams> {
         let state = self
             .store
@@ -3173,6 +3180,33 @@ impl<S: ChannelStore> SessionServer<S> {
                 state.cumulative, state.deposit
             )));
         }
+        let mut state = state;
+        let now = now_unix_secs().max(0) as u64;
+        if let Ok((Some((_, onchain)), _)) = self.read_channel_lifecycle(channel_id, now, 0).await {
+            if onchain > state.settled_on_chain {
+                state.settled_on_chain = onchain;
+                self.store
+                    .mutate_channel(
+                        channel_id,
+                        None,
+                        Box::new(move |state| {
+                            state.settled_on_chain = state.settled_on_chain.max(onchain);
+                            Ok(())
+                        }),
+                    )
+                    .await
+                    .map_err(store_err)?;
+            }
+        }
+        let (voucher_signature, voucher_expires_at) = if state.settled_on_chain >= state.cumulative
+        {
+            (None, None)
+        } else {
+            (
+                state.highest_voucher_signature,
+                state.highest_voucher_expires_at,
+            )
+        };
 
         let channel_pubkey = parse_pubkey(channel_id)?;
         let recipient_pubkey = parse_pubkey(&self.config.recipient)?;
@@ -3206,9 +3240,9 @@ impl<S: ChannelStore> SessionServer<S> {
             program_id,
             channel_version: self.config.channel_version,
             channel_hooks: self.config.channel_hooks.clone(),
-            settled: state.cumulative,
-            voucher_signature: state.highest_voucher_signature,
-            voucher_expires_at: state.highest_voucher_expires_at,
+            settled: state.cumulative.max(state.settled_on_chain),
+            voucher_signature,
+            voucher_expires_at,
             recipient: recipient_pubkey,
             splits: self.config.splits.clone(),
             distribution_hash,
@@ -7328,6 +7362,81 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "server")]
+    /// A client channel at cumulative 100 holding its highest voucher, whose
+    /// account (served when `onchain_settled` is set) has settled that much.
+    async fn sealable_channel(
+        onchain_settled: Option<u64>,
+    ) -> (
+        SessionServer<MemoryChannelStore>,
+        String,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
+        let channel = Pubkey::new_unique();
+        let channel_id = channel.to_string();
+        let mut session = ActiveSession::new(channel, signer(1));
+        let voucher = session.sign_increment(100).await.unwrap();
+        let mut stored = state(channel_id.clone(), signer_address(1));
+        stored.cumulative = 100;
+        stored.highest_voucher_signature = Some(voucher.signature);
+        stored.highest_voucher_expires_at = Some(voucher.data.expires_at.unwrap_or(0));
+        let mut cfg = config(VoucherSigner::Client);
+        let rpc = match onchain_settled {
+            Some(settled) => {
+                let account = channel_account(&stored, 0, 0, settled);
+                let (url, rpc, _) = rpc_for_channel(account, 43).await;
+                cfg.rpc_url = Some(url);
+                Some(rpc)
+            }
+            None => None,
+        };
+        (seeded_server(cfg, stored).await, channel_id, rpc)
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn seal_params_omits_a_voucher_already_settled_onchain() {
+        let (server, channel_id, rpc) = sealable_channel(Some(100)).await;
+        let seal = server.seal_params(&channel_id).await.unwrap();
+        assert_eq!(seal.settled, 100);
+        assert!(seal.voucher_signature.is_none());
+        let operator = Pubkey::from_str(&server.config.operator).unwrap();
+        // settle_and_seal alone, with no Ed25519 voucher instruction.
+        assert_eq!(seal.settle_instructions(&operator).unwrap().len(), 1);
+        assert_eq!(stored(&server, &channel_id).await.settled_on_chain, 100);
+
+        // The recorded watermark keeps the voucher out without a read.
+        rpc.unwrap().abort();
+        assert!(server
+            .seal_params(&channel_id)
+            .await
+            .unwrap()
+            .voucher_signature
+            .is_none());
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn seal_params_keeps_a_voucher_above_the_onchain_watermark() {
+        let (server, channel_id, rpc) = sealable_channel(Some(40)).await;
+        let seal = server.seal_params(&channel_id).await.unwrap();
+        assert_eq!(seal.settled, 100);
+        assert!(seal.voucher_signature.is_some());
+        let operator = Pubkey::from_str(&server.config.operator).unwrap();
+        assert_eq!(seal.settle_instructions(&operator).unwrap().len(), 2);
+        assert_eq!(stored(&server, &channel_id).await.settled_on_chain, 40);
+        rpc.unwrap().abort();
+
+        // Without an RPC the stored watermark decides.
+        let (server, channel_id, _) = sealable_channel(None).await;
+        assert!(server
+            .seal_params(&channel_id)
+            .await
+            .unwrap()
+            .voucher_signature
+            .is_some());
+    }
+
     #[tokio::test]
     async fn seal_params_refuses_a_watermark_above_deposit() {
         let (server, _session, channel_id) = client_server().await;
@@ -7868,6 +7977,7 @@ mod tests {
         assert_eq!(after.spent_amount, 50);
     }
 
+    #[cfg(feature = "server")]
     /// A channel account as the program stores it, at `status` with a forced
     /// close started at `closure_started_at` (`0`: none).
     fn channel_account(
