@@ -1842,6 +1842,8 @@ impl<S: ChannelStore> SessionServer<S> {
         // outlast it so the operator can still redeem on-chain after the async
         // forced-close delay.
         let owner = self.config.operator.clone();
+        let expires_at = voucher.data.expires_at.unwrap_or(0);
+        let grace_period = self.config.grace_period_seconds;
         let acceptance = crate::core::session::accept_voucher_with_commit(
             &self.store,
             &voucher.data.channel_id,
@@ -1871,10 +1873,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     .ok_or_else(|| StoreError::Internal("session spent amount overflow".into()))?;
                 let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
                 state.last_activity_at = now_ms;
-                state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                    owner: owner.clone(),
-                    close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                });
+                state.lifecycle = idle_lifecycle(state, &owner, now_ms, expires_at, grace_period);
                 Ok(())
             },
         )
@@ -1988,10 +1987,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     state.highest_voucher_expires_at = Some(0);
                     let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
                     state.last_activity_at = now_ms;
-                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                        owner: lifecycle_owner.clone(),
-                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                    });
+                    state.lifecycle = idle_lifecycle(&state, &lifecycle_owner, now_ms, 0, 0);
                     record_use(
                         &mut state.processed_uses,
                         crate::core::store::ProcessedUse {
@@ -2232,10 +2228,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     state.highest_voucher_expires_at = Some(0);
                     let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
                     state.last_activity_at = now_ms;
-                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                        owner: lifecycle_owner.clone(),
-                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                    });
+                    state.lifecycle = idle_lifecycle(&state, &lifecycle_owner, now_ms, 0, 0);
                     record_use(
                         &mut state.processed_uses,
                         crate::core::store::ProcessedUse {
@@ -2524,6 +2517,7 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let cid = payload.channel_id.clone();
         let lifecycle_owner = self.config.operator.clone();
+        let grace_period = self.config.grace_period_seconds;
         let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let replay_out = std::sync::Arc::clone(&replay);
         let transaction_signature = topup_signature.clone();
@@ -2560,10 +2554,13 @@ impl<S: ChannelStore> SessionServer<S> {
                                 StoreError::Internal("top-up deposit overflow".to_string())
                             })?;
                     let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
-                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                        owner: lifecycle_owner.clone(),
-                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                    });
+                    state.lifecycle = idle_lifecycle(
+                        &state,
+                        &lifecycle_owner,
+                        now_ms,
+                        state.highest_voucher_expires_at.unwrap_or(0),
+                        grace_period,
+                    );
                     state.deposit = new_deposit;
                     state.last_activity_at = now_ms;
                     state
@@ -2819,6 +2816,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let signature = payload.voucher.signature.clone();
         let expires_at = payload.voucher.data.expires_at.unwrap_or(0);
         let lifecycle_owner = self.config.operator.clone();
+        let grace_period = self.config.grace_period_seconds;
         let commit_outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
         let _new_state = self
             .store
@@ -2915,11 +2913,13 @@ impl<S: ChannelStore> SessionServer<S> {
                         // actively paying through the metered-delivery flow.
                         let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
                         state.last_activity_at = now_ms;
-                        state.lifecycle =
-                            state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
-                                owner: lifecycle_owner.clone(),
-                                close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
-                            });
+                        state.lifecycle = idle_lifecycle(
+                            &state,
+                            &lifecycle_owner,
+                            now_ms,
+                            expires_at,
+                            grace_period,
+                        );
                         state.committed_deliveries.push_back(CommittedDelivery {
                             delivery_id: delivery_id.clone(),
                             amount: actual_amount,
@@ -3309,6 +3309,34 @@ fn check_idempotency_key(key: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The idle-close deadline after activity at `now_ms`: the negotiated idle
+/// timeout, but never later than `grace_period` seconds before the expiry of
+/// the voucher the close will settle (`0`: never expires), so that voucher is
+/// still redeemable when the host closes the channel.
+fn idle_lifecycle(
+    state: &ChannelState,
+    owner: &str,
+    now_ms: u64,
+    voucher_expires_at: i64,
+    grace_period: u32,
+) -> Option<ChannelLifecycle> {
+    state.idle_timeout_seconds.map(|seconds| {
+        let idle = now_ms.saturating_add(u64::from(seconds) * 1_000);
+        let close_after = match u64::try_from(voucher_expires_at) {
+            Ok(expires_at) if expires_at > 0 => idle.min(
+                expires_at
+                    .saturating_sub(u64::from(grace_period))
+                    .saturating_mul(1_000),
+            ),
+            _ => idle,
+        };
+        ChannelLifecycle {
+            owner: owner.to_string(),
+            close_after,
+        }
+    })
 }
 
 /// Refuse a charge on a record whose last confirmed onchain read is older
@@ -8260,6 +8288,73 @@ mod tests {
                 started_at: Some(1)
             }
         );
+    }
+
+    #[tokio::test]
+    async fn idle_close_comes_before_the_settled_voucher_expires() {
+        let (mut server, mut session, channel_id) = client_server().await;
+        server.config.grace_period_seconds = 900;
+        server
+            .store
+            .mutate_channel(
+                &channel_id,
+                None,
+                Box::new(|state| {
+                    state.idle_timeout_seconds = Some(3_600);
+                    Ok(())
+                }),
+            )
+            .await
+            .unwrap();
+        // Outlasts the grace period, so it is accepted, but expires long
+        // before the one-hour idle timeout would close the channel.
+        let expires_at = now_unix_secs() + 960;
+        session.set_expires_at(expires_at);
+        let voucher = session.sign_increment(100).await.unwrap();
+        server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .unwrap();
+        let close_after = stored(&server, &channel_id)
+            .await
+            .lifecycle
+            .unwrap()
+            .close_after;
+        assert_eq!(close_after, (expires_at as u64 - 900) * 1_000);
+
+        let directive = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 10))
+            .await
+            .unwrap();
+        session.set_expires_at(expires_at + 30);
+        let payload = CommitPayload {
+            delivery_id: directive.delivery_id,
+            voucher: session.sign_increment(10).await.unwrap(),
+        };
+        server.process_commit(&payload).await.unwrap();
+        let close_after = stored(&server, &channel_id)
+            .await
+            .lifecycle
+            .unwrap()
+            .close_after;
+        assert_eq!(close_after, (expires_at as u64 + 30 - 900) * 1_000);
+    }
+
+    #[tokio::test]
+    async fn a_never_expiring_voucher_keeps_the_idle_timeout() {
+        let (server, mut session, channel_id) = client_server().await;
+        session.set_expires_at(0);
+        let voucher = session.sign_increment(100).await.unwrap();
+        let before = now_unix_secs() as u64 * 1_000;
+        server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .unwrap();
+        let after = stored(&server, &channel_id).await;
+        let close_after = after.lifecycle.unwrap().close_after;
+        // `state` negotiates a 60-second idle timeout.
+        assert!(close_after >= before + 60_000);
+        assert!(close_after <= after.last_activity_at + 60_000);
     }
 
     #[tokio::test]
