@@ -199,34 +199,70 @@ fn is_empty_tombstone(state: &ChannelState) -> bool {
 
 fn spawn_next_submission(
     version: TxVersion,
-    in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
-    pending: &mut std::collections::VecDeque<Vec<Instruction>>,
+    in_flight: &mut tokio::task::JoinSet<Result<String, FailedSubmission>>,
+    pending: &mut std::collections::VecDeque<Vec<Vec<Instruction>>>,
     pipeline: &TxPipeline,
     signer: &Arc<dyn TransactionSigner>,
     fee_payer: &Pubkey,
 ) {
-    let Some(instructions) = pending.pop_front() else {
+    let Some(groups) = pending.pop_front() else {
         return;
     };
     let pipeline = pipeline.clone();
     let signer = Arc::clone(signer);
     let fee_payer = *fee_payer;
     in_flight.spawn(async move {
-        let blockhash = pipeline
-            .latest_blockhash()
-            .await
-            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let mut tx =
-            crate::core::tx::build_unsigned(version, &fee_payer, &instructions, blockhash, None)?;
-        crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        pipeline
-            .submit_verified(&tx)
-            .await
-            .map(|confirmed| confirmed.signature.to_string())
-            .map_err(|e| Error::Rpc(format!("settlement submission failed: {e}")))
+        let failed =
+            |error: Error, on_chain: bool, groups: Vec<Vec<Instruction>>| FailedSubmission {
+                error,
+                on_chain,
+                groups,
+            };
+        let instructions: Vec<Instruction> = groups.iter().flatten().cloned().collect();
+        let blockhash = match pipeline.latest_blockhash().await {
+            Ok(blockhash) => blockhash,
+            Err(e) => {
+                let error = Error::Rpc(format!("blockhash fetch failed: {e}"));
+                return Err(failed(error, false, groups));
+            }
+        };
+        let mut tx = match crate::core::tx::build_unsigned(
+            version,
+            &fee_payer,
+            &instructions,
+            blockhash,
+            None,
+        ) {
+            Ok(tx) => tx,
+            Err(error) => return Err(failed(error.into(), false, groups)),
+        };
+        if let Err(e) =
+            crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx).await
+        {
+            let error = Error::Other(format!("fee payer signing failed: {e}"));
+            return Err(failed(error, false, groups));
+        }
+        match pipeline.submit_verified(&tx).await {
+            Ok(confirmed) => Ok(confirmed.signature.to_string()),
+            Err(e) => {
+                let on_chain = matches!(
+                    e,
+                    crate::core::tx_pipeline::TxPipelineError::TransactionFailed { .. }
+                );
+                let error = Error::Rpc(format!("settlement submission failed: {e}"));
+                Err(failed(error, on_chain, groups))
+            }
+        }
     });
+}
+
+/// A settlement transaction that did not land, with the channel groups it
+/// carried.
+struct FailedSubmission {
+    error: Error,
+    /// It landed and failed, so none of its instructions applied.
+    on_chain: bool,
+    groups: Vec<Vec<Instruction>>,
 }
 
 /// Fetch and decode a channel account with the blocking RPC client. Factored out
@@ -3361,18 +3397,16 @@ impl X402BatchSettlement {
         // remote signing cannot age later batches before they are submitted.
         let mut pending = std::collections::VecDeque::with_capacity(batches.len());
         for batch in batches {
-            let instructions: Vec<_> = batch
-                .into_iter()
-                .flat_map(|group| group.instructions)
-                .collect();
-            pending.push_back(instructions);
+            let groups: Vec<Vec<Instruction>> =
+                batch.into_iter().map(|group| group.instructions).collect();
+            pending.push_back(groups);
         }
 
         // Feed each independent transaction into the shared pipeline. This
         // local bound limits task creation; the pipeline supplies the global
         // send bound, pacing, retry policy, and batched confirmation tracker
         // across every concurrent lifecycle chunk.
-        let total = pending.len();
+        let mut total = pending.len();
         let pipeline = self.transaction_pipeline().await;
         let mut in_flight = tokio::task::JoinSet::new();
         for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
@@ -3388,18 +3422,34 @@ impl X402BatchSettlement {
         let mut signatures = Vec::with_capacity(total);
         let mut failures = Vec::new();
         while let Some(joined) = in_flight.join_next().await {
-            spawn_next_submission(
-                self.tx_version(),
-                &mut in_flight,
-                &mut pending,
-                &pipeline,
-                &self.config.fee_payer_signer,
-                &self.fee_payer,
-            );
             match joined {
                 Ok(Ok(signature)) => signatures.push(signature),
-                Ok(Err(error)) => failures.push(error.to_string()),
+                // A transaction is atomic, so nothing in it applied: one
+                // channel failing deterministically must not fail the others
+                // packed with it. Each is submitted again alone.
+                Ok(Err(failed)) if failed.on_chain && failed.groups.len() > 1 => {
+                    tracing::warn!(
+                        error = %failed.error,
+                        channels = failed.groups.len(),
+                        "packed settlement failed on-chain; submitting each channel alone",
+                    );
+                    total += failed.groups.len() - 1;
+                    for group in failed.groups {
+                        pending.push_back(vec![group]);
+                    }
+                }
+                Ok(Err(failed)) => failures.push(failed.error.to_string()),
                 Err(error) => failures.push(format!("submit join error: {error}")),
+            }
+            while in_flight.len() < SUBMIT_GROUPS_CONCURRENCY && !pending.is_empty() {
+                spawn_next_submission(
+                    self.tx_version(),
+                    &mut in_flight,
+                    &mut pending,
+                    &pipeline,
+                    &self.config.fee_payer_signer,
+                    &self.fee_payer,
+                );
             }
         }
         if !failures.is_empty() {
@@ -6103,6 +6153,137 @@ mod tests {
             .await
             .expect_err("the placeholder transaction does not decode");
         assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// One channel whose settlement fails on-chain fails the transaction it
+    /// was packed into; the other channels are submitted again alone and
+    /// land, and only the failing one is reported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failing_channel_does_not_fail_the_channels_packed_with_it() {
+        use axum::{routing::post, Json, Router};
+        use std::collections::HashSet;
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Clone, Default)]
+        struct Chain {
+            poison: Arc<StdMutex<Option<Pubkey>>>,
+            failing: Arc<StdMutex<HashSet<String>>>,
+            sends: Arc<StdMutex<Vec<usize>>>,
+        }
+        async fn rpc(
+            axum::extract::State(chain): axum::extract::State<Chain>,
+            Json(request): Json<serde_json::Value>,
+        ) -> Json<serde_json::Value> {
+            let result = match request["method"].as_str().unwrap_or_default() {
+                "getLatestBlockhash" => serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "blockhash": solana_hash::Hash::new_unique().to_string(),
+                        "lastValidBlockHeight": 100
+                    }
+                }),
+                "sendTransaction" => {
+                    let tx =
+                        crate::core::tx::decode(request["params"][0].as_str().unwrap()).unwrap();
+                    let signature = tx.signatures[0].to_string();
+                    chain
+                        .sends
+                        .lock()
+                        .unwrap()
+                        .push(tx.message.instructions().len());
+                    let poison = *chain.poison.lock().unwrap();
+                    if poison.is_some_and(|p| tx.message.static_account_keys().contains(&p)) {
+                        chain.failing.lock().unwrap().insert(signature.clone());
+                    }
+                    serde_json::json!(signature)
+                }
+                "getSignatureStatuses" => {
+                    let failing = chain.failing.lock().unwrap().clone();
+                    let values: Vec<_> = request["params"][0]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|sig| {
+                            let err = failing
+                                .contains(sig.as_str().unwrap())
+                                .then(|| serde_json::json!({ "InstructionError": [0, { "Custom": 1 }] }));
+                            serde_json::json!({
+                                "slot": 1,
+                                "confirmations": null,
+                                "err": err,
+                                "status": match &err { Some(e) => serde_json::json!({ "Err": e }), None => serde_json::json!({ "Ok": null }) },
+                                "confirmationStatus": "confirmed"
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "context": { "slot": 1 }, "value": values })
+                }
+                other => panic!("unexpected RPC method {other}"),
+            };
+            Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+        }
+
+        let chain = Chain::default();
+        let app = Router::new()
+            .route("/", post(rpc))
+            .with_state(chain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let pipeline = TxPipeline::new(
+            url,
+            TxPipelineConfig {
+                batch_coalesce_interval: std::time::Duration::from_millis(10),
+                confirmation_poll_interval: std::time::Duration::from_millis(10),
+                confirmation_timeout: std::time::Duration::from_secs(2),
+                ..TxPipelineConfig::default()
+            },
+        );
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(key.as_bytes());
+        keypair[32..].copy_from_slice(key.verifying_key().as_bytes());
+        let signer = solana_keychain::MemorySigner::from_bytes(&keypair).unwrap();
+        let handler = X402BatchSettlement::with_store(
+            BatchConfig::new(PAY_TO, "localnet", Arc::new(signer)),
+            Arc::new(MemoryChannelStore::new()),
+        )
+        .unwrap()
+        .with_tx_pipeline(pipeline);
+        let groups = |accounts: &[Pubkey]| -> Vec<ChannelInstructionGroup> {
+            accounts
+                .iter()
+                .map(|account| ChannelInstructionGroup {
+                    channel_id: pc::pubkey_string(account),
+                    instructions: vec![Instruction::new_with_bytes(
+                        Pubkey::new_unique(),
+                        &[0],
+                        vec![solana_instruction::AccountMeta::new(*account, false)],
+                    )],
+                })
+                .collect()
+        };
+        let accounts: Vec<Pubkey> = (0..3).map(|_| Pubkey::new_unique()).collect();
+        *chain.poison.lock().unwrap() = Some(accounts[1]);
+
+        let err = handler
+            .submit_groups(groups(&accounts), MAX_CLAIMS_PER_BATCH)
+            .await
+            .expect_err("the failing channel is reported");
+        assert!(err.to_string().contains("1 of 3"), "{err}");
+        // The packed attempt, then one transaction per channel.
+        assert_eq!(chain.sends.lock().unwrap().clone(), vec![3, 1, 1, 1]);
+
+        // Positive control: without a failing channel the pack lands as one.
+        *chain.poison.lock().unwrap() = None;
+        chain.sends.lock().unwrap().clear();
+        let accounts: Vec<Pubkey> = (0..3).map(|_| Pubkey::new_unique()).collect();
+        let signatures = handler
+            .submit_groups(groups(&accounts), MAX_CLAIMS_PER_BATCH)
+            .await
+            .unwrap();
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(chain.sends.lock().unwrap().clone(), vec![3]);
     }
 
     /// A deposit is broadcast only after the handler runs, so one that cannot

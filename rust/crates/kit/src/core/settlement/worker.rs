@@ -12,6 +12,8 @@
 //! Each flush signs with the **operator** (fee-payer + Delegated authority),
 //! **sends without preflight** (does not wait for confirmation — the signature
 //! is returned to callers immediately), then a background task confirms/retries.
+//! A packed transaction that fails on-chain applied nothing, so its channels
+//! are re-sent one per transaction: one failing channel cannot fail the rest.
 //! Un-settled channels remain the caller's store's responsibility to reconcile.
 //!
 //! Broadcast is behind the [`Broadcaster`] trait so the actor is unit-testable
@@ -256,7 +258,7 @@ fn spawn_flush(
                 .acquire_owned()
                 .await
                 .expect("settlement semaphore is never closed");
-            settle_group(group, &cfg, broadcaster.clone(), trigger).await;
+            settle_group(group, &cfg, broadcaster.clone(), &sem, trigger).await;
         }
     });
 }
@@ -301,8 +303,9 @@ fn regroup(
 
 async fn settle_group(
     group: Vec<SettlementUnit>,
-    cfg: &SettlementConfig,
+    cfg: &Arc<SettlementConfig>,
     broadcaster: Arc<dyn Broadcaster>,
+    sem: &Arc<Semaphore>,
     trigger: &'static str,
 ) {
     let started = Instant::now();
@@ -344,26 +347,7 @@ async fn settle_group(
             .unwrap_or(0),
         );
 
-        // Build + sign + broadcast.
-        let result: SettlementResult = async {
-            let blockhash = broadcaster.latest_blockhash().await?;
-            let mut tx = build_unsigned(
-                cfg.tx_version,
-                &cfg.operator,
-                &flat,
-                blockhash,
-                cfg.compute_budget.as_ref(),
-            )
-            .map_err(|e| format!("settle build failed: {e}"))?;
-            crate::core::signing::sign_versioned_transaction_slot(
-                cfg.operator_signer.as_ref(),
-                &mut tx,
-            )
-            .await
-            .map_err(|e| format!("settle signing failed: {e}"))?;
-            broadcaster.send(&tx).await
-        }
-        .await;
+        let result = sign_and_send(cfg, broadcaster.as_ref(), &flat).await;
 
         match &result {
             Ok(sig) => {
@@ -398,20 +382,67 @@ async fn settle_group(
 
         // Reply to every channel in the group with the (shared) tx signature;
         // units awaiting confirmation get the confirmation outcome instead.
+        let packed = group.len() > 1;
         let (confirming, immediate): (Vec<_>, Vec<_>) = group
             .into_iter()
             .partition(|u| u.await_confirmation && result.is_ok());
+        // Kept to re-send alone should the packed transaction fail on-chain.
+        let replied: Vec<(String, Vec<Instruction>)> = if packed && result.is_ok() {
+            immediate
+                .iter()
+                .map(|u| (u.channel_id.clone(), u.instructions.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for u in immediate {
             let _ = u.reply.send(result.clone());
         }
 
         // Background confirm (best-effort; store is the durable source of truth).
         if let Ok(sig) = result {
-            let attempts = cfg.confirm_attempts;
+            let cfg = Arc::clone(cfg);
+            let sem = Arc::clone(sem);
             tokio::spawn(async move {
-                let outcome = confirm_settlement(broadcaster.as_ref(), &sig, attempts).await;
-                for u in confirming {
-                    let _ = u.reply.send(outcome.clone());
+                let outcome =
+                    confirm_settlement(broadcaster.as_ref(), &sig, cfg.confirm_attempts).await;
+                match outcome {
+                    // A transaction is atomic, so nothing in it applied: one
+                    // unit failing deterministically (a channel its payer
+                    // already closed, an unredeemable voucher) must not fail
+                    // the others packed with it. Each is re-sent alone and
+                    // answers with its own outcome.
+                    Err(ConfirmFailure::OnChain(error)) if packed => {
+                        tracing::warn!(
+                            tx = %sig,
+                            error = %error,
+                            channels = confirming.len() + replied.len(),
+                            "packed settlement failed on-chain; settling each channel alone",
+                        );
+                        for unit in confirming {
+                            let outcome =
+                                settle_alone(&cfg, broadcaster.as_ref(), &sem, &unit.instructions)
+                                    .await;
+                            let _ = unit.reply.send(outcome);
+                        }
+                        for (channel_id, instructions) in replied {
+                            if let Err(error) =
+                                settle_alone(&cfg, broadcaster.as_ref(), &sem, &instructions).await
+                            {
+                                tracing::warn!(
+                                    channel = %channel_id,
+                                    error = %error,
+                                    "settlement failed alone (store will reconcile)",
+                                );
+                            }
+                        }
+                    }
+                    outcome => {
+                        let outcome = outcome.map_err(ConfirmFailure::into_message);
+                        for u in confirming {
+                            let _ = u.reply.send(outcome.clone());
+                        }
+                    }
                 }
             });
         }
@@ -420,12 +451,70 @@ async fn settle_group(
     .await
 }
 
+/// Build, sign and broadcast one settlement transaction.
+async fn sign_and_send(
+    cfg: &SettlementConfig,
+    broadcaster: &dyn Broadcaster,
+    instructions: &[Instruction],
+) -> SettlementResult {
+    let blockhash = broadcaster.latest_blockhash().await?;
+    let mut tx = build_unsigned(
+        cfg.tx_version,
+        &cfg.operator,
+        instructions,
+        blockhash,
+        cfg.compute_budget.as_ref(),
+    )
+    .map_err(|e| format!("settle build failed: {e}"))?;
+    crate::core::signing::sign_versioned_transaction_slot(cfg.operator_signer.as_ref(), &mut tx)
+        .await
+        .map_err(|e| format!("settle signing failed: {e}"))?;
+    broadcaster.send(&tx).await
+}
+
+/// Settle one unit in its own transaction and wait for its outcome. Its send
+/// holds an in-flight permit, like every flush transaction's.
+async fn settle_alone(
+    cfg: &SettlementConfig,
+    broadcaster: &dyn Broadcaster,
+    sem: &Arc<Semaphore>,
+    instructions: &[Instruction],
+) -> SettlementResult {
+    let sig = {
+        let _permit = sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("settlement semaphore is never closed");
+        sign_and_send(cfg, broadcaster, instructions).await?
+    };
+    confirm_settlement(broadcaster, &sig, cfg.confirm_attempts)
+        .await
+        .map_err(ConfirmFailure::into_message)
+}
+
+/// Why a sent settlement did not confirm.
+enum ConfirmFailure {
+    /// It landed and failed: none of its instructions applied.
+    OnChain(String),
+    /// Not confirmed within the window; it may still land.
+    Unconfirmed(String),
+}
+
+impl ConfirmFailure {
+    fn into_message(self) -> String {
+        match self {
+            Self::OnChain(message) | Self::Unconfirmed(message) => message,
+        }
+    }
+}
+
 /// Poll `sig` until it is confirmed, fails on-chain, or `attempts` run out.
 async fn confirm_settlement(
     broadcaster: &dyn Broadcaster,
     sig: &str,
     attempts: u32,
-) -> SettlementResult {
+) -> Result<String, ConfirmFailure> {
     let send_policy = SKIP_PREFLIGHT_SEND;
     for _ in 0..attempts {
         match broadcaster.confirm(sig).await {
@@ -450,7 +539,9 @@ async fn confirm_settlement(
                     error = %err,
                     "settlement failed on-chain (store will reconcile)",
                 );
-                return Err(format!("settlement {sig} failed on-chain: {err}"));
+                return Err(ConfirmFailure::OnChain(format!(
+                    "settlement {sig} failed on-chain: {err}"
+                )));
             }
             Err(e) => {
                 tracing::debug!(tx = %sig, error = %e, "confirm poll error");
@@ -465,7 +556,9 @@ async fn confirm_settlement(
         skip_preflight = send_policy.skip_preflight,
         "settlement not confirmed in window",
     );
-    Err(format!("settlement {sig} was not confirmed in its window"))
+    Err(ConfirmFailure::Unconfirmed(format!(
+        "settlement {sig} was not confirmed in its window"
+    )))
 }
 
 /// Production broadcaster backed by the shared asynchronous RPC pipeline.
@@ -563,6 +656,14 @@ mod tests {
         seq: Mutex<u64>,
         /// When set, every confirmation reports this on-chain failure.
         confirm_failure: Mutex<Option<String>>,
+        /// A transaction touching this account fails on-chain.
+        poison: Mutex<Vec<Pubkey>>,
+        /// Sends in progress, and the most seen at once.
+        sending: std::sync::atomic::AtomicUsize,
+        max_sending: std::sync::atomic::AtomicUsize,
+        /// How long each send takes.
+        send_delay: Mutex<Duration>,
+        failing: Mutex<std::collections::HashSet<String>>,
     }
     #[async_trait]
     impl Broadcaster for MockBroadcaster {
@@ -570,15 +671,35 @@ mod tests {
             Ok(Hash::new_from_array([9u8; 32]))
         }
         async fn send(&self, tx: &VersionedTransaction) -> Result<String, String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.sending.fetch_add(1, SeqCst) + 1;
+            self.max_sending.fetch_max(now, SeqCst);
+            let delay = *self.send_delay.lock().unwrap();
+            tokio::time::sleep(delay).await;
+            self.sending.fetch_sub(1, SeqCst);
             self.sent
                 .lock()
                 .unwrap()
                 .push(tx.message.instructions().len());
             let mut seq = self.seq.lock().unwrap();
             *seq += 1;
-            Ok(format!("sig{seq}"))
+            let sig = format!("sig{seq}");
+            let keys = tx.message.static_account_keys();
+            if self
+                .poison
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|poison| keys.contains(poison))
+            {
+                self.failing.lock().unwrap().insert(sig.clone());
+            }
+            Ok(sig)
         }
-        async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
+        async fn confirm(&self, sig: &str) -> Result<ConfirmOutcome, String> {
+            if self.failing.lock().unwrap().contains(sig) {
+                return Ok(ConfirmOutcome::Failed("InstructionError(0)".to_string()));
+            }
             Ok(match self.confirm_failure.lock().unwrap().clone() {
                 Some(error) => ConfirmOutcome::Failed(error),
                 None => ConfirmOutcome::Confirmed,
@@ -653,6 +774,99 @@ mod tests {
             h.settle("c2", unit_instructions(2)).await,
             Ok("sig3".to_string())
         );
+    }
+
+    /// One channel whose settlement fails on-chain fails the transaction it
+    /// was packed into; the others are re-sent alone and land.
+    #[tokio::test]
+    async fn a_failing_channel_does_not_fail_the_channels_packed_with_it() {
+        let (h, bc) = handle(4, 50);
+        let poison = unit_instructions(1)[0].accounts[0].pubkey;
+        *bc.poison.lock().unwrap() = vec![poison];
+
+        let mut tasks = Vec::new();
+        for i in 0..3u64 {
+            let h = h.clone();
+            tasks.push(tokio::spawn(async move {
+                h.settle_confirmed(format!("c{i}"), unit_instructions(i))
+                    .await
+            }));
+        }
+        let outcomes: Vec<_> = join_settlements(tasks).await;
+        assert!(outcomes[0].is_ok(), "{:?}", outcomes[0]);
+        assert!(
+            outcomes[1]
+                .as_ref()
+                .is_err_and(|e| e.contains("failed on-chain")),
+            "{:?}",
+            outcomes[1]
+        );
+        assert!(outcomes[2].is_ok(), "{:?}", outcomes[2]);
+        // The packed attempt, then one transaction per channel.
+        assert_eq!(bc.sent.lock().unwrap().clone(), vec![3, 1, 1, 1]);
+
+        // Positive control: without a failing channel the pack lands as one.
+        bc.poison.lock().unwrap().clear();
+        bc.sent.lock().unwrap().clear();
+        let mut tasks = Vec::new();
+        for i in 10..13u64 {
+            let h = h.clone();
+            tasks.push(tokio::spawn(async move {
+                h.settle_confirmed(format!("c{i}"), unit_instructions(i))
+                    .await
+            }));
+        }
+        assert!(join_settlements(tasks).await.iter().all(Result::is_ok));
+        assert_eq!(bc.sent.lock().unwrap().clone(), vec![3]);
+    }
+
+    /// Re-sending each channel of a failed pack alone still counts against
+    /// `max_in_flight_tx`: two packs failing at once never send more than
+    /// the bound together.
+    #[tokio::test]
+    async fn settling_alone_stays_within_the_in_flight_bound() {
+        let bc = Arc::new(MockBroadcaster::default());
+        *bc.send_delay.lock().unwrap() = Duration::from_millis(30);
+        let mut cfg = SettlementConfig::new(
+            Pubkey::new_from_array([0xAA; 32]),
+            Arc::new(TestSigner(Pubkey::new_from_array([0xAA; 32]))),
+        );
+        cfg.max_voucher_settlements_per_tx = 2;
+        cfg.linger = Duration::from_millis(5_000);
+        cfg.max_in_flight_tx = 1;
+        let h = spawn(cfg, bc.clone());
+        // One failing channel in each of two packs.
+        *bc.poison.lock().unwrap() = vec![
+            unit_instructions(0)[0].accounts[0].pubkey,
+            unit_instructions(2)[0].accounts[0].pubkey,
+        ];
+        let mut tasks = Vec::new();
+        for i in 0..4u64 {
+            let h = h.clone();
+            tasks.push(tokio::spawn(async move {
+                h.settle_confirmed(format!("c{i}"), unit_instructions(i))
+                    .await
+            }));
+        }
+        let outcomes = join_settlements(tasks).await;
+        assert!(outcomes[1].is_ok() && outcomes[3].is_ok(), "{outcomes:?}");
+        // Two packs, then each of the four channels alone.
+        assert_eq!(bc.sent.lock().unwrap().len(), 6);
+        assert_eq!(
+            bc.max_sending.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "never more sends at once than max_in_flight_tx"
+        );
+    }
+
+    async fn join_settlements(
+        tasks: Vec<tokio::task::JoinHandle<SettlementResult>>,
+    ) -> Vec<SettlementResult> {
+        let mut out = Vec::new();
+        for task in tasks {
+            out.push(task.await.unwrap());
+        }
+        out
     }
 
     #[tokio::test]
