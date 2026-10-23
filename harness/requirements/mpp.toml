@@ -875,3 +875,15 @@ id = "MPP-ff870e0a38"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "Clients SHOULD set openSlot to the challenge's methodDetails.recentSlot and MUST use the challenged recentBlockhash in the transaction."
 required = true
+
+[[requirement]]
+id = "MPP-11052eb7e8"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes."
+required = true
+
+[[requirement]]
+id = "MPP-36089e48c3"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Amounts already covered by a persisted voucher and released response bytes remain committed; unused reserved capacity MUST NOT advance the voucher."
+required = true

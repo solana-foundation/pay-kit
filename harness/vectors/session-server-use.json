@@ -1,0 +1,1210 @@
+[
+  {
+    "bugType": "settlement",
+    "description": "A use carrying the proof bound at open, charged at the challenged price: the operator signs and persists the voucher for cumulative 125. The baseline the use rejects pair with. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept",
+      "sessionVoucher": {
+        "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+        "cumulativeAmount": "125",
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+      }
+    },
+    "id": "session-use-verify-accept",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-06150f0fd1",
+      "MPP-3a413603bc",
+      "MPP-2d5c87a7f3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "After authenticating the request, the operator meters the delivered service and signs the corresponding cumulative voucher.",
+      "section": "Action: \"use\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A use whose proof is well formed for this channel and challenge but signed by a stranger, not the payer whose proof was bound at open: it must not authenticate the request. Pair: session-use-verify-accept. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-use-verify-stranger-proof-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "signature": "2XgPcGbKbTpQsn7XjcMwX75RpyeWHyrzDY11B99917Qrgb3BDJc35UUtwMom5Wz2qofxnXHMvgvHg6TsA4kXfUrz",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-2d5c87a7f3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| authentication | object | REQUIRED | Reusable proof bound at open, as defined in {{session-bearer-proof}} |",
+      "section": "Action: \"use\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A client-signed server and channel receive a use: only a client voucher authenticates a client-signed request. Pair: session-use-verify-accept. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-use-verify-client-channel-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "3z3vpam1h1EEoJ45eX2fRpfaYmqDoDtH96hm6MkHF6wX9kp8BXEwsNtpWXvsQRtdWz4kRhRLXpi8wbTicgw3iJmg",
+            "type": "proof"
+          },
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-06150f0fd1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "This action is valid only when voucherSigner is operator.",
+      "section": "Action: \"use\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A use whose cost the server metered after serving at 7, below the challenged price: the operator signs and persists the voucher for cumulative 107, not 125. The baseline the metered rejects pair with. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept",
+      "sessionVoucher": {
+        "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+        "cumulativeAmount": "107",
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+      }
+    },
+    "id": "session-use-verify-metered-accept",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "7",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11052eb7e8",
+      "MPP-2d5c87a7f3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A metered cost of 900 takes the voucher to cumulative 1000, exactly the deposit. Pair: session-use-verify-metered-over-deposit-reject. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "accept",
+      "sessionVoucher": {
+        "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+        "cumulativeAmount": "1000",
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+      }
+    },
+    "id": "session-use-verify-metered-full-deposit-accept",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "900",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11052eb7e8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A metered cost of 901 would take the voucher to cumulative 1001, past the deposit of 1000: nothing is charged. Pair: session-use-verify-metered-full-deposit-accept. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "cumulative-exceeds-deposit"
+    },
+    "id": "session-use-verify-metered-over-deposit-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "901",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-11052eb7e8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "A metered cost of 0 (nothing was delivered): the voucher must not advance. Pair: session-use-verify-metered-accept. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-use-verify-metered-zero-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "0",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-36089e48c3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Amounts already covered by a persisted voucher and released response bytes remain committed; unused reserved capacity MUST NOT advance the voucher.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A metered use whose proof is signed by a stranger: a metered charge still needs the request authenticated first. Pair: session-use-verify-metered-accept. The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-use-verify-metered-stranger-proof-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "100",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "UQsqdKtqCuUFDxUeYQ64FrY8R5ZocXLHXiTjjDH86W3FH9sMujhgWT5c7Z9ssE1vS8n4AAuFdJQTPRETcu3fpvL",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "100"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+            "signature": "2XgPcGbKbTpQsn7XjcMwX75RpyeWHyrzDY11B99917Qrgb3BDJc35UUtwMom5Wz2qofxnXHMvgvHg6TsA4kXfUrz",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "7",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-2d5c87a7f3",
+      "MPP-11052eb7e8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Authenticate client mode with a valid voucher, or operator mode with a valid use proof.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  }
+]

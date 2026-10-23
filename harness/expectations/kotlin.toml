@@ -97,6 +97,10 @@ reason = "the kotlin conformance runner implements only canonical-bytes session 
 pattern = "vector/session-close-*"
 
 [[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session server verify (input.sessionServerVerify)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
 reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session client open build (input.sessionOpenBuild)"
 pattern = "vector/session-build-*"
 

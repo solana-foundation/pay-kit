@@ -29,7 +29,7 @@ use solana_pay_kit::mpp::client::session::{
     PaymentChannelSessionOpenOptions,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
-    SessionAction, SessionAuthentication, SessionRequest,
+    SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload,
 };
 use solana_pay_kit::mpp::server::session::{
     testkit, SessionConfig, SessionOpenContext, SessionServer, Split, VoucherSigner,
@@ -70,10 +70,27 @@ fn signer_from(input: &Value, key: &str) -> Result<MemorySigner, String> {
     MemorySigner::from_bytes(&bytes).map_err(|e| format!("invalid {key}: {e}"))
 }
 
+/// The 32-byte Ed25519 seed of the 64-byte secret key at `input.key`.
+fn secret_seed(input: &Value, key: &str) -> Result<[u8; 32], String> {
+    let bytes: Vec<u8> = input
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("input.{key} missing"))?
+        .iter()
+        .map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| format!("input.{key} must be bytes"))?;
+    bytes
+        .get(..32)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or_else(|| format!("input.{key} must be a 64-byte secret key"))
+}
+
 /// The kit session server `server` describes, over `store`.
 fn kit_server(
     server: &Value,
     fee_payer: Option<MemorySigner>,
+    operator_key: Option<[u8; 32]>,
     store: MemoryChannelStore,
 ) -> Result<SessionServer<MemoryChannelStore>, String> {
     let text = |key: &str| {
@@ -153,6 +170,7 @@ fn kit_server(
         splits,
         token_program,
         fee_payer_signer,
+        operator_signing_key: operator_key.map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed)),
         ..SessionConfig::default()
     };
     let mut versions: Vec<TxVersion> = match server.get("transactionVersions") {
@@ -257,7 +275,10 @@ fn code_for(message: &str) -> Option<&'static str> {
         || has("operator close requires")
     {
         "close-authorization"
-    } else if has("authentication") || has("does not authenticate") {
+    } else if has("authentication")
+        || has("does not authenticate")
+        || has("only valid for operator-signed")
+    {
         "authentication-invalid"
     } else if has("fee payer does not match") || has("fee payer must be") {
         "fee-payer-mismatch"
@@ -279,6 +300,7 @@ fn code_for(message: &str) -> Option<&'static str> {
         || has("additionalamount must be positive")
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
+        || has("charge amount must be positive")
     {
         "amount-mismatch"
     } else if has("open transaction")
@@ -297,7 +319,7 @@ fn code_for(message: &str) -> Option<&'static str> {
         "voucher-signature"
     } else if has("must exceed watermark") || has("already accepted") {
         "cumulative-amount-mismatch"
-    } else if has("exceeds deposit") {
+    } else if has("exceeds deposit") || has("insufficient channel availability") {
         "cumulative-exceeds-deposit"
     } else if has("voucher has expired") {
         "voucher-expired"
@@ -345,7 +367,11 @@ async fn verify(input: &Value) -> Result<Outcome, Rejection> {
         .map(|_| signer_from(input, "sessionServerFeePayerSecretKey"))
         .transpose()?;
     let server_json = params.get("server").cloned().unwrap_or(Value::Null);
-    let server = match kit_server(&server_json, fee_payer, store) {
+    let operator_key = input
+        .get("sessionServerOperatorSecretKey")
+        .map(|_| secret_seed(input, "sessionServerOperatorSecretKey"))
+        .transpose()?;
+    let server = match kit_server(&server_json, fee_payer, operator_key, store) {
         Ok(server) => server,
         Err(e) => return Ok(Outcome::Unsupported(e)),
     };
@@ -376,14 +402,62 @@ async fn verify(input: &Value) -> Result<Outcome, Rejection> {
         }
         SessionAction::TopUp(topup) => testkit::verify_topup_pre_broadcast(&server, topup).await,
         SessionAction::Close(close) => server.process_close(close).await.map(|_| ()),
-        SessionAction::Use(_) => {
-            return Ok(Outcome::Unsupported(
-                "the use action needs an Idempotency-Key and the operator signing key".into(),
-            ))
+        SessionAction::Use(payload) => {
+            let operator = signer_from(input, "sessionServerOperatorSecretKey")?;
+            let voucher = use_voucher(&server, &operator, params, payload)
+                .await
+                .map_err(reject)?;
+            let mut out = Map::new();
+            out.insert(
+                "sessionVoucher".into(),
+                json!({
+                    "channelId": voucher.data.channel_id,
+                    "cumulativeAmount": voucher.data.cumulative_amount,
+                    "signer": voucher.signer,
+                }),
+            );
+            return Ok(Outcome::Accept(out));
         }
     };
     result.map_err(|e| reject(e.to_string()))?;
     Ok(Outcome::Accept(Map::new()))
+}
+
+/// Charge a `use`: the challenged `amount` through `process_use`, or the
+/// vector's `meteredAmount` through `authenticate_use` then
+/// `charge_operator_usage` (mirrors `use_voucher` in
+/// rust/crates/conformance/src/realize/session.rs).
+async fn use_voucher(
+    server: &SessionServer<MemoryChannelStore>,
+    operator: &MemorySigner,
+    params: &Value,
+    payload: &UsePayload,
+) -> Result<SignedVoucher, String> {
+    let voucher = match u64_field(params, "meteredAmount")? {
+        Some(amount) => {
+            let authenticated = server
+                .authenticate_use(payload)
+                .await
+                .map_err(|e| e.to_string())?;
+            server
+                .charge_operator_usage(&authenticated, operator, amount, |_| Ok(()))
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+        None => {
+            server
+                .process_use(
+                    payload,
+                    params["challenge"]["id"].as_str().unwrap_or_default(),
+                    params["idempotencyKey"].as_str().unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+    };
+    Ok(voucher)
 }
 
 /// The shared code for a kit session client refusal (mirrors

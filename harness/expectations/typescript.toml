@@ -632,6 +632,10 @@ reason = "the runner's session verify path drives only the SDK's voucher verifie
 pattern = "vector/session-close-*"
 
 [[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's use processing over stored channel state (input.sessionServerVerify). The SDK's operator use charges the challenged amount; it has no authenticate-then-charge-metered path (draft-solana-session-00 Debit Processing, cost known only after generation)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
 reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
 pattern = "vector/session-build-*"
 

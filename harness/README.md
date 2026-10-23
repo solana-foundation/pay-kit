@@ -258,7 +258,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 79 · 38k | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 74 · 2u · 41k |
-| vector session | 176 | 8 · 168u | 3 · 173u | — | — | 36 · 133u · 7k | — | 176 | 3 · 173u | 36 · 133u · 7k |
+| vector session | 184 | 8 · 176u | 3 · 181u | — | — | 36 · 141u · 7k | — | 184 | 3 · 181u | 36 · 141u · 7k |
 | vector subscription | 123 | — | — | — | — | — | — | 123 | — | 70 · 15u · 38k |
 | vector x402-batch-settlement | 165 | — | — | — | — | — | — | 165 | — | 66 · 27u · 72k |
 | vector x402-exact | 73 | 47 · 26k | — | 32 · 19u · 22k | 32 · 21u · 20k | 44 · 2u · 27k | 29 · 19u · 25k | 73 | 14 · 52u · 7k | 35 · 29u · 9k |

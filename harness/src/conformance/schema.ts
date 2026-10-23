@@ -162,12 +162,23 @@ export type TransactionShape = {
   memo?: string[];
 };
 
+// The operator-signed voucher a session server persisted for an accepted
+// `use`.
+export type SessionVoucher = {
+  channelId: string;
+  cumulativeAmount: string;
+  signer: string;
+};
+
 export type VectorExpect = {
   outcome: VectorOutcome;
   // For build/verify accept vectors: the decoded semantic shape to assert.
   transactionShape?: TransactionShape;
   // For x402-exact build/verify accept vectors: the decoded envelope shape.
   x402EnvelopeShape?: X402EnvelopeShape;
+  // For session `use` accept vectors: the operator-signed voucher the server
+  // persisted. The signature is not pinned (SDKs choose its expiresAt).
+  sessionVoucher?: SessionVoucher;
   // For canonical-bytes vectors: the exact bytes the SDK must produce.
   exactBytes?: {
     canonicalJson?: string;
@@ -708,6 +719,8 @@ export type RunnerResult = {
   transactionShape?: TransactionShape;
   // Present on x402-exact build/verify accept. The decoded envelope shape.
   x402EnvelopeShape?: X402EnvelopeShape;
+  // Present on a session `use` accept. The operator-signed voucher.
+  sessionVoucher?: SessionVoucher;
   // Present on canonical-bytes.
   exactBytes?: {
     canonicalJson?: string;

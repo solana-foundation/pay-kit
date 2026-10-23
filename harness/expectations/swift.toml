@@ -285,6 +285,10 @@ reason = "swift is a client-only SDK and does not implement verify-transaction (
 pattern = "vector/session-close-*"
 
 [[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionServerVerify)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
 reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
 pattern = "vector/session-build-*"
 

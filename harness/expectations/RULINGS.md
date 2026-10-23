@@ -221,6 +221,31 @@ resolves them (“Validate the complete compiled message — resolving any
 version-0 address-lookup-table entries — not just the channel
 instruction.”), the transaction-versions draft rejects them.
 
+**SS5. The operator's own metered voucher is not caller authentication.**
+`Action: "voucher"` reads “In `operator` mode, vouchers are
+operator-generated settlement artifacts and MUST NOT authenticate the
+caller.” Debit Processing authenticates first (“Authenticate `client` mode
+with a valid voucher, or `operator` mode with a valid `use` proof.”), then
+charges (“For `operator`, sign a voucher for `acceptedCumulative + cost` and
+atomically persist that voucher, the new `acceptedCumulative`, and
+`spentAmount += cost`.”), and `Action: "use"` says “After authenticating the
+request, the operator meters the delivered service and signs the
+corresponding cumulative voucher.” When cost is known only after generation
+the server MUST “persist the operator-signed voucher before releasing the
+response bytes whose cost it authorizes.” So the prohibition covers a voucher
+a caller presents: a `voucher` action on an operator-signed channel is
+refused (`authentication-invalid`, SS3). The operator signing and persisting
+its own cumulative voucher for a request already authenticated with `use` is
+the charge the spec requires, and an SDK must let it advance
+`acceptedCumulative` by a metered amount, not only by the challenged
+`amount`. The `session-use-*` vectors pin it: the persisted voucher's
+`cumulativeAmount` is `acceptedCumulative` plus the metered cost; a `use`
+whose proof is not the one bound at open, or that reaches a client-signed
+server, is `authentication-invalid`; a metered cost of zero is
+`amount-mismatch` (“unused reserved capacity MUST NOT advance the voucher”);
+one that would pass the deposit is `cumulative-exceeds-deposit`. Upstream:
+proposed in tempoxyz/mpp-specs `feat/solana-session-operator-hardening`.
+
 ## MPP subscription (Solana)
 
 Pinned as the submodule `external/mpp-specs-solana` at `5c4a528`

@@ -175,6 +175,21 @@ pub fn judge_expect(vector: &Vector, result: &Value) -> Result<Verdict, Failure>
         }
         return Ok(Verdict::Pass);
     }
+    if let Some(wanted) = expect.get("sessionVoucher") {
+        for key in ["channelId", "cumulativeAmount", "signer"] {
+            let want = wanted.get(key);
+            let got = result.pointer(&format!("/sessionVoucher/{key}"));
+            if got != want {
+                return Err(Failure::at(
+                    &format!("sessionVoucher.{key}"),
+                    want,
+                    got,
+                    format!("sessionVoucher.{key} differs"),
+                ));
+            }
+        }
+        return Ok(Verdict::Pass);
+    }
     if vector.intent == "x402-exact" {
         if let Some(shape) = expect.get("x402EnvelopeShape") {
             envelope_shape(shape, result.get("x402EnvelopeShape"))?;

@@ -139,6 +139,9 @@ pub struct Output {
     pub header: Option<String>,
     /// `exactBytes` (canonical-bytes).
     pub exact: Option<Map<String, Value>>,
+    /// The operator-signed voucher a session server persisted for an
+    /// accepted `use` (`channelId`, `cumulativeAmount`, `signer`).
+    pub session_voucher: Option<Value>,
 }
 
 /// A filled case.
@@ -1098,6 +1101,13 @@ pub fn project(pin: &Pin, output: &Output, input: &Value) -> Result<Value, Strin
                 out.insert((*key).to_string(), value.clone());
             }
             Ok(json!({ "exactBytes": out }))
+        }
+        Pin::SessionVoucher => {
+            let voucher = output
+                .session_voucher
+                .clone()
+                .ok_or("kit produced no session voucher")?;
+            Ok(json!({ "sessionVoucher": voucher }))
         }
         Pin::Envelope(keys) => {
             let header = output.header.as_ref().ok_or("kit produced no header")?;

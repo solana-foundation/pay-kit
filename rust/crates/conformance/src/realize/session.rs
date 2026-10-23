@@ -42,7 +42,7 @@ use solana_pay_kit::mpp::client::session::{
     DerivePaymentChannelOpenParams, PaymentChannelOpenOptions, PaymentChannelSessionOpenOptions,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
-    SessionAction, SessionAuthentication, SessionRequest, VoucherData,
+    SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload, VoucherData,
 };
 use solana_pay_kit::mpp::server::session::{
     testkit, SessionConfig, SessionOpenContext, SessionServer, Split, VoucherSigner,
@@ -221,11 +221,28 @@ fn signer_from(input: &Value, key: &str) -> Result<MemorySigner, String> {
     MemorySigner::from_bytes(&bytes).map_err(|e| format!("invalid {key}: {e}"))
 }
 
+/// The 32-byte Ed25519 seed of the 64-byte secret key at `input.key`.
+fn secret_seed(input: &Value, key: &str) -> Result<[u8; 32], String> {
+    let bytes: Vec<u8> = input
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("input.{key} missing"))?
+        .iter()
+        .map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| format!("input.{key} must be bytes"))?;
+    bytes
+        .get(..32)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or_else(|| format!("input.{key} must be a 64-byte secret key"))
+}
+
 /// The kit session server `server` describes, over `store`. Mirrored in the
 /// Rust testee (`vector_runner/session.rs`).
 pub fn kit_server(
     server: &Value,
     fee_payer: Option<MemorySigner>,
+    operator_key: Option<[u8; 32]>,
     store: MemoryChannelStore,
 ) -> Result<SessionServer<MemoryChannelStore>, String> {
     let text = |key: &str| {
@@ -303,6 +320,7 @@ pub fn kit_server(
             }
             (Some(_), None) => return Err("server.feePayer without its secret key".into()),
         },
+        operator_signing_key: operator_key.map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed)),
         ..SessionConfig::default()
     };
     let mut versions: Vec<TxVersion> = match server.get("transactionVersions") {
@@ -638,7 +656,7 @@ fn challenge_request(server: &Server, recent_slot: u64) -> Result<SessionRequest
     });
     let cache = solana_pay_kit::core::blockhash::BlockhashCache::new();
     cache.set(BLOCKHASH.to_string(), 0, recent_slot);
-    kit_server(&server.json(), sponsor, MemoryChannelStore::new())?
+    kit_server(&server.json(), sponsor, None, MemoryChannelStore::new())?
         .with_blockhash_cache(cache)
         .build_challenge_request()
         .map_err(|e| format!("session challenge: {e}"))
@@ -1042,7 +1060,28 @@ pub enum Action {
         voucher: Option<VoucherSpec>,
         authentication: bool,
     },
+    /// A `use` for `channel` carrying `proof`, under `IDEMPOTENCY_KEY`.
+    /// `metered` is the cost the server metered after serving; `None`
+    /// charges the challenged `amount`.
+    Use {
+        channel: Channel,
+        proof: UseProof,
+        metered: Option<u64>,
+    },
 }
+
+/// The bearer proof a `use` carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseProof {
+    /// The proof bound at open.
+    Bound,
+    /// A well-formed proof for the same channel and challenge, signed by a
+    /// stranger instead of the payer.
+    Stranger,
+}
+
+/// The `Idempotency-Key` every `use` vector is sent under.
+pub const IDEMPOTENCY_KEY: &str = "conformance-use-1";
 
 /// A session verify vector.
 #[derive(Debug, Clone, PartialEq)]
@@ -1178,6 +1217,32 @@ pub async fn materialize(recipe: &Recipe) -> Result<Value, String> {
             }
             close
         }
+        Action::Use {
+            channel,
+            proof,
+            metered,
+        } => {
+            verify.insert("channel".into(), channel.json()?);
+            verify.insert("challenge".into(), json!({ "id": CHALLENGE_ID }));
+            verify.insert("idempotencyKey".into(), json!(IDEMPOTENCY_KEY));
+            if let Some(amount) = metered {
+                verify.insert("meteredAmount".into(), json!(amount.to_string()));
+            }
+            let authentication = match proof {
+                UseProof::Bound => channel.proof()?,
+                UseProof::Stranger => SessionAuthentication::sign(
+                    CHALLENGE_ID,
+                    &channel.id().to_string(),
+                    &keys::signing_key(STRANGER_SEED),
+                )
+                .map_err(|e| e.to_string())?,
+            };
+            json!({
+                "action": "use",
+                "channelId": channel.id().to_string(),
+                "authentication": serde_json::to_value(authentication).map_err(|e| e.to_string())?,
+            })
+        }
     };
     let mut credential = credential;
     if let Some(tx) = &recipe.tx {
@@ -1190,6 +1255,10 @@ pub async fn materialize(recipe: &Recipe) -> Result<Value, String> {
     let mut input = json!({ "sessionServerVerify": Value::Object(verify) });
     if recipe.server.sponsored {
         input["sessionServerFeePayerSecretKey"] = keys::secret_json(OPERATOR_SEED);
+    }
+    if matches!(recipe.action, Action::Use { .. }) {
+        // The operator key signs the voucher a `use` charges.
+        input["sessionServerOperatorSecretKey"] = keys::secret_json(OPERATOR_SEED);
     }
     Ok(input)
 }
@@ -1216,7 +1285,10 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
         || has("operator close requires")
     {
         CloseAuthorization
-    } else if has("authentication") || has("does not authenticate") {
+    } else if has("authentication")
+        || has("does not authenticate")
+        || has("only valid for operator-signed")
+    {
         AuthenticationInvalid
     } else if has("fee payer does not match") || has("fee payer must be") {
         FeePayerMismatch
@@ -1238,6 +1310,7 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
         || has("additionalamount must be positive")
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
+        || has("charge amount must be positive")
     {
         AmountMismatch
     } else if has("open transaction")
@@ -1256,7 +1329,7 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
         VoucherSignature
     } else if has("must exceed watermark") || has("already accepted") {
         CumulativeAmountMismatch
-    } else if has("exceeds deposit") {
+    } else if has("exceeds deposit") || has("insufficient channel availability") {
         CumulativeExceedsDeposit
     } else if has("voucher has expired") {
         VoucherExpired
@@ -1314,7 +1387,11 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
         .map(|_| signer_from(input, "sessionServerFeePayerSecretKey"))
         .transpose()?;
     let server_json = params.get("server").cloned().unwrap_or(Value::Null);
-    let server = match kit_server(&server_json, fee_payer, store) {
+    let operator_key = input
+        .get("sessionServerOperatorSecretKey")
+        .map(|_| secret_seed(input, "sessionServerOperatorSecretKey"))
+        .transpose()?;
+    let server = match kit_server(&server_json, fee_payer, operator_key, store) {
         Ok(server) => server,
         Err(e) => return Ok(Observed::NotExpressible(e)),
     };
@@ -1347,16 +1424,65 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
         }
         SessionAction::TopUp(topup) => testkit::verify_topup_pre_broadcast(&server, topup).await,
         SessionAction::Close(close) => server.process_close(close).await.map(|_| ()),
-        SessionAction::Use(_) => {
-            return Ok(Observed::NotExpressible(
-                "the use action needs an Idempotency-Key and operator signing key".into(),
-            ))
+        SessionAction::Use(payload) => {
+            let operator = signer_from(input, "sessionServerOperatorSecretKey")?;
+            return Ok(
+                match use_voucher(&server, &operator, params, payload).await {
+                    Ok(voucher) => Observed::Accept(Output {
+                        session_voucher: Some(json!({
+                            "channelId": voucher.data.channel_id,
+                            "cumulativeAmount": voucher.data.cumulative_amount,
+                            "signer": voucher.signer,
+                        })),
+                        ..Output::default()
+                    }),
+                    Err(e) => reject(e.to_string()),
+                },
+            );
         }
     };
     Ok(match result {
         Ok(()) => Observed::Accept(Output::default()),
         Err(e) => reject(e.to_string()),
     })
+}
+
+/// Charge a `use`: the challenged `amount` through `process_use`, or the
+/// vector's `meteredAmount` through `authenticate_use` then
+/// `charge_operator_usage` (draft-solana-session-00 §Debit Processing).
+/// Mirrored in the Rust testee.
+async fn use_voucher(
+    server: &SessionServer<MemoryChannelStore>,
+    operator: &MemorySigner,
+    params: &Value,
+    payload: &UsePayload,
+) -> Result<SignedVoucher, String> {
+    let metered = u64_field(params, "meteredAmount")?;
+    let voucher = match metered {
+        Some(amount) => {
+            let authenticated = server
+                .authenticate_use(payload)
+                .await
+                .map_err(|e| e.to_string())?;
+            server
+                .charge_operator_usage(&authenticated, operator, amount, |_| Ok(()))
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+        None => {
+            server
+                .process_use(
+                    payload,
+                    params["challenge"]["id"].as_str().unwrap_or_default(),
+                    params["idempotencyKey"].as_str().unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+    };
+    Ok(voucher)
 }
 
 // ── client build ───────────────────────────────────────────────────────────
@@ -1482,6 +1608,7 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
         transaction: action["transaction"].as_str().map(str::to_string),
         header: Some(action.to_string()),
         exact: Some(summary),
+        session_voucher: None,
     }))
 }
 

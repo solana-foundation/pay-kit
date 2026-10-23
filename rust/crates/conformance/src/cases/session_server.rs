@@ -17,8 +17,8 @@ use crate::keys;
 use crate::mutate::Mutation;
 use crate::realize::session::{
     operator, session_signer, Action, Authorized, BuildRecipe, Channel, Edit, OpenArg, OpenBuild,
-    OpenParams, Recipe, Server, TxTamper, VoucherSpec, CHALLENGE_ID, FAR_EXPIRY, OPERATOR_SEED,
-    PAST_EXPIRY, RECENT_SLOT, SESSION_SIGNER_SEED, STRANGER_SEED,
+    OpenParams, Recipe, Server, TxTamper, UseProof, VoucherSpec, CHALLENGE_ID, FAR_EXPIRY,
+    OPERATOR_SEED, PAST_EXPIRY, RECENT_SLOT, SESSION_SIGNER_SEED, STRANGER_SEED,
 };
 
 const DOC: &str = "mpp-specs/specs/methods/solana/draft-solana-session-00.md";
@@ -27,6 +27,7 @@ const OPEN: &str = "session-server-open.json";
 const VOUCHER: &str = "session-server-voucher.json";
 const TOPUP: &str = "session-server-topup.json";
 const CLOSE: &str = "session-server-close.json";
+const USE: &str = "session-server-use.json";
 const BUILD: &str = "session-build.json";
 const WIRE: &str = "session-wire-strict.json";
 
@@ -129,6 +130,8 @@ const R_PROOF_TYPE: &str = "MPP-9edde7b556";
 const R_PROOF_CHALLENGE: &str = "MPP-b23323ead0";
 const R_PROOF_PAYER: &str = "MPP-f8ce7faac8";
 const R_PROOF_SIG: &str = "MPP-d7767fee2b";
+const R_METERED: &str = "MPP-11052eb7e8";
+const R_UNUSED_RESERVATION: &str = "MPP-36089e48c3";
 
 // ── spec references ────────────────────────────────────────────────────────
 
@@ -244,6 +247,50 @@ fn voucher_case(
         recipe,
         expect,
     )
+}
+
+fn use_case(
+    id: &str,
+    bug: BugType,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    recipe: Recipe,
+    expect: Expect,
+) -> CaseBuilder {
+    server_case(
+        id,
+        USE,
+        bug,
+        spec,
+        reqs,
+        &format!("{description} The server's operator-signed channel holds a deposit of 1000 with 100 accepted and spent, and binds the payer's proof; the challenged amount is 25."),
+        recipe,
+        expect,
+    )
+}
+
+fn use_recipe(proof: UseProof, metered: Option<u64>) -> Recipe {
+    Recipe::new(
+        operator_server(),
+        Action::Use {
+            channel: Channel::operator(100),
+            proof,
+            metered,
+        },
+    )
+}
+
+fn use_spec() -> SpecRef {
+    s("Action: \"use\"", "After authenticating the request, the operator meters the delivered service and signs the corresponding cumulative voucher.")
+}
+
+fn metered_spec() -> SpecRef {
+    s("Debit Processing", "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.")
+}
+
+fn signed() -> Expect {
+    Expect::Accept(Pin::SessionVoucher)
 }
 
 fn topup_case(
@@ -1223,6 +1270,80 @@ crate::registry! {
         &[R_OPERATOR_VOUCHER],
         "An operator-signed channel and a voucher action carrying a valid operator-signed voucher for 125 (a settlement artifact anyone could replay): it must not authenticate the request. Pair: session-voucher-verify-accept.",
         Recipe::new(operator_server(), Action::Voucher { channel: Channel::operator(100), voucher: VoucherSpec { signer_seed: OPERATOR_SEED, ..VoucherSpec::new(125) } }),
+        rej(RejectCode::AuthenticationInvalid),
+    ).build();
+
+    // ── use ────────────────────────────────────────────────────────────────
+    session_use_verify_accept => use_case(
+        "session-use-verify-accept",
+        BugType::Settlement,
+        use_spec(),
+        &[R_USE_ACTION, R_USE_CHANNEL, R_USE_AUTH],
+        "A use carrying the proof bound at open, charged at the challenged price: the operator signs and persists the voucher for cumulative 125. The baseline the use rejects pair with.",
+        use_recipe(UseProof::Bound, None),
+        signed(),
+    ).build();
+    session_use_verify_stranger_proof_reject => use_case(
+        "session-use-verify-stranger-proof-reject",
+        BugType::AuthBypass,
+        s("Action: \"use\"", "| authentication | object | REQUIRED | Reusable proof bound at open, as defined in {{session-bearer-proof}} |"),
+        &[R_USE_AUTH],
+        "A use whose proof is well formed for this channel and challenge but signed by a stranger, not the payer whose proof was bound at open: it must not authenticate the request. Pair: session-use-verify-accept.",
+        use_recipe(UseProof::Stranger, None),
+        rej(RejectCode::AuthenticationInvalid),
+    ).build();
+    session_use_verify_client_channel_reject => use_case(
+        "session-use-verify-client-channel-reject",
+        BugType::AuthBypass,
+        s("Action: \"use\"", "This action is valid only when voucherSigner is operator."),
+        &[R_USE_ACTION],
+        "A client-signed server and channel receive a use: only a client voucher authenticates a client-signed request. Pair: session-use-verify-accept.",
+        Recipe::new(server(), Action::Use { channel: Channel::client(100), proof: UseProof::Bound, metered: None }),
+        rej(RejectCode::AuthenticationInvalid),
+    ).build();
+    session_use_verify_metered_accept => use_case(
+        "session-use-verify-metered-accept",
+        BugType::Settlement,
+        metered_spec(),
+        &[R_METERED, R_USE_AUTH],
+        "A use whose cost the server metered after serving at 7, below the challenged price: the operator signs and persists the voucher for cumulative 107, not 125. The baseline the metered rejects pair with.",
+        use_recipe(UseProof::Bound, Some(7)),
+        signed(),
+    ).build();
+    session_use_verify_metered_full_deposit_accept => use_case(
+        "session-use-verify-metered-full-deposit-accept",
+        BugType::Settlement,
+        metered_spec(),
+        &[R_METERED],
+        "A metered cost of 900 takes the voucher to cumulative 1000, exactly the deposit. Pair: session-use-verify-metered-over-deposit-reject.",
+        use_recipe(UseProof::Bound, Some(900)),
+        signed(),
+    ).build();
+    session_use_verify_metered_over_deposit_reject => use_case(
+        "session-use-verify-metered-over-deposit-reject",
+        BugType::Settlement,
+        metered_spec(),
+        &[R_METERED],
+        "A metered cost of 901 would take the voucher to cumulative 1001, past the deposit of 1000: nothing is charged. Pair: session-use-verify-metered-full-deposit-accept.",
+        use_recipe(UseProof::Bound, Some(901)),
+        rej(RejectCode::CumulativeExceedsDeposit),
+    ).build();
+    session_use_verify_metered_zero_reject => use_case(
+        "session-use-verify-metered-zero-reject",
+        BugType::Settlement,
+        s("Debit Processing", "Amounts already covered by a persisted voucher and released response bytes remain committed; unused reserved capacity MUST NOT advance the voucher."),
+        &[R_UNUSED_RESERVATION],
+        "A metered cost of 0 (nothing was delivered): the voucher must not advance. Pair: session-use-verify-metered-accept.",
+        use_recipe(UseProof::Bound, Some(0)),
+        rej(RejectCode::AmountMismatch),
+    ).build();
+    session_use_verify_metered_stranger_proof_reject => use_case(
+        "session-use-verify-metered-stranger-proof-reject",
+        BugType::AuthBypass,
+        s("Debit Processing", "Authenticate client mode with a valid voucher, or operator mode with a valid use proof."),
+        &[R_USE_AUTH, R_METERED],
+        "A metered use whose proof is signed by a stranger: a metered charge still needs the request authenticated first. Pair: session-use-verify-metered-accept.",
+        use_recipe(UseProof::Stranger, Some(7)),
         rej(RejectCode::AuthenticationInvalid),
     ).build();
 

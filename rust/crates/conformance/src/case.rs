@@ -598,6 +598,10 @@ pub enum Pin {
     Envelope(Vec<&'static str>),
     /// `exactBytes` keys (`canonicalJson`, `base64Url`, `bytes`).
     ExactBytes(Vec<&'static str>),
+    /// The operator-signed voucher a session server persisted for an
+    /// accepted `use`: `channelId`, `cumulativeAmount` and `signer`. The
+    /// signature is not pinned (SDKs choose the voucher's `expiresAt`).
+    SessionVoucher,
 }
 
 /// What a case must yield.

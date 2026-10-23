@@ -64,7 +64,12 @@ fn object(
     Some(obj.clone())
 }
 
-const NESTED: [&str; 3] = ["transactionShape", "x402EnvelopeShape", "exactBytes"];
+const NESTED: [&str; 4] = [
+    "transactionShape",
+    "x402EnvelopeShape",
+    "exactBytes",
+    "sessionVoucher",
+];
 
 fn check_transfer(value: &Value, path: &str, errors: &mut Vec<String>) {
     if let Some(t) = object(
@@ -175,6 +180,19 @@ pub fn validate(result: &Value) -> Result<(), String> {
             &mut errors,
         );
     }
+    if let Some(voucher) = root.get("sessionVoucher") {
+        object(
+            voucher,
+            "/sessionVoucher",
+            &["channelId", "cumulativeAmount", "signer"],
+            &[
+                ("channelId", is_string),
+                ("cumulativeAmount", is_string),
+                ("signer", is_string),
+            ],
+            &mut errors,
+        );
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -194,6 +212,7 @@ mod tests {
             json!({"id": "a", "outcome": "reject", "error": "boom", "rejectCode": "amount-mismatch"}),
             json!({"id": "a", "outcome": "unsupported-mode", "error": "unsupported-mode: x"}),
             json!({"id": "a", "outcome": "accept", "exactBytes": {"bytes": [1, 2], "base64Url": "AQI"}}),
+            json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": "107", "signer": "o"}}),
             json!({"id": "a", "outcome": "accept", "x402EnvelopeShape": {"x402Version": 2, "hasAccepted": true, "payloadHasTransaction": true}, "x402PaymentHeader": "e30="}),
         ] {
             validate(&ok).unwrap();
@@ -224,6 +243,10 @@ mod tests {
             (
                 json!({"id": "a", "outcome": "accept", "exactBytes": {"hex": "00"}}),
                 "additional property 'hex'",
+            ),
+            (
+                json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": 107, "signer": "o"}}),
+                "/sessionVoucher/cumulativeAmount has the wrong type",
             ),
         ] {
             let err = validate(&bad).unwrap_err();

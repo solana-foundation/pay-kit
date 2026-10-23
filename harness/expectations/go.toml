@@ -308,6 +308,10 @@ reason = "the runner's session verify path drives only the SDK's voucher verifie
 pattern = "vector/session-close-*"
 
 [[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's use processing over stored channel state (input.sessionServerVerify), and the Go session server has no use action (it models operator mode as delegated settlement, go/protocols/mpp/server/session.go)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
 reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
 pattern = "vector/session-build-*"
 
