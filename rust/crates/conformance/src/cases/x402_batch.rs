@@ -1509,9 +1509,21 @@ crate::registry! {
     );
     batch_verify_top_up_compute_budget_prefix => policy_case(
         "batch-verify-top-up-compute-budget-prefix", policy_spec("If both are present, the limit MUST precede the price."), &[LAYOUT, LIMIT_BEFORE_PRICE, CB_LIMIT, CB_PRICE],
-        "Paired accept: SetComputeUnitLimit 400000 then SetComputeUnitPrice 5000000 (both at the cap) before the top_up.",
-        top_up_tx(vec![fx::compute_ix(&fx::unit_limit(400_000)), fx::compute_ix(&fx::unit_price(5_000_000))], TOP_UP_AMOUNT_ADDED, memo()),
+        "Paired accept: SetComputeUnitLimit 400000 (at the cap) then SetComputeUnitPrice 5000 before the top_up, a 2000 lamport priority fee: exactly the sponsor's cap on the fee it pays (RULINGS S6).",
+        top_up_tx(vec![fx::compute_ix(&fx::unit_limit(400_000)), fx::compute_ix(&fx::unit_price(5_000))], TOP_UP_AMOUNT_ADDED, memo()),
         Expect::Accept(Pin::Outcome),
+    );
+    batch_verify_top_up_priority_fee_over_cap_reject => policy_case(
+        "batch-verify-top-up-priority-fee-over-cap-reject", policy_spec("A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps, but MUST NOT relax the absolute maxima above."), &[CB_LIMIT, CB_PRICE],
+        "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000, each at its own cap: the sponsor would pay a 2000000 lamport priority fee, so it bounds the fee as limit times price (RULINGS S6). Pair: batch-verify-top-up-compute-budget-prefix.",
+        top_up_tx(vec![fx::compute_ix(&fx::unit_limit(400_000)), fx::compute_ix(&fx::unit_price(5_000_000))], TOP_UP_AMOUNT_ADDED, memo()),
+        rej(RejectCode::SetupTransaction),
+    );
+    batch_verify_top_up_implicit_limit_priority_fee_over_cap_reject => policy_case(
+        "batch-verify-top-up-implicit-limit-priority-fee-over-cap-reject", policy_spec("A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps, but MUST NOT relax the absolute maxima above."), &[CB_PRICE],
+        "SetComputeUnitPrice 5001 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the top_up and the memo, so the sponsor would pay 2001 lamports, one over its cap (RULINGS S6). A verifier that bounds only declared limits accepts it.",
+        top_up_tx(vec![fx::compute_ix(&fx::unit_price(5_001))], TOP_UP_AMOUNT_ADDED, memo()),
+        rej(RejectCode::SetupTransaction),
     );
     batch_verify_top_up_three_lighthouse => policy_case(
         "batch-verify-top-up-three-lighthouse", policy_spec("and at most three Lighthouse instructions"), &[LAYOUT, ALLOWLIST],
@@ -1886,15 +1898,21 @@ crate::registry! {
     ).build();
     batch_txv1_top_up_v1_priority_fee_over_cap_reject => txv1_case(
         "batch-txv1-top-up-v1-priority-fee-over-cap-reject", t("Top-level instruction layout", "`priorityFee * 1000000 <= 5000000 * computeUnitLimit`"), &[TX_V1_CAPS],
-        "priorityFee 1000001 lamports at computeUnitLimit 200000: 1000001 × 10^6 > 5000000 × 200000 (one lamport over the cap).",
-        v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_priority_fee(1_000_001), vec![])),
+        "priorityFee 1501 lamports at computeUnitLimit 300: 1501 × 10^6 > 5000000 × 300 (one lamport over the cap), and still under the sponsor's 2000 lamport cap on the total fee, so only the per-unit rule rejects it.",
+        v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_compute_unit_limit(300).with_priority_fee(1_501), vec![])),
         rej(RejectCode::SetupTransaction),
     ).build();
     batch_txv1_top_up_v1_priority_fee_at_cap => txv1_case(
         "batch-txv1-top-up-v1-priority-fee-at-cap", t("Top-level instruction layout", "`priorityFee * 1000000 <= 5000000 * computeUnitLimit`"), &[TX_V1_CAPS],
-        "Paired accept: priorityFee 1000000 lamports at computeUnitLimit 200000 is exactly the cap.",
-        v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_priority_fee(1_000_000), vec![])),
+        "Paired accept: priorityFee 1500 lamports at computeUnitLimit 300 is exactly the per-unit cap, and under the sponsor's 2000 lamport cap on the total fee (RULINGS S6).",
+        v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_compute_unit_limit(300).with_priority_fee(1_500), vec![])),
         Expect::Accept(Pin::Outcome),
+    ).build();
+    batch_txv1_top_up_v1_priority_fee_over_sponsor_cap_reject => txv1_case(
+        "batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject", t("Top-level instruction layout", "`priorityFee * 1000000 <= 5000000 * computeUnitLimit`"), &[TX_V1_CAPS],
+        "priorityFee 2001 lamports at computeUnitLimit 200000: far under the per-unit cap, but one lamport over the cap the sponsor puts on the total fee it pays (RULINGS S6).",
+        v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_priority_fee(2_001), vec![])),
+        rej(RejectCode::SetupTransaction),
     ).build();
     batch_txv1_top_up_v0_over_1232_bytes_reject => txv1_case(
         "batch-txv1-top-up-v0-over-1232-bytes-reject", tx_versions_spec("A legacy or version-0 transaction MUST NOT exceed 1232 serialized bytes; a version-1 transaction MUST NOT exceed 4096 serialized bytes."), &[TX_SIZE],

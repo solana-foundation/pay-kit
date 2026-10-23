@@ -619,7 +619,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-3ed2ac9962`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
 | `X402-536163eb05`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 0 · 2k |
 | `X402-897add7b39`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-a93234f1d7`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 1 · 2k |
+| `X402-a93234f1d7`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 5 | — | — | — | — | — | — | 5 | — | 1 · 4k |
 | `X402-ae18578132`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
 | `X402-ebd20058fd`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
 | `X402-8fcdf05fbf`* | scheme_exact.md § Client-submitted (payment proof) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
@@ -659,7 +659,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-cf373442ff`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 3 |
 | `X402-d75fb10a6f`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 17 | — | — | — | — | — | — | 17 | — | 16 · 1k |
 | `X402-eace5aece9`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 4 | — | — | — | — | — | — | 4 | — | 3 · 1u |
-| `X402-3b5914a7c5`* | scheme_upto_svm.md § 8. Security Properties | 1 | — | — | — | — | — | — | 1 | — | 1 |
+| `X402-3b5914a7c5`* | scheme_upto_svm.md § 8. Security Properties | 4 | — | — | — | — | — | — | 4 | — | 2 · 2k |
 | `X402-076bb2bdc3`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
 | `X402-14b8b2b598`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | — | — | 2 | — | 2 |
 | `X402-4c364688fc`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | — | — | 1 | — | 1 |
@@ -675,12 +675,12 @@ come from the same extraction as `pkc req-lint`.
 | `X402-c1174b72d8`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 2 | — | 2 |
 | `X402-f747c74e76`* | scheme_upto_svm.md § Phase 2 - Authorization | 1 | — | — | — | — | — | — | 1 | — | 1 |
 | `X402-11bbb0287f`* | scheme_upto_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-233dcf8a3e`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-443a167ea1`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
+| `X402-233dcf8a3e`* | scheme_upto_svm.md § Top-level instruction layout | 5 | — | — | — | — | — | — | 5 | — | 3 · 2k |
+| `X402-443a167ea1`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | — | — | 4 | — | 4 |
 | `X402-683361bbae`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 2 · 1k |
 | `X402-7cd3ca69a6`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 2 |
 | `X402-b2b604a864`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | — | — | 4 | — | 4 |
-| `X402-b4167aad45`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | — | — | 4 | — | 3 · 1k |
+| `X402-b4167aad45`* | scheme_upto_svm.md § Top-level instruction layout | 6 | — | — | — | — | — | — | 6 | — | 3 · 3k |
 | `X402-c8544c0fdd`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
 | `X402-ce3692afe0`* | scheme_upto_svm.md § Top-level instruction layout | 17 | — | — | — | — | — | — | 17 | — | 12 · 5k |
 | `X402-d0ce5e5325`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
@@ -706,7 +706,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402TX-10b3fe2ef3`* | scheme_exact_svm.md § PaymentPayload payload Field | 5 | 2 · 3k | — | 1 · 2u · 2k | 1 · 2u · 2k | 2 · 3k | 1 · 2u · 2k | 5 | 1 · 3u · 1k | 1 · 2u · 2k |
 | `X402TX-d444d01b9e`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
 | `X402TX-4de59a1f27`* | scheme_upto_svm.md § Message and signer rules | 6 | — | — | — | — | — | — | 6 | — | 1 · 5k |
-| `X402TX-0f874a9c63`* | scheme_upto_svm.md § Top-level instruction layout | 12 | — | — | — | — | — | — | 12 | — | 0 · 12k |
+| `X402TX-0f874a9c63`* | scheme_upto_svm.md § Top-level instruction layout | 14 | — | — | — | — | — | — | 14 | — | 0 · 14k |
 | `X402TX-125d312b26`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 0 · 2k |
 | `X402TX-5267172b18`* | scheme_upto_svm.md § Transaction versions | 4 | — | — | — | — | — | — | 4 | — | 0 · 4k |
 

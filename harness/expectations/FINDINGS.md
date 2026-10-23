@@ -247,6 +247,26 @@ other x402 verifier caps the unit price alone:
   (`typescript/external/x402/typescript/packages/mechanisms/svm/src/exact/facilitator/scheme.ts:1246`).
   SOLA1-340 bounded the product in the TypeScript MPP charge only.
 
+## x402-channel-priority-fee-product-uncapped
+
+**Case:** `vector/x402-upto-verify-priority-fee-over-cap-reject`,
+`vector/x402-upto-verify-implicit-limit-priority-fee-over-cap-reject`,
+`vector/batch-verify-top-up-priority-fee-over-cap-reject`,
+`vector/batch-verify-top-up-implicit-limit-priority-fee-over-cap-reject`
+**SDKs:** typescript
+
+The sponsor co-signs the payer-built channel `open`, `top_up` and refund
+`request_close` as fee payer, so it pays whatever priority fee the payer
+chose. scheme_upto_svm.md: "A sponsor MAY apply a stricter local policy for
+compute-unit limit, compute-unit price, and required-signature count"; Rust
+holds the fee itself (limit times price, the runtime default limit when none
+is declared, or the version-1 header fee) to 2,000 lamports, the same cap
+exact uses (`core::payment_channels::scan_channel_tx_layout`, RULINGS S6).
+The vendored `@x402/svm` 2.26.0 `findCanonicalOpenInstruction` caps each
+field alone, so a 400,000 unit limit at 5,000,000 micro-lamports (a
+2,000,000 lamport fee) and a price-only prefix charged on the implicit limit
+are both accepted.
+
 ## session-open-initial-voucher-accepted
 
 **Case:** `vector/session-wire-action-open-initial-voucher-reject`

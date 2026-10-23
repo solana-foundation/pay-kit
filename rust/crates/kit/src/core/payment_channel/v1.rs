@@ -1000,6 +1000,10 @@ impl MemoPolicy<'_> {
 /// 1. An optional ComputeBudget prefix: at most one `SetComputeUnitLimit` and
 ///    at most one `SetComputeUnitPrice`, limit before price, each within
 ///    [`OPEN_MAX_COMPUTE_UNIT_LIMIT`] / [`MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`].
+///    The sponsor pays the priority fee, so the fee itself (limit times price,
+///    the runtime default limit when none is declared, or the version-1
+///    header fee) is held to
+///    [`MAX_SPONSORED_PRIORITY_FEE_LAMPORTS`](crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS).
 /// 2. Exactly one instruction on `program_id` whose first data byte is
 ///    `discriminator`.
 /// 3. A suffix of at most [`OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS`] Lighthouse
@@ -1194,6 +1198,18 @@ pub fn scan_channel_tx_layout<'tx>(
             "{label} transaction must carry exactly one binding Memo"
         )));
     }
+    // Each field within its ceiling still lets the largest limit pair with the
+    // largest price, and an undeclared limit is priced at the runtime default
+    // for every instruction. Checked once the layout is known to be canonical.
+    crate::core::tx::check_priority_fee(
+        &tx.message,
+        crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS,
+    )
+    .map_err(|e| {
+        Error::Other(format!(
+            "{label} transaction compute unit price exceeds the sponsored fee maximum: {e}"
+        ))
+    })?;
 
     Ok(primary)
 }

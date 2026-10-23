@@ -123,7 +123,15 @@ refused as `compute-price-over-cap`. Vector:
 `priorityFee` is the same product, so the cap applies to it unchanged; the
 txv1 per-unit cap (5 lamports per unit) still holds below it, and
 `x402-verify-v1-priority-fee-{at,over}-cap-*` pin that boundary at a 300 unit
-limit, where it binds before the total does.
+limit, where it binds before the total does. The same sponsor cap covers the
+payment-channel transactions an x402 sponsor co-signs (upto `open`, batch
+`open`, `top_up` and refund `request_close`), whose spec ceilings (400,000
+units, 5,000,000 micro-lamports) are absolute maxima a sponsor MAY tighten;
+without a declared limit the price is charged on the runtime default of
+200,000 units per non-ComputeBudget instruction. Vectors:
+`x402-upto-verify-{priority-fee,implicit-limit-priority-fee,v1-priority-fee-over-sponsor}-*`
+and `batch-verify-top-up-{priority-fee,implicit-limit-priority-fee}-over-cap-reject`,
+`batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject`.
 
 ## x402 upto on SVM
 

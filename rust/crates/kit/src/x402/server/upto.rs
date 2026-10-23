@@ -2497,15 +2497,56 @@ mod tests {
         ])
         .is_err());
         assert!(validate_layout(&[
+            cu_limit_ix(1),
             cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
             open_placeholder()
         ])
         .is_ok());
         assert!(validate_layout(&[
+            cu_limit_ix(1),
             cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1),
             open_placeholder()
         ])
         .is_err());
+    }
+
+    #[test]
+    fn bounds_the_priority_fee_the_operator_pays() {
+        let over_fee_cap = |result: Result<(), Error>| {
+            result.is_err_and(|e| e.to_string().contains("exceeds the sponsored fee maximum"))
+        };
+        // Both fields at their ceilings: 400,000 x 5 lamports.
+        assert!(over_fee_cap(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+            open_placeholder(),
+        ])));
+        // The same price with no declared limit is charged on the runtime
+        // default for each of the five non-budget instructions.
+        assert!(over_fee_cap(validate_layout(&[
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+            open_placeholder(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            memo_ix("x"),
+        ])));
+        // Exactly the sponsored maximum, declared or implied.
+        let at_cap = crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS * 1_000_000
+            / u64::from(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT);
+        assert!(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            cu_price_ix(at_cap),
+            open_placeholder(),
+        ])
+        .is_ok());
+        // Two non-budget instructions imply the same 400,000 unit limit.
+        assert!(validate_layout(&[cu_price_ix(at_cap), open_placeholder(), memo_ix("x")]).is_ok());
+        assert!(over_fee_cap(validate_layout(&[
+            cu_price_ix(at_cap + 1),
+            open_placeholder(),
+            memo_ix("x"),
+        ])));
     }
 
     #[test]

@@ -26,8 +26,9 @@ ea981eedf129540b23117a2f7e9e72916e8b93da074c345231e06e342cc2df0e  annotated/batc
 a7659349471ab46653e0e08233655e80038fd828fcf733b065d00b9664871b22  annotated/batch-txv1-top-up-v1-missing-unit-limit-reject.txt
 78c007df83fe926d4b7b52b9b9398f6d57281cb954e730e3cba8814acb6d2f3d  annotated/batch-txv1-top-up-v1-not-advertised-reject.txt
 22fe677b27fe02e32faaffe2822eb07ccedc2434cabbf4a45112d7f144acc2c9  annotated/batch-txv1-top-up-v1-over-1232-bytes.txt
-8ee7b11777ab5c00e0e36172afdded6f68ea984bc804aa90fa563d7d915600eb  annotated/batch-txv1-top-up-v1-priority-fee-at-cap.txt
-bc2ac43fc7647b88381607a5b43d708251df3360d6be99a10c6a5c6d2c731b13  annotated/batch-txv1-top-up-v1-priority-fee-over-cap-reject.txt
+9d58aa022a5771c09d78c97691e2cabb8cf08eb3f7c39b0c12e177bfd5973109  annotated/batch-txv1-top-up-v1-priority-fee-at-cap.txt
+bc2917705fb7456d265b510dfd05e9f3d58c861238870eebf94f6f4005714071  annotated/batch-txv1-top-up-v1-priority-fee-over-cap-reject.txt
+39907cb3f1674a0cdb1e2351cdadadb5692a011594328dbbfbeac752986f95ab  annotated/batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject.txt
 a2e031a6a4276a2d28779bb931e2af3b3b3f7e22f1ae2c41184581e9ed37e843  annotated/batch-txv1-top-up-v1-unit-limit-over-cap-reject.txt
 ac6856f925b534e013855d6edc22b1616924bc914052fee52ca411431d39f2b5  annotated/batch-verify-accepted-amount-mismatch-reject.txt
 e5711029cc266f1fc00b60d5c28e4cf08c83bc4f7ed2067933c5a2d0e66d1e95  annotated/batch-verify-accepted-network-mismatch-reject.txt
@@ -61,7 +62,7 @@ b321f5a6904588490d96ad69087fe8de268d21210564fd07575ec8fd2bbaa2b2  annotated/batc
 8005ddd0c9f70bb393934ea90a4bf9b55202121f36159eae72e0d6a7fc9e49db  annotated/batch-verify-top-up-accept.txt
 f37f7e838c37d68edb371c4452c255ee0b19484bee43fa53d876a060d2940b3e  annotated/batch-verify-top-up-amount-mismatch-reject.txt
 3cdadb20446e17f1ea27f62d8edf1395fa91720fc8960abed4dd38e302d29b8e  annotated/batch-verify-top-up-ata-instruction-reject.txt
-4a949221a79fccea2e874552fcfa58425da7ca53668df8aa166689e035007536  annotated/batch-verify-top-up-compute-budget-prefix.txt
+1ff9971b5c1fc4def2f875ac6fd8ae9a5b795ffa1d6a19e7ddeec0b8c881acdf  annotated/batch-verify-top-up-compute-budget-prefix.txt
 cff0683f94cc314246aaa144a37eb40cc328d900ab3934feeee42a6373028afb  annotated/batch-verify-top-up-compute-limit-over-cap-reject.txt
 070c31a1d57a3beebcd79fa34b7bc2ce5a779a87acd932f9417475f28d11b139  annotated/batch-verify-top-up-compute-price-over-cap-reject.txt
 08856502c2f4beb69aecea6eb54095c38afd75ed8230bc7cda2a48c26aaacbb2  annotated/batch-verify-top-up-duplicate-limit-reject.txt
@@ -72,6 +73,7 @@ cff0683f94cc314246aaa144a37eb40cc328d900ab3934feeee42a6373028afb  annotated/batc
 40008adb08e644ce581a8fdf588bb2ec1781fc549505fcc96b75abb0a9b0926f  annotated/batch-verify-top-up-fee-payer-not-sponsor-reject.txt
 9eb513712b5f3ec86dc145ca787a7fdbfc6c4e64906eb3c814ac5b9b27f41de3  annotated/batch-verify-top-up-four-lighthouse-reject.txt
 ad0234c28be3a00ec169ffcac7708d4de28ca4a13a65a87b2dd3833bc745bf10  annotated/batch-verify-top-up-frozen-payer-ata-reject.txt
+6181c15cd01a70578b8c9cb3ad6d8fa682108269b7867926d4ab7b01df5d271e  annotated/batch-verify-top-up-implicit-limit-priority-fee-over-cap-reject.txt
 d2db393b2e9934b812d07767930c9435b8b775273546e8e86f2cd964eb330fe1  annotated/batch-verify-top-up-legacy-message.txt
 4b0fba5e3942f08bdbcb7a54cb594bc8fe22e7e9e543864b240807eccd96b66b  annotated/batch-verify-top-up-memo-mismatch-reject.txt
 96f7b3553cb8906f55af973a8d4302cb7d8ab435f057edbec82f867f0ecb4a1e  annotated/batch-verify-top-up-missing-memo-reject.txt
@@ -79,6 +81,7 @@ a21cd90f07842230198b5e91463b5a32008388785d435a4022bc4bb564a003fe  annotated/batc
 162f0cfcb737e749f9be55b7cc6538c79190439be6feb8987e4a5dde12ac0766  annotated/batch-verify-top-up-missing-receiver-ata-reject.txt
 3e7851a34c992e6bd903faf1ea995b90f73fc236da6e0eff0574bbcb22dce615  annotated/batch-verify-top-up-oversized-memo-reject.txt
 131b94e275b189c3f85bad07f05cee779aff9534b0e8a455ed708b67cd1fe751  annotated/batch-verify-top-up-price-before-limit-reject.txt
+0d432e27826d0c5a834d0ea66e0ed892d9582438f50dff46f370eda17a12d541  annotated/batch-verify-top-up-priority-fee-over-cap-reject.txt
 b4d04378f5767b1c5d30054184cafc929af2be344d2a3afb2f2a1603c518b13a  annotated/batch-verify-top-up-second-setup-instruction-reject.txt
 c5ad34fc7aaa0bf8a49bd8d386fee5d0cae41b2334bdbd1bd1b382e513f810f2  annotated/batch-verify-top-up-smuggled-transfer-reject.txt
 42f7fdd961a9643109a4d82ea00808bed206245b614dc7fc1a27ffe807533d26  annotated/batch-verify-top-up-three-lighthouse.txt
@@ -484,7 +487,7 @@ acc9a03b99aa82aad211f9a7045eeb40c27ad21606b6c40126e686e5eff7d054  annotated/x402
 680284da54a60b588a697c92fc9551e2f34ccce261d3c7d2cbdeddfdf8fc0d30  annotated/x402-upto-verify-client-voucher-empty-reject.txt
 ea69f94e8ed85c52afe6b840cc59c2db368606f74143be441a8e1cb4aefae69e  annotated/x402-upto-verify-client-voucher-reject.txt
 8f4d132df707ad8af2d98b18b0ae0d2aae386be972dd9a34be61313c9b927043  annotated/x402-upto-verify-compute-after-open-reject.txt
-87083847140c9610db91badecc3235f8182dcbb31cad238376b1ab3f60da6374  annotated/x402-upto-verify-compute-at-caps-accept.txt
+e52a6ca2aa3c9255303643af1472f895b6fcca932c8c0749fd8258f7c0fc3ba9  annotated/x402-upto-verify-compute-at-caps-accept.txt
 6432ba8692105852846dda3ab230ca0b376b11f8a93e44cd24e9fd5921799b19  annotated/x402-upto-verify-compute-duplicate-limit-reject.txt
 21608dcea744525e48e2907fe7db4391c9ba41add489cd7bf7271b0f254b8349  annotated/x402-upto-verify-compute-duplicate-price-reject.txt
 ebf22f2bf093a9c44b4ee00b404622309d53746e5509fe7adff4cf284de885f0  annotated/x402-upto-verify-compute-limit-over-cap-reject.txt
@@ -513,6 +516,8 @@ faf9819f9d408b7501f5d86e57e32c6ddaa557f9cf07dc50c33f8faeb382e7b8  annotated/x402
 0a36e7e94a7eebf13e5e96552436a7632a5bb640391f7d37ee1cca8257e9aad8  annotated/x402-upto-verify-fractional-expires-at-reject.txt
 871d71d91dfc67e79b1ee5925f7aaba73f276be25de61cadd9e250c20bec6076  annotated/x402-upto-verify-fractional-valid-after-reject.txt
 e1b89f350d2146afba565aa3b729ddf14e180c4cc3ffaaa3b64603fb22eda88e  annotated/x402-upto-verify-grace-period-reject.txt
+2134419d8a747670bbaf164c0b033e70089de5ac7141fc3811e06df98c1c2569  annotated/x402-upto-verify-implicit-limit-at-fee-cap-accept.txt
+45e9d41c3aad45749f25859cc72af8c40ab0315956df34241165acee35059a26  annotated/x402-upto-verify-implicit-limit-priority-fee-over-cap-reject.txt
 3bae8185d730c713d895ad01dc0698bcd451ec3a870c9027311384d38db1d9f5  annotated/x402-upto-verify-invalid-payer-signature-reject.txt
 38eaacf3194b9f95a37d692b99c63332d34e08cc7aa01e78eee8019cc6261b73  annotated/x402-upto-verify-legacy-message-accept.txt
 debe92e1abbc8d2507e47917d34b7d23e8f45c8a9b9e40e160915d3aeff14831  annotated/x402-upto-verify-lighthouse-accept.txt
@@ -541,6 +546,7 @@ b8d1adc29384f0ca1d605cb8ca6738c1769c9bf4caae2e89da286e0beb5b6fe5  annotated/x402
 690bf4307d6c7b0736a4fd97b7489879e11be02b82a71885b9e816f8089df738  annotated/x402-upto-verify-pay-to-fee-payer-accept.txt
 091c85b57f469025f65a0d17c910a6cd73f775640508969380da14a6180469bd  annotated/x402-upto-verify-payee-reject.txt
 b9bdcfe745db3b93a2fb118630bee4c171d828dac85baf6a81cd062581fe2110  annotated/x402-upto-verify-payer-token-account-reject.txt
+17514a51ebe453546e264577c94fe545eb07871214da61065d7cf803b402c5cf  annotated/x402-upto-verify-priority-fee-over-cap-reject.txt
 452683fafe8d84b99f526ba48e5f43889967f38d7e28a299d817ba960479dc22  annotated/x402-upto-verify-recipient-bps-reject.txt
 7607efcd94618b9910b025d924826cd65e79ad10d26babc5fac1eafafb59ad40  annotated/x402-upto-verify-recipient-implicit-reject.txt
 3b0f56eb8d9b1b069a0a8e74cbc43a15a3ea4b5eeebc737971d0f7b503a58ecb  annotated/x402-upto-verify-recipient-reject.txt
@@ -566,8 +572,9 @@ ce59ed37df74e4826d9bd6c71c09cc514163da33f85f708843d7742d363d558e  annotated/x402
 1917d0fe6e9e52317ae2ff05ce769ceb9e2948f629530de38984a74a42d09b88  annotated/x402-upto-verify-v1-missing-limit-reject.txt
 047c59de0ca609c7ecbfadf78e99af07e73f1d97581e42feb1bd5af305ed767d  annotated/x402-upto-verify-v1-missing-loaded-limit-reject.txt
 4e62956ea1ce652109463a90b26d4c46a52360b3f62ba207fd382d79c68a40c5  annotated/x402-upto-verify-v1-oversize-reject.txt
-2eb93676066b4ac25c8205dbb2a4d2141d0b6c3202fbf220828950f9541ee5ec  annotated/x402-upto-verify-v1-priority-fee-at-cap-accept.txt
-8f107c62c931deb4930b5ad85fa78f14ab540dc32d91252a5db320bbf06e60de  annotated/x402-upto-verify-v1-priority-fee-over-cap-reject.txt
+c6c8ef7beb8ac903a0a9ea75ebae5fc36f8bc1bca7619af8ca0fce273b4ee783  annotated/x402-upto-verify-v1-priority-fee-at-cap-accept.txt
+21d1fbf22e8848a9111dfe36352d5b877f6cd4a4c84f9945a79619bf92cfae04  annotated/x402-upto-verify-v1-priority-fee-over-cap-reject.txt
+8fdec90d0dac0cf754335c9e62e8f8446c0a27cc5d82cc9b0853082a75d2dd3c  annotated/x402-upto-verify-v1-priority-fee-over-sponsor-cap-reject.txt
 415ba369d974ef5b2b26d27e44565a8eee760b993747fd64ad818ef87be2c4c3  annotated/x402-upto-verify-v1-small-loaded-limit-accept.txt
 251510e562d067008004931a6e6ee408301b3566e23155b019cbc8346ff44e62  annotated/x402-upto-verify-v1-unadvertised-before-layout-reject.txt
 22844edaa25c1b45723e72efd6ef3cf096fd3ada517d7d0205e73b7e02ec274f  annotated/x402-upto-verify-v1-unadvertised-reject.txt
@@ -604,10 +611,10 @@ ee17ec2e291409954d77a23e40909764e62a3cd53730fd693a72ce0462212811  annotated/x402
 00d714eb0b579a1bc8ee6c0f017297dad3dcdec91827a30efbd8927634021937  batch-build.json
 1e0bb980d86a6dca02071160befe39f9603b73d7ddb06de06e3f32a68fb248ec  batch-canonical.json
 9d29189ac18e7f3219a336acb593d6a64527b9357ff60ce0be44108ed38e2598  batch-corrective.json
-c8baf9606dc77393d125bba0050f4f07f79887da58ce33ed8e09a3d04f7441f9  batch-txv1.json
+b906fc5e25dc7ebe454f0d24e881cae5bb06bb7fa2d0c5c0b2f9307138a484ce  batch-txv1.json
 456f3193ec301265c7ee71571757809c802afc41a866fb4bfa8989f1203dad47  batch-verify-open.json
 2c69a2d23afd0c815d5be2634154208f608c157cf1132c9675d1434a8d5d2857  batch-verify-refund.json
-5a3737493aa52305b81f3305c7a097ebad45e02154dbbcd1da89e62c5869fd6e  batch-verify-setup-policy.json
+04ac3f72bcd531d4124b106b78f9a485c138100715548a611c4638c8e2aefc57  batch-verify-setup-policy.json
 3428ded34c4f1cfbfe343e7e8923f4f3a396a587836729f198a7c36d32f5b1ca  batch-verify-voucher.json
 0c6f4fae057ce68548cc4c496ecaa36cef906709abafc3463cd3de8f2543a5b5  batch-wire.json
 65a3a4793b3ef918d2b6464e0aa24e8f30de634c1a8223543960224fef443bea  canonical-bytes.json
@@ -641,8 +648,8 @@ ce46f0ac323f508415a6dea09315596ed4fa52e38b511e2f0cf808f485d32f2a  x402-build.jso
 812e251b273d84998507068b1b41c9710db973f05c9c38b340bb5b009f0060fc  x402-extensions.json
 2c75e41fa50fdbaeff061100d455866af1bd1d5393d1a8a2277608072ac99e52  x402-tx-versions.json
 ac2555712b1f952bb8c59dbcc57dccd0f3fe2de480f0a98982e15a801229e695  x402-upto-build.json
-104a4c96607919402d21a0b4ffdd15796132b70702a02e7436b6495f1d1700f4  x402-upto-open-policy.json
-ac8b5c84c914b88af97e7327e9221edd8ebe99e9280680a34c4ee5b18534211c  x402-upto-txv1.json
+53f6cdf619c05aa0b10b1bbf74c36251be48ce4ff166a3fb84bc1e2a59da9e66  x402-upto-open-policy.json
+226edd935ccd71e8fa835fc5d6d04b46736b3414c110158f99f397e8594b58ad  x402-upto-txv1.json
 ed579f6183f66be54f127aaec7beb5ba19f6a22222b0dbeeb18479f901f67d43  x402-upto-verify.json
 7c2c19185d91c9a2d7b8d55ef4342cbcf49dc7e2918d5daa5b0357c624ad2ab1  x402-upto-wire.json
 a0b94e993a0766fe74aa500254c63672ddeab94aad6ec4b1ed136bb7ccd26be8  x402-v1-build.json

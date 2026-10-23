@@ -138,6 +138,16 @@ tracking = "FINDINGS.md#upto-slot-wire-type"
 
 [[known_failing]]
 ids = [
+  "vector/x402-upto-verify-priority-fee-over-cap-reject",
+  "vector/x402-upto-verify-implicit-limit-priority-fee-over-cap-reject",
+  "vector/batch-verify-top-up-priority-fee-over-cap-reject",
+  "vector/batch-verify-top-up-implicit-limit-priority-fee-over-cap-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 open and top_up verifiers cap the compute-unit limit and price separately (findCanonicalOpenInstruction), so the sponsor pays up to 400000 x 5000000 micro-lamports, and a price with no declared limit is never charged against the runtime default limit"
+tracking = "FINDINGS.md#x402-channel-priority-fee-product-uncapped"
+
+[[known_failing]]
+ids = [
   "vector/x402-upto-verify-open-trailing-byte-reject",
 ]
 reason = "verifyOpenTransaction decodes the open args with a decoder that ignores trailing bytes"
@@ -161,6 +171,7 @@ ids = [
   "vector/x402-upto-verify-v1-limit-over-cap-reject",
   "vector/x402-upto-verify-v1-priority-fee-over-cap-reject",
   "vector/x402-upto-verify-v1-priority-fee-at-cap-accept",
+  "vector/x402-upto-verify-v1-priority-fee-over-sponsor-cap-reject",
   "vector/x402-upto-verify-v1-missing-limit-reject",
   "vector/x402-upto-verify-v1-missing-loaded-limit-reject",
   "vector/x402-upto-verify-v1-small-loaded-limit-accept",
@@ -320,6 +331,7 @@ ids = [
   "vector/batch-txv1-top-up-v1-over-1232-bytes",
   "vector/batch-txv1-top-up-v1-priority-fee-at-cap",
   "vector/batch-txv1-top-up-v1-priority-fee-over-cap-reject",
+  "vector/batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject",
   "vector/batch-txv1-top-up-v1-unit-limit-over-cap-reject",
 ]
 reason = "the vendored @x402/svm 2.26.0 predates SVM transaction versions (x402-foundation/x402 PR 3473): its verifier fails on a version-1 message and does not enforce the 1232-byte version-0 limit, and its client ignores extra.transactionVersions"

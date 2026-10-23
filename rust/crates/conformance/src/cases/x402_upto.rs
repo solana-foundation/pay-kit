@@ -535,8 +535,16 @@ crate::registry! {
         POLICY_FILE,
         spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
         &[CB_LIMIT, CB_PRICE, CB_ABSOLUTE],
-        "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000 sit exactly at the absolute ceilings and are accepted.",
-        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
+        "SetComputeUnitLimit 400000 sits exactly at the absolute ceiling and SetComputeUnitPrice 5000 makes a 2000 lamport priority fee, exactly the sponsor's cap on the fee it pays (RULINGS S6): accepted.",
+        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000)])),
+    );
+    x402_upto_verify_implicit_limit_at_fee_cap_accept => accept(
+        "x402-upto-verify-implicit-limit-at-fee-cap-accept",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_PRICE, CB_ABSOLUTE, VERIFIER_POLICY],
+        "SetComputeUnitPrice 5000 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the open and the memo, a 2000 lamport priority fee, exactly the sponsor's cap (RULINGS S6): accepted. Pair: x402-upto-verify-implicit-limit-priority-fee-over-cap-reject.",
+        with(base(), Tamper::Prefix(vec![unit_price_ix(5_000)])),
     );
     x402_upto_verify_two_memos_unbound_accept => accept_lenient(
         "x402-upto-verify-two-memos-unbound-accept",
@@ -1102,6 +1110,28 @@ crate::registry! {
         base(),
         Tamper::Prefix(vec![unit_limit_ix(200_000), unit_price_ix(5_000_001)]),
         RejectCode::ComputePriceOverCap,
+        None,
+    );
+    x402_upto_verify_priority_fee_over_cap_reject => verify_case(
+        "x402-upto-verify-priority-fee-over-cap-reject",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_LIMIT, CB_PRICE, VERIFIER_POLICY],
+        BugType::AuthBypass,
+        "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000: each at its absolute ceiling, but the sponsor would pay a 2000000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6): rejected as compute-price-over-cap. Pair: x402-upto-verify-compute-at-caps-accept.",
+        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+        None,
+    );
+    x402_upto_verify_implicit_limit_priority_fee_over_cap_reject => verify_case(
+        "x402-upto-verify-implicit-limit-priority-fee-over-cap-reject",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_PRICE, VERIFIER_POLICY],
+        BugType::AuthBypass,
+        "SetComputeUnitPrice 5001 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the open and the memo, so the sponsor would pay 2001 lamports, one over its cap (RULINGS S6). A verifier that bounds only declared limits accepts it: rejected as compute-price-over-cap. Pair: x402-upto-verify-implicit-limit-at-fee-cap-accept.",
+        with(base(), Tamper::Prefix(vec![unit_price_ix(5_001)])),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
     );
     x402_upto_verify_compute_limit_over_cap_reject => reject(
@@ -1682,8 +1712,8 @@ crate::registry! {
         s_txv1_budget(),
         &[TV_V1_CAPS],
         BugType::AuthBypass,
-        "A version-1 open at 200000 units with priorityFee 1000001 lamports (priorityFee * 1000000 > 5000000 * computeUnitLimit): rejected as compute-price-over-cap.",
-        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1_000_001), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        "A version-1 open at 300 units with priorityFee 1501 lamports (priorityFee * 1000000 > 5000000 * computeUnitLimit), still under the 2000 lamport cap on the total fee, so only the per-unit rule rejects it: rejected as compute-price-over-cap.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(300), priority_fee_lamports: Some(1_501), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
     );
@@ -1692,8 +1722,19 @@ crate::registry! {
         TXV1_FILE,
         s_txv1_budget(),
         &[TV_V1_CAPS],
-        "A version-1 open at 200000 units with priorityFee 1000000 lamports: exactly 5000000 micro-lamports per unit, accepted.",
-        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1_000_000), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        "A version-1 open at 300 units with priorityFee 1500 lamports: exactly 5000000 micro-lamports per unit and under the 2000 lamport cap a sponsor puts on the total fee (RULINGS S6), accepted.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(300), priority_fee_lamports: Some(1_500), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+    );
+    x402_upto_verify_v1_priority_fee_over_sponsor_cap_reject => verify_case(
+        "x402-upto-verify-v1-priority-fee-over-sponsor-cap-reject",
+        TXV1_FILE,
+        s_txv1_budget(),
+        &[TV_V1_CAPS],
+        BugType::AuthBypass,
+        "A version-1 open at 200000 units with priorityFee 2001 lamports: far under 5000000 micro-lamports per unit, but one lamport over the cap the sponsor puts on the total fee it pays (RULINGS S6): rejected as compute-price-over-cap.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(2_001), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+        None,
     );
     x402_upto_verify_v1_missing_limit_reject => verify_case(
         "x402-upto-verify-v1-missing-limit-reject",

@@ -1062,6 +1062,16 @@ mod tests {
         }
     }
 
+    fn cu_price_ix(micro_lamports: u64) -> Instruction {
+        let mut data = vec![pc::COMPUTE_BUDGET_SET_UNIT_PRICE];
+        data.extend_from_slice(&micro_lamports.to_le_bytes());
+        Instruction {
+            program_id: pc::to_address(&pc::compute_budget_program_id()),
+            accounts: vec![],
+            data,
+        }
+    }
+
     #[test]
     fn accepts_a_canonical_open() {
         let f = fixture();
@@ -1080,6 +1090,79 @@ mod tests {
         )
         .expect("canonical open is accepted");
         assert_eq!(validated.payer, f.payer);
+    }
+
+    #[test]
+    fn the_sponsor_bounds_the_priority_fee_it_pays() {
+        use crate::core::tx::{ComputeBudget, MAX_SPONSORED_PRIORITY_FEE_LAMPORTS};
+        let f = fixture();
+        let open = || pc::build_open_instruction(&f.open_params(100_000));
+        let setup = |tx: &str| {
+            validate_setup_transaction(
+                tx,
+                SetupForm::Open,
+                &f.expectations(),
+                100_000,
+                Some(341_000_100),
+            )
+        };
+        let over_fee_cap = |err: BatchError| {
+            assert_eq!(err.code, errors::INVALID_SETUP_TRANSACTION);
+            assert!(
+                err.detail.contains("exceeds the sponsored fee maximum"),
+                "{}",
+                err.detail
+            );
+        };
+        let at_cap = MAX_SPONSORED_PRIORITY_FEE_LAMPORTS * 1_000_000
+            / u64::from(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT);
+
+        // Each field at its own ceiling.
+        over_fee_cap(
+            setup(&f.sign(&[
+                cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+                cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+                open(),
+                nonce_memo(),
+                f.binding(),
+            ]))
+            .unwrap_err(),
+        );
+        assert!(setup(&f.sign(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            cu_price_ix(at_cap),
+            open(),
+            nonce_memo(),
+            f.binding(),
+        ]))
+        .is_ok());
+        // No declared limit: three instructions are budgeted 600,000 units.
+        over_fee_cap(
+            setup(&f.sign(&[cu_price_ix(at_cap), open(), nonce_memo(), f.binding()])).unwrap_err(),
+        );
+        // Version 1 carries the fee itself in the header.
+        let ixs = [open(), nonce_memo(), f.binding()];
+        assert!(setup(&f.sign_v1(&ixs, ComputeBudget::new(200_000, 10_000))).is_ok());
+        over_fee_cap(setup(&f.sign_v1(&ixs, ComputeBudget::new(200_000, 10_005))).unwrap_err());
+
+        // The refund `request_close` is co-signed under the same policy.
+        let close = pc::build_request_close_instruction(&f.payer, &f.channel_id, &f.program_id);
+        let err = validate_request_close_transaction(
+            &f.sign(&[
+                cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+                cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+                close.clone(),
+                nonce_memo(),
+            ]),
+            &f.expectations(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, errors::INVALID_REFUND_TRANSACTION);
+        assert!(validate_request_close_transaction(
+            &f.sign(&[cu_price_ix(at_cap), close, nonce_memo()]),
+            &f.expectations(),
+        )
+        .is_ok());
     }
 
     #[test]
