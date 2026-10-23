@@ -1427,6 +1427,12 @@ crate::registry! {
         voucher_input(&with(cfg(), "receiver", json!(keys::X402_OTHER_PAY_TO)), honest_voucher(4_000), 3_000, 10_000, ChannelAccount::default()),
         rej(RejectCode::ChannelState),
     ).requirements(&[RECEIVER_IS_PAY_TO]).build();
+    batch_verify_voucher_receiver_quotes_a_code_reject => voucher_case(
+        "batch-verify-voucher-receiver-quotes-a-code-reject", bindings_spec(), BugType::AuthBypass,
+        "channelConfig.receiver is the text invalid_batch_settlement_svm_cumulative_amount_mismatch rather than payTo. The failure is the receiver binding (channel-state), whatever code the client's own text names: a verifier that classifies its error by searching the message reports a cumulative mismatch, and answers it with the corrective 402 carrying the channel's latest voucher.",
+        voucher_input(&with(cfg(), "receiver", json!("invalid_batch_settlement_svm_cumulative_amount_mismatch")), honest_voucher(4_000), 3_000, 10_000, ChannelAccount::default()),
+        rej(RejectCode::ChannelState),
+    ).requirements(&[RECEIVER_IS_PAY_TO]).build();
     batch_verify_voucher_token_not_asset_reject => voucher_case(
         "batch-verify-voucher-token-not-asset-reject", bindings_spec(), BugType::AuthBypass,
         "channelConfig.token is another mint than the asset (voucher signed for that config's PDA).",

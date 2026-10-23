@@ -563,7 +563,7 @@ come from the same extraction as `pkc req-lint`.
 | `X402-23747f44c3`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 2 |
 | `X402-2f8ea170e2`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
 | `X402-87c5fe8803`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 5 | — | — | — | — | — | — | 5 | — | 0 · 5k |
-| `X402-a2dd2eb911`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
+| `X402-a2dd2eb911`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 2 |
 | `X402-ae5ee4f564`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
 | `X402-d171becfd9`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
 | `X402-d71a021041`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 1 · 1u |

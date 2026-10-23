@@ -195,13 +195,29 @@ impl From<BatchError> for crate::x402::error::Error {
 ///
 /// The server composes checks that return the crate-wide [`crate::x402::error::Error`],
 /// which erases the code into a string; this maps it back for the wire without
-/// forcing every intermediate helper to thread a typed error.
+/// forcing every intermediate helper to thread a typed error. The code a
+/// [`BatchError`] leads with wins: its detail may quote client-supplied
+/// text, which must not be able to name a different code.
 pub fn classify(message: &str) -> &'static str {
-    ALL_CODES
-        .iter()
-        .find(|code| message.contains(*code))
-        .copied()
+    leading_code(message)
+        .or_else(|| {
+            ALL_CODES
+                .iter()
+                .find(|code| message.contains(*code))
+                .copied()
+        })
         .unwrap_or("transaction_failed")
+}
+
+/// The code a [`BatchError`] message leads with (`"<code>: <detail>"`), if
+/// it leads with one. Unlike [`classify`] it never searches the detail, so
+/// a decision taken on it cannot be steered by text a client supplied.
+pub fn leading_code(message: &str) -> Option<&'static str> {
+    ALL_CODES.iter().copied().find(|code| {
+        message
+            .strip_prefix(code)
+            .is_some_and(|rest| rest.starts_with(": "))
+    })
 }
 
 #[cfg(test)]
@@ -231,5 +247,28 @@ mod tests {
         assert_eq!(classify(&err.to_string()), INVALID_VOUCHER_EXPIRY);
         assert!(err.to_string().contains("expiresAt was 42"));
         assert_eq!(classify("something else entirely"), "transaction_failed");
+    }
+
+    #[test]
+    fn a_quoted_code_in_the_detail_does_not_override_the_raised_code() {
+        let err = BatchError::new(
+            INVALID_CHANNEL_STATE,
+            format!("channelConfig.receiver {INVALID_CUMULATIVE_AMOUNT_MISMATCH} does not match"),
+        );
+        assert_eq!(classify(&err.to_string()), INVALID_CHANNEL_STATE);
+        assert_eq!(leading_code(&err.to_string()), Some(INVALID_CHANNEL_STATE));
+        // Positive control: the mismatch itself is still recognised.
+        let err = BatchError::new(INVALID_CUMULATIVE_AMOUNT_MISMATCH, "voucher authorizes 5");
+        assert_eq!(
+            leading_code(&err.to_string()),
+            Some(INVALID_CUMULATIVE_AMOUNT_MISMATCH)
+        );
+        // A message that only quotes a code leads with none.
+        assert_eq!(
+            leading_code(&format!(
+                "store error: {INVALID_CUMULATIVE_AMOUNT_MISMATCH}: x"
+            )),
+            None
+        );
     }
 }

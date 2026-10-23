@@ -31,7 +31,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::body::{to_bytes, Body, HttpBody};
+use axum::body::{to_bytes, Body};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::handler::Handler;
 use axum::http::request::Parts;
@@ -61,9 +61,6 @@ const PAYMENT_RECEIPT_HEADER: &str = "Payment-Receipt";
 
 /// Marks a response whose authorization was already charged and served.
 const PAYMENT_REPLAY_HEADER: HeaderName = HeaderName::from_static("payment-replay");
-
-/// Avoid turning the channel store into an unbounded response-body cache.
-const MAX_CACHED_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 /// Error returned when a [`PayKit`] can't be built from its config.
 #[derive(Debug)]
@@ -1567,114 +1564,20 @@ fn exact_memo(method: &Method, resource: &str) -> String {
     format!("{method} {}", bs58::encode(digest).into_string())
 }
 
-/// Answer a request whose authorization was already charged and served.
-///
-/// The payment result is authoritative and is returned verbatim. When the
-/// original resource response was cached, restore that representation too.
+/// Answer a request whose authorization was already charged and served with
+/// its settlement result only. The resource is never replayed: the voucher
+/// that reaches this path is public once a claim publishes it or a corrective
+/// 402 returns it, so it proves nothing about who sent the original request.
 fn replayed_response(
     batch: &X402BatchSettlement,
     settlement: &crate::x402::batch_settlement::BatchSettlementResponse,
-    cached: Option<&crate::core::store::CachedUpstreamResponse>,
 ) -> Response {
-    let mut resp = if let Some(cached) = cached {
-        let status = StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK);
-        let mut response = (status, cached.body.clone()).into_response();
-        if let Some(content_type) = &cached.content_type {
-            if let Ok(value) = HeaderValue::from_str(content_type) {
-                response.headers_mut().insert(header::CONTENT_TYPE, value);
-            }
-        }
-        for (name, value) in &cached.headers {
-            if let (Ok(name), Ok(value)) = (
-                HeaderName::from_bytes(name.as_bytes()),
-                HeaderValue::from_str(value),
-            ) {
-                response.headers_mut().append(name, value);
-            }
-        }
-        response
-    } else {
-        StatusCode::OK.into_response()
-    };
+    let mut resp = StatusCode::OK.into_response();
     prevent_shared_caching(&mut resp);
     resp.headers_mut()
         .insert(PAYMENT_REPLAY_HEADER, HeaderValue::from_static("true"));
     attach_settlement_header(batch, settlement, &mut resp);
     resp
-}
-
-/// Headers whose meaning belongs to the stored representation rather than to
-/// this particular transport hop or payment attempt.
-fn is_replayable_response_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "accept-ranges"
-            | "cache-control"
-            | "content-security-policy"
-            | "content-security-policy-report-only"
-            | "content-disposition"
-            | "content-encoding"
-            | "content-language"
-            | "content-location"
-            | "content-range"
-            | "cross-origin-embedder-policy"
-            | "cross-origin-opener-policy"
-            | "cross-origin-resource-policy"
-            | "etag"
-            | "expires"
-            | "last-modified"
-            | "location"
-            | "permissions-policy"
-            | "referrer-policy"
-            | "reporting-endpoints"
-            | "strict-transport-security"
-            | "vary"
-            | "x-content-type-options"
-            | "x-frame-options"
-            | "x-permitted-cross-domain-policies"
-            | "x-xss-protection"
-    )
-}
-
-/// Buffer a small, finite handler response so an authorization replay can
-/// return the same representation. Streaming and large responses pass through
-/// untouched and retain settlement-only replay semantics.
-async fn cacheable_response(
-    response: Response,
-) -> Result<(Response, Option<crate::core::store::CachedUpstreamResponse>), axum::Error> {
-    let size = response.body().size_hint();
-    if size
-        .upper()
-        .is_none_or(|upper| upper > MAX_CACHED_RESPONSE_BYTES)
-    {
-        return Ok((response, None));
-    }
-
-    let (parts, body) = response.into_parts();
-    let bytes = to_bytes(body, MAX_CACHED_RESPONSE_BYTES as usize).await?;
-    let content_type = parts
-        .headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let headers = parts
-        .headers
-        .iter()
-        .filter(|(name, _)| is_replayable_response_header(name))
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_owned(), value.to_owned()))
-        })
-        .collect();
-    let cached = crate::core::store::CachedUpstreamResponse {
-        status: parts.status.as_u16(),
-        content_type,
-        headers,
-        body: bytes.to_vec(),
-    };
-    Ok((Response::from_parts(parts, Body::from(bytes)), Some(cached)))
 }
 
 /// High-throughput gate for x402 `batch-settlement`, under the scheme's
@@ -1749,8 +1652,8 @@ async fn batch_gate_middleware(
         // Already charged and served. The client lost the response, not the
         // payment, so it gets the original result — never a second charge and
         // never a second execution.
-        BatchAccess::Replay(settlement, cached) => {
-            return replayed_response(&batch, &settlement, cached.as_ref());
+        BatchAccess::Replay(settlement, _) => {
+            return replayed_response(&batch, &settlement);
         }
 
         // Another in-flight request owns this authorization. The retryable
@@ -1771,7 +1674,7 @@ async fn batch_gate_middleware(
         // unfinished. Finishing it is the one safe continuation.
         BatchAccess::Resume(outcome) => {
             return match batch.finish_commit(&outcome).await {
-                Ok(settlement) => replayed_response(&batch, &settlement, None),
+                Ok(settlement) => replayed_response(&batch, &settlement),
                 Err(e) => {
                     tracing::error!(error = %e, "batch-settlement commit could not be resumed");
                     (
@@ -1834,17 +1737,6 @@ async fn batch_gate_middleware(
         return resp;
     }
 
-    let (mut resp, cached) = match cacheable_response(resp).await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::warn!(channel = %channel_id, error = %error, "could not buffer handler response for replay");
-            (
-                (StatusCode::BAD_GATEWAY, "resource response body failed").into_response(),
-                None,
-            )
-        }
-    };
-
     // The crash boundary: past this point a retry may only finish the charge.
     //
     // A marker that fails to write is not a reason to abandon the charge. This
@@ -1863,15 +1755,6 @@ async fn batch_gate_middleware(
 
     match commit_served_request(&batch, &outcome, &channel_id).await {
         Ok(settlement) => {
-            if let Some(cached) = cached {
-                if let Err(error) = batch.cache_response(&outcome, cached).await {
-                    tracing::warn!(
-                        channel = %channel_id,
-                        error = %error,
-                        "batch-settlement response cache write failed"
-                    );
-                }
-            }
             attach_settlement_header(&batch, &settlement, &mut resp);
             resp
         }
@@ -2006,7 +1889,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::body::{Body, HttpBody};
     use axum::Router;
     use tower::ServiceExt; // oneshot
 
@@ -3143,6 +3026,110 @@ mod tests {
         responses
     }
 
+    /// The latest voucher of a channel is public (a claim publishes it, a
+    /// corrective 402 returns it), so presenting it again must not return
+    /// the payer's response body, and text a client put in its channel
+    /// config must not be able to request the corrective snapshot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_replay_and_corrective_402_do_not_leak_the_payers_response() {
+        use crate::x402::batch_settlement::errors as codes;
+
+        // A fresh challenge reads a blockhash; the corrective one reads none.
+        let (rpc_url, _) = mock_rpc(false).await;
+        let pay = exact_paykit(rpc_url, Some(test_signer()));
+        let (channel_id, header) = batch_paid_request(&pay).await;
+        let handler = || async { "victim-secret" };
+        let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
+        let post = |header: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/orders")
+                        .header(PAYMENT_SIGNATURE_HEADER, header)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let body_of = |resp: Response| async move {
+            String::from_utf8(to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap()
+        };
+        let edited = |edit: &dyn Fn(&mut serde_json::Value)| {
+            use base64::Engine as _;
+            let engine = base64::engine::general_purpose::STANDARD;
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&engine.decode(&header).unwrap()).unwrap();
+            edit(&mut value);
+            engine.encode(serde_json::to_vec(&value).unwrap())
+        };
+        let challenge_of = |resp: &Response| -> serde_json::Value {
+            use base64::Engine as _;
+            let encoded = resp.headers()["payment-required"].to_str().unwrap();
+            serde_json::from_slice(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        let served = post(header.clone()).await;
+        assert_eq!(served.status(), StatusCode::OK);
+        assert_eq!(body_of(served).await, "victim-secret");
+
+        // Resending the committed voucher replays the settlement only.
+        let replay = post(header.clone()).await;
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(replay.headers()[PAYMENT_REPLAY_HEADER], "true");
+        assert!(!body_of(replay).await.contains("victim-secret"));
+
+        // A mismatch code planted in a client-supplied field is not the
+        // server's mismatch: no snapshot, and the raised code is reported.
+        let injected = post(edited(&|value| {
+            value["payload"]["channelConfig"]["receiver"] =
+                codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH.into();
+        }))
+        .await;
+        assert_eq!(injected.status(), StatusCode::PAYMENT_REQUIRED);
+        let challenge = challenge_of(&injected);
+        assert_eq!(challenge["error"], codes::INVALID_CHANNEL_STATE);
+        assert!(challenge["accepts"][0]["extra"]
+            .get("voucherState")
+            .is_none());
+
+        // Positive control: a genuine mismatch still resynchronizes the client.
+        let skipped = {
+            use ed25519_dalek::Signer as _;
+            let channel = channel_id.parse().unwrap();
+            let message = crate::core::payment_channels::voucher_message_bytes(
+                &channel,
+                5_000,
+                crate::x402::batch_settlement::VOUCHER_EXPIRES_AT,
+            )
+            .unwrap();
+            let key = ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]);
+            bs58::encode(key.sign(&message).to_bytes()).into_string()
+        };
+        let stale = post(edited(&|value| {
+            value["payload"]["voucher"]["maxClaimableAmount"] = "5000".into();
+            value["payload"]["voucher"]["signature"] = skipped.clone().into();
+        }))
+        .await;
+        assert_eq!(stale.status(), StatusCode::PAYMENT_REQUIRED);
+        let challenge = challenge_of(&stale);
+        assert_eq!(
+            challenge["error"],
+            codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH
+        );
+        assert!(challenge["accepts"][0]["extra"]
+            .get("channelState")
+            .is_some());
+    }
+
     /// A state-changing handler that answers with a redirect is charged, so
     /// the same voucher cannot run it a second time for free.
     #[tokio::test(flavor = "multi_thread")]
@@ -3171,10 +3158,12 @@ mod tests {
         let responses = post_twice(app, &header).await;
         assert_eq!(responses[0].status(), StatusCode::SEE_OTHER);
         assert!(responses[0].headers().contains_key(PAYMENT_RESPONSE_HEADER));
-        // The retry replays the committed redirect instead of re-running it.
-        assert_eq!(responses[1].status(), StatusCode::SEE_OTHER);
+        // The retry replays the committed settlement instead of re-running
+        // the handler; the representation itself is not replayed.
+        assert_eq!(responses[1].status(), StatusCode::OK);
         assert_eq!(responses[1].headers()[PAYMENT_REPLAY_HEADER], "true");
-        assert_eq!(responses[1].headers()[header::LOCATION], "/orders/created");
+        assert!(responses[1].headers().contains_key(PAYMENT_RESPONSE_HEADER));
+        assert!(!responses[1].headers().contains_key(header::LOCATION));
         assert_eq!(executions.load(Ordering::SeqCst), 1);
 
         let state = pay
@@ -3209,9 +3198,7 @@ mod tests {
         let app: Router = Router::new().route("/orders", paid_batch_post(handler, "0.001", &pay));
 
         let responses = post_twice(app, &header).await;
-        assert!(responses
-            .iter()
-            .all(|r| r.status() == StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(responses[0].status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(responses[1].headers()[PAYMENT_REPLAY_HEADER], "true");
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         let state = pay
@@ -4147,63 +4134,5 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(!resp.headers().contains_key(PAYMENT_RESPONSE_HEADER));
         assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn batch_response_cache_keeps_representation_headers_only() {
-        let mut response = (StatusCode::TEMPORARY_REDIRECT, "moved").into_response();
-        response
-            .headers_mut()
-            .insert(header::LOCATION, HeaderValue::from_static("/destination"));
-        response.headers_mut().insert(
-            header::CONTENT_DISPOSITION,
-            HeaderValue::from_static("attachment; filename=report.txt"),
-        );
-        response.headers_mut().insert(
-            HeaderName::from_static("content-security-policy"),
-            HeaderValue::from_static("default-src 'none'"),
-        );
-        response.headers_mut().insert(
-            HeaderName::from_static("x-content-type-options"),
-            HeaderValue::from_static("nosniff"),
-        );
-        response.headers_mut().insert(
-            HeaderName::from_static("x-frame-options"),
-            HeaderValue::from_static("DENY"),
-        );
-        response
-            .headers_mut()
-            .insert(header::CONNECTION, HeaderValue::from_static("close"));
-        response.headers_mut().insert(
-            HeaderName::from_static("payment-response"),
-            HeaderValue::from_static("attempt-specific"),
-        );
-
-        let (_, cached) = cacheable_response(response).await.unwrap();
-        let cached = cached.expect("small finite response is cached");
-        assert_eq!(cached.status, StatusCode::TEMPORARY_REDIRECT.as_u16());
-        assert!(cached
-            .headers
-            .contains(&("location".to_string(), "/destination".to_string())));
-        assert!(cached.headers.contains(&(
-            "content-disposition".to_string(),
-            "attachment; filename=report.txt".to_string()
-        )));
-        assert!(cached.headers.contains(&(
-            "content-security-policy".to_string(),
-            "default-src 'none'".to_string()
-        )));
-        assert!(cached
-            .headers
-            .contains(&("x-content-type-options".to_string(), "nosniff".to_string())));
-        assert!(cached
-            .headers
-            .contains(&("x-frame-options".to_string(), "DENY".to_string())));
-        assert!(!cached.headers.iter().any(|(name, _)| name == "connection"));
-        assert!(!cached
-            .headers
-            .iter()
-            .any(|(name, _)| name == "payment-response"));
-        assert_eq!(cached.body, b"moved");
     }
 }
