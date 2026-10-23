@@ -21,7 +21,7 @@ use std::str::FromStr;
 
 use serde_json::{json, Map, Value};
 use solana_pay_kit::core::store::{
-    ChannelState, ChannelStore, MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION,
+    ChannelState, ChannelStore, MemoryChannelStore, ProcessedUse, CHANNEL_STATE_SCHEMA_VERSION,
 };
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
@@ -188,6 +188,36 @@ fn kit_server(
     Ok(SessionServer::new(config, store).with_tx_v1(mode))
 }
 
+/// `channel.processedUses`: requests the server already charged.
+fn processed_uses(channel: &Value) -> Result<Vec<ProcessedUse>, String> {
+    let Some(entries) = channel.get("processedUses") else {
+        return Ok(Vec::new());
+    };
+    let entries = entries
+        .as_array()
+        .ok_or("channel.processedUses is not an array")?;
+    entries
+        .iter()
+        .map(|entry| {
+            let text = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("channel.processedUses[].{key} missing"))
+            };
+            Ok(ProcessedUse {
+                challenge_id: text("challengeId")?,
+                idempotency_key: text("idempotencyKey")?,
+                cumulative: u64_field(entry, "cumulativeAmount")?
+                    .ok_or("channel.processedUses[].cumulativeAmount missing")?,
+                voucher_signature: text("voucherSignature")?,
+                amount: u64_field(entry, "amount")?,
+            })
+        })
+        .collect()
+}
+
 /// The server's per-channel state (`channel`) as the kit stores it.
 fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
     let text = |key: &str| {
@@ -243,7 +273,7 @@ fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
         spent_amount: number("spentAmount")?,
         settled_on_chain: number("settledOnChain")?,
         distributed_on_chain: 0,
-        processed_uses: vec![],
+        processed_uses: processed_uses(channel)?,
         processed_topup_signatures: vec![],
         next_delivery_sequence: 0,
         pending_deliveries: vec![],
@@ -301,6 +331,7 @@ fn code_for(message: &str) -> Option<&'static str> {
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
         || has("charge amount must be positive")
+        || has("used for a different request")
     {
         "amount-mismatch"
     } else if has("open transaction")
@@ -433,10 +464,12 @@ async fn use_voucher(
     params: &Value,
     payload: &UsePayload,
 ) -> Result<SignedVoucher, String> {
+    let challenge_id = params["challenge"]["id"].as_str().unwrap_or_default();
+    let idempotency_key = params["idempotencyKey"].as_str().unwrap_or_default();
     let voucher = match u64_field(params, "meteredAmount")? {
         Some(amount) => {
             let authenticated = server
-                .authenticate_use(payload)
+                .authenticate_use(payload, challenge_id, idempotency_key)
                 .await
                 .map_err(|e| e.to_string())?;
             server
@@ -447,11 +480,7 @@ async fn use_voucher(
         }
         None => {
             server
-                .process_use(
-                    payload,
-                    params["challenge"]["id"].as_str().unwrap_or_default(),
-                    params["idempotencyKey"].as_str().unwrap_or_default(),
-                )
+                .process_use(payload, challenge_id, idempotency_key)
                 .await
                 .map_err(|e| e.to_string())?
                 .voucher

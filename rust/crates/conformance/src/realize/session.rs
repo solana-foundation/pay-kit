@@ -359,6 +359,10 @@ pub struct Channel {
     pub closed: bool,
     /// Operator mode: the bearer proof bound at open.
     pub bound_proof: bool,
+    /// Operator mode: a request already charged, `(cumulative, amount)`,
+    /// recorded under `(CHALLENGE_ID, IDEMPOTENCY_KEY)` with the operator's
+    /// voucher for `cumulative`.
+    pub processed_use: Option<(u64, u64)>,
 }
 
 impl Channel {
@@ -374,6 +378,7 @@ impl Channel {
             closure_started_at: None,
             closed: false,
             bound_proof: false,
+            processed_use: None,
         }
     }
 
@@ -440,6 +445,17 @@ impl Channel {
             out["authentication"] =
                 serde_json::to_value(self.proof()?).map_err(|e| e.to_string())?;
         }
+        if let Some((cumulative, amount)) = self.processed_use {
+            let voucher =
+                signed_voucher(&self.id(), cumulative, None, self.open.authorized_signer)?;
+            out["processedUses"] = json!([{
+                "challengeId": CHALLENGE_ID,
+                "idempotencyKey": IDEMPOTENCY_KEY,
+                "cumulativeAmount": cumulative.to_string(),
+                "amount": amount.to_string(),
+                "voucherSignature": voucher["signature"],
+            }]);
+        }
         Ok(out)
     }
 }
@@ -499,7 +515,7 @@ pub fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
         spent_amount: number("spentAmount")?,
         settled_on_chain: number("settledOnChain")?,
         distributed_on_chain: 0,
-        processed_uses: vec![],
+        processed_uses: processed_uses(channel)?,
         processed_topup_signatures: vec![],
         next_delivery_sequence: 0,
         pending_deliveries: vec![],
@@ -513,6 +529,38 @@ pub fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
 }
 
 /// A signed voucher JSON (`SignedVoucher` on the wire).
+/// `channel.processedUses`: requests the server already charged.
+pub fn processed_uses(
+    channel: &Value,
+) -> Result<Vec<solana_pay_kit::core::store::ProcessedUse>, String> {
+    let Some(entries) = channel.get("processedUses") else {
+        return Ok(Vec::new());
+    };
+    let entries = entries
+        .as_array()
+        .ok_or("channel.processedUses is not an array")?;
+    entries
+        .iter()
+        .map(|entry| {
+            let text = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("channel.processedUses[].{key} missing"))
+            };
+            Ok(solana_pay_kit::core::store::ProcessedUse {
+                challenge_id: text("challengeId")?,
+                idempotency_key: text("idempotencyKey")?,
+                cumulative: u64_field(entry, "cumulativeAmount")?
+                    .ok_or("channel.processedUses[].cumulativeAmount missing")?,
+                voucher_signature: text("voucherSignature")?,
+                amount: u64_field(entry, "amount")?,
+            })
+        })
+        .collect()
+}
+
 pub fn signed_voucher(
     channel: &Pubkey,
     cumulative: u64,
@@ -1078,6 +1126,9 @@ pub enum UseProof {
     /// A well-formed proof for the same channel and challenge, signed by a
     /// stranger instead of the payer.
     Stranger,
+    /// The bound proof's challenge and payer, with a stranger's signature:
+    /// only a server that verifies the signature refuses it.
+    Forged,
 }
 
 /// The `Idempotency-Key` every `use` vector is sent under.
@@ -1236,6 +1287,15 @@ pub async fn materialize(recipe: &Recipe) -> Result<Value, String> {
                     &keys::signing_key(STRANGER_SEED),
                 )
                 .map_err(|e| e.to_string())?,
+                UseProof::Forged => SessionAuthentication {
+                    payer: client().to_string(),
+                    ..SessionAuthentication::sign(
+                        CHALLENGE_ID,
+                        &channel.id().to_string(),
+                        &keys::signing_key(STRANGER_SEED),
+                    )
+                    .map_err(|e| e.to_string())?
+                },
             };
             json!({
                 "action": "use",
@@ -1311,6 +1371,7 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
         || has("charge amount must be positive")
+        || has("used for a different request")
     {
         AmountMismatch
     } else if has("open transaction")
@@ -1458,10 +1519,12 @@ async fn use_voucher(
     payload: &UsePayload,
 ) -> Result<SignedVoucher, String> {
     let metered = u64_field(params, "meteredAmount")?;
+    let challenge_id = params["challenge"]["id"].as_str().unwrap_or_default();
+    let idempotency_key = params["idempotencyKey"].as_str().unwrap_or_default();
     let voucher = match metered {
         Some(amount) => {
             let authenticated = server
-                .authenticate_use(payload)
+                .authenticate_use(payload, challenge_id, idempotency_key)
                 .await
                 .map_err(|e| e.to_string())?;
             server
@@ -1472,11 +1535,7 @@ async fn use_voucher(
         }
         None => {
             server
-                .process_use(
-                    payload,
-                    params["challenge"]["id"].as_str().unwrap_or_default(),
-                    params["idempotencyKey"].as_str().unwrap_or_default(),
-                )
+                .process_use(payload, challenge_id, idempotency_key)
                 .await
                 .map_err(|e| e.to_string())?
                 .voucher

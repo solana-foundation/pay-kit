@@ -132,6 +132,9 @@ const R_PROOF_PAYER: &str = "MPP-f8ce7faac8";
 const R_PROOF_SIG: &str = "MPP-d7767fee2b";
 const R_METERED: &str = "MPP-11052eb7e8";
 const R_UNUSED_RESERVATION: &str = "MPP-36089e48c3";
+const R_PROOF_CLOSE: &str = "MPP-e1aa4afd02";
+const R_REPLAY_CACHED: &str = "MPP-670a939f90";
+const R_SPENT_ONCE: &str = "MPP-b18b8c42af";
 
 // ── spec references ────────────────────────────────────────────────────────
 
@@ -287,6 +290,32 @@ fn use_spec() -> SpecRef {
 
 fn metered_spec() -> SpecRef {
     s("Debit Processing", "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.")
+}
+
+/// A metered `use` on `channel` (the operator baseline otherwise).
+fn metered_use(channel: Channel, proof: UseProof, amount: u64) -> Recipe {
+    Recipe::new(
+        operator_server(),
+        Action::Use {
+            channel,
+            proof,
+            metered: Some(amount),
+        },
+    )
+}
+
+fn replay_spec() -> SpecRef {
+    s("Concurrency and Idempotency", "Replaying an already processed request MAY return the cached receipt and MUST NOT change channel state or deliver additional service.")
+}
+
+/// The operator channel after this vector's request was already charged 7:
+/// 107 accepted and spent, the charge recorded under its challenge and
+/// Idempotency-Key with the operator's voucher for 107.
+fn charged_channel() -> Channel {
+    Channel {
+        processed_use: Some((107, 7)),
+        ..Channel::operator(107)
+    }
 }
 
 fn signed() -> Expect {
@@ -1345,6 +1374,53 @@ crate::registry! {
         "A metered use whose proof is signed by a stranger: a metered charge still needs the request authenticated first. Pair: session-use-verify-metered-accept.",
         use_recipe(UseProof::Stranger, Some(7)),
         rej(RejectCode::AuthenticationInvalid),
+    ).build();
+    session_use_verify_metered_forged_proof_reject => use_case(
+        "session-use-verify-metered-forged-proof-reject",
+        BugType::AuthBypass,
+        s("Action: \"use\"", "| authentication | object | REQUIRED | Reusable proof bound at open, as defined in {{session-bearer-proof}} |"),
+        &[R_USE_AUTH, R_METERED],
+        "A metered use whose proof names the bound challenge and the real payer but carries a stranger's signature: a server that checks the payer without verifying the signature would charge it. Pair: session-use-verify-metered-accept.",
+        use_recipe(UseProof::Forged, Some(7)),
+        rej(RejectCode::AuthenticationInvalid),
+    ).build();
+    session_use_verify_metered_close_pending_reject => use_case(
+        "session-use-verify-metered-close-pending-reject",
+        BugType::Settlement,
+        s("Session Bearer Proofs", "Servers MUST reject it once close begins or the channel becomes terminal."),
+        &[R_PROOF_CLOSE],
+        "A metered use on a channel whose forced close began (closureStartedAt set): the bound proof no longer authenticates and nothing is charged. Pair: session-use-verify-metered-accept.",
+        metered_use(Channel { closure_started_at: Some(1_700_000_000), ..Channel::operator(100) }, UseProof::Bound, 7),
+        rej(RejectCode::ChannelClosing),
+    ).build();
+    session_use_verify_metered_sealed_reject => use_case(
+        "session-use-verify-metered-sealed-reject",
+        BugType::Settlement,
+        s("Session Bearer Proofs", "Servers MUST reject it once close begins or the channel becomes terminal."),
+        &[R_PROOF_CLOSE],
+        "A metered use on a sealed channel: the bound proof no longer authenticates and nothing is charged. Pair: session-use-verify-metered-accept.",
+        metered_use(Channel { closed: true, ..Channel::operator(100) }, UseProof::Bound, 7),
+        rej(RejectCode::ChannelClosing),
+    ).build();
+    session_use_verify_metered_replay_accept => server_case(
+        "session-use-verify-metered-replay-accept",
+        USE,
+        BugType::Settlement,
+        replay_spec(),
+        &[R_REPLAY_CACHED, R_SPENT_ONCE],
+        "A retry of a metered use the server already charged 7 (a lost response): the channel holds 107 accepted and spent, with the charge recorded under the request's challenge and Idempotency-Key. The server answers with the recorded voucher for 107 and charges nothing; a server that charges again persists 114. Pair: session-use-verify-metered-replay-amount-reject.",
+        metered_use(charged_channel(), UseProof::Bound, 7),
+        signed(),
+    ).build();
+    session_use_verify_metered_replay_amount_reject => server_case(
+        "session-use-verify-metered-replay-amount-reject",
+        USE,
+        BugType::Settlement,
+        replay_spec(),
+        &[R_REPLAY_CACHED],
+        "The recorded request's Idempotency-Key and challenge, but a metered cost of 8 instead of the recorded 7: it is not the same request, so it is neither replayed nor charged. Pair: session-use-verify-metered-replay-accept.",
+        metered_use(charged_channel(), UseProof::Bound, 8),
+        rej(RejectCode::AmountMismatch),
     ).build();
 
     // ── topUp ──────────────────────────────────────────────────────────────

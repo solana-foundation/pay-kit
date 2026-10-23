@@ -648,6 +648,15 @@ export type VectorInput = {
       highestVoucher?: Record<string, unknown>;
       closureStartedAt?: number;
       authentication?: Record<string, unknown>;
+      // operator mode: requests already charged, keyed by challenge and
+      // Idempotency-Key, with the operator's voucher signature.
+      processedUses?: Array<{
+        challengeId: string;
+        idempotencyKey: string;
+        cumulativeAmount: string;
+        amount: string;
+        voucherSignature: string;
+      }>;
     };
     credential: Record<string, unknown>;
   };

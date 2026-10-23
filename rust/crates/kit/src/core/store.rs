@@ -1522,6 +1522,10 @@ pub struct ProcessedUse {
     pub idempotency_key: String,
     pub cumulative: u64,
     pub voucher_signature: String,
+    /// The amount charged. Absent on records written before it was kept;
+    /// such a record never matches a metered retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
 }
 
 // ── Durable payment authorizations ──

@@ -241,9 +241,18 @@ the charge the spec requires, and an SDK must let it advance
 `amount`. The `session-use-*` vectors pin it: the persisted voucher's
 `cumulativeAmount` is `acceptedCumulative` plus the metered cost; a `use`
 whose proof is not the one bound at open, or that reaches a client-signed
-server, is `authentication-invalid`; a metered cost of zero is
-`amount-mismatch` (“unused reserved capacity MUST NOT advance the voucher”);
-one that would pass the deposit is `cumulative-exceeds-deposit`. Upstream:
+server, is `authentication-invalid`; one that would pass the deposit is
+`cumulative-exceeds-deposit`. A retry under a recorded `(challengeId,
+Idempotency-Key)` returns the recorded voucher and charges nothing
+(“Replaying an already processed request MAY return the cached receipt and
+MUST NOT change channel state or deliver additional service.”); the same key
+with another cost is `amount-mismatch`. The spec does not say a zero cost is
+refused; that part is this ruling. A zero charge would persist a voucher equal
+to `acceptedCumulative`, and “Equal or lower amounts MUST be rejected for
+metered voucher acceptance unless they are exact idempotent replays handled
+per "Concurrency and Idempotency".” (with “unused reserved capacity MUST NOT
+advance the voucher”), so a metered cost of zero is `amount-mismatch`: the
+host records nothing for a request it did not charge. Upstream:
 proposed in tempoxyz/mpp-specs `feat/solana-session-operator-hardening`.
 
 ## MPP subscription (Solana)

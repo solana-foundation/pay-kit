@@ -887,3 +887,21 @@ id = "MPP-36089e48c3"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "Amounts already covered by a persisted voucher and released response bytes remain committed; unused reserved capacity MUST NOT advance the voucher."
 required = true
+
+[[requirement]]
+id = "MPP-e1aa4afd02"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Servers MUST reject it once close begins or the channel becomes terminal."
+required = true
+
+[[requirement]]
+id = "MPP-670a939f90"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Replaying an already processed request MAY return the cached receipt and MUST NOT change channel state or deliver additional service."
+required = true
+
+[[requirement]]
+id = "MPP-b18b8c42af"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Servers SHOULD cache (challengeId, idempotencyKey) pairs and MUST NOT increment spentAmount twice for a duplicate idempotent request."
+required = true
