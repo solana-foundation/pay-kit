@@ -99,6 +99,13 @@ pub enum TxPipelineError {
     FinalizationTimeout { signature: Signature },
     #[error("RPC submission and confirmation failed for transaction {signature}")]
     SubmissionFailed { signature: Signature },
+    #[error("transaction {signature} failed simulation: {reason}")]
+    SimulationFailed {
+        signature: Signature,
+        reason: String,
+    },
+    #[error("simulation of transaction {signature} could not be completed")]
+    SimulationUnavailable { signature: Signature },
     #[error("transaction submission guard rejected the attempt")]
     SubmissionGuardRejected,
     #[error("confirmed account read failed after bounded retries")]
@@ -201,7 +208,9 @@ impl TxPipeline {
     /// already been verified locally, then await confirmed commitment.
     ///
     /// Only this API skips preflight. Callers must not pass arbitrary client
-    /// transactions without first performing byte-exact validation.
+    /// transactions without first performing byte-exact validation, and a
+    /// client transaction the server pays the fee for goes through
+    /// [`Self::simulate`] and [`Self::submit_simulated`] instead.
     pub async fn submit_verified(
         &self,
         transaction: &VersionedTransaction,
@@ -614,6 +623,82 @@ impl TxPipeline {
             tokio::time::sleep(*next - now).await;
         }
         *next = Instant::now() + self.inner.config.send_interval;
+    }
+}
+
+/// A signed transaction whose exact bytes executed successfully in a
+/// simulation against confirmed state, or whose signature already landed.
+///
+/// Only [`TxPipeline::simulate`] issues one and
+/// [`TxPipeline::submit_simulated`] takes it. A sponsor that co-signs a
+/// client's transaction pays its fee even when it fails on-chain, and a
+/// shape check cannot show that the client can fund it, so such a
+/// transaction is broadcast only through this proof.
+#[derive(Debug, Clone)]
+pub struct SimulatedTransaction {
+    transaction: VersionedTransaction,
+}
+
+impl SimulatedTransaction {
+    /// The simulated transaction.
+    pub fn transaction(&self) -> &VersionedTransaction {
+        &self.transaction
+    }
+}
+
+impl TxPipeline {
+    /// Simulate the fully signed `transaction` at confirmed commitment with
+    /// signature verification and its own recent blockhash.
+    ///
+    /// A failed simulation of a transaction whose signature has already
+    /// landed (a retry whose first response was lost) still yields the proof:
+    /// rebroadcasting it cannot charge its fee payer again.
+    pub async fn simulate(
+        &self,
+        transaction: VersionedTransaction,
+    ) -> PipelineResult<SimulatedTransaction> {
+        let signature = *transaction
+            .signatures
+            .first()
+            .ok_or(TxPipelineError::MissingSignature)?;
+        let unavailable = TxPipelineError::SimulationUnavailable { signature };
+        let encoded = crate::core::tx::encode(&transaction).map_err(|_| unavailable.clone())?;
+        let response: serde_json::Value = self
+            .inner
+            .rpc
+            .send(
+                RpcRequest::SimulateTransaction,
+                serde_json::json!([encoded, {
+                    "encoding": "base64",
+                    "commitment": "confirmed",
+                    "sigVerify": true,
+                    "replaceRecentBlockhash": false,
+                }]),
+            )
+            .await
+            .map_err(|_| unavailable.clone())?;
+        let value = response.get("value").ok_or(unavailable)?;
+        match value.get("err") {
+            None | Some(serde_json::Value::Null) => Ok(SimulatedTransaction { transaction }),
+            Some(error) => {
+                if self.landed_slot(signature).await?.is_some() {
+                    return Ok(SimulatedTransaction { transaction });
+                }
+                Err(TxPipelineError::SimulationFailed {
+                    signature,
+                    reason: error.to_string(),
+                })
+            }
+        }
+    }
+
+    /// [`Self::submit_verified`] for a transaction that passed
+    /// [`Self::simulate`].
+    pub async fn submit_simulated(
+        &self,
+        simulated: &SimulatedTransaction,
+    ) -> PipelineResult<ConfirmedTransaction> {
+        self.submit_verified(&simulated.transaction).await
     }
 }
 
@@ -1382,6 +1467,93 @@ mod tests {
                 expected
             );
             rpc.abort();
+        }
+    }
+
+    mod simulation {
+        use super::*;
+
+        /// `simulateTransaction` reports `simulation_err`; the signature has
+        /// landed when `landed` is set. Counts every `sendTransaction`.
+        async fn simulating_rpc(
+            simulation_err: Value,
+            landed: bool,
+        ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+            let sends = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&sends);
+            let app = Router::new().route(
+                "/",
+                post(move |Json(request): Json<Value>| {
+                    let simulation_err = simulation_err.clone();
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        let result = match request["method"].as_str().unwrap() {
+                            "simulateTransaction" => {
+                                assert_eq!(request["params"][1]["sigVerify"], true);
+                                assert_eq!(request["params"][1]["replaceRecentBlockhash"], false);
+                                json!({ "context": { "slot": 9 }, "value": { "err": simulation_err } })
+                            }
+                            "getSignatureStatuses" => {
+                                let status = landed.then(|| {
+                                    json!({
+                                        "slot": 8, "confirmations": null, "err": null,
+                                        "confirmationStatus": "finalized", "status": { "Ok": null }
+                                    })
+                                });
+                                json!({ "context": { "slot": 9 }, "value": [status] })
+                            }
+                            "sendTransaction" => {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                json!(Signature::default().to_string())
+                            }
+                            method => panic!("unexpected RPC method {method}"),
+                        };
+                        Json(json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, sends, server)
+        }
+
+        fn transaction() -> VersionedTransaction {
+            VersionedTransaction {
+                signatures: vec![Signature::new_unique()],
+                message: solana_message::VersionedMessage::Legacy(solana_message::Message::new(
+                    &[],
+                    Some(&Pubkey::new_unique()),
+                )),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_failing_simulation_yields_no_proof() {
+            let failure = json!({ "InstructionError": [0, { "Custom": 1 }] });
+            let (url, sends, rpc) = simulating_rpc(failure, false).await;
+            let pipeline = TxPipeline::new(url, test_config());
+            let error = pipeline.simulate(transaction()).await.unwrap_err();
+            assert!(
+                matches!(error, TxPipelineError::SimulationFailed { .. }),
+                "{error:?}"
+            );
+            assert_eq!(sends.load(Ordering::SeqCst), 0);
+            rpc.abort();
+        }
+
+        #[tokio::test]
+        async fn a_clean_or_already_landed_simulation_is_a_proof() {
+            for (simulation_err, landed) in
+                [(Value::Null, false), (json!("AlreadyProcessed"), true)]
+            {
+                let (url, _, rpc) = simulating_rpc(simulation_err, landed).await;
+                let pipeline = TxPipeline::new(url, test_config());
+                let tx = transaction();
+                let simulated = pipeline.simulate(tx.clone()).await.unwrap();
+                assert_eq!(simulated.transaction().signatures, tx.signatures);
+                rpc.abort();
+            }
         }
     }
 }

@@ -3659,7 +3659,7 @@ async fn submit_and_fetch_open(
     // first submission landed (response lost, or the store write after it
     // failed) dies at preflight with "already processed", and the pipeline
     // still reports that signature's confirmed landing.
-    let submission = pipeline.submit_verified(&tx).await;
+    let submission = submit_client_transaction(pipeline, tx, config).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
     if let (Some(floor), Ok(landed)) = (activation_floor, &submission) {
         if let Err(elsewhere) = landed_here(landed.slot, floor) {
@@ -3677,6 +3677,31 @@ async fn submit_and_fetch_open(
         signature: transaction_signature,
         settled,
     })
+}
+
+/// Broadcast a validated client `open` or `topUp` and await confirmation.
+/// One the configured sponsor pays the fee for is simulated first: it is
+/// charged for a transaction that fails on-chain, and the offline checks
+/// cannot show that the payer holds the tokens it moves.
+#[cfg(feature = "server")]
+async fn submit_client_transaction(
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
+    tx: solana_transaction::versioned::VersionedTransaction,
+    config: &SessionConfig,
+) -> std::result::Result<
+    crate::core::tx_pipeline::ConfirmedTransaction,
+    crate::core::tx_pipeline::TxPipelineError,
+> {
+    let sponsor = config
+        .fee_payer_signer
+        .as_ref()
+        .map(|signer| signer.pubkey());
+    if sponsor.is_some() && tx.message.static_account_keys().first() == sponsor.as_ref() {
+        let simulated = pipeline.simulate(tx).await?;
+        pipeline.submit_simulated(&simulated).await
+    } else {
+        pipeline.submit_verified(&tx).await
+    }
 }
 
 #[cfg(feature = "server")]
@@ -3948,8 +3973,7 @@ async fn verify_submit_and_fetch_topup(
     // atomic mutator in `process_topup_with_outcome` credits
     // `additionalAmount` once per distinct signature — stacking N credits in
     // the store for one real on-chain deposit.
-    let confirmed = pipeline
-        .submit_verified(&tx)
+    let confirmed = submit_client_transaction(pipeline, tx, config)
         .await
         .map_err(|error| Error::Rpc(format!("top-up submission failed: {error}")))?;
     // A confirmed signature can still be forked out, and the aggregate
@@ -4419,6 +4443,9 @@ mod tests {
     enum LandedStatus {
         Finalized,
         Failed,
+        /// Fails simulation (e.g. the payer cannot fund it) and would fail
+        /// on-chain if sent.
+        Unexecutable,
         /// Confirmed but never finalized (e.g. on a fork that is abandoned).
         ConfirmedOnly,
     }
@@ -4514,6 +4541,27 @@ mod tests {
                             Ok(json!({"context": {"slot": 42}, "value": true}))
                         }
                         "getSlot" => Ok(json!(slot.load(std::sync::atomic::Ordering::SeqCst))),
+                        "simulateTransaction" => {
+                            assert_eq!(request["params"][1]["commitment"], "confirmed");
+                            assert_eq!(request["params"][1]["replaceRecentBlockhash"], false);
+                            let signature = payment_channels::decode_transaction(
+                                request["params"][0].as_str().unwrap(),
+                            )
+                            .unwrap()
+                            .signatures[0]
+                                .to_string();
+                            let err = if landed.lock().unwrap().contains_key(&signature) {
+                                json!("AlreadyProcessed")
+                            } else if landed_status == LandedStatus::Unexecutable {
+                                json!({"InstructionError": [1, {"Custom": 1}]})
+                            } else {
+                                Value::Null
+                            };
+                            Ok(json!({
+                                "context": { "slot": slot.load(std::sync::atomic::Ordering::SeqCst) },
+                                "value": { "err": err, "logs": [], "accounts": null, "unitsConsumed": 0 }
+                            }))
+                        }
                         "sendTransaction" => {
                             send_tx_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let signature = payment_channels::decode_transaction(
@@ -4552,7 +4600,10 @@ mod tests {
                                         .get(signature.as_str().unwrap())
                                         .copied()
                                     {
-                                        if landed_status == LandedStatus::Failed {
+                                        if matches!(
+                                            landed_status,
+                                            LandedStatus::Failed | LandedStatus::Unexecutable
+                                        ) {
                                             // A signature the RPC saw land, but
                                             // whose execution failed on-chain
                                             // (e.g. insufficient fee-payer
@@ -4942,6 +4993,73 @@ mod tests {
             .to_string()
             .contains("invalid client transaction signature"));
         rpc.abort();
+    }
+
+    // The sponsor pays the fee of a sponsored open even when it fails
+    // on-chain (an empty payer token account), so one that fails simulation
+    // never reaches the network.
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_that_fails_simulation_is_never_broadcast() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        for (status, lands) in [
+            (LandedStatus::Unexecutable, false),
+            (LandedStatus::Finalized, true),
+        ] {
+            let sponsor = shared_signer(8);
+            let mut cfg = config(VoucherSigner::Client);
+            cfg.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+            let mut server = SessionServer::new(cfg, MemoryChannelStore::new());
+            let (open, params) = signed_open(&server, 6).await;
+            let channel = payment_channels::generated::generated::accounts::Channel {
+                discriminator: 1,
+                version: 1,
+                bump: 1,
+                status: 0,
+                salt: params.salt,
+                deposit: params.deposit,
+                settlement: SettlementWatermarks {
+                    settled: 0,
+                    payout_watermark: 0,
+                },
+                closure_started_at: 0,
+                payer_withdrawn_at: 0,
+                grace_period: params.grace_period,
+                distribution_hash: payment_channels::distribution_hash(&params.recipients),
+                payer: payment_channels::to_address(&params.payer),
+                payee: payment_channels::to_address(&params.payee),
+                authorized_signer: payment_channels::to_address(&params.authorized_signer),
+                mint: payment_channels::to_address(&params.mint),
+                rent_payer: payment_channels::to_address(&params.rent_payer),
+                open_slot: params.open_slot,
+            };
+            let (url, rpc, sends) = rpc_for_channel_with_options(channel, 43, status).await;
+            server.config.rpc_url = Some(url);
+            let blockhash = test_blockhash().to_string();
+            let result = server
+                .process_open(
+                    &open,
+                    SessionOpenContext {
+                        challenge_id: "opening",
+                        expires: None,
+                        recent_blockhash: &blockhash,
+                        recent_slot: CHALLENGED_SLOT,
+                    },
+                )
+                .await;
+            if lands {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("failed simulation"), "{error}");
+            }
+            assert_eq!(
+                sends.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(lands)
+            );
+            rpc.abort();
+        }
     }
 
     #[cfg(feature = "server")]
@@ -6708,6 +6826,111 @@ mod tests {
         assert_eq!(stored.deposit, 1_100);
         assert_eq!(stored.processed_topup_signatures.len(), 1);
         rpc.abort();
+    }
+
+    // A sponsored top-up the payer cannot fund fails simulation and is never
+    // broadcast at the sponsor's expense.
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_topup_that_fails_simulation_is_never_broadcast() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        for (status, lands) in [
+            (LandedStatus::Unexecutable, false),
+            (LandedStatus::Finalized, true),
+        ] {
+            let (mut server, _session, channel_id) = client_server().await;
+            let payer = signer(5);
+            let sponsor = shared_signer(8);
+            server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+            server
+                .store
+                .update_channel(
+                    &channel_id,
+                    Box::new({
+                        let payer = payer.pubkey().to_string();
+                        let rent_payer = sponsor.pubkey().to_string();
+                        move |state| {
+                            let mut state = state.unwrap();
+                            state.payer = payer;
+                            state.rent_payer = rent_payer;
+                            Ok(state)
+                        }
+                    }),
+                )
+                .await
+                .unwrap();
+            let channel = Pubkey::from_str(&channel_id).unwrap();
+            let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+            let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+            let program_id = payment_channels::default_program_id();
+            let ix = payment_channels::build_top_up_instruction(
+                &payer.pubkey(),
+                &channel,
+                &mint,
+                100,
+                &token_program,
+                &program_id,
+            );
+            let mut tx = crate::core::tx::build_unsigned_unchecked(
+                crate::core::tx::TxVersion::V0,
+                &sponsor.pubkey(),
+                &[ix],
+                solana_hash::Hash::new_unique(),
+                None,
+            )
+            .unwrap();
+            crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
+                .await
+                .unwrap();
+            let transaction = crate::core::tx::encode(&tx).unwrap();
+            // The on-chain account already reflects deposit=1_100 — as if a
+            // *different* concurrent top-up already landed — even though THIS
+            // request's own transaction is about to be reported as failed.
+            let account = payment_channels::generated::generated::accounts::Channel {
+                discriminator: 1,
+                version: 1,
+                bump: 1,
+                status: 0,
+                salt: 7,
+                deposit: 1_100,
+                settlement: SettlementWatermarks {
+                    settled: 0,
+                    payout_watermark: 0,
+                },
+                closure_started_at: 0,
+                payer_withdrawn_at: 0,
+                grace_period: server.config.grace_period_seconds,
+                distribution_hash: [0; 32],
+                payer: payment_channels::to_address(&payer.pubkey()),
+                payee: payment_channels::to_address(
+                    &Pubkey::from_str(&server.config.recipient).unwrap(),
+                ),
+                authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
+                mint: payment_channels::to_address(&mint),
+                rent_payer: payment_channels::to_address(&sponsor.pubkey()),
+                open_slot: 42,
+            };
+            let (url, rpc, sends) = rpc_for_channel_with_options(account, 43, status).await;
+            server.config.rpc_url = Some(url);
+            let payload = TopUpPayload {
+                channel_id: channel_id.clone(),
+                additional_amount: "100".into(),
+                transaction,
+            };
+            let result = server.process_topup_with_outcome(&payload).await;
+            if lands {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("failed simulation"), "{error}");
+            }
+            assert_eq!(
+                sends.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(lands)
+            );
+            rpc.abort();
+        }
     }
 
     /// Regression: a top-up whose own transaction fails on-chain must not be
