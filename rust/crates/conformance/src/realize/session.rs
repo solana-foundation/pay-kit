@@ -359,10 +359,9 @@ pub struct Channel {
     pub closed: bool,
     /// Operator mode: the bearer proof bound at open.
     pub bound_proof: bool,
-    /// Operator mode: a request already charged, `(cumulative, amount)`,
-    /// recorded under `(CHALLENGE_ID, IDEMPOTENCY_KEY)` with the operator's
-    /// voucher for `cumulative`.
-    pub processed_use: Option<(u64, u64)>,
+    /// Operator mode: a request already charged, recorded under
+    /// `IDEMPOTENCY_KEY` with the operator's voucher for its cumulative.
+    pub processed_use: Option<ProcessedRequest>,
 }
 
 impl Channel {
@@ -445,19 +444,32 @@ impl Channel {
             out["authentication"] =
                 serde_json::to_value(self.proof()?).map_err(|e| e.to_string())?;
         }
-        if let Some((cumulative, amount)) = self.processed_use {
-            let voucher =
-                signed_voucher(&self.id(), cumulative, None, self.open.authorized_signer)?;
+        if let Some(request) = &self.processed_use {
+            let voucher = signed_voucher(
+                &self.id(),
+                request.cumulative,
+                None,
+                self.open.authorized_signer,
+            )?;
             out["processedUses"] = json!([{
-                "challengeId": CHALLENGE_ID,
+                "challengeId": request.challenge_id,
                 "idempotencyKey": IDEMPOTENCY_KEY,
-                "cumulativeAmount": cumulative.to_string(),
-                "amount": amount.to_string(),
+                "cumulativeAmount": request.cumulative.to_string(),
+                "amount": request.total.to_string(),
                 "voucherSignature": voucher["signature"],
             }]);
         }
         Ok(out)
     }
+}
+
+/// A request the server already charged: its running `total`, the channel's
+/// `cumulative` after that charge, and the challenge it was made under.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessedRequest {
+    pub cumulative: u64,
+    pub total: u64,
+    pub challenge_id: &'static str,
 }
 
 /// `channel` JSON to the kit's stored state. Mirrored in the Rust testee.
@@ -1109,7 +1121,8 @@ pub enum Action {
         authentication: bool,
     },
     /// A `use` for `channel` carrying `proof`, under `IDEMPOTENCY_KEY`.
-    /// `metered` is the cost the server metered after serving; `None`
+    /// `metered` is the request's total the server metered so far (a
+    /// stream charges the same request again with a growing total); `None`
     /// charges the challenged `amount`.
     Use {
         channel: Channel,
@@ -1333,6 +1346,8 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
     let has = |n: &str| m.contains(n);
     Some(if has("transaction version") && has("not accepted") {
         UnsupportedVersion
+    } else if has("used for a different request") {
+        InvalidChallenge
     } else if has("compute unit price") && (has("exceed") || has("maximum")) {
         ComputePriceOverCap
     } else if has("compute unit limit") && (has("exceed") || has("maximum")) {
@@ -1371,7 +1386,6 @@ pub fn code_for(message: &str) -> Option<RejectCode> {
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
         || has("charge amount must be positive")
-        || has("used for a different request")
     {
         AmountMismatch
     } else if has("open transaction")
@@ -1534,8 +1548,8 @@ async fn persisted_use(
 }
 
 /// Charge a `use`: the challenged `amount` through `process_use`, or the
-/// vector's `meteredAmount` through `authenticate_use` then
-/// `charge_operator_usage` (draft-solana-session-00 §Debit Processing).
+/// vector's `meteredAmount`, the request's metered total, through `authenticate_use` then
+/// `charge_operator_request` (draft-solana-session-00 §Debit Processing).
 /// Mirrored in the Rust testee.
 async fn use_voucher<S: ChannelStore>(
     server: &SessionServer<S>,
@@ -1553,7 +1567,7 @@ async fn use_voucher<S: ChannelStore>(
                 .await
                 .map_err(|e| e.to_string())?;
             server
-                .charge_operator_usage(&authenticated, operator, amount, |_| Ok(()))
+                .charge_operator_request(&authenticated, operator, amount, |_| Ok(()))
                 .await
                 .map_err(|e| e.to_string())?
                 .voucher

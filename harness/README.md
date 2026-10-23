@@ -258,7 +258,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 79 · 38k | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 74 · 2u · 41k |
-| vector session | 189 | 8 · 181u | 3 · 186u | — | — | 36 · 146u · 7k | — | 189 | 3 · 186u | 36 · 146u · 7k |
+| vector session | 191 | 8 · 183u | 3 · 188u | — | — | 36 · 148u · 7k | — | 191 | 3 · 188u | 36 · 148u · 7k |
 | vector subscription | 123 | — | — | — | — | — | — | 123 | — | 70 · 15u · 38k |
 | vector x402-batch-settlement | 165 | — | — | — | — | — | — | 165 | — | 66 · 27u · 72k |
 | vector x402-exact | 73 | 47 · 26k | — | 32 · 19u · 22k | 32 · 21u · 20k | 44 · 2u · 27k | 29 · 19u · 25k | 73 | 14 · 52u · 7k | 35 · 29u · 9k |
@@ -435,8 +435,8 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-994af38957`* | draft-solana-session-00.md § Channel State | 9 | 0 · 9u | 0 · 9u | — | — | 0 · 9u | — | 9 | 0 · 9u | 0 · 9u |
 | `MPP-670a939f90`* | draft-solana-session-00.md § Concurrency and Idempotency | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2u | — | 2 | 0 · 2u | 0 · 2u |
 | `MPP-ae84beeba3`* | draft-solana-session-00.md § Concurrency and Idempotency | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3u | — | 3 | 0 · 3u | 0 · 3u |
-| `MPP-b18b8c42af`* | draft-solana-session-00.md § Concurrency and Idempotency | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1u | — | 1 | 0 · 1u | 0 · 1u |
-| `MPP-11052eb7e8`* | draft-solana-session-00.md § Debit Processing | 5 | 0 · 5u | 0 · 5u | — | — | 0 · 5u | — | 5 | 0 · 5u | 0 · 5u |
+| `MPP-b18b8c42af`* | draft-solana-session-00.md § Concurrency and Idempotency | 4 | 0 · 4u | 0 · 4u | — | — | 0 · 4u | — | 4 | 0 · 4u | 0 · 4u |
+| `MPP-11052eb7e8`* | draft-solana-session-00.md § Debit Processing | 6 | 0 · 6u | 0 · 6u | — | — | 0 · 6u | — | 6 | 0 · 6u | 0 · 6u |
 | `MPP-36089e48c3`* | draft-solana-session-00.md § Debit Processing | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1u | — | 1 | 0 · 1u | 0 · 1u |
 | `MPP-ea7a6777e6`* | draft-solana-session-00.md § Error Responses | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1u | — | 1 | 0 · 1u | 0 · 1u |
 | `MPP-382e76fa94`* | draft-solana-session-00.md § Grace Period Security | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2u | — | 2 | 0 · 2u | 0 · 2u |

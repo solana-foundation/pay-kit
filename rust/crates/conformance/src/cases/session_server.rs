@@ -17,8 +17,8 @@ use crate::keys;
 use crate::mutate::Mutation;
 use crate::realize::session::{
     operator, session_signer, Action, Authorized, BuildRecipe, Channel, Edit, OpenArg, OpenBuild,
-    OpenParams, Recipe, Server, TxTamper, UseProof, VoucherSpec, CHALLENGE_ID, FAR_EXPIRY,
-    OPERATOR_SEED, PAST_EXPIRY, RECENT_SLOT, SESSION_SIGNER_SEED, STRANGER_SEED,
+    OpenParams, ProcessedRequest, Recipe, Server, TxTamper, UseProof, VoucherSpec, CHALLENGE_ID,
+    FAR_EXPIRY, OPERATOR_SEED, PAST_EXPIRY, RECENT_SLOT, SESSION_SIGNER_SEED, STRANGER_SEED,
 };
 
 const DOC: &str = "mpp-specs/specs/methods/solana/draft-solana-session-00.md";
@@ -308,12 +308,16 @@ fn replay_spec() -> SpecRef {
     s("Concurrency and Idempotency", "Replaying an already processed request MAY return the cached receipt and MUST NOT change channel state or deliver additional service.")
 }
 
-/// The operator channel after this vector's request was already charged 7:
-/// 107 accepted and spent, the charge recorded under its challenge and
-/// Idempotency-Key with the operator's voucher for 107.
-fn charged_channel() -> Channel {
+/// The operator channel after this vector's request, under `challenge`, was
+/// already charged a total of 7: 107 accepted and spent, the request recorded
+/// under its challenge and Idempotency-Key with the operator's voucher for 107.
+fn charged_channel(challenge_id: &'static str) -> Channel {
     Channel {
-        processed_use: Some((107, 7)),
+        processed_use: Some(ProcessedRequest {
+            cumulative: 107,
+            total: 7,
+            challenge_id,
+        }),
         ..Channel::operator(107)
     }
 }
@@ -1408,19 +1412,39 @@ crate::registry! {
         BugType::Settlement,
         replay_spec(),
         &[R_REPLAY_CACHED, R_SPENT_ONCE],
-        "A retry of a metered use the server already charged 7 (a lost response): the channel holds 107 accepted and spent, with the charge recorded under the request's challenge and Idempotency-Key. The server answers with the recorded voucher for 107 and charges nothing; a server that charges again persists 114. Pair: session-use-verify-metered-replay-amount-reject.",
-        metered_use(charged_channel(), UseProof::Bound, 7),
+        "A retry of a metered use the server already charged a total of 7 (a lost response): the channel holds 107 accepted and spent, with the request recorded under its challenge and Idempotency-Key. The server answers with the recorded voucher for 107 and charges nothing; a server that charges again persists 114. Pair: session-use-verify-metered-replay-advance-accept.",
+        metered_use(charged_channel(CHALLENGE_ID), UseProof::Bound, 7),
         signed(),
     ).build();
-    session_use_verify_metered_replay_amount_reject => server_case(
-        "session-use-verify-metered-replay-amount-reject",
+    session_use_verify_metered_replay_lower_accept => server_case(
+        "session-use-verify-metered-replay-lower-accept",
         USE,
         BugType::Settlement,
         replay_spec(),
-        &[R_REPLAY_CACHED],
-        "The recorded request's Idempotency-Key and challenge, but a metered cost of 8 instead of the recorded 7: it is not the same request, so it is neither replayed nor charged. Pair: session-use-verify-metered-replay-accept.",
-        metered_use(charged_channel(), UseProof::Bound, 8),
-        rej(RejectCode::AmountMismatch),
+        &[R_REPLAY_CACHED, R_SPENT_ONCE],
+        "A stale retry of an earlier step of a request already charged a total of 7: it asks for 5, below the recorded total, so it is answered with the recorded voucher for 107 and charges nothing. Pair: session-use-verify-metered-replay-advance-accept.",
+        metered_use(charged_channel(CHALLENGE_ID), UseProof::Bound, 5),
+        signed(),
+    ).build();
+    session_use_verify_metered_replay_advance_accept => server_case(
+        "session-use-verify-metered-replay-advance-accept",
+        USE,
+        BugType::Settlement,
+        metered_spec(),
+        &[R_METERED, R_SPENT_ONCE],
+        "The request already charged a total of 7 is metered on to a total of 8, as a stream charges as it is served: only the difference of 1 is charged, so the voucher is for 108, not 115. Pair: session-use-verify-metered-replay-accept.",
+        metered_use(charged_channel(CHALLENGE_ID), UseProof::Bound, 8),
+        signed(),
+    ).build();
+    session_use_verify_metered_replay_other_challenge_reject => server_case(
+        "session-use-verify-metered-replay-other-challenge-reject",
+        USE,
+        BugType::Settlement,
+        s("Concurrency and Idempotency", "Servers SHOULD cache (challengeId, idempotencyKey) pairs and MUST NOT increment spentAmount twice for a duplicate idempotent request."),
+        &[R_SPENT_ONCE],
+        "The Idempotency-Key was recorded for a request under another challenge: it is not this request, so it is neither replayed nor charged. Pair: session-use-verify-metered-replay-accept.",
+        metered_use(charged_channel("c_session_conformance_other"), UseProof::Bound, 7),
+        rej(RejectCode::InvalidChallenge),
     ).build();
 
     // ── topUp ──────────────────────────────────────────────────────────────

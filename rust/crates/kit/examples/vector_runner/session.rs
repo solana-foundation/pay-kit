@@ -293,6 +293,8 @@ fn code_for(message: &str) -> Option<&'static str> {
     let has = |n: &str| m.contains(n);
     Some(if has("transaction version") && has("not accepted") {
         "unsupported-version"
+    } else if has("used for a different request") {
+        "invalid-challenge"
     } else if has("compute unit price") && (has("exceed") || has("maximum")) {
         "compute-price-over-cap"
     } else if has("compute unit limit") && (has("exceed") || has("maximum")) {
@@ -331,7 +333,6 @@ fn code_for(message: &str) -> Option<&'static str> {
         || has("does not match additionalamount")
         || has("insufficient authorized voucher availability")
         || has("charge amount must be positive")
-        || has("used for a different request")
     {
         "amount-mismatch"
     } else if has("open transaction")
@@ -481,8 +482,8 @@ async fn persisted_use(
 }
 
 /// Charge a `use`: the challenged `amount` through `process_use`, or the
-/// vector's `meteredAmount` through `authenticate_use` then
-/// `charge_operator_usage` (mirrors `use_voucher` in
+/// vector's `meteredAmount`, the request's metered total, through `authenticate_use` then
+/// `charge_operator_request` (mirrors `use_voucher` in
 /// rust/crates/conformance/src/realize/session.rs).
 async fn use_voucher<S: ChannelStore>(
     server: &SessionServer<S>,
@@ -499,7 +500,7 @@ async fn use_voucher<S: ChannelStore>(
                 .await
                 .map_err(|e| e.to_string())?;
             server
-                .charge_operator_usage(&authenticated, operator, amount, |_| Ok(()))
+                .charge_operator_request(&authenticated, operator, amount, |_| Ok(()))
                 .await
                 .map_err(|e| e.to_string())?
                 .voucher

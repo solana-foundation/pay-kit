@@ -1664,7 +1664,7 @@
   },
   {
     "bugType": "settlement",
-    "description": "A retry of a metered use the server already charged 7 (a lost response): the channel holds 107 accepted and spent, with the charge recorded under the request's challenge and Idempotency-Key. The server answers with the recorded voucher for 107 and charges nothing; a server that charges again persists 114. Pair: session-use-verify-metered-replay-amount-reject.",
+    "description": "A retry of a metered use the server already charged a total of 7 (a lost response): the channel holds 107 accepted and spent, with the request recorded under its challenge and Idempotency-Key. The server answers with the recorded voucher for 107 and charges nothing; a server that charges again persists 114. Pair: session-use-verify-metered-replay-advance-accept.",
     "expect": {
       "outcome": "accept",
       "sessionVoucher": {
@@ -1829,12 +1829,182 @@
   },
   {
     "bugType": "settlement",
-    "description": "The recorded request's Idempotency-Key and challenge, but a metered cost of 8 instead of the recorded 7: it is not the same request, so it is neither replayed nor charged. Pair: session-use-verify-metered-replay-accept.",
+    "description": "A stale retry of an earlier step of a request already charged a total of 7: it asks for 5, below the recorded total, so it is answered with the recorded voucher for 107 and charges nothing. Pair: session-use-verify-metered-replay-advance-accept.",
     "expect": {
-      "outcome": "reject",
-      "rejectCode": "amount-mismatch"
+      "outcome": "accept",
+      "sessionVoucher": {
+        "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+        "cumulativeAmount": "107",
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "107"
+      }
     },
-    "id": "session-use-verify-metered-replay-amount-reject",
+    "id": "session-use-verify-metered-replay-lower-accept",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "107",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "4Sy4NtaGuf2FZEstbnRm6VwXZLmwYHFF8LpUudiezRCuf3D2sAX9bxYUKdXJN9dCgXDGYidocFnLoXT7gF8KrUmP",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "107"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "processedUses": [
+            {
+              "amount": "7",
+              "challengeId": "c_session_conformance_0001",
+              "cumulativeAmount": "107",
+              "idempotencyKey": "conformance-use-1",
+              "voucherSignature": "4Sy4NtaGuf2FZEstbnRm6VwXZLmwYHFF8LpUudiezRCuf3D2sAX9bxYUKdXJN9dCgXDGYidocFnLoXT7gF8KrUmP"
+            }
+          ],
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "107",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "5",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-670a939f90",
+      "MPP-b18b8c42af"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Replaying an already processed request MAY return the cached receipt and MUST NOT change channel state or deliver additional service.",
+      "section": "Concurrency and Idempotency"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The request already charged a total of 7 is metered on to a total of 8, as a stream charges as it is served: only the difference of 1 is charged, so the voucher is for 108, not 115. Pair: session-use-verify-metered-replay-accept.",
+    "expect": {
+      "outcome": "accept",
+      "sessionVoucher": {
+        "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+        "cumulativeAmount": "108",
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "108"
+      }
+    },
+    "id": "session-use-verify-metered-replay-advance-accept",
     "input": {
       "sessionServerOperatorSecretKey": [
         11,
@@ -1976,12 +2146,172 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "MPP-670a939f90"
+      "MPP-11052eb7e8",
+      "MPP-b18b8c42af"
     ],
     "role": "server",
     "spec": {
       "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
-      "quote": "Replaying an already processed request MAY return the cached receipt and MUST NOT change channel state or deliver additional service.",
+      "quote": "When cost is known only after generation begins, an operator-mode server MUST reserve sufficient channel capacity before delivery and persist the operator-signed voucher before releasing the response bytes whose cost it authorizes.",
+      "section": "Debit Processing"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The Idempotency-Key was recorded for a request under another challenge: it is not this request, so it is neither replayed nor charged. Pair: session-use-verify-metered-replay-accept.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-challenge"
+    },
+    "id": "session-use-verify-metered-replay-other-challenge-reject",
+    "input": {
+      "sessionServerOperatorSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001"
+        },
+        "channel": {
+          "acceptedCumulative": "107",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "4Sy4NtaGuf2FZEstbnRm6VwXZLmwYHFF8LpUudiezRCuf3D2sAX9bxYUKdXJN9dCgXDGYidocFnLoXT7gF8KrUmP",
+            "signatureType": "ed25519",
+            "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+            "voucher": {
+              "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+              "cumulativeAmount": "107"
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "processedUses": [
+            {
+              "amount": "7",
+              "challengeId": "c_session_conformance_other",
+              "cumulativeAmount": "107",
+              "idempotencyKey": "conformance-use-1",
+              "voucherSignature": "4Sy4NtaGuf2FZEstbnRm6VwXZLmwYHFF8LpUudiezRCuf3D2sAX9bxYUKdXJN9dCgXDGYidocFnLoXT7gF8KrUmP"
+            }
+          ],
+          "rentPayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "settledOnChain": "0",
+          "spentAmount": "107",
+          "status": "open",
+          "voucherSigner": "operator"
+        },
+        "credential": {
+          "action": "use",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY"
+        },
+        "idempotencyKey": "conformance-use-1",
+        "meteredAmount": "7",
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b18b8c42af"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers SHOULD cache (challengeId, idempotencyKey) pairs and MUST NOT increment spentAmount twice for a duplicate idempotent request.",
       "section": "Concurrency and Idempotency"
     },
     "tier": "offline"

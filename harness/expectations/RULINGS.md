@@ -242,11 +242,16 @@ the charge the spec requires, and an SDK must let it advance
 `cumulativeAmount` is `acceptedCumulative` plus the metered cost; a `use`
 whose proof is not the one bound at open, or that reaches a client-signed
 server, is `authentication-invalid`; one that would pass the deposit is
-`cumulative-exceeds-deposit`. A retry under a recorded `(challengeId,
-Idempotency-Key)` returns the recorded voucher and charges nothing
-(“Replaying an already processed request MAY return the cached receipt and
-MUST NOT change channel state or deliver additional service.”); the same key
-with another cost is `amount-mismatch`. The spec does not say a zero cost is
+`cumulative-exceeds-deposit`. The spec charges a request's cost but does
+not say how a request metered as it is served is charged more than once;
+this ruling reads `meteredAmount` as the request's running total under its
+`(challengeId, Idempotency-Key)`, and each charge as paying only what the
+request was not yet charged. So a retry at or below the recorded total
+returns the recorded voucher and charges nothing (“Replaying an already
+processed request MAY return the cached receipt and MUST NOT change channel
+state or deliver additional service.”), a higher total charges the
+difference, and the key recorded under another challenge is
+`invalid-challenge`. The spec does not say a zero cost is
 refused; that part is this ruling. A zero charge would persist a voucher equal
 to `acceptedCumulative`, and “Equal or lower amounts MUST be rejected for
 metered voucher acceptance unless they are exact idempotent replays handled

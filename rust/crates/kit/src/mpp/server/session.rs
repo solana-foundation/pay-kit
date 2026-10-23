@@ -266,7 +266,7 @@ pub struct UseAcceptance {
 
 /// A `use` proof that matched the proof bound at open. Only
 /// [`SessionServer::authenticate_use`] produces one, and
-/// [`SessionServer::charge_operator_usage`] takes nothing else, so a metered
+/// [`SessionServer::charge_operator_request`] takes nothing else, so a metered
 /// operator charge is never made for a request that did not authenticate
 /// (draft-solana-session-00 §Debit Processing step 1). It carries the
 /// request's `(challengeId, idempotencyKey)`, so the charge it authorizes is
@@ -294,20 +294,31 @@ impl AuthenticatedUse {
 /// A metered charge on an operator-signed session.
 #[derive(Debug, Clone)]
 pub struct OperatorCharge {
-    /// Operator-signed cumulative voucher persisted for the charge.
+    /// Operator-signed cumulative voucher persisted for the request.
     pub voucher: SignedVoucher,
-    /// Accepted cumulative before the charge.
+    /// Accepted cumulative before this call's charge.
     pub previous_cumulative: u64,
-    /// Accepted cumulative after the charge.
+    /// Accepted cumulative after it.
     pub cumulative: u64,
-    /// Whether the request had already been charged: the voucher is the one
-    /// recorded then, and nothing was charged now.
+    /// What this call charged: the request's new total less what it had
+    /// already been charged. Zero on a replay.
+    pub charged: u64,
+    /// The request's total charged so far.
+    pub request_total: u64,
+    /// Whether the request had already been charged up to the total asked:
+    /// the voucher is the one recorded then, and nothing was charged now.
     pub replay: bool,
 }
 
-/// Attempts [`SessionServer::charge_operator_usage`] makes before reporting
-/// that concurrent charges kept moving the watermark.
+/// Attempts [`SessionServer::charge_operator_request`] makes before
+/// reporting that concurrent charges kept moving the watermark.
 const OPERATOR_CHARGE_ATTEMPTS: usize = 8;
+
+/// Most requests a channel remembers for idempotent replay, most recently
+/// charged first. A long-lived channel serves far more requests than any
+/// host retries, so the record is bounded; a retry of a request older than
+/// this is charged as a new one.
+pub const MAX_PROCESSED_USES: usize = 256;
 #[derive(Clone)]
 pub struct SessionConfig {
     /// Operator public key (base58). Shown to clients in the challenge.
@@ -1918,13 +1929,16 @@ impl<S: ChannelStore> SessionServer<S> {
                         owner: lifecycle_owner.clone(),
                         close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
                     });
-                    state.processed_uses.push(crate::core::store::ProcessedUse {
-                        challenge_id: challenge_id.clone(),
-                        idempotency_key: idempotency_key.clone(),
-                        cumulative,
-                        voucher_signature: signature.clone(),
-                        amount: Some(price),
-                    });
+                    record_use(
+                        &mut state.processed_uses,
+                        crate::core::store::ProcessedUse {
+                            challenge_id: challenge_id.clone(),
+                            idempotency_key: idempotency_key.clone(),
+                            cumulative,
+                            voucher_signature: signature.clone(),
+                            amount: Some(price),
+                        },
+                    );
                     let voucher = SignedVoucher {
                         data,
                         signer: signer.clone(),
@@ -1953,7 +1967,7 @@ impl<S: ChannelStore> SessionServer<S> {
     ///
     /// Hosts whose price is known only after serving authenticate here,
     /// serve, then charge the metered amount with
-    /// [`charge_operator_usage`](Self::charge_operator_usage). Hosts with a
+    /// [`charge_operator_request`](Self::charge_operator_request). Hosts with a
     /// fixed price per request use [`process_use`](Self::process_use).
     ///
     /// Nothing is reserved between the two calls: concurrent requests on one
@@ -2003,37 +2017,45 @@ impl<S: ChannelStore> SessionServer<S> {
         })
     }
 
-    /// Charge `amount` of metered usage to an authenticated operator-signed
-    /// session (draft-solana-session-00 §Debit Processing step 5): sign the
-    /// voucher for `acceptedCumulative + amount` and persist it, the new
-    /// `acceptedCumulative` and `spentAmount += amount` in one store update.
+    /// Charge an authenticated request on an operator-signed session up to
+    /// `request_total`, the request's metered cost so far
+    /// (draft-solana-session-00 §Debit Processing step 5): sign the voucher
+    /// for `acceptedCumulative` plus what the request has not yet been
+    /// charged, and persist it, the new `acceptedCumulative` and
+    /// `spentAmount` in one store update.
+    ///
+    /// A request is metered as it is served, so a stream charges it again
+    /// and again with a growing total. Each charge pays only the difference
+    /// from what the request was already charged, recorded under its
+    /// `(challengeId, idempotencyKey)` in the same update: one record per
+    /// request, updated in place. A retry (a lost response, an ambiguous
+    /// store result) asking for a total already reached returns the recorded
+    /// voucher with `replay: true` and charges nothing (MPP-670a939f90,
+    /// MPP-b18b8c42af). The key used for another challenge is refused.
     ///
     /// `signer` is the operator key; it signs before the update so it may be
-    /// remote. The update commits only if the watermark is still the one the
-    /// voucher was signed from, the channel is still open and bound to the
-    /// same proof, the voucher stays within the deposit, and `guard` accepts
-    /// the record. A concurrent charge that moved the watermark, or a store
-    /// write that lost its compare-and-set to one, is retried from the new
-    /// watermark, up to a bound; `guard` runs again on every attempt, so it
-    /// must be nonblocking and free of side effects.
+    /// remote. The update commits only if the watermark and the request's
+    /// record are still the ones the voucher was signed from, the channel is
+    /// still open and bound to the same proof, the voucher stays within the
+    /// deposit, and `guard` accepts the record. A concurrent charge that
+    /// moved either, or a store write that lost its compare-and-set to one,
+    /// is retried from the new state, up to a bound; `guard` runs again on
+    /// every attempt, so it must be nonblocking and free of side effects.
     ///
-    /// The charge is recorded with the request's `(challengeId,
-    /// idempotencyKey)` in the same update. A retry of a request already
-    /// charged (a lost response, an ambiguous store result) returns the
-    /// recorded voucher with `replay: true` and charges nothing
-    /// (MPP-670a939f90); the same key with another amount or challenge is
-    /// refused.
+    /// The channel remembers the last [`MAX_PROCESSED_USES`] requests; a
+    /// retry of an older one is not recognised and is charged as a new
+    /// request.
     ///
-    /// A zero `amount` is rejected: unused reserved capacity MUST NOT advance
-    /// the voucher.
-    pub async fn charge_operator_usage(
+    /// A zero `request_total` is rejected: unused reserved capacity MUST NOT
+    /// advance the voucher.
+    pub async fn charge_operator_request(
         &self,
         authenticated: &AuthenticatedUse,
         signer: &dyn solana_keychain::SolanaSigner,
-        amount: u64,
+        request_total: u64,
         guard: impl Fn(&ChannelState) -> Result<()> + Send + Sync + 'static,
     ) -> Result<OperatorCharge> {
-        if amount == 0 {
+        if request_total == 0 {
             return Err(Error::Other(
                 "operator charge amount must be positive".to_string(),
             ));
@@ -2064,12 +2086,18 @@ impl<S: ChannelStore> SessionServer<S> {
                 ));
             }
             check_bound_authentication(&state, &authenticated.authentication).map_err(store_err)?;
-            if let Some(entry) = recorded_use(&state, authenticated, amount).map_err(store_err)? {
-                return Ok(replayed_charge(&channel_id, &operator, entry, amount));
+            let recorded = recorded_use(&state, authenticated).map_err(store_err)?;
+            let charged_before = recorded.as_ref().map_or(0, |entry| entry.request_total);
+            if let Some(entry) = recorded
+                .as_ref()
+                .filter(|entry| entry.request_total >= request_total)
+            {
+                return Ok(replayed_charge(&channel_id, &operator, entry));
             }
+            let delta = request_total - charged_before;
             let base = state.cumulative;
             let cumulative = base
-                .checked_add(amount)
+                .checked_add(delta)
                 .ok_or_else(|| Error::Other("session cumulative overflow".to_string()))?;
             if cumulative > state.deposit {
                 return Err(Error::Other(
@@ -2107,13 +2135,20 @@ impl<S: ChannelStore> SessionServer<S> {
                         ));
                     }
                     check_bound_authentication(&state, &authenticated.authentication)?;
-                    // A retry of this request committed since the read:
-                    // answer with its charge and write nothing new.
-                    if let Some(entry) = recorded_use(&state, &authenticated, amount)? {
-                        *replayed.lock().unwrap() = Some(entry);
+                    let recorded = recorded_use(&state, &authenticated)?;
+                    // A retry of this request reached the total since the
+                    // read: answer with its record and write nothing new.
+                    if let Some(entry) = recorded
+                        .as_ref()
+                        .filter(|entry| entry.request_total >= request_total)
+                    {
+                        *replayed.lock().unwrap() = Some(entry.clone());
                         return Ok(state);
                     }
-                    if state.cumulative != base {
+                    if state.cumulative != base
+                        || recorded.as_ref().map_or(0, |entry| entry.request_total)
+                            != charged_before
+                    {
                         moved.store(true, std::sync::atomic::Ordering::Relaxed);
                         return Err(StoreError::Internal(
                             "operator charge watermark moved".to_string(),
@@ -2127,7 +2162,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     guard(&state).map_err(|error| StoreError::Internal(error.to_string()))?;
                     state.cumulative = cumulative;
                     state.spent_amount =
-                        state.spent_amount.checked_add(amount).ok_or_else(|| {
+                        state.spent_amount.checked_add(delta).ok_or_else(|| {
                             StoreError::Internal("session spent amount overflow".to_string())
                         })?;
                     state.highest_voucher_signature = Some(signature.clone());
@@ -2138,13 +2173,16 @@ impl<S: ChannelStore> SessionServer<S> {
                         owner: lifecycle_owner.clone(),
                         close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
                     });
-                    state.processed_uses.push(crate::core::store::ProcessedUse {
-                        challenge_id: authenticated.challenge_id.clone(),
-                        idempotency_key: authenticated.idempotency_key.clone(),
-                        cumulative,
-                        voucher_signature: signature.clone(),
-                        amount: Some(amount),
-                    });
+                    record_use(
+                        &mut state.processed_uses,
+                        crate::core::store::ProcessedUse {
+                            challenge_id: authenticated.challenge_id.clone(),
+                            idempotency_key: authenticated.idempotency_key.clone(),
+                            cumulative,
+                            voucher_signature: signature.clone(),
+                            amount: Some(request_total),
+                        },
+                    );
                     Ok(state)
                 }
             };
@@ -2155,7 +2193,7 @@ impl<S: ChannelStore> SessionServer<S> {
             {
                 Ok(_) => {
                     if let Some(entry) = replayed.lock().unwrap().take() {
-                        return Ok(replayed_charge(&channel_id, &operator, entry, amount));
+                        return Ok(replayed_charge(&channel_id, &operator, &entry));
                     }
                     return Ok(OperatorCharge {
                         voucher: SignedVoucher {
@@ -2166,6 +2204,8 @@ impl<S: ChannelStore> SessionServer<S> {
                         },
                         previous_cumulative: base,
                         cumulative,
+                        charged: delta,
+                        request_total,
                         replay: false,
                     });
                 }
@@ -3009,14 +3049,22 @@ fn check_bound_authentication(
     Ok(())
 }
 
-/// The charge already recorded for `authenticated`'s idempotency key, if
-/// any. The key names one request: reusing it for another challenge or
-/// amount is refused rather than answered with the earlier charge.
+/// What a request has been charged so far: its recorded total, and the
+/// voucher persisted with it.
+#[derive(Debug, Clone)]
+struct RecordedUse {
+    request_total: u64,
+    cumulative: u64,
+    voucher_signature: String,
+}
+
+/// The record of `authenticated`'s request, if the channel holds one. The
+/// key names one request: one recorded for another challenge, or without a
+/// total (written before totals were kept), is refused rather than advanced.
 fn recorded_use(
     state: &ChannelState,
     authenticated: &AuthenticatedUse,
-    amount: u64,
-) -> std::result::Result<Option<crate::core::store::ProcessedUse>, StoreError> {
+) -> std::result::Result<Option<RecordedUse>, StoreError> {
     let Some(entry) = state
         .processed_uses
         .iter()
@@ -3024,21 +3072,36 @@ fn recorded_use(
     else {
         return Ok(None);
     };
-    if entry.challenge_id != authenticated.challenge_id || entry.amount != Some(amount) {
-        return Err(StoreError::Internal(
+    match entry.amount {
+        Some(request_total) if entry.challenge_id == authenticated.challenge_id => {
+            Ok(Some(RecordedUse {
+                request_total,
+                cumulative: entry.cumulative,
+                voucher_signature: entry.voucher_signature.clone(),
+            }))
+        }
+        _ => Err(StoreError::Internal(
             "Idempotency-Key was already used for a different request".to_string(),
-        ));
+        )),
     }
-    Ok(Some(entry.clone()))
 }
 
-/// The answer to a retry of a request already charged as `entry`.
-fn replayed_charge(
-    channel_id: &str,
-    operator: &str,
+/// Record `entry` as its request's latest charge: replace the request's
+/// earlier record, so a request is one entry however often it is charged,
+/// and keep only the [`MAX_PROCESSED_USES`] most recently charged requests.
+fn record_use(
+    processed_uses: &mut Vec<crate::core::store::ProcessedUse>,
     entry: crate::core::store::ProcessedUse,
-    amount: u64,
-) -> OperatorCharge {
+) {
+    processed_uses.retain(|recorded| recorded.idempotency_key != entry.idempotency_key);
+    processed_uses.push(entry);
+    let excess = processed_uses.len().saturating_sub(MAX_PROCESSED_USES);
+    processed_uses.drain(..excess);
+}
+
+/// The answer to a retry of a request already charged up to `entry`:
+/// the recorded voucher, and nothing charged now.
+fn replayed_charge(channel_id: &str, operator: &str, entry: &RecordedUse) -> OperatorCharge {
     OperatorCharge {
         voucher: SignedVoucher {
             data: VoucherData {
@@ -3047,11 +3110,13 @@ fn replayed_charge(
                 expires_at: None,
             },
             signer: operator.to_string(),
-            signature: entry.voucher_signature,
+            signature: entry.voucher_signature.clone(),
             signature_type: VoucherSignatureType::Ed25519,
         },
-        previous_cumulative: entry.cumulative.saturating_sub(amount),
+        previous_cumulative: entry.cumulative,
         cumulative: entry.cumulative,
+        charged: 0,
+        request_total: entry.request_total,
         replay: true,
     }
 }
@@ -7603,7 +7668,7 @@ mod tests {
         assert_eq!(stored(&server, &payload.channel_id).await.cumulative, 0);
 
         let first = server
-            .charge_operator_usage(&first_request, &operator, 7, |_| Ok(()))
+            .charge_operator_request(&first_request, &operator, 7, |_| Ok(()))
             .await
             .unwrap();
         assert_eq!(
@@ -7612,7 +7677,7 @@ mod tests {
         );
         let second_request = authenticate(&server, &payload, "request-2").await;
         let second = server
-            .charge_operator_usage(&second_request, &operator, 40, |_| Ok(()))
+            .charge_operator_request(&second_request, &operator, 40, |_| Ok(()))
             .await
             .unwrap();
         assert_eq!((second.previous_cumulative, second.cumulative), (7, 47));
@@ -7672,16 +7737,16 @@ mod tests {
         let authenticated = authenticate(&server, &payload, "request-1").await;
         let refusals = [
             server
-                .charge_operator_usage(&authenticated, &operator, 0, |_| Ok(()))
+                .charge_operator_request(&authenticated, &operator, 0, |_| Ok(()))
                 .await,
             server
-                .charge_operator_usage(&authenticated, &operator, 1_001, |_| Ok(()))
+                .charge_operator_request(&authenticated, &operator, 1_001, |_| Ok(()))
                 .await,
             server
-                .charge_operator_usage(&authenticated, &memory_signer(5), 5, |_| Ok(()))
+                .charge_operator_request(&authenticated, &memory_signer(5), 5, |_| Ok(()))
                 .await,
             server
-                .charge_operator_usage(&authenticated, &operator, 5, |_| {
+                .charge_operator_request(&authenticated, &operator, 5, |_| {
                     Err(Error::Other("lease expired".into()))
                 })
                 .await,
@@ -7709,7 +7774,7 @@ mod tests {
             .await
             .unwrap();
         assert!(server
-            .charge_operator_usage(&authenticated, &operator, 5, |_| Ok(()))
+            .charge_operator_request(&authenticated, &operator, 5, |_| Ok(()))
             .await
             .unwrap_err()
             .to_string()
@@ -7734,7 +7799,7 @@ mod tests {
                 let request = format!("request-{amount}");
                 let authenticated = authenticate(&server, &payload, &request).await;
                 server
-                    .charge_operator_usage(&authenticated, operator.as_ref(), amount, |_| Ok(()))
+                    .charge_operator_request(&authenticated, operator.as_ref(), amount, |_| Ok(()))
                     .await
             })
         });
@@ -7766,35 +7831,63 @@ mod tests {
     /// draft-solana-session-00 §Concurrency and Idempotency: "Replaying an
     /// already processed request MAY return the cached receipt and MUST NOT
     /// change channel state", and servers "MUST NOT increment spentAmount
-    /// twice for a duplicate idempotent request". A host retrying after a
-    /// lost response gets the recorded voucher back; nothing is charged.
+    /// twice for a duplicate idempotent request". A request is charged up to
+    /// its running total: each charge pays only the difference, a retry at or
+    /// below the total reached is answered from the record, and the request
+    /// stays one record however often it is charged.
     #[tokio::test]
-    async fn a_retried_operator_charge_is_answered_from_its_record() {
+    async fn a_request_is_charged_up_to_its_running_total() {
         let (server, payload, operator) = operator_channel().await;
         let request = authenticate(&server, &payload, "request-1").await;
         let first = server
-            .charge_operator_usage(&request, &operator, 7, |_| Ok(()))
+            .charge_operator_request(&request, &operator, 7, |_| Ok(()))
             .await
             .unwrap();
-        // The retry authenticates again, as a fresh request would.
+        assert_eq!(
+            (first.charged, first.cumulative, first.replay),
+            (7, 7, false)
+        );
+
+        // The retry after a lost response authenticates again, as a fresh
+        // request would, and charges nothing.
         let retry = authenticate(&server, &payload, "request-1").await;
         let replay = server
-            .charge_operator_usage(&retry, &operator, 7, |_| Ok(()))
+            .charge_operator_request(&retry, &operator, 7, |_| Ok(()))
             .await
             .unwrap();
         assert!(replay.replay);
-        assert_eq!(
-            (replay.previous_cumulative, replay.cumulative),
-            (first.previous_cumulative, first.cumulative)
-        );
+        assert_eq!((replay.charged, replay.cumulative), (0, 7));
         assert_eq!(replay.voucher.signature, first.voucher.signature);
-        let record = stored(&server, &payload.channel_id).await;
-        assert_eq!((record.cumulative, record.spent_amount), (7, 7));
 
-        // The key names one request: reusing it for another amount is
-        // refused, not answered with the earlier charge.
+        // The stream goes on: only the difference is charged.
+        let more = server
+            .charge_operator_request(&request, &operator, 10, |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            (more.previous_cumulative, more.charged, more.cumulative),
+            (7, 3, 10)
+        );
+        // A stale retry of an earlier step is answered with the latest.
+        let stale = server
+            .charge_operator_request(&retry, &operator, 7, |_| Ok(()))
+            .await
+            .unwrap();
+        assert!(stale.replay);
+        assert_eq!((stale.request_total, stale.cumulative), (10, 10));
+
+        let record = stored(&server, &payload.channel_id).await;
+        assert_eq!((record.cumulative, record.spent_amount), (10, 10));
+        assert_eq!(record.processed_uses.len(), 1, "one record per request");
+
+        // The key names one request: reused under another challenge it is
+        // refused, not answered with this request's charge.
+        let other = server
+            .authenticate_use(&payload, "another-challenge", "request-1")
+            .await
+            .unwrap();
         let reused = server
-            .charge_operator_usage(&retry, &operator, 8, |_| Ok(()))
+            .charge_operator_request(&other, &operator, 12, |_| Ok(()))
             .await
             .unwrap_err()
             .to_string();
@@ -7803,7 +7896,34 @@ mod tests {
             "{reused}"
         );
         let record = stored(&server, &payload.channel_id).await;
-        assert_eq!((record.cumulative, record.spent_amount), (7, 7));
+        assert_eq!((record.cumulative, record.spent_amount), (10, 10));
+    }
+
+    /// A channel remembers the most recently charged requests, not every
+    /// request it ever served.
+    #[tokio::test]
+    async fn the_request_record_is_bounded() {
+        let (server, payload, operator) = operator_channel().await;
+        for i in 0..MAX_PROCESSED_USES + 10 {
+            let request = authenticate(&server, &payload, &format!("request-{i}")).await;
+            for total in 1..=2 {
+                server
+                    .charge_operator_request(&request, &operator, total, |_| Ok(()))
+                    .await
+                    .unwrap();
+            }
+        }
+        let record = stored(&server, &payload.channel_id).await;
+        assert_eq!(record.processed_uses.len(), MAX_PROCESSED_USES);
+        assert_eq!(
+            record.processed_uses.last().unwrap().idempotency_key,
+            format!("request-{}", MAX_PROCESSED_USES + 9)
+        );
+        assert!(record
+            .processed_uses
+            .iter()
+            .all(|entry| entry.idempotency_key != "request-0"));
+        assert_eq!(record.spent_amount, 2 * (MAX_PROCESSED_USES as u64 + 10));
     }
 
     /// A store whose next update loses its compare-and-set the way the Redis
@@ -7933,7 +8053,7 @@ mod tests {
         }));
 
         let charge = server
-            .charge_operator_usage(&request, &operator, 7, |_| Ok(()))
+            .charge_operator_request(&request, &operator, 7, |_| Ok(()))
             .await
             .unwrap();
         assert_eq!((charge.previous_cumulative, charge.cumulative), (5, 12));
