@@ -27,6 +27,35 @@ pub async fn build_payment(
     requirements: &PaymentRequirements,
     max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<PaymentPayload, Error> {
+    let mut tx =
+        prepare_unsigned_payment(&signer.pubkey(), rpc, requirements, max_tx_version).await?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx).await?;
+    let encoded = crate::core::tx::encode(&tx)?;
+    Ok(PaymentPayload {
+        network: requirements.network.clone(),
+        proof: PaymentProof::Transaction {
+            transaction: encoded,
+        },
+    })
+}
+
+/// Prepare an exact payment using only the buyer's public key.
+///
+/// Reuses the same validation, instruction construction and transaction-version
+/// negotiation as [`build_payment`]. Every required signature slot is left zero;
+/// this function neither signs nor submits a transaction.
+///
+/// Uses asynchronous RPC just as [`build_payment`] does: a supplied blockhash
+/// is checked against the configured RPC, a missing blockhash is fetched, and
+/// missing mint decimals are resolved on-chain.
+/// The caller must validate the returned transaction against its authorization
+/// before signing, persist any evidence it needs, and own submission/recovery.
+pub async fn prepare_unsigned_payment(
+    payer: &Pubkey,
+    rpc: &RpcClient,
+    requirements: &PaymentRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
+) -> Result<solana_transaction::versioned::VersionedTransaction, Error> {
     // Only the nonblocking client is reachable here: a blocking call panics
     // on a current-thread runtime.
     let rpc = rpc.get_inner_client().as_ref();
@@ -40,7 +69,7 @@ pub async fn build_payment(
         .parse()
         .map_err(|_| Error::Other(format!("Invalid amount: {}", requirements.amount)))?;
 
-    let signer_pubkey = signer.pubkey();
+    let signer_pubkey = *payer;
 
     let recipient = Pubkey::from_str(&requirements.recipient)
         .map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
@@ -81,7 +110,7 @@ pub async fn build_payment(
 
     instructions.push(memo_instruction(requirements)?);
 
-    // Build and sign.
+    // Resolve the blockhash without acquiring a signing capability.
     let blockhash = crate::core::blockhash::resolve_challenge_blockhash(
         rpc,
         requirements.recent_blockhash.as_deref(),
@@ -95,7 +124,7 @@ pub async fn build_payment(
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let version =
         crate::core::tx::negotiate(requirements.transaction_versions.as_deref(), max_tx_version)?;
-    let mut tx = crate::core::tx::build_unsigned(
+    let tx = crate::core::tx::build_unsigned(
         version,
         &actual_fee_payer,
         &instructions,
@@ -103,16 +132,7 @@ pub async fn build_payment(
         Some(&budget),
     )?;
 
-    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx).await?;
-
-    let encoded = crate::core::tx::encode(&tx)?;
-
-    Ok(PaymentPayload {
-        network: requirements.network.clone(),
-        proof: PaymentProof::Transaction {
-            transaction: encoded,
-        },
-    })
+    Ok(tx)
 }
 
 /// Build a payment and return the base64-encoded `PAYMENT-SIGNATURE` header value,
@@ -1665,5 +1685,252 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(transfer_decimals(payload), 6);
+    }
+    fn prepared_requirements() -> PaymentRequirements {
+        let mut requirements = test_requirements("USDC");
+        requirements.extra = Some(serde_json::json!({ "memo": "unsigned-prepare-test" }));
+        requirements
+    }
+
+    // A fixed blockhash and seller memo make both public entry points deterministic.
+    // The mock confirms blockhash validity without contacting an RPC service.
+    #[tokio::test]
+    async fn unsigned_prepare_matches_existing_builder_message_and_wire() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let requirements = prepared_requirements();
+        let unsigned = prepare_unsigned_payment(&signer.pubkey, &rpc, &requirements, None)
+            .await
+            .unwrap();
+        assert!(unsigned
+            .signatures
+            .iter()
+            .all(|s| *s == Signature::default()));
+        let encoded = crate::core::tx::encode(&unsigned).unwrap();
+        let decoded = decode_tx(&encoded);
+        assert_eq!(decoded.message, unsigned.message);
+        assert_eq!(decoded.signatures, unsigned.signatures);
+        let payload = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
+        let PaymentProof::Transaction { transaction } = payload.proof else {
+            panic!("expected transaction")
+        };
+        let mut signed = decode_tx(&transaction);
+        assert_eq!(signed.message, unsigned.message);
+        assert_ne!(signed.signatures, unsigned.signatures);
+        signed.signatures.fill(Signature::default());
+        assert_eq!(crate::core::tx::encode(&signed).unwrap(), encoded);
+    }
+
+    #[tokio::test]
+    async fn unsigned_prepare_preserves_spl_terms_sponsor_memo_and_blockhash() {
+        let payer = Pubkey::new_unique();
+        let sponsor = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU").unwrap();
+        let mut requirements = prepared_requirements();
+        requirements.currency = mint.to_string();
+        requirements.recipient = recipient.to_string();
+        requirements.amount = "1234567".to_string();
+        requirements.fee_payer = Some(true);
+        requirements.fee_payer_key = Some(sponsor.to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let tx = prepare_unsigned_payment(&payer, &rpc, &requirements, None)
+            .await
+            .unwrap();
+        assert_eq!(tx.message.static_account_keys()[0], sponsor);
+        assert_eq!(
+            *tx.message.recent_blockhash(),
+            Hash::new_from_array([5u8; 32])
+        );
+        assert_eq!(tx.signatures.len(), 2);
+        assert!(tx.signatures.iter().all(|s| *s == Signature::default()));
+        let keys = tx.message.static_account_keys();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let transfer = tx
+            .message
+            .instructions()
+            .iter()
+            .find(|ix| keys[ix.program_id_index as usize] == token_program)
+            .unwrap();
+        let mut expected = vec![12]; // TransferChecked discriminator.
+        expected.extend_from_slice(&1234567u64.to_le_bytes());
+        expected.push(6);
+        assert_eq!(transfer.data, expected);
+        assert_eq!(keys[transfer.accounts[1] as usize], mint);
+        assert_eq!(keys[transfer.accounts[3] as usize], payer);
+        let source = get_associated_token_address(&payer, &mint, &token_program);
+        let destination = get_associated_token_address(&recipient, &mint, &token_program);
+        assert_eq!(keys[transfer.accounts[0] as usize], source);
+        assert_eq!(keys[transfer.accounts[2] as usize], destination);
+        assert_eq!(memo_instruction_from_tx(&tx).data, b"unsigned-prepare-test");
+        assert_eq!(tx.message.instructions()[0].data[0], 2);
+        assert_eq!(tx.message.instructions()[1].data[0], 3);
+    }
+
+    #[tokio::test]
+    async fn unsigned_prepare_then_sign_changes_only_buyer_signature() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let mut requirements = prepared_requirements();
+        requirements.fee_payer = Some(true);
+        requirements.fee_payer_key = Some(Pubkey::new_unique().to_string());
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let mut tx = prepare_unsigned_payment(&signer.pubkey, &rpc, &requirements, None)
+            .await
+            .unwrap();
+        let message = tx.message.clone();
+        crate::core::signing::sign_versioned_transaction_slot(&signer, &mut tx)
+            .await
+            .unwrap();
+        assert_eq!(tx.message, message);
+        let buyer_slot = message
+            .static_account_keys()
+            .iter()
+            .position(|key| *key == signer.pubkey)
+            .unwrap();
+        assert_ne!(buyer_slot, 0);
+        assert_eq!(tx.signatures[0], Signature::default());
+        assert_eq!(tx.signatures[buyer_slot], Signature::from([7u8; 64]));
+        assert_eq!(
+            tx.signatures
+                .iter()
+                .filter(|s| **s != Signature::default())
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn unsigned_prepare_preserves_transaction_version_negotiation() {
+        use crate::core::tx::TxVersion;
+        let payer = Pubkey::new_unique();
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let mut requirements = prepared_requirements();
+        requirements.transaction_versions = Some(vec![TxVersion::V0, TxVersion::V1]);
+        for version in [TxVersion::V0, TxVersion::V1] {
+            let signer = MockSigner {
+                pubkey: payer,
+                fail_sign: false,
+            };
+            let unsigned = prepare_unsigned_payment(&payer, &rpc, &requirements, Some(version))
+                .await
+                .unwrap();
+            assert_eq!(TxVersion::of(&unsigned.message).unwrap(), version);
+            let payload = build_payment(&signer, &rpc, &requirements, Some(version))
+                .await
+                .unwrap();
+            let PaymentProof::Transaction { transaction } = payload.proof else {
+                panic!("expected transaction")
+            };
+            assert_eq!(decode_tx(&transaction).message, unsigned.message);
+            assert!(unsigned
+                .signatures
+                .iter()
+                .all(|s| *s == Signature::default()));
+        }
+    }
+
+    #[tokio::test]
+    async fn unsigned_prepare_rejects_invalid_terms_without_signer_or_network() {
+        let payer = Pubkey::new_unique();
+        let rpc = crate::core::blockhash::mock_blockhash_rpc(true);
+        let base = prepared_requirements();
+        let mut bad = base.clone();
+        bad.amount = "-1".to_string();
+        assert!(prepare_unsigned_payment(&payer, &rpc, &bad, None)
+            .await
+            .is_err());
+        let mut bad = base.clone();
+        bad.recipient = "invalid".to_string();
+        assert!(prepare_unsigned_payment(&payer, &rpc, &bad, None)
+            .await
+            .is_err());
+        let mut bad = base.clone();
+        bad.recent_blockhash = Some("invalid".to_string());
+        assert!(prepare_unsigned_payment(&payer, &rpc, &bad, None)
+            .await
+            .is_err());
+        let mut bad = base;
+        bad.extra = Some(serde_json::json!({ "memo": "x".repeat(MAX_MEMO_BYTES + 1) }));
+        assert!(prepare_unsigned_payment(&payer, &rpc, &bad, None)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsigned_prepare_resolves_missing_rpc_facts_asynchronously() {
+        let payer = Pubkey::new_unique();
+        let mut requirements = prepared_requirements();
+        requirements.decimals = None;
+        requirements.recent_blockhash = None;
+        let tx = prepare_unsigned_payment(
+            &payer,
+            &mint_rpc(programs::TOKEN_PROGRAM, 9),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(tx
+            .signatures
+            .iter()
+            .all(|signature| *signature == Signature::default()));
+        let transfer = tx
+            .message
+            .instructions()
+            .iter()
+            .find(|instruction| {
+                tx.message.static_account_keys()[instruction.program_id_index as usize]
+                    == Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap()
+            })
+            .unwrap();
+        assert_eq!(transfer.data[9], 9);
+        assert!(prepare_unsigned_payment(
+            &payer,
+            &mint_rpc(programs::SYSTEM_PROGRAM, 6),
+            &requirements,
+            None,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsigned_prepare_rejects_a_blockhash_not_live_on_the_configured_cluster() {
+        let payer = Pubkey::new_unique();
+        let requirements = prepared_requirements();
+        let error = prepare_unsigned_payment(
+            &payer,
+            &crate::core::blockhash::mock_blockhash_rpc(false),
+            &requirements,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("not a live blockhash"));
+    }
+
+    #[tokio::test]
+    async fn unsigned_prepare_keeps_exact_scheme_and_network_validation() {
+        let payer = Pubkey::new_unique();
+        let rpc = RpcClient::new("http://127.0.0.1:0");
+        let mut requirements = prepared_requirements();
+        requirements.accepted = Some(serde_json::json!({ "scheme": "upto" }));
+        assert!(prepare_unsigned_payment(&payer, &rpc, &requirements, None)
+            .await
+            .is_err());
+        let mut requirements = prepared_requirements();
+        requirements.network = "eip155:1".into();
+        requirements.cluster = None;
+        assert!(prepare_unsigned_payment(&payer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 }
