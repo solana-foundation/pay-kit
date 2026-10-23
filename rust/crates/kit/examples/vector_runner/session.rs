@@ -21,7 +21,8 @@ use std::str::FromStr;
 
 use serde_json::{json, Map, Value};
 use solana_pay_kit::core::store::{
-    ChannelState, ChannelStore, MemoryChannelStore, ProcessedUse, CHANNEL_STATE_SCHEMA_VERSION,
+    ChannelState, ChannelStore, MemoryChannelStore, ObservedLifecycle, OnchainObservation,
+    ProcessedUse, CHANNEL_STATE_SCHEMA_VERSION,
 };
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
@@ -232,7 +233,7 @@ fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
     };
     let highest = channel.get("highestVoucher");
     let proof = channel.get("authentication").filter(|v| !v.is_null());
-    Ok(ChannelState {
+    let mut state = ChannelState {
         channel_id: text("channelId")?,
         authorized_signer: text("authorizedSigner")?,
         deposit: number("escrowedAmount")?,
@@ -283,7 +284,26 @@ fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
         lifecycle: None,
         schema_version: CHANNEL_STATE_SCHEMA_VERSION,
         extra: Default::default(),
-    })
+    };
+    // The record is the server's view of a channel it confirmed onchain just
+    // now: `status` and `closureStartedAt` are what that read showed.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let lifecycle = match (state.sealed, state.close_requested_at) {
+        (true, started_at) => ObservedLifecycle::Terminal { started_at },
+        (false, Some(started_at)) => ObservedLifecycle::Closing { started_at },
+        (false, None) => ObservedLifecycle::Open,
+    };
+    state.record_onchain_observation(
+        OnchainObservation {
+            slot: None,
+            lifecycle,
+        },
+        now,
+    );
+    Ok(state)
 }
 
 /// The shared code for a kit session server error (mirrors `code_for` in

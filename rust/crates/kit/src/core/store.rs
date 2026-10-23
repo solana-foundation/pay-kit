@@ -1331,6 +1331,23 @@ pub enum ObservedLifecycle {
     Terminal { started_at: Option<u64> },
 }
 
+impl ObservedLifecycle {
+    /// The lifecycle a confirmed read of a payment-channel account shows,
+    /// from its `status` and `closure_started_at` fields. `now` stands in
+    /// for a close the account reports without a start time.
+    pub fn of_channel(status: u8, closure_started_at: i64, now: u64) -> Self {
+        const OPEN: u8 = 0;
+        const CLOSING: u8 = 2;
+        let started_at = (closure_started_at != 0 || status != OPEN)
+            .then(|| u64::try_from(closure_started_at).unwrap_or(now).max(1));
+        match (status, started_at) {
+            (OPEN | CLOSING, Some(started_at)) => Self::Closing { started_at },
+            (OPEN, None) => Self::Open,
+            (_, started_at) => Self::Terminal { started_at },
+        }
+    }
+}
+
 /// One onchain read of a channel; see [`ChannelState::record_onchain_observation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OnchainObservation {

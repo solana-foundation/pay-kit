@@ -376,6 +376,32 @@ impl TxPipeline {
         min_context_slot: u64,
         expected_owner: Pubkey,
     ) -> PipelineResult<Option<Vec<u8>>> {
+        self.read_owned_account_at(address, "finalized", min_context_slot, expected_owner)
+            .await
+            .map(|(data, _)| data)
+    }
+
+    /// Read program state at confirmed commitment from a bank at or after
+    /// `min_context_slot`, with the slot of the bank that answered, so the
+    /// caller can refuse to let an older view replace a newer one. Ownership
+    /// is checked on the same observation; a missing account returns `None`.
+    pub async fn read_confirmed_owned_account_data_at(
+        &self,
+        address: Pubkey,
+        min_context_slot: u64,
+        expected_owner: Pubkey,
+    ) -> PipelineResult<(Option<Vec<u8>>, u64)> {
+        self.read_owned_account_at(address, "confirmed", min_context_slot, expected_owner)
+            .await
+    }
+
+    async fn read_owned_account_at(
+        &self,
+        address: Pubkey,
+        commitment: &str,
+        min_context_slot: u64,
+        expected_owner: Pubkey,
+    ) -> PipelineResult<(Option<Vec<u8>>, u64)> {
         let response: solana_rpc_client_api::response::Response<
             Option<solana_account_decoder_client_types::UiAccount>,
         > = self
@@ -385,7 +411,7 @@ impl TxPipeline {
                 RpcRequest::GetAccountInfo,
                 serde_json::json!([
                     address.to_string(), {
-                        "commitment": "finalized",
+                        "commitment": commitment,
                         "minContextSlot": min_context_slot,
                         "encoding": "base64",
                     }
@@ -393,11 +419,12 @@ impl TxPipeline {
             )
             .await
             .map_err(|_| TxPipelineError::AccountReadFailed)?;
-        if response.context.slot < min_context_slot {
+        let slot = response.context.slot;
+        if slot < min_context_slot {
             return Err(TxPipelineError::AccountReadFailed);
         }
         let Some(account) = response.value else {
-            return Ok(None);
+            return Ok((None, slot));
         };
         let account = account
             .to_account()
@@ -405,7 +432,7 @@ impl TxPipeline {
         if account.owner.to_bytes() != expected_owner.to_bytes() {
             return Err(TxPipelineError::AccountOwnerMismatch { address });
         }
-        Ok(Some(account.data))
+        Ok((Some(account.data), slot))
     }
 
     /// Read one account at confirmed commitment, optionally requiring the RPC

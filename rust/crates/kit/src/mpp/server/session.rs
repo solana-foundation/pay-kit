@@ -21,11 +21,19 @@
 //!
 //! Replayed `open` payloads for an existing channel are idempotent: they
 //! never reset the voucher watermark or any other channel state.
+//!
+//! A charge (voucher, `use`, metered delivery) is admitted only on a confirmed
+//! read of the channel account at most [`CHANNEL_SNAPSHOT_MAX_AGE_SECONDS`]
+//! old, re-read as needed. A read showing a forced close sets
+//! `close_requested_at` and makes the channel's lifecycle due at once; the host
+//! must then settle it with [`SessionServer::seal_params`] before the grace
+//! period ends.
 
 use solana_pubkey::Pubkey;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
+use crate::core::store::{ObservedLifecycle, OnchainObservation};
 use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
@@ -119,6 +127,13 @@ const OPENED_ELSEWHERE_ERROR: &str =
 
 /// Index of the channel PDA among the `open` instruction's accounts.
 const OPEN_CHANNEL_ACCOUNT: usize = 5;
+
+/// Longest a confirmed read of a channel account admits new charges on it.
+///
+/// The payer can start a forced close at any time; the server learns of it at
+/// most this long later and must still settle inside the grace period. It is
+/// further capped at half the configured grace period.
+pub const CHANNEL_SNAPSHOT_MAX_AGE_SECONDS: u64 = 30;
 
 /// An open credential that passed the credential checks.
 struct ValidatedOpen {
@@ -1598,6 +1613,14 @@ impl<S: ChannelStore> SessionServer<S> {
                     state.cumulative = state.cumulative.max(onchain_settled);
                     state.spent_amount = state.spent_amount.max(onchain_settled);
                     state.settled_on_chain = state.settled_on_chain.max(onchain_settled);
+                    // The confirmed read above found the channel open.
+                    state.record_onchain_observation(
+                        OnchainObservation {
+                            slot: None,
+                            lifecycle: ObservedLifecycle::Open,
+                        },
+                        now_unix_secs().max(0) as u64,
+                    );
                     Ok(state)
                 }),
             )
@@ -1771,6 +1794,9 @@ impl<S: ChannelStore> SessionServer<S> {
             .cumulative_amount
             .parse()
             .map_err(|_| Error::Other("Invalid cumulative in voucher".to_string()))?;
+        self.refresh_channel_snapshot(&voucher.data.channel_id)
+            .await?;
+        let max_age = self.snapshot_max_age();
 
         // Wire-agnostic acceptance (signature + monotonicity + deposit cap +
         // min-delta + idempotent replay + atomic advance) lives in core so the
@@ -1794,6 +1820,7 @@ impl<S: ChannelStore> SessionServer<S> {
             // TypeScript/Python session servers' availability gate.
             amount,
             move |state, replay| {
+                require_fresh_snapshot(state, max_age)?;
                 if replay && !allow_replay {
                     return Err(StoreError::Internal(
                         "voucher was already accepted; sign a new voucher for this request".into(),
@@ -1857,6 +1884,8 @@ impl<S: ChannelStore> SessionServer<S> {
         let idempotency_key = idempotency_key.to_string();
         let price = self.config.amount;
         let lifecycle_owner = self.config.operator.clone();
+        self.refresh_channel_snapshot(&channel_id).await?;
+        let max_age = self.snapshot_max_age();
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let result_out = std::sync::Arc::clone(&result);
         self.store
@@ -1893,6 +1922,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         });
                         return Ok(state);
                     }
+                    require_fresh_snapshot(&state, max_age)?;
                     let cumulative = state.cumulative.checked_add(price).ok_or_else(|| {
                         StoreError::Internal("session cumulative overflow".to_string())
                     })?;
@@ -2009,6 +2039,7 @@ impl<S: ChannelStore> SessionServer<S> {
             ));
         }
         check_use_binding(&state, &payload.authentication, &authentication).map_err(store_err)?;
+        self.refresh_channel_snapshot(&payload.channel_id).await?;
         Ok(AuthenticatedUse {
             channel_id: payload.channel_id.clone(),
             authentication,
@@ -2073,6 +2104,8 @@ impl<S: ChannelStore> SessionServer<S> {
         }
         let guard = std::sync::Arc::new(guard);
         let channel_id = authenticated.channel_id.clone();
+        self.refresh_channel_snapshot(&channel_id).await?;
+        let max_age = self.snapshot_max_age();
         for _ in 0..OPERATOR_CHARGE_ATTEMPTS {
             let state = self
                 .store
@@ -2135,6 +2168,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         ));
                     }
                     check_bound_authentication(&state, &authenticated.authentication)?;
+                    require_fresh_snapshot(&state, max_age)?;
                     let recorded = recorded_use(&state, &authenticated)?;
                     // A retry of this request reached the total since the
                     // read: answer with its record and write nothing new.
@@ -2230,6 +2264,161 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?
             .is_some_and(|state| state.cumulative != base))
+    }
+
+    /// Longest a confirmed channel read admits charges on that channel.
+    fn snapshot_max_age(&self) -> u64 {
+        CHANNEL_SNAPSHOT_MAX_AGE_SECONDS.min(u64::from(self.config.grace_period_seconds) / 2)
+    }
+
+    /// Re-read the channel account once half of
+    /// [`Self::snapshot_max_age`] has passed since the record's last
+    /// confirmed read, so a forced close started onchain fences the record
+    /// before it admits another charge.
+    ///
+    /// A due read that fails or finds no account refuses the charge. A read
+    /// showing the channel closing or closed records the close (no further
+    /// charges), makes the channel's lifecycle due now so the host settles it
+    /// inside the grace period, and refuses the charge.
+    async fn refresh_channel_snapshot(&self, channel_id: &str) -> Result<()> {
+        let now = now_unix_secs().max(0) as u64;
+        let max_age = self.snapshot_max_age();
+        let due = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let due_out = std::sync::Arc::clone(&due);
+        let observed_slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed_slot_out = std::sync::Arc::clone(&observed_slot);
+        self.store
+            .read_channel(
+                channel_id,
+                Box::new(move |state| {
+                    if let Some(state) = state {
+                        observed_slot_out.store(
+                            state.onchain_observed_slot(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    let stale = state.is_some_and(|state| {
+                        !state.sealed
+                            && state.close_requested_at.is_none()
+                            && !state
+                                .pending_setup
+                                .as_ref()
+                                .is_some_and(|setup| setup.opens_channel)
+                            && now
+                                .saturating_sub(state.onchain_observed_at())
+                                .saturating_mul(2)
+                                >= max_age
+                    });
+                    due_out.store(stale, std::sync::atomic::Ordering::Relaxed);
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(store_err)?;
+        if !due.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        // A lagging node may still show a closing channel as open: read from
+        // a bank at least as recent as the one last recorded, and record the
+        // answering slot so an older view can never renew the window.
+        let min_slot = observed_slot.load(std::sync::atomic::Ordering::Relaxed);
+        let (read, slot) = self
+            .read_channel_lifecycle(channel_id, now, min_slot)
+            .await?;
+        let (lifecycle, settled) =
+            read.ok_or_else(|| Error::Other(format!("Channel {channel_id} not found onchain")))?;
+        let owner = self.config.operator.clone();
+        self.store
+            .mutate_channel(
+                channel_id,
+                None,
+                Box::new(move |state| {
+                    state.settled_on_chain = state.settled_on_chain.max(settled);
+                    let outcome = state.record_onchain_observation(
+                        OnchainObservation {
+                            slot: Some(slot),
+                            lifecycle,
+                        },
+                        now,
+                    );
+                    if let crate::core::store::ObservationOutcome::Behind { recorded } = outcome {
+                        return Err(StoreError::Internal(format!(
+                            "channel read at slot {slot} is behind the recorded slot {recorded}"
+                        )));
+                    }
+                    if lifecycle != ObservedLifecycle::Open {
+                        let now_ms = now.saturating_mul(1_000);
+                        let close_after = state
+                            .lifecycle
+                            .as_ref()
+                            .map_or(now_ms, |current| current.close_after.min(now_ms));
+                        state.lifecycle = Some(ChannelLifecycle { owner, close_after });
+                    }
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(store_err)?;
+        match lifecycle {
+            ObservedLifecycle::Open => Ok(()),
+            ObservedLifecycle::Closing { started_at } => Err(Error::Other(format!(
+                "Channel close is pending — channel {channel_id} has been closing onchain \
+                 since {started_at}; no further charges accepted"
+            ))),
+            ObservedLifecycle::Terminal { .. } => Err(Error::Other(format!(
+                "Channel {channel_id} is already sealed onchain"
+            ))),
+        }
+    }
+
+    /// The lifecycle and settled watermark of the channel account (`None`
+    /// when it does not exist), read at confirmed commitment from a bank at
+    /// or after `min_slot`, with the slot that answered.
+    #[cfg(feature = "server")]
+    async fn read_channel_lifecycle(
+        &self,
+        channel_id: &str,
+        now: u64,
+        min_slot: u64,
+    ) -> Result<(Option<(ObservedLifecycle, u64)>, u64)> {
+        if self.config.rpc_url.is_none() {
+            return Err(Error::Other(format!(
+                "channel {channel_id} needs a confirmed onchain read before it accepts charges, \
+                 and no RPC is configured"
+            )));
+        }
+        let pipeline = self.transaction_pipeline().await?;
+        let deployment = self.config.channel_deployment()?;
+        let (data, slot) = pipeline
+            .read_confirmed_owned_account_data_at(
+                parse_pubkey(channel_id)?,
+                min_slot,
+                deployment.program_id,
+            )
+            .await
+            .map_err(|error| Error::Rpc(format!("channel account read failed: {error}")))?;
+        let read = data
+            .map(|data| {
+                let channel = deployment.decode_channel(&data)?.channel;
+                Ok::<_, Error>((
+                    ObservedLifecycle::of_channel(channel.status, channel.closure_started_at, now),
+                    channel.settlement.settled,
+                ))
+            })
+            .transpose()?;
+        Ok((read, slot))
+    }
+
+    #[cfg(not(feature = "server"))]
+    async fn read_channel_lifecycle(
+        &self,
+        _channel_id: &str,
+        _now: u64,
+        _min_slot: u64,
+    ) -> Result<(Option<(ObservedLifecycle, u64)>, u64)> {
+        Err(Error::Other(
+            "session channel reads require the `server` feature".to_string(),
+        ))
     }
 
     /// Process a `topup` action: atomically update the channel's deposit cap.
@@ -2383,6 +2572,8 @@ impl<S: ChannelStore> SessionServer<S> {
             .expires_at
             .unwrap_or(crate::mpp::protocol::intents::session::DEFAULT_SESSION_EXPIRES_AT);
         let directive_out = std::sync::Arc::new(std::sync::Mutex::new(None));
+        self.refresh_channel_snapshot(&session_id).await?;
+        let max_age = self.snapshot_max_age();
 
         self.store
             .update_channel(
@@ -2405,6 +2596,7 @@ impl<S: ChannelStore> SessionServer<S> {
                                     .to_string(),
                             ));
                         }
+                        require_fresh_snapshot(&state, max_age)?;
                         let reserved = state
                             .pending_deliveries
                             .iter()
@@ -2999,6 +3191,24 @@ impl<S: ChannelStore> SessionServer<S> {
 
 fn store_err(e: StoreError) -> Error {
     Error::Other(e.to_string())
+}
+
+/// Refuse a charge on a record whose last confirmed onchain read is older
+/// than `max_age` seconds: only a fresh read can rule out a forced close.
+/// Checked inside every admitting mutation, after
+/// [`SessionServer::refresh_channel_snapshot`].
+fn require_fresh_snapshot(
+    state: &ChannelState,
+    max_age: u64,
+) -> std::result::Result<(), StoreError> {
+    let now = now_unix_secs().max(0) as u64;
+    if now.saturating_sub(state.onchain_observed_at()) > max_age {
+        return Err(StoreError::Internal(format!(
+            "channel {} has no confirmed onchain read in the last {max_age}s",
+            state.channel_id
+        )));
+    }
+    Ok(())
 }
 
 /// The checks a `use` proof must pass against the channel record: the
@@ -4033,7 +4243,7 @@ mod tests {
     }
 
     fn state(channel_id: String, authorized_signer: String) -> ChannelState {
-        ChannelState {
+        let mut state = ChannelState {
             channel_id,
             authorized_signer,
             deposit: 1_000,
@@ -4064,7 +4274,15 @@ mod tests {
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
-        }
+        };
+        state.record_onchain_observation(
+            OnchainObservation {
+                slot: None,
+                lifecycle: ObservedLifecycle::Open,
+            },
+            now_unix_secs() as u64,
+        );
+        state
     }
 
     async fn client_server() -> (SessionServer<MemoryChannelStore>, ActiveSession, String) {
@@ -7308,6 +7526,290 @@ mod tests {
         assert_eq!(after.spent_amount, 50);
     }
 
+    /// A channel account as the program stores it, at `status` with a forced
+    /// close started at `closure_started_at` (`0`: none).
+    fn channel_account(
+        state: &ChannelState,
+        status: u8,
+        closure_started_at: i64,
+        settled: u64,
+    ) -> payment_channels::generated::generated::accounts::Channel {
+        let key = |value: &str| payment_channels::to_address(&Pubkey::from_str(value).unwrap());
+        payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status,
+            salt: 7,
+            deposit: state.deposit,
+            settlement: payment_channels::generated::generated::types::SettlementWatermarks {
+                settled,
+                payout_watermark: 0,
+            },
+            closure_started_at,
+            payer_withdrawn_at: 0,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            distribution_hash: [0; 32],
+            payer: key(&state.payer),
+            payee: payment_channels::to_address(&Pubkey::new_unique()),
+            authorized_signer: key(&state.authorized_signer),
+            mint: payment_channels::to_address(&Pubkey::new_unique()),
+            rent_payer: key(&state.rent_payer),
+            open_slot: 42,
+        }
+    }
+
+    /// `stored`, last confirmed onchain long ago.
+    fn stale(mut stored: ChannelState) -> ChannelState {
+        stored.record_onchain_observation(
+            OnchainObservation {
+                slot: None,
+                lifecycle: ObservedLifecycle::Open,
+            },
+            1,
+        );
+        stored
+    }
+
+    /// A client-signed channel whose snapshot is stale, served by a fixture
+    /// RPC holding its account at `status` / `closure_started_at`.
+    #[cfg(feature = "server")]
+    async fn client_channel_onchain(
+        status: u8,
+        closure_started_at: i64,
+    ) -> (
+        SessionServer<MemoryChannelStore>,
+        ActiveSession,
+        String,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let channel = Pubkey::new_unique();
+        let channel_id = channel.to_string();
+        let stored = stale(state(channel_id.clone(), signer_address(1)));
+        let account = channel_account(&stored, status, closure_started_at, 0);
+        let (url, rpc, _) = rpc_for_channel(account, 43).await;
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.rpc_url = Some(url);
+        (
+            seeded_server(cfg, stored).await,
+            ActiveSession::new(channel, signer(1)),
+            channel_id,
+            rpc,
+        )
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn a_forced_close_started_onchain_stops_vouchers_and_makes_the_close_due() {
+        let started_at = now_unix_secs() - 10;
+        let (server, mut session, channel_id, rpc) = client_channel_onchain(2, started_at).await;
+        let voucher = session.sign_increment(100).await.unwrap();
+        let error = server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("closing onchain"), "{error}");
+
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(after.cumulative, 0);
+        assert_eq!(after.spent_amount, 0);
+        assert_eq!(after.close_requested_at, Some(started_at as u64));
+        let due = after
+            .lifecycle
+            .expect("closing channel is scheduled")
+            .close_after;
+        assert!(due <= now_unix_secs() as u64 * 1_000);
+
+        // The record alone now refuses every further voucher.
+        rpc.abort();
+        let next = session.sign_increment(100).await.unwrap();
+        let error = server
+            .verify_voucher_for_amount(&voucher_payload(next), 25)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("close is pending"), "{error}");
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 10))
+            .await
+            .is_err());
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn an_open_channel_read_renews_the_snapshot_and_admits_the_voucher() {
+        let (server, mut session, channel_id, rpc) = client_channel_onchain(0, 0).await;
+        let voucher = session.sign_increment(100).await.unwrap();
+        let accepted = server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .unwrap();
+        assert_eq!(accepted.charged, 100);
+        let after = stored(&server, &channel_id).await;
+        assert!(after.close_requested_at.is_none());
+        assert!(now_unix_secs() as u64 - after.onchain_observed_at() <= 1);
+
+        // Inside the window the snapshot stands in for a read.
+        rpc.abort();
+        let next = session.sign_increment(100).await.unwrap();
+        assert_eq!(
+            server
+                .verify_voucher(&voucher_payload(next))
+                .await
+                .unwrap()
+                .charged,
+            100
+        );
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id, 10))
+            .await
+            .is_ok());
+    }
+
+    /// A lagging RPC node can still show a channel open after the payer
+    /// started closing it: a read from a bank older than the recorded one
+    /// never renews the charge window.
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn a_read_behind_the_recorded_slot_never_renews_the_snapshot() {
+        let channel = Pubkey::new_unique();
+        let channel_id = channel.to_string();
+        let mut record = state(channel_id.clone(), signer_address(1));
+        record.record_onchain_observation(
+            OnchainObservation {
+                slot: Some(100),
+                lifecycle: ObservedLifecycle::Open,
+            },
+            1,
+        );
+        let account = channel_account(&record, 0, 0, 0);
+        // The node answers from slot 43, behind the recorded 100.
+        let (url, _rpc, _) = rpc_for_channel(account, 43).await;
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.rpc_url = Some(url);
+        let server = seeded_server(cfg, record).await;
+        let mut session = ActiveSession::new(channel, signer(1));
+        let voucher = session.sign_increment(100).await.unwrap();
+        assert!(server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .is_err());
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(after.cumulative, 0);
+        assert_eq!(after.onchain_observed_at(), 1, "the window was not renewed");
+        assert_eq!(after.onchain_observed_slot(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_stale_snapshot_without_a_read_refuses_every_charge() {
+        let channel = Pubkey::new_unique();
+        let channel_id = channel.to_string();
+        let server = seeded_server(
+            config(VoucherSigner::Client),
+            stale(state(channel_id.clone(), signer_address(1))),
+        )
+        .await;
+        let mut session = ActiveSession::new(channel, signer(1));
+        let voucher = session.sign_increment(100).await.unwrap();
+        assert!(server
+            .verify_voucher(&voucher_payload(voucher))
+            .await
+            .is_err());
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 10))
+            .await
+            .is_err());
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(after.cumulative, 0);
+        assert!(after.pending_deliveries.is_empty());
+
+        let cfg = config(VoucherSigner::Operator);
+        let channel_id = Pubkey::new_unique().to_string();
+        let proof = SessionAuthentication::sign("opening", &channel_id, &key(3)).unwrap();
+        let mut bound = stale(state(channel_id.clone(), cfg.operator.clone()));
+        bound.payer = proof.payer.clone();
+        bound.authentication = Some(serde_json::to_string(&proof).unwrap());
+        bound.voucher_signer = "operator".into();
+        let server = seeded_server(cfg, bound).await;
+        let payload = UsePayload {
+            channel_id: channel_id.clone(),
+            authentication: proof,
+        };
+        assert!(server
+            .process_use(&payload, "use-1", "request-1")
+            .await
+            .is_err());
+        assert!(server
+            .authenticate_use(&payload, "use-1", "request-1")
+            .await
+            .is_err());
+        assert_eq!(stored(&server, &channel_id).await.cumulative, 0);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn operator_use_stops_once_the_channel_is_closing_onchain() {
+        let cfg = config(VoucherSigner::Operator);
+        let channel_id = Pubkey::new_unique().to_string();
+        let proof = SessionAuthentication::sign("opening", &channel_id, &key(3)).unwrap();
+        let mut bound = stale(state(channel_id.clone(), cfg.operator.clone()));
+        bound.payer = proof.payer.clone();
+        bound.authentication = Some(serde_json::to_string(&proof).unwrap());
+        bound.voucher_signer = "operator".into();
+        let account = channel_account(&bound, 2, now_unix_secs() - 5, 0);
+        let (url, rpc, _) = rpc_for_channel(account, 43).await;
+        let mut cfg = cfg;
+        cfg.rpc_url = Some(url);
+        let server = seeded_server(cfg, bound).await;
+        let payload = UsePayload {
+            channel_id: channel_id.clone(),
+            authentication: proof,
+        };
+        let error = server
+            .process_use(&payload, "use-1", "request-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("closing onchain"), "{error}");
+        assert!(server
+            .authenticate_use(&payload, "use-2", "request-2")
+            .await
+            .is_err());
+        let after = stored(&server, &channel_id).await;
+        assert_eq!(after.cumulative, 0);
+        assert!(after.close_requested_at.is_some());
+        rpc.abort();
+    }
+
+    #[test]
+    fn admission_requires_a_snapshot_inside_the_window() {
+        let fresh = state(Pubkey::new_unique().to_string(), signer_address(1));
+        assert!(require_fresh_snapshot(&fresh, 30).is_ok());
+        assert!(require_fresh_snapshot(&stale(fresh), 30).is_err());
+    }
+
+    #[test]
+    fn channel_status_maps_to_the_observed_lifecycle() {
+        assert_eq!(
+            ObservedLifecycle::of_channel(0, 0, 9),
+            ObservedLifecycle::Open
+        );
+        assert_eq!(
+            ObservedLifecycle::of_channel(2, 5, 9),
+            ObservedLifecycle::Closing { started_at: 5 }
+        );
+        assert_eq!(
+            ObservedLifecycle::of_channel(1, 0, 9),
+            ObservedLifecycle::Terminal {
+                started_at: Some(1)
+            }
+        );
+        assert_eq!(
+            ObservedLifecycle::of_channel(3, 0, 9),
+            ObservedLifecycle::Terminal {
+                started_at: Some(1)
+            }
+        );
+    }
+
     #[tokio::test]
     async fn deliveries_commit_partially_and_are_idempotent() {
         let (server, mut session, channel_id) = client_server().await;
@@ -7815,6 +8317,34 @@ mod tests {
         let record = stored(&server, &payload.channel_id).await;
         assert_eq!(record.cumulative, 21);
         assert_eq!(record.spent_amount, 21);
+    }
+
+    /// A stream charges one authenticated request again and again, so every
+    /// charge, not only the authentication, needs a fresh channel read.
+    #[tokio::test]
+    async fn every_operator_charge_needs_a_fresh_channel_read() {
+        let (server, payload, operator) = operator_channel().await;
+        let request = authenticate(&server, &payload, "request-1").await;
+        let first = server
+            .charge_operator_request(&request, &operator, 7, |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(first.cumulative, 7);
+
+        server
+            .store
+            .update_channel(
+                &payload.channel_id,
+                Box::new(|state| Ok(stale(state.unwrap()))),
+            )
+            .await
+            .unwrap();
+        let error = server
+            .charge_operator_request(&request, &operator, 20, |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("onchain"), "{error}");
+        assert_eq!(stored(&server, &payload.channel_id).await.cumulative, 7);
     }
 
     async fn authenticate(
