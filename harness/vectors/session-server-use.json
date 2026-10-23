@@ -7,7 +7,8 @@
       "sessionVoucher": {
         "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
         "cumulativeAmount": "125",
-        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "125"
       }
     },
     "id": "session-use-verify-accept",
@@ -455,7 +456,8 @@
       "sessionVoucher": {
         "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
         "cumulativeAmount": "107",
-        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "107"
       }
     },
     "id": "session-use-verify-metered-accept",
@@ -610,7 +612,8 @@
       "sessionVoucher": {
         "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
         "cumulativeAmount": "1000",
-        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "1000"
       }
     },
     "id": "session-use-verify-metered-full-deposit-accept",
@@ -1667,7 +1670,8 @@
       "sessionVoucher": {
         "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
         "cumulativeAmount": "107",
-        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9"
+        "signer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+        "spentAmount": "107"
       }
     },
     "id": "session-use-verify-metered-replay-accept",

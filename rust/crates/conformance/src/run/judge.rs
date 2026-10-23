@@ -176,7 +176,9 @@ pub fn judge_expect(vector: &Vector, result: &Value) -> Result<Verdict, Failure>
         return Ok(Verdict::Pass);
     }
     if let Some(wanted) = expect.get("sessionVoucher") {
-        for key in ["channelId", "cumulativeAmount", "signer"] {
+        // The runner reads these back from the store, so they pin what was
+        // persisted, not only what the SDK returned.
+        for key in ["channelId", "cumulativeAmount", "spentAmount", "signer"] {
             let want = wanted.get(key);
             let got = result.pointer(&format!("/sessionVoucher/{key}"));
             if got != want {

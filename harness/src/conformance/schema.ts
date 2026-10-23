@@ -164,9 +164,12 @@ export type TransactionShape = {
 
 // The operator-signed voucher a session server persisted for an accepted
 // `use`.
+// The channel's persisted accounting after an accepted `use`, read back from
+// the server's store.
 export type SessionVoucher = {
   channelId: string;
   cumulativeAmount: string;
+  spentAmount: string;
   signer: string;
 };
 

@@ -239,12 +239,12 @@ fn secret_seed(input: &Value, key: &str) -> Result<[u8; 32], String> {
 
 /// The kit session server `server` describes, over `store`. Mirrored in the
 /// Rust testee (`vector_runner/session.rs`).
-pub fn kit_server(
+pub fn kit_server<S: ChannelStore>(
     server: &Value,
     fee_payer: Option<MemorySigner>,
     operator_key: Option<[u8; 32]>,
-    store: MemoryChannelStore,
-) -> Result<SessionServer<MemoryChannelStore>, String> {
+    store: S,
+) -> Result<SessionServer<S>, String> {
     let text = |key: &str| {
         server
             .get(key)
@@ -1435,7 +1435,7 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
     let params = input
         .get("sessionServerVerify")
         .ok_or("input.sessionServerVerify missing")?;
-    let store = MemoryChannelStore::new();
+    let store = std::sync::Arc::new(MemoryChannelStore::new());
     if let Some(channel) = params.get("channel") {
         let state = stored_channel(channel)?;
         store
@@ -1452,7 +1452,7 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
         .get("sessionServerOperatorSecretKey")
         .map(|_| secret_seed(input, "sessionServerOperatorSecretKey"))
         .transpose()?;
-    let server = match kit_server(&server_json, fee_payer, operator_key, store) {
+    let server = match kit_server(&server_json, fee_payer, operator_key, store.clone()) {
         Ok(server) => server,
         Err(e) => return Ok(Observed::NotExpressible(e)),
     };
@@ -1490,11 +1490,7 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
             return Ok(
                 match use_voucher(&server, &operator, params, payload).await {
                     Ok(voucher) => Observed::Accept(Output {
-                        session_voucher: Some(json!({
-                            "channelId": voucher.data.channel_id,
-                            "cumulativeAmount": voucher.data.cumulative_amount,
-                            "signer": voucher.signer,
-                        })),
+                        session_voucher: Some(persisted_use(&store, &voucher).await?),
                         ..Output::default()
                     }),
                     Err(e) => reject(e.to_string()),
@@ -1508,12 +1504,41 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
     })
 }
 
+/// The `sessionVoucher` result of an accepted `use`, read back from the
+/// store: the channel's persisted cumulative and spent amounts, after
+/// checking that the persisted voucher is the one the kit returned. A kit
+/// that answers with a voucher but does not save it fails here.
+async fn persisted_use(
+    store: &MemoryChannelStore,
+    voucher: &SignedVoucher,
+) -> Result<Value, String> {
+    let stored = store
+        .get_channel(&voucher.data.channel_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("channel missing after use")?;
+    if stored.highest_voucher_signature.as_deref() != Some(voucher.signature.as_str())
+        || stored.cumulative.to_string() != voucher.data.cumulative_amount
+    {
+        return Err(format!(
+            "the returned voucher (cumulative {}) is not the persisted one (cumulative {})",
+            voucher.data.cumulative_amount, stored.cumulative
+        ));
+    }
+    Ok(json!({
+        "channelId": stored.channel_id,
+        "cumulativeAmount": stored.cumulative.to_string(),
+        "spentAmount": stored.spent_amount.to_string(),
+        "signer": voucher.signer,
+    }))
+}
+
 /// Charge a `use`: the challenged `amount` through `process_use`, or the
 /// vector's `meteredAmount` through `authenticate_use` then
 /// `charge_operator_usage` (draft-solana-session-00 §Debit Processing).
 /// Mirrored in the Rust testee.
-async fn use_voucher(
-    server: &SessionServer<MemoryChannelStore>,
+async fn use_voucher<S: ChannelStore>(
+    server: &SessionServer<S>,
     operator: &MemorySigner,
     params: &Value,
     payload: &UsePayload,

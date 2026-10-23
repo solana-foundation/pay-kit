@@ -184,10 +184,11 @@ pub fn validate(result: &Value) -> Result<(), String> {
         object(
             voucher,
             "/sessionVoucher",
-            &["channelId", "cumulativeAmount", "signer"],
+            &["channelId", "cumulativeAmount", "spentAmount", "signer"],
             &[
                 ("channelId", is_string),
                 ("cumulativeAmount", is_string),
+                ("spentAmount", is_string),
                 ("signer", is_string),
             ],
             &mut errors,
@@ -212,7 +213,7 @@ mod tests {
             json!({"id": "a", "outcome": "reject", "error": "boom", "rejectCode": "amount-mismatch"}),
             json!({"id": "a", "outcome": "unsupported-mode", "error": "unsupported-mode: x"}),
             json!({"id": "a", "outcome": "accept", "exactBytes": {"bytes": [1, 2], "base64Url": "AQI"}}),
-            json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": "107", "signer": "o"}}),
+            json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": "107", "spentAmount": "107", "signer": "o"}}),
             json!({"id": "a", "outcome": "accept", "x402EnvelopeShape": {"x402Version": 2, "hasAccepted": true, "payloadHasTransaction": true}, "x402PaymentHeader": "e30="}),
         ] {
             validate(&ok).unwrap();
@@ -245,7 +246,7 @@ mod tests {
                 "additional property 'hex'",
             ),
             (
-                json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": 107, "signer": "o"}}),
+                json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": 107, "spentAmount": "107", "signer": "o"}}),
                 "/sessionVoucher/cumulativeAmount has the wrong type",
             ),
         ] {
