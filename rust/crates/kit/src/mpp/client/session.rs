@@ -392,7 +392,9 @@ pub struct PaymentChannelOpenOptions {
     /// `None` preserves the core transaction builder's defaults. Explicit
     /// budgets remain subject to the server's fee-sponsorship policy.
     pub compute_budget: Option<crate::core::tx::ComputeBudget>,
-    pub deposit: Option<u64>,
+    /// Grace period to open with instead of the challenge's
+    /// `gracePeriodSeconds`. Either is bounded by the authorization's
+    /// [`SessionOpenAuthorization::max_grace_period`].
     pub grace_period: Option<u32>,
     /// Override for the channel's open slot (the program's `openSlot`).
     /// Defaults to the challenge's `recentSlot`. An override MAY be earlier
@@ -431,11 +433,78 @@ impl SessionPayout {
     }
 }
 
+/// Longest grace period [`SessionOpenAuthorization`] accepts unless the
+/// caller sets another (30 days). The grace period is how long the payer
+/// waits, after asking to close, before it can withdraw what was not settled.
+pub const MAX_SESSION_GRACE_PERIOD_SECONDS: u32 = 2_592_000;
+
+/// The escrow terms a caller authorizes for one channel open.
+///
+/// A session challenge proposes a deposit, who signs vouchers and how long
+/// the payer's exit takes; this decides which of them the client signs. The
+/// deposit is the caller's, never the challenge's `suggestedDeposit`; an
+/// operator-signed channel, whose operator can settle up to the whole
+/// deposit with its own vouchers, needs that operator named here; and the
+/// grace period is bounded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOpenAuthorization {
+    deposit: u64,
+    operator: Option<Pubkey>,
+    max_grace_period: u32,
+}
+
+impl SessionOpenAuthorization {
+    /// Lock `deposit` base units in a channel whose vouchers the client signs.
+    /// A challenge asking for operator vouchers is refused.
+    pub fn client_signed(deposit: u64) -> Self {
+        Self {
+            deposit,
+            operator: None,
+            max_grace_period: MAX_SESSION_GRACE_PERIOD_SECONDS,
+        }
+    }
+
+    /// Lock `deposit` base units and also accept a challenge whose vouchers
+    /// `operator` signs. That operator can settle up to the whole deposit, so
+    /// `deposit` is what the caller is prepared to pay it.
+    pub fn operator_signed(deposit: u64, operator: Pubkey) -> Self {
+        Self {
+            operator: Some(operator),
+            ..Self::client_signed(deposit)
+        }
+    }
+
+    /// Replace the grace-period ceiling ([`MAX_SESSION_GRACE_PERIOD_SECONDS`]
+    /// by default).
+    pub fn with_max_grace_period(mut self, seconds: u32) -> Result<Self> {
+        if seconds == 0 {
+            return Err(Error::Other(
+                "maximum grace period must be greater than zero".to_string(),
+            ));
+        }
+        self.max_grace_period = seconds;
+        Ok(self)
+    }
+
+    pub fn deposit(&self) -> u64 {
+        self.deposit
+    }
+
+    pub fn operator(&self) -> Option<Pubkey> {
+        self.operator
+    }
+
+    pub fn max_grace_period(&self) -> u32 {
+        self.max_grace_period
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DerivePaymentChannelOpenParams<'a> {
     pub request: &'a SessionRequest,
     pub payer: Pubkey,
     pub authorized_signer: Pubkey,
+    pub authorization: &'a SessionOpenAuthorization,
     pub options: PaymentChannelOpenOptions,
 }
 
@@ -467,19 +536,27 @@ pub fn derive_payment_channel_open(
         "mint",
     )?;
     let payee = parse_pubkey(&request.recipient, "recipient")?;
-    let deposit = match params.options.deposit {
-        Some(deposit) => deposit,
-        None => parse_u64_string(
-            request
-                .suggested_deposit
-                .as_deref()
-                .or(request.minimum_deposit.as_deref())
-                .ok_or_else(|| {
-                    Error::Other("session challenge missing suggestedDeposit".to_string())
-                })?,
-            "suggestedDeposit",
-        )?,
-    };
+    let authorization = params.authorization;
+    if details.voucher_signer == Some(SessionVoucherSigner::Operator) {
+        let operator = parse_pubkey(
+            details.operator.as_deref().ok_or_else(|| {
+                Error::Other("operator is required for operator vouchers".to_string())
+            })?,
+            "operator",
+        )?;
+        if authorization.operator != Some(operator) {
+            return Err(Error::Other(format!(
+                "session challenge asks for vouchers signed by operator {operator}, which the \
+                 caller did not authorize"
+            )));
+        }
+        if params.authorized_signer != operator {
+            return Err(Error::Other(
+                "authorized signer is not the challenge's operator".to_string(),
+            ));
+        }
+    }
+    let deposit = authorization.deposit;
     if request
         .minimum_deposit
         .as_deref()
@@ -494,6 +571,12 @@ pub fn derive_payment_channel_open(
         .grace_period
         .or(details.grace_period_seconds)
         .ok_or_else(|| Error::Other("session challenge missing gracePeriodSeconds".to_string()))?;
+    if grace_period > authorization.max_grace_period {
+        return Err(Error::Other(format!(
+            "session gracePeriodSeconds {grace_period} exceeds the authorized maximum {}",
+            authorization.max_grace_period
+        )));
+    }
     let program_id = parse_pubkey(&details.channel_program, "channelProgram")?;
     crate::mpp::program::channel_deployment::resolve_for_network(
         program_id,
@@ -595,6 +678,7 @@ pub struct BuildOpenPaymentChannelTransactionParams<'a> {
     /// Blockhash for the open transaction, checked against the client's own
     /// cluster (see [`OpenBlockhash`]).
     pub blockhash: OpenBlockhash,
+    pub authorization: &'a SessionOpenAuthorization,
     pub options: PaymentChannelOpenOptions,
 }
 
@@ -700,6 +784,7 @@ pub async fn build_open_payment_channel_transaction(
         request: params.request,
         payer: params.signer.pubkey(),
         authorized_signer: params.authorized_signer,
+        authorization: params.authorization,
         options: params.options,
     })?;
 
@@ -756,6 +841,7 @@ pub async fn create_payment_channel_session_opener(
     payer_signer: &dyn TransactionSigner,
     session_signer: Box<dyn SolanaSigner>,
     blockhash: OpenBlockhash,
+    authorization: &SessionOpenAuthorization,
     options: PaymentChannelSessionOpenOptions,
 ) -> Result<PaymentChannelSessionOpen> {
     let authorized_signer = match request.method_details.voucher_signer {
@@ -785,6 +871,7 @@ pub async fn create_payment_channel_session_opener(
         request,
         payer: payer_signer.pubkey(),
         authorized_signer,
+        authorization,
         options: options.open.clone(),
     })?;
     // Carry the already chosen salt into the shared builder; deriving twice
@@ -797,6 +884,7 @@ pub async fn create_payment_channel_session_opener(
         authorized_signer,
         fee_payer: Some(fee_payer),
         blockhash,
+        authorization,
         options: build_options,
     })
     .await?;
@@ -907,6 +995,7 @@ mod tests {
                 request,
                 payer: Pubkey::new_unique(),
                 authorized_signer: Pubkey::new_unique(),
+                authorization: &auth(),
                 options: PaymentChannelOpenOptions {
                     program_id: override_program,
                     ..Default::default()
@@ -950,6 +1039,10 @@ mod tests {
     /// The `recentBlockhash` every test challenge advertises.
     fn test_blockhash() -> Hash {
         Hash::new_from_array([7; 32])
+    }
+
+    fn auth() -> SessionOpenAuthorization {
+        SessionOpenAuthorization::client_signed(1000)
     }
 
     fn request(recipient: Pubkey) -> SessionRequest {
@@ -999,6 +1092,7 @@ mod tests {
                 request,
                 payer: Pubkey::new_unique(),
                 authorized_signer: Pubkey::new_unique(),
+                authorization: &auth(),
                 options: PaymentChannelOpenOptions {
                     salt: Some(7),
                     ..Default::default()
@@ -1103,6 +1197,7 @@ mod tests {
                 request,
                 payer: Pubkey::new_unique(),
                 authorized_signer: Pubkey::new_unique(),
+                authorization: &auth(),
                 options: PaymentChannelOpenOptions {
                     open_slot: Some(42),
                     approved_payout: Some(approved),
@@ -1145,6 +1240,7 @@ mod tests {
             request: &req,
             payer,
             authorized_signer: authorized,
+            authorization: &auth(),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(42),
                 salt: Some(7),
@@ -1160,35 +1256,44 @@ mod tests {
         assert_eq!(payload.deposit_amount, "1000");
         assert_eq!(payload.distribution_splits[0].share_bps, 250);
 
-        let mut invalid = req.clone();
-        invalid.suggested_deposit = Some("bad".into());
-        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &invalid,
-            payer,
-            authorized_signer: authorized,
-            options: PaymentChannelOpenOptions {
-                open_slot: Some(1),
-                ..Default::default()
-            }
-        })
-        .is_err());
-        let mut below = req.clone();
-        below.suggested_deposit = Some("1".into());
-        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &below,
-            payer,
-            authorized_signer: authorized,
-            options: PaymentChannelOpenOptions {
-                open_slot: Some(1),
-                ..Default::default()
-            }
-        })
-        .is_err());
+        // The deposit is the caller's, whatever the challenge suggests, and
+        // still at least minimumDeposit.
+        let mut suggested = req.clone();
+        suggested.suggested_deposit = Some("bad".into());
+        let derive_with = |request: &SessionRequest, authorization: &SessionOpenAuthorization| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request,
+                payer,
+                authorized_signer: authorized,
+                authorization,
+                options: PaymentChannelOpenOptions {
+                    open_slot: Some(1),
+                    ..Default::default()
+                },
+            })
+        };
+        assert_eq!(derive_with(&suggested, &auth()).unwrap().deposit, 1000);
+        let mut no_suggestion = req.clone();
+        no_suggestion.suggested_deposit = None;
+        no_suggestion.minimum_deposit = None;
+        assert_eq!(
+            derive_with(&no_suggestion, &SessionOpenAuthorization::client_signed(7))
+                .unwrap()
+                .deposit,
+            7
+        );
+        assert!(
+            derive_with(&req, &SessionOpenAuthorization::client_signed(99))
+                .unwrap_err()
+                .to_string()
+                .contains("below minimumDeposit")
+        );
         // Default options take `openSlot` from the challenged `recentSlot`.
         let defaulted = derive_payment_channel_open(DerivePaymentChannelOpenParams {
             request: &req,
             payer,
             authorized_signer: authorized,
+            authorization: &auth(),
             options: Default::default(),
         })
         .unwrap();
@@ -1198,6 +1303,7 @@ mod tests {
             request: &req,
             payer,
             authorized_signer: authorized,
+            authorization: &auth(),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(43),
                 ..Default::default()
@@ -1213,6 +1319,7 @@ mod tests {
             request: &no_slot,
             payer,
             authorized_signer: authorized,
+            authorization: &auth(),
             options: Default::default()
         })
         .unwrap_err()
@@ -1224,19 +1331,7 @@ mod tests {
             request: &bad_program,
             payer,
             authorized_signer: authorized,
-            options: PaymentChannelOpenOptions {
-                open_slot: Some(1),
-                ..Default::default()
-            }
-        })
-        .is_err());
-        let mut no_deposit = req.clone();
-        no_deposit.suggested_deposit = None;
-        no_deposit.minimum_deposit = None;
-        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &no_deposit,
-            payer,
-            authorized_signer: authorized,
+            authorization: &auth(),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(1),
                 ..Default::default()
@@ -1269,6 +1364,7 @@ mod tests {
                             authorized_signer: payer.pubkey(),
                             fee_payer: None,
                             blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
+                            authorization: &auth(),
                             options: PaymentChannelOpenOptions {
                                 compute_budget: budget,
                                 ..Default::default()
@@ -1332,6 +1428,7 @@ mod tests {
             authorized_signer: session_signer.pubkey(),
             fee_payer: None,
             blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
+            authorization: &auth(),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(42),
                 salt: Some(7),
@@ -1365,6 +1462,7 @@ mod tests {
                 authorized_signer: session_signer.pubkey(),
                 fee_payer: Some(payer.pubkey()),
                 blockhash: OpenBlockhash::from_client_cluster(test_blockhash()),
+                authorization: &auth(),
                 options: PaymentChannelOpenOptions {
                     open_slot: Some(42),
                     ..Default::default()
@@ -1391,6 +1489,7 @@ mod tests {
             OpenBlockhash::verify(&crate::core::blockhash::mock_blockhash_rpc(true), &req)
                 .await
                 .unwrap(),
+            &SessionOpenAuthorization::operator_signed(1000, operator.pubkey()),
             PaymentChannelSessionOpenOptions {
                 open: PaymentChannelOpenOptions {
                     // Earlier than the challenged recentSlot (42): allowed.
@@ -1416,6 +1515,128 @@ mod tests {
         }
     }
 
+    /// An operator-signed channel lets the operator settle up to the whole
+    /// deposit with its own vouchers, so the challenge alone never makes the
+    /// client open one: the caller names the operator it trusts.
+    #[tokio::test]
+    async fn operator_vouchers_need_the_caller_to_name_the_operator() {
+        let operator = Pubkey::new_unique();
+        let mut req = request(Pubkey::new_unique());
+        req.method_details.voucher_signer = Some(SessionVoucherSigner::Operator);
+        req.method_details.operator = Some(operator.to_string());
+        let open = |authorization: SessionOpenAuthorization| {
+            let req = req.clone();
+            async move {
+                create_payment_channel_session_opener(
+                    &req,
+                    signer(2).as_ref(),
+                    signer(3),
+                    OpenBlockhash::from_client_cluster(test_blockhash()),
+                    &authorization,
+                    PaymentChannelSessionOpenOptions::default(),
+                )
+                .await
+            }
+        };
+
+        let error = open(auth()).await.err().expect("client-signed only");
+        assert!(error.to_string().contains("did not authorize"), "{error}");
+        let other = SessionOpenAuthorization::operator_signed(1000, Pubkey::new_unique());
+        let error = open(other).await.err().expect("another operator");
+        assert!(error.to_string().contains("did not authorize"), "{error}");
+
+        let opened = open(SessionOpenAuthorization::operator_signed(1000, operator))
+            .await
+            .unwrap();
+        assert_eq!(opened.open.authorized_signer, operator);
+        assert_eq!(opened.open.deposit, 1000);
+
+        // derive_payment_channel_open holds the same line for callers that
+        // pick the authorized signer themselves.
+        let derive = |authorized_signer, authorization: &SessionOpenAuthorization| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request: &req,
+                payer: Pubkey::new_unique(),
+                authorized_signer,
+                authorization,
+                options: Default::default(),
+            })
+        };
+        assert!(derive(operator, &auth()).is_err());
+        let trusted = SessionOpenAuthorization::operator_signed(1000, operator);
+        assert!(derive(Pubkey::new_unique(), &trusted).is_err());
+        assert!(derive(operator, &trusted).is_ok());
+    }
+
+    /// The deposit is the caller's: a challenge's suggestedDeposit never
+    /// sizes the escrow.
+    #[tokio::test]
+    async fn the_deposit_is_the_callers_not_the_challenges() {
+        let mut req = request(Pubkey::new_unique());
+        req.suggested_deposit = Some(u64::MAX.to_string());
+        let opened = create_payment_channel_session_opener(
+            &req,
+            signer(2).as_ref(),
+            signer(3),
+            OpenBlockhash::from_client_cluster(test_blockhash()),
+            &SessionOpenAuthorization::client_signed(250),
+            PaymentChannelSessionOpenOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(opened.open.deposit, 250);
+        let SessionAction::Open(payload) = opened.action else {
+            panic!("open action");
+        };
+        assert_eq!(payload.deposit_amount, "250");
+    }
+
+    /// The grace period is the payer's wait to withdraw what was not settled,
+    /// so a challenge cannot stretch it past the caller's ceiling.
+    #[test]
+    fn the_grace_period_is_bounded() {
+        let derive = |grace: u32, option: Option<u32>, authorization: &SessionOpenAuthorization| {
+            let mut req = request(Pubkey::new_unique());
+            req.method_details.grace_period_seconds = Some(grace);
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request: &req,
+                payer: Pubkey::new_unique(),
+                authorized_signer: Pubkey::new_unique(),
+                authorization,
+                options: PaymentChannelOpenOptions {
+                    grace_period: option,
+                    ..Default::default()
+                },
+            })
+        };
+        let error = derive(u32::MAX, None, &auth()).unwrap_err();
+        assert!(
+            error.to_string().contains("exceeds the authorized maximum"),
+            "{error}"
+        );
+        assert!(derive(MAX_SESSION_GRACE_PERIOD_SECONDS + 1, None, &auth()).is_err());
+        assert_eq!(
+            derive(MAX_SESSION_GRACE_PERIOD_SECONDS, None, &auth())
+                .unwrap()
+                .grace_period,
+            MAX_SESSION_GRACE_PERIOD_SECONDS
+        );
+
+        let tight = auth().with_max_grace_period(3_600).unwrap();
+        assert!(derive(3_601, None, &tight).is_err());
+        assert!(derive(u32::MAX, Some(3_601), &tight).is_err());
+        assert_eq!(
+            derive(u32::MAX, Some(900), &tight).unwrap().grace_period,
+            900
+        );
+        let wide = auth().with_max_grace_period(u32::MAX).unwrap();
+        assert_eq!(
+            derive(u32::MAX, None, &wide).unwrap().grace_period,
+            u32::MAX
+        );
+        assert!(auth().with_max_grace_period(0).is_err());
+    }
+
     #[tokio::test]
     async fn a_challenged_blockhash_the_client_cluster_does_not_know_is_refused() {
         let req = request(Pubkey::new_unique());
@@ -1434,6 +1655,7 @@ mod tests {
             signer(2).as_ref(),
             signer(3),
             blockhash,
+            &auth(),
             PaymentChannelSessionOpenOptions::default(),
         )
         .await
@@ -1462,6 +1684,7 @@ mod tests {
             request: &req,
             payer: Pubkey::new_unique(),
             authorized_signer: Pubkey::new_unique(),
+            authorization: &auth(),
             options: PaymentChannelOpenOptions {
                 open_slot: Some(1),
                 ..Default::default()

@@ -15,9 +15,10 @@
 //!   is the sponsor's key when `server.feePayer` is set. Nothing in the input
 //!   is a precomputed verdict: the testee parses `credential` with its SDK's
 //!   wire types and hands it to the SDK's server.
-//! - build: `sessionOpenBuild` = `{ request, salt, server, challenge }`:
+//! - build: `sessionOpenBuild` = `{ request, salt, deposit, server, challenge }`:
 //!   `request` is the challenge's `SessionRequest`, `salt` the channel salt
-//!   the client's builder takes; `server` / `challenge` are for the judge
+//!   the client's builder takes, `deposit` the deposit its caller
+//!   authorizes; `server` / `challenge` are for the judge
 //!   only. `signerSecretKey` is the payer, `sessionSignerSecretKey` the
 //!   voucher key the client authorizes.
 //!
@@ -41,7 +42,7 @@ use solana_pay_kit::core::tx::{ComputeBudget, TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
     create_payment_channel_session_opener, derive_payment_channel_open,
     DerivePaymentChannelOpenParams, OpenBlockhash, PaymentChannelOpenOptions,
-    PaymentChannelSessionOpenOptions,
+    PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
     SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload, VoucherData,
@@ -758,9 +759,27 @@ async fn open_for_request(request: &SessionRequest, build: &OpenBuild) -> Result
     };
     let session =
         MemorySigner::from_bytes(&keys::keypair_bytes(voucher_seed)).map_err(|e| e.to_string())?;
+    // The harness client deposits what the server suggests unless the case
+    // picks a deposit, and trusts the kit server's operator.
+    let deposit = match build.deposit {
+        Some(deposit) => deposit,
+        None => request
+            .suggested_deposit
+            .as_deref()
+            .or(request.minimum_deposit.as_deref())
+            .ok_or("challenge without a deposit")?
+            .parse()
+            .map_err(|e| format!("suggestedDeposit: {e}"))?,
+    };
+    let authorization = match request.method_details.operator.as_deref() {
+        Some(operator) => SessionOpenAuthorization::operator_signed(
+            deposit,
+            Pubkey::from_str(operator).map_err(|e| e.to_string())?,
+        ),
+        None => SessionOpenAuthorization::client_signed(deposit),
+    };
     let open_options = PaymentChannelOpenOptions {
         salt: Some(SALT),
-        deposit: build.deposit,
         open_slot: build.open_slot,
         compute_budget: build
             .budget
@@ -779,6 +798,7 @@ async fn open_for_request(request: &SessionRequest, build: &OpenBuild) -> Result
                 request,
                 payer: client(),
                 authorized_signer: Pubkey::from_str(operator_key).map_err(|e| e.to_string())?,
+                authorization: &authorization,
                 options: open_options.clone(),
             })
             .map_err(|e| format!("derive open: {e}"))?;
@@ -800,6 +820,7 @@ async fn open_for_request(request: &SessionRequest, build: &OpenBuild) -> Result
         &payer,
         Box::new(session),
         blockhash,
+        &authorization,
         PaymentChannelSessionOpenOptions {
             open: open_options,
             authentication,
@@ -1638,6 +1659,15 @@ pub fn build_input(recipe: &BuildRecipe) -> Result<Value, String> {
         "sessionOpenBuild": {
             "request": request,
             "salt": SALT.to_string(),
+            // The deposit the caller authorizes (draft-solana-session-00
+            // leaves it to the client); the harness client takes the
+            // server's suggestion.
+            "deposit": recipe
+                .server
+                .suggested_deposit
+                .or(recipe.server.minimum_deposit)
+                .unwrap_or(1_000)
+                .to_string(),
             "server": recipe.server.json(),
             "challenge": {
                 "id": CHALLENGE_ID,
@@ -1713,6 +1743,7 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
     let payer = signer_from(input, "signerSecretKey")?;
     let session = signer_from(input, "sessionSignerSecretKey")?;
     let salt = u64_field(params, "salt")?;
+    let deposit = u64_field(params, "deposit")?.ok_or("sessionOpenBuild.deposit missing")?;
     let fixtures = crate::fixture_rpc::Fixtures::from_input(input)?;
     let (rpc, _log) = crate::fixture_rpc::rpc_client(&fixtures);
     let blockhash = match OpenBlockhash::verify(&rpc, &request).await {
@@ -1724,6 +1755,7 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
         &payer,
         Box::new(session),
         blockhash,
+        &SessionOpenAuthorization::client_signed(deposit),
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt,

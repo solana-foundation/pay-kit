@@ -665,13 +665,15 @@ export type VectorInput = {
   };
   sessionServerFeePayerSecretKey?: number[];
   // build-transaction (session): the client's `open` for `request` (the
-  // challenge's SessionRequest) with the channel `salt` its builder takes;
-  // `signerSecretKey` is the payer, `sessionSignerSecretKey` the voucher key
-  // it authorizes. `server` / `challenge` are for the judge only. An
-  // accepted build returns the open action as `sessionCredential`.
+  // challenge's SessionRequest) with the channel `salt` its builder takes
+  // and the `deposit` its caller authorizes; `signerSecretKey` is the payer,
+  // `sessionSignerSecretKey` the voucher key it authorizes. `server` /
+  // `challenge` are for the judge only. An accepted build returns the open
+  // action as `sessionCredential`.
   sessionOpenBuild?: {
     request: Record<string, unknown>;
     salt: string;
+    deposit: string;
     server: Record<string, unknown>;
     challenge: { id: string; recentBlockhash: string; recentSlot: string };
   };

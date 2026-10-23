@@ -16,7 +16,7 @@ use solana_pay_kit::core::store::MemoryChannelStore;
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
     create_payment_channel_session_opener, OpenBlockhash, PaymentChannelOpenOptions,
-    PaymentChannelSessionOpenOptions,
+    PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{OpenPayload, SessionAction};
 use solana_pay_kit::mpp::server::session::{SessionConfig, SessionServer, VoucherSigner};
@@ -113,6 +113,16 @@ async fn build_open(server_value: &Value) -> Result<Value, String> {
         &payer,
         Box::new(session),
         blockhash,
+        // The harness client deposits what the server suggests.
+        &SessionOpenAuthorization::client_signed(
+            request
+                .suggested_deposit
+                .as_deref()
+                .or(request.minimum_deposit.as_deref())
+                .ok_or("challenge without a deposit")?
+                .parse()
+                .map_err(|e| format!("suggestedDeposit: {e}"))?,
+        ),
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt: Some(SALT),

@@ -27,7 +27,7 @@ use solana_pay_kit::core::store::{
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
     create_payment_channel_session_opener, OpenBlockhash, PaymentChannelOpenOptions,
-    PaymentChannelSessionOpenOptions,
+    PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{
     SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload,
@@ -576,11 +576,13 @@ async fn build(input: &Value) -> Result<Outcome, Rejection> {
     let blockhash = OpenBlockhash::verify(&rpc, &request)
         .await
         .map_err(|e| refuse(e.to_string()))?;
+    let deposit = u64_field(params, "deposit")?.ok_or("sessionOpenBuild.deposit missing")?;
     let opened = create_payment_channel_session_opener(
         &request,
         &payer,
         Box::new(session),
         blockhash,
+        &SessionOpenAuthorization::client_signed(deposit),
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt: u64_field(params, "salt")?,
