@@ -264,7 +264,12 @@ after its channel opened (a client disconnect, a timeout layer) still settles
 what was metered. A settlement that lands within the program's open-slot
 window (1,500 slots) leaves the channel account `Distributed`, holding the
 fee payer's rent until a permissionless `reclaim`; the `upto` server does not
-run one.
+run one. When the payer's token account can no longer take its refund (closed
+or frozen since the open), settlement only seals the channel: `distribute`
+would send that refund to the protocol treasury. Run `distribute_sealed`
+periodically; it finds those channels on chain and distributes each once the
+account is usable again, or once `withdraw_delay` has passed since the open,
+when the refund goes to the treasury and the seller is paid.
 
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /

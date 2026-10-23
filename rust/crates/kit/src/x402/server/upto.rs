@@ -31,6 +31,10 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 
+use crate::core::payment_channel::payer_refund::{
+    payer_refund, DistributeClearance, ObservedAccount, PayerRefund, RefundDeadline,
+    SealedRefundTerms,
+};
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::tx::{TxV1Mode, TxVersion};
@@ -916,42 +920,28 @@ impl X402Upto {
     /// data, not as a transaction signature — so the worker can sign the
     /// envelope on the caller's behalf.
     ///
-    /// When the payer has closed its token account since the open, the
-    /// `distribute` that refunds it would fail and take the charge down with
-    /// it, so only `settle_and_seal` is emitted: the charge is locked onchain
-    /// and the permissionless `distribute` pays both sides once the payer
-    /// recreates the account to collect its refund. The account is never
-    /// recreated at the fee payer's expense, which the payer could farm.
+    /// The bundle ends in `distribute`, which pays `payTo`, refunds the
+    /// payer, closes the escrow token account to the fee payer and leaves the
+    /// channel for `reclaim`. When a refund is due and the payer's token
+    /// account can no longer take it (closed or frozen since the open), the
+    /// program would forfeit the refund to the treasury, so the bundle only
+    /// seals and the distribute is deferred to
+    /// [`distribute_sealed`](Self::distribute_sealed), which runs it once the
+    /// account is usable, the payer withdrew, or the grace period after the
+    /// open has passed. The account is never recreated at the fee payer's
+    /// expense, which the payer could farm.
     pub async fn settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
     ) -> Result<Vec<Instruction>, Error> {
-        let (payer_token, _) =
-            pc::find_associated_token_address(&open.payer, &open.mint, &open.token_program);
-        // Only a confirmed absence drops `distribute`; on an RPC error the
-        // atomic transaction itself is the safeguard.
-        let distribute = !matches!(
-            self.rpc
-                .get_account_with_commitment(&payer_token, self.rpc.commitment())
-                .map(|response| response.value),
-            Ok(None)
-        );
-        if !distribute {
-            tracing::warn!(
-                channel = %open.channel_id,
-                "upto payer token account is gone; sealing the charge without distributing"
-            );
-        }
-        self.build_settlement_instructions(open, actual, distribute)
-            .await
+        self.build_settlement_instructions(open, actual).await
     }
 
     async fn build_settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
-        distribute: bool,
     ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
         // The voucher is signed by this server, so its deadline is chosen here
@@ -992,38 +982,319 @@ impl X402Upto {
             )?
         };
 
-        if !distribute {
+        let now = now_unix();
+        let decision = self
+            .sealed_refund(
+                &open.channel_id,
+                SealedRefundTerms {
+                    channel: open.channel_id,
+                    payer: open.payer,
+                    mint: open.mint,
+                    token_program: open.token_program,
+                    deposit: open.deposit,
+                    settled: actual,
+                    payer_withdrawn_at: 0,
+                },
+                // This bundle seals the channel now.
+                now,
+                now,
+            )
+            .await?;
+        let Some(clearance) = decision.clearance() else {
             return Ok(instructions);
-        }
-        let payee = open.payee;
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.fee_payer,
-            &payee,
-            &open.mint,
-            &open.token_program,
-        ));
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.fee_payer,
-            &self.treasury_owner(),
-            &open.mint,
-            &open.token_program,
-        ));
-        // Recipient accounts were required to exist before the open
-        // (`ensure_payouts_ready`) and are never created here: the fee payer
-        // would fund an account its owner can close for the rent.
-        instructions.push(pc::build_distribute_instruction(
-            &open.channel_id,
+        };
+        instructions.extend(self.distribute_instructions(
+            &clearance,
             &open.payer,
             &open.rent_payer,
-            &payee,
-            &self.treasury_owner(),
             &open.mint,
             &open.distribution,
             &open.token_program,
             &open.program_id,
         ));
-
         Ok(instructions)
+    }
+
+    /// The payout of a sealed channel this server holds the payee seat of:
+    /// its own and the treasury's token accounts, then `distribute`. Built
+    /// only under a [`DistributeClearance`].
+    #[allow(clippy::too_many_arguments)]
+    fn distribute_instructions(
+        &self,
+        clearance: &DistributeClearance,
+        payer: &Pubkey,
+        rent_payer: &Pubkey,
+        mint: &Pubkey,
+        distribution: &[pc::Distribution],
+        token_program: &Pubkey,
+        program_id: &Pubkey,
+    ) -> Vec<Instruction> {
+        let channel = clearance.channel();
+        // Recipient accounts were required to exist before the open
+        // (`ensure_payouts_ready`) and are never created here: the fee payer
+        // would fund an account its owner can close for the rent.
+        vec![
+            pc::build_create_associated_token_account_instruction(
+                &self.fee_payer,
+                &self.fee_payer,
+                mint,
+                token_program,
+            ),
+            pc::build_create_associated_token_account_instruction(
+                &self.fee_payer,
+                &self.treasury_owner(),
+                mint,
+                token_program,
+            ),
+            pc::build_distribute_instruction(
+                channel,
+                payer,
+                rent_payer,
+                &self.fee_payer,
+                &self.treasury_owner(),
+                mint,
+                distribution,
+                token_program,
+                program_id,
+            ),
+        ]
+    }
+
+    /// What the sealed `distribute` of `channel` may do (see
+    /// [`payer_refund`]), reading the payer's refund account when a refund
+    /// is due. The deadline counts `withdraw_delay` from `sealed_at`.
+    async fn sealed_refund(
+        &self,
+        channel: &Pubkey,
+        terms: SealedRefundTerms,
+        sealed_at: i64,
+        now: i64,
+    ) -> Result<PayerRefund, Error> {
+        let deadline = RefundDeadline {
+            sealed_at,
+            grace_period: self.config.withdraw_delay,
+        };
+        if terms.refund_due() == 0 {
+            return Ok(payer_refund(&terms, None, deadline, now));
+        }
+        let address = terms.payer_token_account();
+        let rpc = Arc::clone(&self.rpc);
+        let account = tokio::task::spawn_blocking(move || {
+            rpc.get_account_with_commitment(&address, rpc.commitment())
+        })
+        .await
+        .map_err(|e| Error::Other(format!("payer refund account read task failed: {e}")))?
+        .map_err(|e| Error::Rpc(format!("payer refund account {address}: {e}")))?
+        .value;
+        let observed = account.as_ref().map(|account| ObservedAccount {
+            owner: pc::from_address(&account.owner),
+            data: &account.data,
+        });
+        let decision = payer_refund(&terms, observed, deadline, now);
+        match &decision {
+            PayerRefund::Clear(_) => {}
+            PayerRefund::Deferred {
+                refund,
+                payer_token_account,
+                reason,
+                until,
+            } => tracing::warn!(
+                channel = %channel,
+                %payer_token_account,
+                refund,
+                reason,
+                until,
+                "payer refund account cannot be paid; sealing without distributing until it \
+                 can, or until the deadline (distribute_sealed)"
+            ),
+            PayerRefund::Forfeit {
+                refund,
+                payer_token_account,
+                reason,
+                ..
+            } => tracing::warn!(
+                channel = %channel,
+                %payer_token_account,
+                refund,
+                reason,
+                "payer refund account still unusable past the deadline; distributing, the \
+                 refund goes to the treasury"
+            ),
+        }
+        Ok(decision)
+    }
+
+    /// Distribute the sealed channels this server holds the payee seat of
+    /// whose distribute a settlement deferred (see
+    /// [`settlement_instructions`](Self::settlement_instructions)), and
+    /// return the confirmed signatures.
+    ///
+    /// The chain is the work queue: channels are discovered by
+    /// `rent_payer == payee == fee payer` and accepted only when their PDA
+    /// rederives and their distribution is this server's, so no local state
+    /// is needed and nothing is lost on restart. A channel is distributed as
+    /// soon as the payer's refund account can take its refund (or the payer
+    /// withdrew it), and once `withdraw_delay` has passed since the channel's
+    /// open, anyway: the program then sends the refund to the treasury, and
+    /// a payer can never hold the payout and the fee payer's rent hostage.
+    /// The program records no seal time; an `upto` channel is sealed by the
+    /// settlement of the request that opened it, so the open's block time
+    /// stands in for it.
+    ///
+    /// Run it periodically, like `reclaim` for other channel schemes.
+    pub async fn distribute_sealed(&self) -> Result<Vec<String>, Error> {
+        let program_id = self.program_id()?;
+        let distribution = self.distribution()?;
+        let distribution_hash = pc::distribution_hash(&distribution);
+        let sealed = crate::core::payment_channels::generated::types::ChannelStatus::Sealed as u8;
+        let mut signatures = Vec::new();
+        for (channel_id, channel) in self.sealed_channel_candidates(&program_id).await? {
+            if channel.status != sealed
+                || pc::from_address(&channel.payee) != self.fee_payer
+                || channel.distribution_hash != distribution_hash
+            {
+                continue;
+            }
+            let mint = pc::from_address(&channel.mint);
+            let Some(token_program) = self
+                .config
+                .currencies
+                .iter()
+                .find(|cc| self.mint_for(cc).is_ok_and(|candidate| candidate == mint))
+                .map(|cc| self.token_program_for(cc))
+                .transpose()?
+            else {
+                continue;
+            };
+            let rpc = Arc::clone(&self.rpc);
+            let open_slot = channel.open_slot;
+            let opened_at = match tokio::task::spawn_blocking(move || rpc.get_block_time(open_slot))
+                .await
+                .map_err(|e| Error::Other(format!("block time read task failed: {e}")))?
+            {
+                Ok(time) => time,
+                Err(error) => {
+                    tracing::warn!(channel = %channel_id, %error, "open block time unavailable; skipping");
+                    continue;
+                }
+            };
+            let payer = pc::from_address(&channel.payer);
+            let decision = self
+                .sealed_refund(
+                    &channel_id,
+                    SealedRefundTerms {
+                        channel: channel_id,
+                        payer,
+                        mint,
+                        token_program,
+                        deposit: channel.deposit,
+                        settled: channel.settlement.settled,
+                        payer_withdrawn_at: channel.payer_withdrawn_at,
+                    },
+                    opened_at,
+                    now_unix(),
+                )
+                .await?;
+            let Some(clearance) = decision.clearance() else {
+                continue;
+            };
+            let instructions = self.distribute_instructions(
+                &clearance,
+                &payer,
+                &pc::from_address(&channel.rent_payer),
+                &mint,
+                &distribution,
+                &token_program,
+                &program_id,
+            );
+            let blockhash = self
+                .rpc
+                .get_latest_blockhash()
+                .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
+            let mut tx = crate::core::tx::build_unsigned(
+                self.tx_version(),
+                &self.fee_payer,
+                &instructions,
+                blockhash,
+                None,
+            )?;
+            self.sign_settlement_transaction(&mut tx).await?;
+            match crate::core::rpc::send_and_confirm_with_outcome(
+                &self.rpc,
+                &tx,
+                crate::core::rpc::PriorBroadcast::None,
+            ) {
+                Ok(signature) => signatures.push(signature.to_string()),
+                Err(failure) => {
+                    tracing::warn!(channel = %channel_id, %failure, "deferred distribute failed");
+                }
+            }
+        }
+        Ok(signatures)
+    }
+
+    /// Channels whose rent this server's fee payer put up, PDA-checked.
+    async fn sealed_channel_candidates(
+        &self,
+        program_id: &Pubkey,
+    ) -> Result<Vec<(Pubkey, Channel)>, Error> {
+        use solana_rpc_client_api::config::{
+            RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding,
+        };
+        use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+        use solana_rpc_client_api::request::RpcRequest;
+        use solana_rpc_client_api::response::RpcKeyedAccount;
+
+        let config = RpcProgramAccountsConfig {
+            filters: Some(vec![
+                RpcFilterType::DataSize(pc::CHANNEL_ACCOUNT_SIZE as u64),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    pc::CHANNEL_RENT_PAYER_OFFSET,
+                    self.fee_payer.to_bytes().to_vec(),
+                )),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    pc::CHANNEL_PAYEE_OFFSET,
+                    self.fee_payer.to_bytes().to_vec(),
+                )),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = serde_json::json!([program_id.to_string(), config]);
+        let rpc = Arc::clone(&self.rpc);
+        let keyed: Vec<RpcKeyedAccount> =
+            tokio::task::spawn_blocking(move || rpc.send(RpcRequest::GetProgramAccounts, params))
+                .await
+                .map_err(|e| Error::Other(format!("channel discovery task failed: {e}")))?
+                .map_err(|e| Error::Rpc(format!("getProgramAccounts failed: {e}")))?;
+        let mut found = Vec::new();
+        for entry in keyed {
+            let Ok(address) = Pubkey::from_str(&entry.pubkey) else {
+                continue;
+            };
+            let Some(data) = entry.account.data.decode() else {
+                continue;
+            };
+            let Ok(channel) = Channel::from_bytes(&data) else {
+                continue;
+            };
+            let (derived, _) = pc::find_channel_pda(
+                &pc::from_address(&channel.payer),
+                &pc::from_address(&channel.payee),
+                &pc::from_address(&channel.mint),
+                &pc::from_address(&channel.authorized_signer),
+                channel.salt,
+                channel.open_slot,
+                program_id,
+            );
+            if derived == address {
+                found.push((address, channel));
+            }
+        }
+        Ok(found)
     }
 
     /// Build the `PAYMENT-RESPONSE` receipt for a settled `actual` amount and
@@ -2886,13 +3157,19 @@ mod tests {
     /// up in the settlement voucher: the server signs its own deadline.
     #[tokio::test]
     async fn settlement_voucher_deadline_is_server_derived() {
-        let engine = multi_currency_engine(&["USDC"]);
+        let mut engine = multi_currency_engine(&["USDC"]);
         let mut open = engine.test_open(Pubkey::new_unique(), 1_000);
+        // The payer's refund account is usable, so settlement distributes.
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
         let now = now_unix();
         open.expires_at = now + 1;
 
         let instructions = engine
-            .build_settlement_instructions(&open, 400, true)
+            .build_settlement_instructions(&open, 400)
             .await
             .unwrap();
         let expiry = settled_voucher_expiry(&instructions, &open, 400);
@@ -2903,7 +3180,7 @@ mod tests {
 
         open.expires_at = now - 10;
         let instructions = engine
-            .build_settlement_instructions(&open, 400, true)
+            .build_settlement_instructions(&open, 400)
             .await
             .unwrap();
         assert!(settled_voucher_expiry(&instructions, &open, 400) > now);
@@ -2979,8 +3256,14 @@ mod tests {
     /// recipient could close it after each settlement and keep the rent.
     #[tokio::test]
     async fn settlement_never_creates_a_recipient_account() {
-        let engine = multi_currency_engine(&["USDC"]);
+        let mut engine = multi_currency_engine(&["USDC"]);
         let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        // The payer's refund account is usable, so settlement distributes.
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
         let created_for = |ixs: &[Instruction]| -> Vec<Pubkey> {
             ixs.iter()
                 .filter(|ix| ix.program_id == pc::associated_token_program_id())
@@ -2989,7 +3272,7 @@ mod tests {
         };
         for actual in [0, 400, 1_000] {
             let ixs = engine
-                .build_settlement_instructions(&open, actual, true)
+                .build_settlement_instructions(&open, actual)
                 .await
                 .unwrap();
             let created = created_for(&ixs);
@@ -3062,36 +3345,186 @@ mod tests {
             .expect("the fee payer's own payout needs no account yet");
     }
 
-    /// A payer that closed its token account after the open cannot make the
-    /// settlement fail as a whole: the charge is sealed without the refund.
+    /// The engine with its RPC answering `getAccountInfo` (the payer's refund
+    /// account) with `refund_account`, plus `extra` mocks.
+    fn engine_reading(
+        refund_account: serde_json::Value,
+        extra: Vec<(
+            solana_rpc_client_api::request::RpcRequest,
+            serde_json::Value,
+        )>,
+    ) -> X402Upto {
+        let mut engine = multi_currency_engine(&["USDC"]);
+        // A mock answers each request once: queue one answer per read.
+        let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+        for _ in 0..8 {
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": refund_account }),
+            );
+        }
+        for (request, value) in extra {
+            mocks.insert(request, value);
+        }
+        engine.rpc = Arc::new(RpcClient::new_mock_with_mocks_map(
+            "succeeds".to_string(),
+            mocks,
+        ));
+        engine
+    }
+
+    /// A token account of `owner` for `mint`, as `getAccountInfo` returns it.
+    fn token_account_json(
+        mint: &Pubkey,
+        owner: &Pubkey,
+        token_program: &Pubkey,
+    ) -> serde_json::Value {
+        use base64::Engine as _;
+        let mut data = vec![0u8; 165];
+        data[..32].copy_from_slice(mint.as_ref());
+        data[32..64].copy_from_slice(owner.as_ref());
+        data[108] = 1;
+        serde_json::json!({
+            "lamports": 2_039_280,
+            "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+            "owner": pc::pubkey_string(token_program),
+            "executable": false,
+            "rentEpoch": 0,
+            "space": 165,
+        })
+    }
+
+    /// A payer that closed its token account after the open would have its
+    /// refund forfeited to the treasury by `distribute`, so settlement only
+    /// seals and defers the distribute (to `distribute_sealed`). With nothing
+    /// to refund, or a usable account, settlement still distributes.
     #[tokio::test]
-    async fn settlement_without_a_payer_account_still_seals_the_charge() {
-        let engine = multi_currency_engine(&["USDC"]);
+    async fn settlement_defers_the_distribute_of_an_unpayable_refund() {
+        let engine = engine_reading(serde_json::Value::Null, vec![]);
         let open = engine.test_open(Pubkey::new_unique(), 1_000);
         let program_id = pc::default_program_id();
         let is_distribute = |ix: &Instruction| {
             ix.program_id == program_id && ix.accounts.iter().any(|meta| meta.pubkey == open.payer)
         };
+        let is_create = |ix: &Instruction| ix.program_id == pc::associated_token_program_id();
 
-        let full = engine
-            .build_settlement_instructions(&open, 400, true)
-            .await
-            .unwrap();
-        assert!(full.last().is_some_and(is_distribute));
-
-        let sealed_only = engine
-            .build_settlement_instructions(&open, 400, false)
-            .await
-            .unwrap();
-        assert!(!sealed_only.iter().any(is_distribute));
+        for actual in [0, 400] {
+            let ixs = engine.settlement_instructions(&open, actual).await.unwrap();
+            assert!(!ixs.iter().any(is_distribute), "actual {actual}");
+            assert!(!ixs.iter().any(is_create), "actual {actual}");
+            if actual > 0 {
+                assert!(settled_voucher_expiry(&ixs, &open, actual) > now_unix());
+            }
+        }
+        // Nothing is due back at the full amount: no account is read.
+        let ixs = engine.settlement_instructions(&open, 1_000).await.unwrap();
+        assert!(ixs.last().is_some_and(is_distribute));
+        // Positive control: a usable refund account distributes at once.
+        let mut engine = engine_reading(serde_json::Value::Null, vec![]);
+        let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
+        let ixs = engine.settlement_instructions(&open, 400).await.unwrap();
+        assert!(ixs.last().is_some_and(|ix| {
+            ix.program_id == program_id && ix.accounts.iter().any(|meta| meta.pubkey == open.payer)
+        }));
         assert!(
-            sealed_only
-                .iter()
-                .all(|ix| ix.program_id != pc::associated_token_program_id()),
-            "no account is created at the fee payer's expense"
+            !ixs.iter()
+                .filter(|ix| is_create(ix))
+                .any(|ix| ix.accounts[2].pubkey == open.payer),
+            "the payer's account is never created at the fee payer's expense"
         );
-        assert!(sealed_only.iter().any(|ix| ix.program_id == program_id));
-        assert!(settled_voucher_expiry(&sealed_only, &open, 400) > now_unix());
+    }
+
+    /// `distribute_sealed` finds this server's sealed channels on chain and
+    /// distributes a deferred one once the grace period after its open has
+    /// passed, even with the payer's account still unusable; inside it,
+    /// nothing is sent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn distribute_sealed_ends_a_deferral_at_the_deadline() {
+        use base64::Engine as _;
+        use solana_rpc_client_api::request::RpcRequest;
+
+        let probe = multi_currency_engine(&["USDC"]);
+        let usdc = &probe.config.currencies[0];
+        let mint = probe.mint_for(usdc).unwrap();
+        let program_id = pc::default_program_id();
+        let sealed_channel = |engine: &X402Upto| {
+            let payer = Pubkey::new_unique();
+            let authorized = Pubkey::new_unique();
+            let channel = Channel {
+                discriminator: 1,
+                version: 1,
+                bump: 1,
+                status: crate::core::payment_channels::generated::types::ChannelStatus::Sealed
+                    as u8,
+                salt: 7,
+                deposit: 1_000,
+                settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                    settled: 400,
+                    payout_watermark: 0,
+                },
+                closure_started_at: 0,
+                payer_withdrawn_at: 0,
+                grace_period: 900,
+                distribution_hash: pc::distribution_hash(&engine.distribution().unwrap()),
+                payer: pc::to_address(&payer),
+                payee: pc::to_address(&engine.fee_payer),
+                authorized_signer: pc::to_address(&authorized),
+                mint: pc::to_address(&mint),
+                rent_payer: pc::to_address(&engine.fee_payer),
+                open_slot: 42,
+            };
+            let (address, _) = pc::find_channel_pda(
+                &payer,
+                &engine.fee_payer,
+                &mint,
+                &authorized,
+                7,
+                42,
+                &program_id,
+            );
+            serde_json::json!([{
+                "pubkey": pc::pubkey_string(&address),
+                "account": {
+                    "lamports": 2_000_000,
+                    "data": [base64::engine::general_purpose::STANDARD
+                        .encode(borsh::to_vec(&channel).unwrap()), "base64"],
+                    "owner": pc::pubkey_string(&program_id),
+                    "executable": false,
+                    "rentEpoch": 0,
+                    "space": pc::CHANNEL_ACCOUNT_SIZE,
+                }
+            }])
+        };
+        let run = |opened_at: i64| {
+            let probe = multi_currency_engine(&["USDC"]);
+            let mut engine = engine_reading(serde_json::Value::Null, vec![]);
+            engine.fee_payer = probe.fee_payer;
+            engine.config = probe.config.clone();
+            let accounts = sealed_channel(&engine);
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": null }),
+            );
+            mocks.insert(RpcRequest::GetProgramAccounts, accounts);
+            mocks.insert(RpcRequest::GetBlockTime, serde_json::json!(opened_at));
+            engine.rpc = Arc::new(RpcClient::new_mock_with_mocks(
+                "succeeds".to_string(),
+                mocks,
+            ));
+            async move { engine.distribute_sealed().await.unwrap() }
+        };
+        let now = now_unix();
+        assert!(
+            run(now - 899).await.is_empty(),
+            "still inside the grace period"
+        );
+        assert_eq!(run(now - 900).await.len(), 1, "the deadline passed");
     }
 
     /// A payer-chosen split keeps the channel address (recipients are not a
