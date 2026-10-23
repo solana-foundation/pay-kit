@@ -35,13 +35,26 @@ struct PartialSseEvent {
     retry: Option<u64>,
 }
 
+/// Longest SSE line [`SseDecoder`] buffers while waiting for its newline.
+pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+
+/// Largest event [`SseDecoder`] assembles from its `data` lines.
+pub const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
+
+/// Largest commit-endpoint response [`HttpCommitTransport`] reads.
+const MAX_COMMIT_RESPONSE_BYTES: usize = 64 * 1024;
+
 /// Incremental SSE decoder.
 ///
 /// Feed raw HTTP chunks with [`push_chunk`](Self::push_chunk). It returns all
 /// complete events decoded from that chunk and retains partial data internally.
+/// A line longer than [`MAX_SSE_LINE_BYTES`] or an event larger than
+/// [`MAX_SSE_EVENT_BYTES`] is an error, so a stream cannot grow the buffer
+/// without bound.
 #[derive(Default)]
 pub struct SseDecoder {
-    buffer: String,
+    /// Bytes of the line in progress; never holds a newline.
+    buffer: Vec<u8>,
     current: PartialSseEvent,
 }
 
@@ -51,32 +64,44 @@ impl SseDecoder {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>> {
-        let text = std::str::from_utf8(chunk)
-            .map_err(|e| Error::Other(format!("SSE chunk is not valid UTF-8: {e}")))?;
-        self.buffer.push_str(text);
-
         let mut events = vec![];
-        while let Some(index) = self.buffer.find('\n') {
-            let mut line = self.buffer.drain(..=index).collect::<String>();
-            if line.ends_with('\n') {
+        let mut rest = chunk;
+        // Only the new bytes are scanned for a newline, and a line is decoded
+        // once it is complete, so a character split across chunks is intact.
+        while let Some(index) = rest.iter().position(|byte| *byte == b'\n') {
+            self.extend_line(&rest[..index])?;
+            rest = &rest[index + 1..];
+            let mut line = std::mem::take(&mut self.buffer);
+            if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            if let Some(event) = self.process_line(&line)? {
+            if let Some(event) = self.process_line(&decode_line(line)?)? {
                 events.push(event);
             }
         }
+        self.extend_line(rest)?;
         Ok(events)
+    }
+
+    fn extend_line(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.buffer.len() + bytes.len() > MAX_SSE_LINE_BYTES {
+            return Err(Error::Other(format!(
+                "SSE line exceeds {MAX_SSE_LINE_BYTES} bytes"
+            )));
+        }
+        self.buffer.extend_from_slice(bytes);
+        Ok(())
     }
 
     /// Flush an incomplete final event, if any, at EOF.
     pub fn finish(&mut self) -> Result<Vec<SseEvent>> {
         let mut events = vec![];
         if !self.buffer.is_empty() {
-            let line = std::mem::take(&mut self.buffer);
-            if let Some(event) = self.process_line(line.trim_end_matches('\r'))? {
+            let mut line = std::mem::take(&mut self.buffer);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            if let Some(event) = self.process_line(&decode_line(line)?)? {
                 events.push(event);
             }
         }
@@ -102,6 +127,11 @@ impl SseDecoder {
         match field {
             "event" => self.current.event = Some(value.to_string()),
             "data" => {
+                if self.current.data.len() + value.len() + 1 > MAX_SSE_EVENT_BYTES {
+                    return Err(Error::Other(format!(
+                        "SSE event data exceeds {MAX_SSE_EVENT_BYTES} bytes"
+                    )));
+                }
                 if !self.current.data.is_empty() {
                     self.current.data.push('\n');
                 }
@@ -133,6 +163,28 @@ impl SseDecoder {
             retry: current.retry,
         })
     }
+}
+
+fn decode_line(line: Vec<u8>) -> Result<String> {
+    String::from_utf8(line).map_err(|e| Error::Other(format!("SSE line is not valid UTF-8: {e}")))
+}
+
+/// Read at most `limit` bytes of `response`, failing past it.
+async fn read_capped(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| Error::Other(format!("commit response read failed: {e}")))?
+    {
+        if body.len() + chunk.len() > limit {
+            return Err(Error::Other(format!(
+                "commit response exceeds {limit} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Parsed metered SSE event.
@@ -367,15 +419,17 @@ impl CommitTransport for HttpCommitTransport {
                 .map_err(|e| Error::Other(format!("commit request failed: {e}")))?;
             let status = response.status();
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
+                let body = read_capped(response, MAX_COMMIT_RESPONSE_BYTES)
+                    .await
+                    .map(|body| String::from_utf8_lossy(&body).into_owned())
+                    .unwrap_or_default();
                 return Err(Error::Other(format!(
                     "commit endpoint returned {status}: {body}"
                 )));
             }
 
-            response
-                .json::<CommitReceipt>()
-                .await
+            let body = read_capped(response, MAX_COMMIT_RESPONSE_BYTES).await?;
+            serde_json::from_slice::<CommitReceipt>(&body)
                 .map_err(|e| Error::Other(format!("invalid commit receipt: {e}")))
         })
     }
@@ -612,8 +666,64 @@ mod tests {
 
     #[test]
     fn sse_decoder_rejects_invalid_utf8() {
-        let err = SseDecoder::new().push_chunk(&[0xff]).unwrap_err();
+        let err = SseDecoder::new().push_chunk(&[0xff, b'\n']).unwrap_err();
         assert!(err.to_string().contains("valid UTF-8"));
+    }
+
+    #[test]
+    fn sse_decoder_keeps_a_character_split_across_chunks() {
+        let mut decoder = SseDecoder::new();
+        let text = "data: caf\u{e9}\n\n".as_bytes();
+        let split = text.len() - 3;
+        assert!(decoder.push_chunk(&text[..split]).unwrap().is_empty());
+        let events = decoder.push_chunk(&text[split..]).unwrap();
+        assert_eq!(events[0].data, "caf\u{e9}");
+    }
+
+    #[test]
+    fn sse_decoder_bounds_an_unterminated_line() {
+        let mut decoder = SseDecoder::new();
+        let chunk = vec![b'A'; 64 * 1024];
+        let mut buffered = 0;
+        let err = loop {
+            match decoder.push_chunk(&chunk) {
+                Ok(events) => {
+                    assert!(events.is_empty());
+                    buffered += chunk.len();
+                    assert!(buffered <= MAX_SSE_LINE_BYTES, "line grew past the cap");
+                }
+                Err(err) => break err,
+            }
+        };
+        assert!(err.to_string().contains("SSE line exceeds"), "{err}");
+
+        // A line at the cap still decodes.
+        let mut decoder = SseDecoder::new();
+        let mut line = b"data: ".to_vec();
+        line.resize(MAX_SSE_LINE_BYTES, b'A');
+        assert!(decoder.push_chunk(&line).unwrap().is_empty());
+        let events = decoder.push_chunk(b"\n\n").unwrap();
+        assert_eq!(events[0].data.len(), MAX_SSE_LINE_BYTES - "data: ".len());
+    }
+
+    #[test]
+    fn sse_decoder_bounds_an_event_built_from_many_lines() {
+        let mut decoder = SseDecoder::new();
+        let mut line = b"data: ".to_vec();
+        line.extend(std::iter::repeat_n(b'A', 64 * 1024));
+        line.push(b'\n');
+        let mut pushed = 0;
+        let err = loop {
+            match decoder.push_chunk(&line) {
+                Ok(events) => {
+                    assert!(events.is_empty());
+                    pushed += line.len();
+                    assert!(pushed <= 2 * MAX_SSE_EVENT_BYTES, "event grew past the cap");
+                }
+                Err(err) => break err,
+            }
+        };
+        assert!(err.to_string().contains("SSE event data exceeds"), "{err}");
     }
 
     #[test]
@@ -826,6 +936,10 @@ mod tests {
                 post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "commit failed") }),
             )
             .route("/commit-invalid-json", post(|| async { "not json" }))
+            .route(
+                "/commit-oversized",
+                post(|| async { " ".repeat(MAX_COMMIT_RESPONSE_BYTES + 1) }),
+            )
             .with_state(state.clone());
         let base_url = spawn_app(app).await;
 
@@ -860,10 +974,17 @@ mod tests {
 
         let invalid_json = HttpCommitTransport::new()
             .with_default_commit_url(format!("{base_url}/commit-invalid-json"))
-            .commit(&directive, payload)
+            .commit(&directive, payload.clone())
             .await
             .unwrap_err();
         assert!(invalid_json.to_string().contains("invalid commit receipt"));
+
+        let oversized = HttpCommitTransport::new()
+            .with_default_commit_url(format!("{base_url}/commit-oversized"))
+            .commit(&directive, payload)
+            .await
+            .unwrap_err();
+        assert!(oversized.to_string().contains("commit response exceeds"));
     }
 
     #[tokio::test]

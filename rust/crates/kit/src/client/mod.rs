@@ -156,8 +156,10 @@ impl PayKitClient {
         }
         let origin = response_url.origin().ascii_serialization();
         let headers = response_headers(response.headers());
-        let body = response.bytes().await?;
-        let body = std::str::from_utf8(&body).ok();
+        let body = read_challenge_body(response).await?;
+        let body = body
+            .as_deref()
+            .and_then(|body| std::str::from_utf8(body).ok());
         let (offers, mut rejections) = self.collect_offers(&headers, body, &origin);
         if offers.is_empty() {
             return if rejections.is_empty() {
@@ -284,6 +286,31 @@ impl PayKitClient {
             }
         }
     }
+}
+
+/// Largest 402 body the client reads, after content decoding. Only x402 v1
+/// carries its offers in the body, and a challenge set is a few KiB; a body
+/// past this is dropped unread and the offers in the headers still apply.
+const MAX_CHALLENGE_BODY_BYTES: usize = 64 * 1024;
+
+/// The 402 body, or `None` when it is larger than
+/// [`MAX_CHALLENGE_BODY_BYTES`]. Counting decoded chunks bounds a compressed
+/// body by what it inflates to, not by what crossed the wire.
+async fn read_challenge_body(mut response: Response) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_CHALLENGE_BODY_BYTES as u64)
+    {
+        return Ok(None);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_CHALLENGE_BODY_BYTES {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
 }
 
 /// Builder for [`PayKitClient`].
@@ -1450,6 +1477,120 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(!saw_payment.load(Ordering::SeqCst));
         task.abort();
+    }
+
+    /// A response body that never ends.
+    struct EndlessBody;
+
+    impl http_body::Body for EndlessBody {
+        type Data = axum::body::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            std::task::Poll::Ready(Some(Ok(http_body::Frame::data(
+                axum::body::Bytes::from_static(&[b' '; 16 * 1024]),
+            ))))
+        }
+    }
+
+    /// Serve a 402 whose body is `body`, plus the x402 offer in the
+    /// `PAYMENT-REQUIRED` header when `header` is set.
+    async fn challenge_body_server(
+        header: Option<String>,
+        body: fn() -> axum::body::Body,
+    ) -> (String, Arc<AtomicBool>) {
+        let saw_payment = Arc::new(AtomicBool::new(false));
+        let seen = saw_payment.clone();
+        let app = Router::new().route(
+            "/report",
+            get(move |headers: HeaderMap| {
+                let header = header.clone();
+                let seen = seen.clone();
+                async move {
+                    if headers.contains_key("payment-signature") {
+                        seen.store(true, Ordering::SeqCst);
+                        return (StatusCode::OK, "paid").into_response();
+                    }
+                    let mut response = axum::response::Response::new(body());
+                    *response.status_mut() = StatusCode::PAYMENT_REQUIRED;
+                    if let Some(header) = header {
+                        response
+                            .headers_mut()
+                            .insert("payment-required", header.parse().unwrap());
+                    }
+                    response
+                }
+            }),
+        );
+        (format!("{}/report", serve(app).await), saw_payment)
+    }
+
+    async fn x402_test_client() -> PayKitClient {
+        PayKitClient::builder()
+            .signer(test_signer())
+            .rpc_url(live_rpc().await)
+            .accept([ClientProtocol::X402])
+            .build()
+            .unwrap()
+    }
+
+    fn endless() -> axum::body::Body {
+        axum::body::Body::new(EndlessBody)
+    }
+
+    #[tokio::test]
+    async fn an_endless_challenge_body_is_not_buffered() {
+        let (url, saw_payment) = challenge_body_server(None, endless).await;
+        let client = x402_test_client().await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), client.get(url).send())
+                .await
+                .expect("the client stops reading an oversized 402 body");
+        assert!(matches!(result, Err(ClientError::NoSupportedChallenge)));
+        assert!(!saw_payment.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn header_offers_are_paid_past_an_oversized_body() {
+        let (url, saw_payment) =
+            challenge_body_server(Some(x402_challenge_header()), endless).await;
+        let client = x402_test_client().await;
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(10), client.get(url).send())
+                .await
+                .expect("the client stops reading an oversized 402 body")
+                .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(saw_payment.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn an_oversized_body_offer_is_ignored_and_a_small_one_is_paid() {
+        fn body_offer(padding: usize) -> axum::body::Body {
+            let header = x402_challenge_header();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(header)
+                .unwrap();
+            let mut envelope: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+            envelope["padding"] = serde_json::json!(" ".repeat(padding));
+            axum::body::Body::from(serde_json::to_vec(&envelope).unwrap())
+        }
+        let (url, saw_payment) = challenge_body_server(None, || body_offer(0)).await;
+        let response = x402_test_client().await.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(saw_payment.load(Ordering::SeqCst));
+
+        let (url, saw_payment) =
+            challenge_body_server(None, || body_offer(MAX_CHALLENGE_BODY_BYTES)).await;
+        let error = x402_test_client().await.get(url).send().await.unwrap_err();
+        assert!(
+            matches!(error, ClientError::NoSupportedChallenge),
+            "{error}"
+        );
+        assert!(!saw_payment.load(Ordering::SeqCst));
     }
 
     /// Serve a single-offer x402 402 whose paid retry is recorded.
