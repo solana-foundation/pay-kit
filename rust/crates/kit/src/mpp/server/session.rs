@@ -604,16 +604,26 @@ impl SealParams {
     /// Build distribution with the original mandatory callbacks, including
     /// terminal distributions whose actual payer refund is zero. The rent
     /// payer is the one recorded at open, never inferred from a signer.
+    ///
+    /// `clearance` comes from [`Self::payer_refund`]: the program forfeits a
+    /// due refund to the treasury when the payer's token account cannot
+    /// take it, so a sealed distribute is built only once that was ruled out.
     pub fn distribute_instruction(
         &self,
         treasury: &Pubkey,
         token_program: &Pubkey,
+        clearance: &crate::core::payment_channel::payer_refund::DistributeClearance,
     ) -> Result<solana_instruction::Instruction> {
         let deployment = crate::mpp::program::channel_deployment::resolve(
             self.program_id,
             self.channel_version,
             self.channel_hooks.as_ref(),
         )?;
+        if clearance.channel() != &self.channel_id {
+            return Err(Error::Other(
+                "distribution clearance was issued for another channel".into(),
+            ));
+        }
         let payer = self
             .payer
             .ok_or_else(|| Error::Other("distribution missing payer".into()))?;
@@ -3206,9 +3216,43 @@ impl<S: ChannelStore> SessionServer<S> {
 
     /// Mark a channel as sealed (call after the on-chain seal tx confirms).
     pub async fn mark_sealed(&self, channel_id: &str) -> Result<()> {
-        self.store.mark_sealed(channel_id).await.map_err(store_err)
+        self.store
+            .mark_sealed(channel_id)
+            .await
+            .map_err(store_err)?;
+        let now = now_unix_secs();
+        self.store
+            .mutate_channel(
+                channel_id,
+                None,
+                Box::new(move |state| {
+                    state
+                        .extra
+                        .entry(SEALED_AT_KEY.to_string())
+                        .or_insert_with(|| now.into());
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(store_err)
+    }
+
+    /// When [`Self::mark_sealed`] first recorded the channel sealed (unix
+    /// seconds), the start of a deferred distribute's deadline
+    /// ([`SealParams::payer_refund`]).
+    pub async fn sealed_at(&self, channel_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .store
+            .get_channel(channel_id)
+            .await
+            .map_err(store_err)?
+            .and_then(|state| state.extra.get(SEALED_AT_KEY)?.as_i64()))
     }
 }
+
+/// Where a session record keeps the time it was first recorded sealed,
+/// inside [`ChannelState::extra`].
+const SEALED_AT_KEY: &str = "mppSealedAt";
 
 // ── Helpers ──
 
@@ -9037,8 +9081,21 @@ mod tests {
         assert_eq!(params.rent_payer, Some(client_payer));
         let treasury = Pubkey::new_unique();
         let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let clearance = match params
+            .payer_refund(
+                &sealed_channel_account(&params, params.settled),
+                &token_program,
+                None,
+                None,
+                now_unix_secs(),
+            )
+            .unwrap()
+        {
+            crate::core::payment_channel::payer_refund::PayerRefund::Clear(clearance) => clearance,
+            blocked => panic!("{blocked:?}"),
+        };
         let ix = params
-            .distribute_instruction(&treasury, &token_program)
+            .distribute_instruction(&treasury, &token_program, &clearance)
             .unwrap();
         // Accounts: channel, payer, rent_payer, …
         assert_eq!(ix.accounts[2].pubkey, client_payer);
@@ -9047,10 +9104,223 @@ mod tests {
         let mut missing = params;
         missing.rent_payer = None;
         assert!(missing
-            .distribute_instruction(&treasury, &token_program)
+            .distribute_instruction(&treasury, &token_program, &clearance)
             .unwrap_err()
             .to_string()
             .contains("rent payer"));
+    }
+
+    /// The on-chain account of a channel closed by `params` whose deposit is
+    /// `deposit`.
+    fn sealed_channel_account(params: &SealParams, deposit: u64) -> Vec<u8> {
+        channel_account_at(params, deposit, 0, 0)
+    }
+
+    /// The channel account for `params` at onchain `status` and `settled`.
+    fn channel_account_at(params: &SealParams, deposit: u64, status: u8, settled: u64) -> Vec<u8> {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+        borsh::to_vec(&payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status,
+            salt: 7,
+            deposit,
+            settlement: SettlementWatermarks {
+                settled,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: [0; 32],
+            payer: payment_channels::to_address(&params.payer.unwrap()),
+            payee: payment_channels::to_address(&params.recipient),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer.unwrap()),
+            mint: payment_channels::to_address(&params.mint.unwrap()),
+            rent_payer: payment_channels::to_address(&params.rent_payer.unwrap()),
+            open_slot: 42,
+        })
+        .unwrap()
+    }
+
+    /// A channel the payer already sealed onchain below the stored watermark
+    /// refunds `deposit - onchain settled`: the stored cumulative never lands,
+    /// so it must not hide a due refund behind a missing account.
+    #[tokio::test]
+    async fn an_already_sealed_channel_refunds_from_its_onchain_watermark() {
+        use crate::core::payment_channel::payer_refund::PayerRefund;
+
+        let (server, mut session, channel_id) = client_server().await;
+        let params = server
+            .process_close(&ClosePayload {
+                channel_id,
+                authentication: None,
+                voucher: Some(session.sign_increment(100).await.unwrap()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(params.settled, 100);
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let sealed = payment_channels::generated::generated::types::ChannelStatus::Sealed as u8;
+        // Sealed by the payer at 0 of a 100 deposit: all 100 is due back.
+        let outcome = params
+            .payer_refund(
+                &channel_account_at(&params, 100, sealed, 0),
+                &token_program,
+                None,
+                None,
+                now_unix_secs(),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, PayerRefund::Deferred { refund: 100, .. }),
+            "{outcome:?}"
+        );
+        // Positive control: an open channel this close seals at 100 owes
+        // nothing back, so no account is needed.
+        let outcome = params
+            .payer_refund(
+                &channel_account_at(&params, 100, 0, 0),
+                &token_program,
+                None,
+                None,
+                now_unix_secs(),
+            )
+            .unwrap();
+        assert!(matches!(outcome, PayerRefund::Clear(_)), "{outcome:?}");
+    }
+
+    // The program forfeits a due refund to the treasury when the payer's
+    // token account cannot take it, so a close leaves the sealed distribute
+    // unbuilt until the payer can be paid.
+    #[tokio::test]
+    async fn sealed_distribute_needs_a_payable_refund_account() {
+        use crate::core::payment_channel::payer_refund::{ObservedAccount, PayerRefund};
+
+        let (server, mut session, channel_id) = client_server().await;
+        let params = server
+            .process_close(&ClosePayload {
+                channel_id,
+                authentication: None,
+                voucher: Some(session.sign_increment(100).await.unwrap()),
+            })
+            .await
+            .unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        // 900 of a 1_000 deposit is due back to the payer.
+        let channel = sealed_channel_account(&params, 1_000);
+        let refund_account = params.payer_refund_account(&token_program).unwrap();
+        let mut live = vec![0u8; 165];
+        live[..32].copy_from_slice(params.mint.unwrap().as_ref());
+        live[32..64].copy_from_slice(params.payer.unwrap().as_ref());
+        live[108] = 1;
+        let mut frozen = live.clone();
+        frozen[108] = 2;
+
+        for missing_or_frozen in [None, Some(frozen.as_slice())] {
+            let outcome = params
+                .payer_refund(
+                    &channel,
+                    &token_program,
+                    missing_or_frozen.map(|data| ObservedAccount {
+                        owner: token_program,
+                        data,
+                    }),
+                    None,
+                    now_unix_secs(),
+                )
+                .unwrap();
+            assert!(
+                matches!(
+                    &outcome,
+                    PayerRefund::Deferred { refund: 900, payer_token_account, until, .. }
+                        if *payer_token_account == refund_account
+                            && *until >= now_unix_secs() + 899
+                ),
+                "{outcome:?}"
+            );
+        }
+
+        let PayerRefund::Clear(clearance) = params
+            .payer_refund(
+                &channel,
+                &token_program,
+                Some(ObservedAccount {
+                    owner: token_program,
+                    data: &live,
+                }),
+                None,
+                now_unix_secs(),
+            )
+            .unwrap()
+        else {
+            panic!("a live refund account must clear the distribute");
+        };
+        params
+            .distribute_instruction(&Pubkey::new_unique(), &token_program, &clearance)
+            .unwrap();
+
+        // A clearance is bound to its channel.
+        let mut other = params.clone();
+        other.channel_id = Pubkey::new_unique();
+        assert!(other
+            .distribute_instruction(&Pubkey::new_unique(), &token_program, &clearance)
+            .unwrap_err()
+            .to_string()
+            .contains("another channel"));
+    }
+
+    /// A deferred distribute is retried by the host and runs anyway once the
+    /// channel has been sealed for its grace period, so a payer keeping its
+    /// refund account unusable cannot hold the payout. The seal time is the
+    /// one `mark_sealed` recorded first.
+    #[tokio::test]
+    async fn a_deferred_distribute_runs_once_the_grace_period_after_the_seal_ends() {
+        use crate::core::payment_channel::payer_refund::PayerRefund;
+
+        let (server, mut session, channel_id) = client_server().await;
+        let params = server
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
+                authentication: None,
+                voucher: Some(session.sign_increment(100).await.unwrap()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(server.sealed_at(&channel_id).await.unwrap(), None);
+        server.mark_sealed(&channel_id).await.unwrap();
+        let sealed_at = server.sealed_at(&channel_id).await.unwrap().unwrap();
+        assert!(now_unix_secs() - sealed_at <= 1);
+        // A later mark keeps the first seal time.
+        server.mark_sealed(&channel_id).await.unwrap();
+        assert_eq!(
+            server.sealed_at(&channel_id).await.unwrap(),
+            Some(sealed_at)
+        );
+
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let sealed = payment_channels::generated::generated::types::ChannelStatus::Sealed as u8;
+        // Sealed at 100 of a 1_000 deposit with no refund account (grace 900).
+        let channel = channel_account_at(&params, 1_000, sealed, 100);
+        let at = |now: i64| {
+            params
+                .payer_refund(&channel, &token_program, None, Some(sealed_at), now)
+                .unwrap()
+        };
+        assert!(
+            matches!(at(sealed_at + 899), PayerRefund::Deferred { until, .. } if until == sealed_at + 900)
+        );
+        let PayerRefund::Forfeit {
+            clearance, refund, ..
+        } = at(sealed_at + 900)
+        else {
+            panic!("the deferral ends at the deadline");
+        };
+        assert_eq!(refund, 900);
+        params
+            .distribute_instruction(&Pubkey::new_unique(), &token_program, &clearance)
+            .unwrap();
     }
 
     #[tokio::test]

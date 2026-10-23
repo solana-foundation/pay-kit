@@ -40,6 +40,14 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 
+use crate::core::payment_channel::payer_refund::DistributeClearance;
+use crate::core::payment_channel::token_account::{
+    decode_token_account, TOKEN_ACCOUNT_FROZEN, TOKEN_ACCOUNT_INITIALIZED,
+};
+#[cfg(test)]
+use crate::core::payment_channel::token_account::{
+    EXTENSION_IMMUTABLE_OWNER, TOKEN_ACCOUNT_LEN, TOKEN_ACCOUNT_TYPE,
+};
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
@@ -1618,6 +1626,112 @@ impl X402BatchSettlement {
         })
         .await
         .map_err(|e| Error::Other(format!("deposit check task failed: {e}")))?
+    }
+
+    /// The clearance to send the sealed `distribute` of `channel`, sealed at
+    /// `settled` (at `sealed_at`, unix seconds), or `None` to defer it. The
+    /// program forfeits a due refund to the treasury when the payer's token
+    /// account cannot take it, so such a channel is sealed without its
+    /// distribute and a later pass retries: as soon as the account is usable
+    /// or the payer withdrew, and once the channel has been sealed for its
+    /// grace period, anyway, so the payer cannot hold the payout hostage.
+    fn sealed_distribute_clearance(
+        &self,
+        channel_id: &str,
+        channel: &Pubkey,
+        onchain: &Channel,
+        settled: u64,
+        sealed_at: i64,
+        now: i64,
+    ) -> Result<Option<DistributeClearance>, Error> {
+        use crate::core::payment_channel::payer_refund::{
+            payer_refund, ObservedAccount, PayerRefund, RefundDeadline, SealedRefundTerms,
+        };
+        let terms = SealedRefundTerms {
+            channel: *channel,
+            payer: pc::from_address(&onchain.payer),
+            mint: self.mint()?,
+            token_program: self.token_program()?,
+            deposit: onchain.deposit,
+            settled: settled.max(onchain.settlement.settled),
+            payer_withdrawn_at: onchain.payer_withdrawn_at,
+        };
+        let deadline = RefundDeadline {
+            sealed_at,
+            grace_period: onchain.grace_period,
+        };
+        if terms.refund_due() == 0 {
+            return Ok(payer_refund(&terms, None, deadline, now).clearance());
+        }
+        let address = terms.payer_token_account();
+        let account = self
+            .rpc
+            .get_account_with_commitment(&address, self.rpc.commitment())
+            .map_err(|e| Error::Rpc(format!("payer refund account {address}: {e}")))?
+            .value;
+        let observed = account.as_ref().map(|account| ObservedAccount {
+            owner: pc::from_address(&account.owner),
+            data: &account.data,
+        });
+        match payer_refund(&terms, observed, deadline, now) {
+            PayerRefund::Clear(clearance) => Ok(Some(clearance)),
+            PayerRefund::Deferred {
+                refund,
+                payer_token_account,
+                reason,
+                until,
+            } => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    %payer_token_account,
+                    refund,
+                    reason,
+                    until,
+                    "payer refund account cannot be paid; sealing without distributing \
+                     until it can, or until the deadline"
+                );
+                Ok(None)
+            }
+            PayerRefund::Forfeit {
+                clearance,
+                refund,
+                payer_token_account,
+                reason,
+            } => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    %payer_token_account,
+                    refund,
+                    reason,
+                    "payer refund account still unusable past the deadline; distributing, \
+                     the refund goes to the treasury"
+                );
+                Ok(Some(clearance))
+            }
+        }
+    }
+
+    /// When this server first saw `channel_id` sealed, recording `now` when it
+    /// had not; `now` for a channel this store has no record of.
+    async fn first_sealed_at(&self, channel_id: &str, now: i64) -> i64 {
+        self.store
+            .update_channel(
+                channel_id,
+                Box::new(move |current| {
+                    let mut state = current.ok_or_else(|| {
+                        crate::core::store::StoreError::Internal("channel not found".into())
+                    })?;
+                    state
+                        .extra
+                        .entry(SEALED_AT_KEY.to_string())
+                        .or_insert_with(|| now.into());
+                    Ok(state)
+                }),
+            )
+            .await
+            .ok()
+            .and_then(|state| state.extra.get(SEALED_AT_KEY)?.as_i64())
+            .unwrap_or(now)
     }
 
     /// Verify a client-mode `refund` and return the watermark it closes at.
@@ -3529,6 +3643,20 @@ impl X402BatchSettlement {
             let distribute = match terminal_step(onchain.status, distribute) {
                 TerminalStep::PlanClose(distribute) => distribute,
                 TerminalStep::Submit(instructions) => {
+                    let sealed_at = self.first_sealed_at(channel_id, now).await;
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id,
+                            &channel,
+                            &onchain,
+                            onchain.settlement.settled,
+                            sealed_at,
+                            now,
+                        )?
+                        .is_none()
+                    {
+                        continue;
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
                         instructions,
@@ -3574,9 +3702,23 @@ impl X402BatchSettlement {
             let seal_ix = pc::build_seal_instruction(&channel, &program_id);
             match plan {
                 None | Some((GraceSealPlan::SealFrozen, _)) => {
+                    let mut instructions = vec![seal_ix];
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id,
+                            &channel,
+                            &onchain,
+                            onchain.settlement.settled,
+                            now,
+                            now,
+                        )?
+                        .is_some()
+                    {
+                        instructions.push(distribute);
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
-                        instructions: vec![seal_ix, distribute],
+                        instructions,
                     });
                 }
                 Some((GraceSealPlan::InFlight, _)) => {
@@ -3616,7 +3758,14 @@ impl X402BatchSettlement {
                         expires_at,
                         &program_id,
                     )?;
-                    instructions.push(distribute);
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id, &channel, &onchain, cumulative, now, now,
+                        )?
+                        .is_some()
+                    {
+                        instructions.push(distribute);
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
                         instructions,
@@ -3645,6 +3794,10 @@ impl X402BatchSettlement {
                             crate::core::store::StoreError::Internal("channel not found".into())
                         })?;
                         state.sealed = true;
+                        state
+                            .extra
+                            .entry(SEALED_AT_KEY.to_string())
+                            .or_insert_with(|| now.into());
                         if let Some(watermark) = applied {
                             state.settled_on_chain = state.settled_on_chain.max(watermark);
                         }
@@ -3884,56 +4037,6 @@ fn payer_signature(transaction: &VersionedTransaction) -> Option<String> {
     Some(signature.to_string())
 }
 
-/// Base length of an SPL token account. Token-2022 appends its extensions
-/// after the same fixed layout, so one decoder covers both programs.
-const TOKEN_ACCOUNT_LEN: usize = 165;
-
-/// `AccountState::Initialized`, at offset 108.
-const TOKEN_ACCOUNT_INITIALIZED: u8 = 1;
-
-/// `AccountState::Frozen`: the account cannot receive or send.
-const TOKEN_ACCOUNT_FROZEN: u8 = 2;
-
-/// `AccountType::Account`, the discriminant a Token-2022 account carries at
-/// offset 165 before its extensions.
-const TOKEN_ACCOUNT_TYPE: u8 = 2;
-
-/// `ExtensionType::ImmutableOwner`.
-///
-/// The only account extension a settlement destination may carry. It is inert
-/// — it fixes the owner, nothing else — and every associated token account has
-/// it, so requiring its absence would reject ordinary ATAs.
-const EXTENSION_IMMUTABLE_OWNER: u16 = 7;
-
-/// The fields of an SPL token account this server cares about.
-struct TokenAccount {
-    mint: Pubkey,
-    owner: Pubkey,
-    state: u8,
-    /// An account extension this server will not settle through, if any.
-    unsupported_extension: Option<u16>,
-}
-
-/// Decode a token account, or `None` when the data is too short to be one —
-/// which is what an uninitialized (or non-token) account looks like.
-///
-/// Token-2022 appends a type byte and a TLV extension list after the same
-/// 165-byte base. Those extensions are not cosmetic: one can withhold part of a
-/// transfer, require a memo to precede it, block it from a CPI, or move the
-/// balance out of the classic ledger entirely — so an account carrying one is
-/// reported rather than silently accepted as a payout destination.
-fn decode_token_account(data: &[u8]) -> Option<TokenAccount> {
-    if data.len() < TOKEN_ACCOUNT_LEN {
-        return None;
-    }
-    Some(TokenAccount {
-        mint: Pubkey::try_from(&data[0..32]).ok()?,
-        owner: Pubkey::try_from(&data[32..64]).ok()?,
-        state: data[108],
-        unsupported_extension: unsupported_account_extension(data),
-    })
-}
-
 /// Why the account at `owner`'s associated token address for `mint`, owned
 /// by `program` and holding `data`, cannot receive a settlement payout, or
 /// `None` when it can: it must be an
@@ -3979,45 +4082,6 @@ pub(crate) fn unusable_settlement_account(
     }
     if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
         return Some(format!("is in account state {}", decoded.state));
-    }
-    None
-}
-
-/// The first account extension outside the allowlist, if the account has one.
-///
-/// A malformed or truncated TLV is reported as unsupported rather than skipped:
-/// this decides whether to accept an escrow, so anything it cannot read is
-/// something it should not settle through.
-fn unsupported_account_extension(data: &[u8]) -> Option<u16> {
-    // A classic SPL Token account is exactly the base length and has no
-    // extension list at all.
-    if data.len() == TOKEN_ACCOUNT_LEN {
-        return None;
-    }
-    if data[TOKEN_ACCOUNT_LEN] != TOKEN_ACCOUNT_TYPE {
-        return Some(u16::from(data[TOKEN_ACCOUNT_LEN]));
-    }
-    let mut cursor = TOKEN_ACCOUNT_LEN + 1;
-    while cursor < data.len() {
-        // A run of zero padding is the end of the list, not an extension.
-        if data[cursor..].iter().all(|byte| *byte == 0) {
-            return None;
-        }
-        let Some(header) = data.get(cursor..cursor + 4) else {
-            return Some(u16::MAX);
-        };
-        let extension = u16::from_le_bytes([header[0], header[1]]);
-        let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
-        if extension != EXTENSION_IMMUTABLE_OWNER {
-            return Some(extension);
-        }
-        let Some(next) = cursor.checked_add(4).and_then(|c| c.checked_add(length)) else {
-            return Some(u16::MAX);
-        };
-        if next > data.len() {
-            return Some(u16::MAX);
-        }
-        cursor = next;
     }
     None
 }
@@ -4071,6 +4135,11 @@ fn deposit_can_land(
     }
     Ok(())
 }
+
+/// Where a record keeps when this server first saw its channel sealed (unix
+/// seconds), inside [`ChannelState::extra`]: the program records no seal
+/// time, and a deferred distribute's deadline counts from it.
+const SEALED_AT_KEY: &str = "x402BatchSealedAt";
 
 /// Where a record keeps the receiver authorizer its channel's open bound
 /// (spec §3), inside [`ChannelState::extra`].
@@ -6104,6 +6173,230 @@ mod tests {
             rent_payer: pc::to_address(fee_payer),
             open_slot: config.open_slot,
         }
+    }
+
+    /// A pipeline RPC that confirms every broadcast and records the program
+    /// ids each sent transaction invokes.
+    async fn recording_pipeline_rpc() -> (
+        String,
+        Arc<Mutex<Vec<Vec<Pubkey>>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{routing::post, Json, Router};
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&sent);
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    let result = match request["method"].as_str().unwrap() {
+                        "getLatestBlockhash" => serde_json::json!({
+                            "context": { "slot": 1 },
+                            "value": {
+                                "blockhash": solana_hash::Hash::new_unique().to_string(),
+                                "lastValidBlockHeight": 100
+                            }
+                        }),
+                        "sendTransaction" => {
+                            let tx =
+                                crate::core::tx::decode(request["params"][0].as_str().unwrap())
+                                    .unwrap();
+                            let keys = tx.message.static_account_keys();
+                            recorded.lock().unwrap().push(
+                                tx.message
+                                    .instructions()
+                                    .iter()
+                                    .map(|ix| keys[ix.program_id_index as usize])
+                                    .collect(),
+                            );
+                            serde_json::json!(tx.signatures[0].to_string())
+                        }
+                        "getSignatureStatuses" => {
+                            let statuses = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|_| {
+                                    serde_json::json!({
+                                        "slot": 2, "confirmations": null, "err": null,
+                                        "confirmationStatus": "finalized",
+                                        "status": { "Ok": null }
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            serde_json::json!({ "context": { "slot": 2 }, "value": statuses })
+                        }
+                        method => panic!("unexpected RPC method {method}"),
+                    };
+                    Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": result
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, sent, server)
+    }
+
+    /// The program forfeits a due refund to the treasury when the payer's
+    /// token account cannot take it, so `finalize_close` seals such a
+    /// channel without distributing it.
+    /// Run `finalize_close` over one channel at onchain `status`, its payer
+    /// refund account usable or not, its record seeded with `sealed_at`.
+    /// Returns the payment-channels instructions sent and the seal time the
+    /// record holds afterwards.
+    async fn finalize_close_once(
+        status: u8,
+        payable: bool,
+        sealed_at: Option<i64>,
+    ) -> (usize, Option<i64>) {
+        use base64::Engine as _;
+        use solana_rpc_client_api::request::RpcRequest;
+
+        {
+            let (url, sent, rpc) = recording_pipeline_rpc().await;
+            let key = SigningKey::from_bytes(&[21; 32]);
+            let mut keypair = [0u8; 64];
+            keypair[..32].copy_from_slice(key.as_bytes());
+            keypair[32..].copy_from_slice(key.verifying_key().as_bytes());
+            let signer = solana_keychain::MemorySigner::from_bytes(&keypair).unwrap();
+            let fee_payer = signer.pubkey();
+            let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(signer));
+            config.withdraw_delay = 3600;
+            config.rpc_url = Some(url);
+            let store = Arc::new(MemoryChannelStore::new());
+            let handler = X402BatchSettlement::with_store(config, store.clone()).unwrap();
+            let requirements = handler.requirements("0.001").unwrap();
+            let (_, client_config, channel) = client(&fee_payer, &requirements);
+            let channel_b58 = pc::pubkey_string(&channel);
+            let mut seeded = handler.seed_state(&channel_b58, &client_config);
+            if let Some(sealed_at) = sealed_at {
+                seeded
+                    .extra
+                    .insert(SEALED_AT_KEY.to_string(), sealed_at.into());
+            }
+            store.put_channel(&channel_b58, seeded).await.unwrap();
+            // 4_000 of the 5_000 deposit is due back to the payer; the
+            // closing channel is past its grace deadline.
+            let mut onchain = onchain_channel(&client_config, &fee_payer, 5_000);
+            onchain.status = status;
+            onchain.settlement.settled = 1_000;
+            onchain.closure_started_at = 1;
+            let mint = handler.mint().unwrap();
+            let token_program = handler.token_program().unwrap();
+            let payer = pc::from_address(&onchain.payer);
+            let mut token_account = vec![0u8; 165];
+            token_account[..32].copy_from_slice(mint.as_ref());
+            token_account[32..64].copy_from_slice(payer.as_ref());
+            token_account[108] = 1;
+            let account = |data: &[u8], owner: &Pubkey| {
+                serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "lamports": 1_000_000,
+                        "data": [base64::engine::general_purpose::STANDARD.encode(data), "base64"],
+                        "owner": pc::pubkey_string(owner),
+                        "executable": false,
+                        "rentEpoch": 0,
+                        "space": data.len(),
+                    }
+                })
+            };
+            let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                account(&borsh::to_vec(&onchain).unwrap(), &pc::default_program_id()),
+            );
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                if payable {
+                    account(&token_account, &token_program)
+                } else {
+                    serde_json::json!({ "context": { "slot": 1 }, "value": null })
+                },
+            );
+            let handler = handler.with_rpc_client(RpcClient::new_mock_with_mocks_map(
+                "succeeds".to_string(),
+                mocks,
+            ));
+
+            handler
+                .finalize_close(std::slice::from_ref(&channel_b58))
+                .await
+                .unwrap();
+            let program_id = pc::default_program_id();
+            let sent = sent.lock().unwrap().clone();
+            let distributes = sent
+                .iter()
+                .flatten()
+                .filter(|program| **program == program_id)
+                .count();
+            rpc.abort();
+            let recorded = store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .and_then(|state| state.extra.get(SEALED_AT_KEY)?.as_i64());
+            (distributes, recorded)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalize_close_never_distributes_into_an_unusable_refund_account() {
+        // (on-chain status, payer refund account usable) → programs invoked.
+        for (status, payable) in [
+            (CHANNEL_STATUS_SEALED, false),
+            (CHANNEL_STATUS_SEALED, true),
+            (CHANNEL_STATUS_CLOSING, false),
+            (CHANNEL_STATUS_CLOSING, true),
+        ] {
+            let (distributes, sealed_at) = finalize_close_once(status, payable, None).await;
+            let expected = match (status, payable) {
+                // Already sealed: distribute only, or nothing this pass.
+                (CHANNEL_STATUS_SEALED, true) => 1,
+                (CHANNEL_STATUS_SEALED, false) => 0,
+                // Closing: seal + distribute, or the seal alone.
+                (_, true) => 2,
+                (_, false) => 1,
+            };
+            assert_eq!(distributes, expected, "status {status}, payable {payable}");
+            // The seal time a deferred distribute's deadline counts from.
+            let now = now_unix() as i64;
+            assert!(
+                sealed_at.is_some_and(|at| now - at <= 1),
+                "status {status}, payable {payable}: {sealed_at:?}"
+            );
+        }
+    }
+
+    /// A deferred distribute is retried on every later pass and, once the
+    /// channel has been sealed for its grace period, sent anyway: a payer
+    /// keeping its refund account unusable cannot hold the payout. The first
+    /// seal time recorded is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_distribute_runs_once_the_grace_period_after_the_seal_ends() {
+        let now = now_unix() as i64;
+        // Grace 3600 s: inside it the distribute still waits.
+        let inside = now - 3_599;
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, false, Some(inside)).await,
+            (0, Some(inside))
+        );
+        let past = now - 3_600;
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, false, Some(past)).await,
+            (1, Some(past))
+        );
+        // Positive control: a payable account distributes inside the grace.
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, true, Some(inside))
+                .await
+                .0,
+            1
+        );
     }
 
     /// A replayed opening deposit for a channel the chain already holds, sent

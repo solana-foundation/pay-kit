@@ -277,7 +277,11 @@ operator and caps its total channel escrow; the bundled server currently offers
 client-signed vouchers. When a payer force-closes a channel,
 `finalize_close` applies the server's latest voucher with `settle_and_seal`
 during the grace period rather than forfeiting it, then finalizes
-permissionlessly once the grace period has run out.
+permissionlessly once the grace period has run out. A channel whose payer refund
+account cannot take its refund is sealed without its `distribute`; later
+`finalize_close` passes distribute it once the account is usable, or once the
+channel has been sealed for its grace period, when the refund goes to the
+treasury.
 
 ## Client
 
