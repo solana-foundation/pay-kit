@@ -456,6 +456,10 @@ fn policy_case(
 
 /// An `open` deposit: no stored record, no channel onchain yet.
 fn open_input(transaction: String) -> Value {
+    open_input_with(transaction, Atas::Healthy)
+}
+
+fn open_input_with(transaction: String, atas: Atas) -> Value {
     let config = cfg();
     let payload = json!({
         "type": "deposit",
@@ -468,7 +472,7 @@ fn open_input(transaction: String) -> Value {
         &requirements(),
         &payload,
         None,
-        fx::rpc_fixtures(None, Atas::Healthy, TOKEN_PROGRAM),
+        fx::rpc_fixtures(None, atas, TOKEN_PROGRAM),
     )
 }
 
@@ -1697,6 +1701,13 @@ crate::registry! {
         top_up_input_with(&route(), top_up_tx(vec![], TOP_UP_AMOUNT_ADDED, memo()), "6000", 4_000, Atas::FrozenPayer, TOKEN_PROGRAM),
         rej(RejectCode::SettlementSimulation),
     ).requirements(&[SETTLEMENT_ACCOUNTS, "X402-fbdea947ae"]).authored(None).build();
+    batch_verify_top_up_unfunded_payer_reject => case(
+        "batch-verify-top-up-unfunded-payer-reject", "batch-verify-setup-policy.json", Mode::VerifyTransaction, Role::Server, BugType::Settlement,
+        s("Canonical top_up", "It MUST confirm the payer has sufficient tokens."),
+        "The accept top-up, but the payer's token account holds 1 base unit against the 6000 top-up. The deposit is broadcast only after the handler runs, so a verifier that skips the balance serves the request and only then finds the deposit cannot land.",
+        top_up_input_with(&route(), top_up_tx(vec![], TOP_UP_AMOUNT_ADDED, memo()), "6000", 4_000, Atas::UnfundedPayer, TOKEN_PROGRAM),
+        rej(RejectCode::SettlementSimulation),
+    ).requirements(&["X402-014270dc81"]).build();
 
     // ── server verify: open ──
     batch_verify_open_accept => open_case(
@@ -1705,6 +1716,13 @@ crate::registry! {
         open_tx(honest_open(), open_suffix()),
         Expect::AcceptAuthored(json!({})),
     ).authored(None).build();
+    batch_verify_open_unfunded_payer_reject => case(
+        "batch-verify-open-unfunded-payer-reject", "batch-verify-open.json", Mode::VerifyTransaction, Role::Server, BugType::Settlement,
+        s("Canonical open", "It MUST confirm the payer has sufficient tokens for the deposit and the sponsor has sufficient SOL for the transaction fee plus the channel PDA and escrow ATA rent."),
+        "The accept open, but the payer's token account holds 1 base unit against the 10000 deposit. The deposit is broadcast only after the handler runs, so a verifier that skips the balance serves the request and only then finds the open cannot land. Pair: batch-verify-open-accept.",
+        open_input_with(open_tx(honest_open(), open_suffix()), Atas::UnfundedPayer),
+        rej(RejectCode::SettlementSimulation),
+    ).requirements(&["X402-0ff4cabcb4"]).build();
     batch_verify_open_missing_binding_memo_reject => open_case(
         "batch-verify-open-missing-binding-memo-reject", s("Top-level instruction layout", "An `open` suffix also carries exactly one binding Memo from section 3."), &[MEMO_EXACT, BINDING_KEY],
         "The open carries only the seller memo: without the binding memo the channel is bound to no receiver authorizer.",

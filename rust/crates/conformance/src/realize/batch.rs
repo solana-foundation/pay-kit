@@ -1182,10 +1182,15 @@ pub mod fx {
     // ── chain state ──
 
     pub fn token_account(owner: &str, state: u8) -> Value {
+        token_account_holding(owner, state, 1_000_000_000)
+    }
+
+    /// [`token_account`] holding `amount` base units.
+    pub fn token_account_holding(owner: &str, state: u8, amount: u64) -> Value {
         let mut data = Vec::with_capacity(165);
         data.extend_from_slice(pubkey(keys::MINT).as_ref());
         data.extend_from_slice(pubkey(owner).as_ref());
-        data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
         data.extend_from_slice(&[0u8; 36]); // delegate: None
         data.push(state);
         data.extend_from_slice(&[0u8; 12]); // is_native: None
@@ -1285,6 +1290,8 @@ pub mod fx {
         MissingReceiver,
         /// The payer's return ATA is frozen (state 2).
         FrozenPayer,
+        /// The payer's ATA holds a single base unit, short of any deposit.
+        UnfundedPayer,
     }
 
     /// `rpcFixtures`: the mint, the settlement ATAs and, when given, the
@@ -1306,7 +1313,12 @@ pub mod fx {
             if atas == Atas::MissingReceiver && owner == keys::X402_PAY_TO {
                 continue;
             }
-            accounts.insert(ata(&owner), token_account(&owner, state));
+            let amount = if atas == Atas::UnfundedPayer && owner == payer() {
+                1
+            } else {
+                1_000_000_000
+            };
+            accounts.insert(ata(&owner), token_account_holding(&owner, state, amount));
         }
         if let Some((config, account)) = channel {
             accounts.insert(

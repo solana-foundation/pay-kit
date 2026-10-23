@@ -4899,5 +4899,163 @@
       "section": "Canonical top_up"
     },
     "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "The accept top-up, but the payer's token account holds 1 base unit against the 6000 top-up. The deposit is broadcast only after the handler runs, so a verifier that skips the balance serves the request and only then finds the deposit cannot land.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "settlement-simulation"
+    },
+    "id": "batch-verify-top-up-unfunded-payer-reject",
+    "input": {
+      "batchRequirements": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+          "memo": "invoice-42",
+          "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "withdrawDelay": 3600
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "batch-settlement"
+      },
+      "batchServer": {
+        "cluster": "devnet",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "feePayerSecretKey": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          253,
+          23,
+          36,
+          56,
+          90,
+          160,
+          199,
+          91,
+          100,
+          251,
+          120,
+          205,
+          96,
+          47,
+          161,
+          217,
+          145,
+          253,
+          235,
+          247,
+          107,
+          19,
+          197,
+          142,
+          215,
+          2,
+          234,
+          200,
+          53,
+          233,
+          246,
+          24
+        ],
+        "maxTimeoutSeconds": 300,
+        "memo": "invoice-42",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "price": "0.001",
+        "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "withdrawDelay": 3600
+      },
+      "batchServerChannel": {
+        "channelId": "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ",
+        "chargedCumulativeAmount": "3000",
+        "deposit": "4000",
+        "openSlot": 341000000,
+        "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "settled": "0"
+      },
+      "rpcFixtures": {
+        "accounts": {
+          "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqfqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqc7S0pMPs1+WdY0rmfl3rvsCtBvIE3wE6aVozdqV7mNBQDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "Hjg2PDgLxYDiQWRHrJeeY9V9iNyebM9MWutoA67eivsZ": {
+            "data": "AQH/ACoAAAAAAAAAoA8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAOAABKHxlNESMyCQEQHZINFOcuqsCHfS894FMmEGgZV1RQmepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hjqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLDtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6n/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hhAP1MUAAAAAA==",
+            "owner": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          },
+          "PjeTAeWHZHjrBForCEJvMVmRJpW5dngPaRzCp8w1MM4": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqerTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiMwDKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "f5xag9qZ5qmEkt2MDrBQZENh9QV1orw3UyrqAg5wTc3": {
+            "data": "O0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqf9FyQ4WqDHW2T7eM1gL6HZkf3r92sTxY7XAurINen2GADKmjsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111",
+        "slot": 341000100
+      },
+      "x402PaymentHeader": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwicGF5VG8iOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInNjaGVtZSI6ImJhdGNoLXNldHRsZW1lbnQifSwicGF5bG9hZCI6eyJjaGFubmVsQ29uZmlnIjp7Im9wZW5TbG90IjozNDEwMDAwMDAsInBheWVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJwYXllckF1dGhvcml6ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInJlY2VpdmVyIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJyZWNlaXZlckF1dGhvcml6ZXIiOiJBb1ZzR2FqOE1TSjZ4d0t4ZkZ4bzlpWldIM2VuQzhSUlRYS0gyZngyRjhvcyIsInNhbHQiOiI0MiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiZGVwb3NpdCI6eyJhbW91bnQiOiI2MDAwIiwidHJhbnNhY3Rpb24iOiJBZ0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUJKejlBaGkyYTZVNGlRa3J4OGVYK3lEaVZWQ1dyVmNrcmp3VjZjZ1dLY3hLRmNIRTVYYTRuZ3V2dEFxUjBlSGFpRncxSWN0SS9WUDZ1L2xWWnc1b1FKZ0FJQUJBbjlGeVE0V3FESFcyVDdlTTFnTDZIWmtmM3I5MnNUeFk3WEF1cklOZW4yR09wS2JHUGluRklLdnZWUWV4TXV4Zm1WUjNhdXZyNTdra0llNm1rVVJ0SXNFdWsySzZja1BjcS9FcEs5UjJWMENzendnNDV3eHVmODBadC9aTEZlSXg1cmhQNVVCWm1RcHVvakNOeGxpRld0bFlwbEhoUlhKaVAzK3RPVDI3QVQ3UGlwZ2x0WTd5MWN4M1F4NGZuR0xRMS9wU1lmaTdmNGgyMmZIb21nMlNzZ0JVcFRXcGtwSVFaTkpPaHhZTm80Zkh3MXRkMjhrcnVCNUIrb1FFRUZSSTBHM2ZiaDEyV2hrOW5MNFViTzYzbXNITFNGN1Y5Yk41RTZqUFdGZnY4QXFUdEVMTE9SSVZmeE9wTTlBVFFvTFFNclgvN05BYUxiOGJkNUJnamZBQzZucDZIN3BPc3JDUW1UOTlMZjFpdUo0cmh5QjNwam45ZlhSNmpwbjJQVUZhNEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFJSUJnRUVBd0lIQmdrRGNCY0FBQUFBQUFBRkFBcHBiblp2YVdObExUUXlBQT09In0sInR5cGUiOiJkZXBvc2l0Iiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJIamcyUERnTHhZRGlRV1JIckplZVk5VjlpTnllYk05TVd1dG9BNjdlaXZzWiIsImV4cGlyZXNBdCI6MCwibWF4Q2xhaW1hYmxlQW1vdW50IjoiNDAwMCIsInNpZ25hdHVyZSI6IjNXWU5qY21oZDRzWG9ueFFQckJxckZic1Z0OUpvZ0ZTdG9BU3BqNG8xTFRuTHhpOUhlNGI0ZTh0SGpzdUN0TUNXQlBrdG9SZnpHWHhIU2ZKOXVZZ2FYRFIifX0sIng0MDJWZXJzaW9uIjoyfQ=="
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402-014270dc81"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "It MUST confirm the payer has sufficient tokens.",
+      "section": "Canonical top_up"
+    },
+    "tier": "offline"
   }
 ]

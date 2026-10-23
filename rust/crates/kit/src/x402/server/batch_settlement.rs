@@ -1322,6 +1322,20 @@ impl X402BatchSettlement {
                         recent_slot,
                     )?;
                 let deposit_signature = payer_signature(&validated.transaction);
+                // The deposit is broadcast only after the handler runs, so a
+                // transaction that cannot land must be refused now. One this
+                // server already recorded may be in flight or committed, and
+                // its funds already moved.
+                if !deposit_already_recorded(stored.as_ref(), deposit_signature.as_deref()) {
+                    self.check_deposit_can_land(
+                        &validated.transaction,
+                        &payer,
+                        &mint,
+                        &token_program,
+                        deposit_amount,
+                    )
+                    .await?;
+                }
                 let deposit_after = Self::deposit_ceiling(
                     stored.as_ref(),
                     deposit_amount,
@@ -1544,6 +1558,30 @@ impl X402BatchSettlement {
             }
         }
         Ok(())
+    }
+
+    /// The checks a deposit transaction must pass before the handler runs,
+    /// since it is only broadcast afterwards: its blockhash is still live and
+    /// the payer's token account holds the deposit (spec, canonical `open`
+    /// and `top_up`: "It MUST confirm the payer has sufficient tokens"). A
+    /// failed read is a refusal too. The blocking reads run on a blocking
+    /// thread (`spawn_blocking`).
+    async fn check_deposit_can_land(
+        &self,
+        transaction: &VersionedTransaction,
+        payer: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        deposit_amount: u64,
+    ) -> Result<(), Error> {
+        let rpc = Arc::clone(&self.rpc);
+        let blockhash = *transaction.message.recent_blockhash();
+        let (ata, _) = pc::find_associated_token_address(payer, mint, token_program);
+        tokio::task::spawn_blocking(move || {
+            deposit_can_land(&rpc, &blockhash, &ata, deposit_amount)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("deposit check task failed: {e}")))?
     }
 
     /// Verify a client-mode `refund` and return the watermark it closes at.
@@ -3934,6 +3972,56 @@ fn unsupported_account_extension(data: &[u8]) -> Option<u16> {
     None
 }
 
+/// Whether `signature` is a deposit this server already recorded for the
+/// channel: still pending, or committed (a byte-identical retry). Its landing
+/// was checked when it was first presented.
+fn deposit_already_recorded(stored: Option<&ChannelState>, signature: Option<&str>) -> bool {
+    let (Some(state), Some(signature)) = (stored, signature) else {
+        return false;
+    };
+    state
+        .pending_setup
+        .as_ref()
+        .is_some_and(|setup| setup.payer_signature == signature)
+        || state
+            .processed_topup_signatures
+            .iter()
+            .any(|recorded| recorded == signature)
+}
+
+/// [`X402BatchSettlement::check_deposit_can_land`]'s blocking reads.
+fn deposit_can_land(
+    rpc: &RpcClient,
+    blockhash: &solana_hash::Hash,
+    ata: &Pubkey,
+    deposit_amount: u64,
+) -> Result<(), Error> {
+    let not_ready = |detail: String| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, detail);
+    let live = rpc
+        .is_blockhash_valid(blockhash, rpc.commitment())
+        .map_err(|e| not_ready(format!("deposit blockhash check failed: {e}")))?;
+    if !live {
+        return Err(not_ready(format!(
+            "deposit transaction blockhash {blockhash} is not live"
+        )));
+    }
+    let account = rpc
+        .get_account(ata)
+        .map_err(|e| not_ready(format!("payer token account {ata} is unavailable: {e}")))?;
+    let balance = account
+        .data
+        .get(64..72)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| not_ready(format!("payer token account {ata} is not a token account")))?;
+    if balance < deposit_amount {
+        return Err(not_ready(format!(
+            "payer token account {ata} holds {balance}, less than the {deposit_amount} deposit"
+        )));
+    }
+    Ok(())
+}
+
 /// Where a record keeps the receiver authorizer its channel's open bound
 /// (spec §3), inside [`ChannelState::extra`].
 const RECEIVER_BINDING_KEY: &str = "x402BatchReceiverAuthorizer";
@@ -6015,6 +6103,111 @@ mod tests {
             .await
             .expect_err("the placeholder transaction does not decode");
         assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// A deposit is broadcast only after the handler runs, so one that cannot
+    /// land (an expired blockhash, a payer short of the deposit) is refused
+    /// before the handler, and a failed read refuses too.
+    /// A retry of a deposit already committed skips the landing check like a
+    /// pending one: its funds moved, so a balance read now would refuse it.
+    #[test]
+    fn a_committed_deposit_retry_skips_the_landing_check() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let mut state = seeded(&channel, &config, 5_000, 0);
+        state.processed_topup_signatures = vec!["committed".to_string()];
+        assert!(deposit_already_recorded(Some(&state), Some("committed")));
+        // Positive controls: an unknown deposit, or none at all, is checked.
+        assert!(!deposit_already_recorded(Some(&state), Some("fresh")));
+        assert!(!deposit_already_recorded(None, Some("committed")));
+        assert!(!deposit_already_recorded(Some(&state), None));
+        state.processed_topup_signatures.clear();
+        assert!(!deposit_already_recorded(Some(&state), Some("committed")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deposit_that_cannot_land_is_refused_before_serving() {
+        use base64::Engine as _;
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let (payer, mint, token_program) = (
+            Pubkey::new_unique(),
+            probe.mint().unwrap(),
+            probe.token_program().unwrap(),
+        );
+        let tx = VersionedTransaction {
+            signatures: vec![solana_signature::Signature::default()],
+            message: solana_message::VersionedMessage::V0(
+                solana_message::v0::Message::try_compile(
+                    &fee_payer,
+                    &[],
+                    &[],
+                    solana_hash::Hash::new_unique(),
+                )
+                .unwrap(),
+            ),
+        };
+        let chain = |live: bool, balance: u64| {
+            let mut data = vec![0u8; 165];
+            data[..32].copy_from_slice(mint.as_ref());
+            data[32..64].copy_from_slice(payer.as_ref());
+            data[64..72].copy_from_slice(&balance.to_le_bytes());
+            data[108] = 1;
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::IsBlockhashValid,
+                serde_json::json!({ "context": { "slot": 1 }, "value": live }),
+            );
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "lamports": 2_039_280,
+                        "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+                        "owner": pc::pubkey_string(&token_program),
+                        "executable": false,
+                        "rentEpoch": 0,
+                        "space": 165,
+                    }
+                }),
+            );
+            let (handler, _) = handler(Arc::new(MemoryChannelStore::new()));
+            handler.with_rpc_client(RpcClient::new_mock_with_mocks(
+                "succeeds".to_string(),
+                mocks,
+            ))
+        };
+        let check = |handler: X402BatchSettlement| {
+            let tx = tx.clone();
+            async move {
+                handler
+                    .check_deposit_can_land(&tx, &payer, &mint, &token_program, 5_000)
+                    .await
+            }
+        };
+        let refused = |result: Result<(), Error>, detail: &str| {
+            let err = result.expect_err(detail);
+            assert_eq!(
+                crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+                codes::INVALID_SETTLEMENT_SIMULATION,
+                "{err}"
+            );
+            assert!(err.to_string().contains(detail), "{err}");
+        };
+
+        refused(
+            check(chain(true, 4_999)).await,
+            "less than the 5000 deposit",
+        );
+        refused(check(chain(false, 5_000)).await, "is not live");
+        let (unreachable, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let unreachable = unreachable.with_rpc_client(RpcClient::new_mock("fails".to_string()));
+        refused(check(unreachable).await, "blockhash check failed");
+        // Positive control: a live blockhash and exactly the deposit.
+        check(chain(true, 5_000))
+            .await
+            .expect("a fundable deposit passes");
     }
 
     /// Channel reads run off the async worker. The blocking RPC client parks

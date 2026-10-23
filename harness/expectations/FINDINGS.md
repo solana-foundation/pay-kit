@@ -285,6 +285,21 @@ the recipient creations and check recipient token accounts before co-signing
 the open; dropping the creations alone would forfeit payouts to accounts that
 do not exist.
 
+## batch-deposit-balance-unchecked
+
+**Case:** `vector/batch-verify-open-unfunded-payer-reject`,
+`vector/batch-verify-top-up-unfunded-payer-reject`
+**SDKs:** typescript
+
+scheme_batch_settlement_svm.md, canonical `open` and `top_up`: "It MUST
+confirm the payer has sufficient tokens". The pay-kit gate broadcasts the
+deposit only after the handler runs, so Rust reads the payer's token account
+and the transaction's blockhash before it reserves the request
+(`X402BatchSettlement::check_deposit_can_land`). The vendored `@x402/svm`
+2.26.0 verify reads no balance; its deposit settle simulates the
+transaction, which the offline harness signer stubs, so the vector cannot
+observe it there.
+
 ## session-open-initial-voucher-accepted
 
 **Case:** `vector/session-wire-action-open-initial-voucher-reject`

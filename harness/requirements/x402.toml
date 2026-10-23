@@ -587,6 +587,18 @@ text = "| authorization | BatchAuthorization | REQUIRED in server mode and absen
 required = true
 
 [[requirement]]
+id = "X402-0ff4cabcb4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST confirm the payer has sufficient tokens for the deposit and the sponsor has sufficient SOL for the transaction fee plus the channel PDA and escrow ATA rent."
+required = true
+
+[[requirement]]
+id = "X402-014270dc81"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST confirm the payer has sufficient tokens."
+required = true
+
+[[requirement]]
 id = "X402-4cedb5114b"
 doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
 text = "It MAY use a facilitator-built composite simulation or targeted account checks in addition to the setup simulation, but it MUST reject before escrowing when a settlement account is missing, frozen, has the wrong owner or mint, or is otherwise unusable under the program rules."

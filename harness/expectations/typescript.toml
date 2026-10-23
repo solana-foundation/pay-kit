@@ -148,6 +148,14 @@ tracking = "FINDINGS.md#x402-channel-priority-fee-product-uncapped"
 
 [[known_failing]]
 ids = [
+  "vector/batch-verify-open-unfunded-payer-reject",
+  "vector/batch-verify-top-up-unfunded-payer-reject",
+]
+reason = "the vendored @x402/svm 2.26.0 verify reads no payer balance: an unfunded deposit is caught only by the simulation its deposit settle runs, which the offline signer stubs"
+tracking = "FINDINGS.md#batch-deposit-balance-unchecked"
+
+[[known_failing]]
+ids = [
   "vector/x402-upto-verify-open-trailing-byte-reject",
 ]
 reason = "verifyOpenTransaction decodes the open args with a decoder that ignores trailing bytes"

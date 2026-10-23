@@ -1221,7 +1221,10 @@ impl X402Upto {
     ) -> Result<(), Error> {
         // The fee payer's own account is the payee seat settlement creates
         // itself; only accounts of other owners must already exist.
-        for entry in distribution.iter().filter(|entry| entry.recipient != self.fee_payer) {
+        for entry in distribution
+            .iter()
+            .filter(|entry| entry.recipient != self.fee_payer)
+        {
             let (ata, _) = pc::find_associated_token_address(&entry.recipient, mint, token_program);
             let account = self
                 .rpc
