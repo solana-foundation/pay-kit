@@ -557,6 +557,10 @@ mod tests {
         Box::new(MemorySigner::from_bytes(&kp).unwrap())
     }
 
+    fn budget() -> super::super::session_consumer::MeteringBudget {
+        super::super::session_consumer::MeteringBudget::new(10_000, 100_000).unwrap()
+    }
+
     fn directive(session_id: &str) -> MeteringDirective {
         MeteringDirective {
             delivery_id: "stream-1".to_string(),
@@ -788,7 +792,7 @@ mod tests {
         let transport = RecordingTransport {
             commits: Mutex::new(vec![]),
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let mut stream = consumer.metered_sse::<Delta>();
         let directive = directive(&stream.consumer.session().channel_id_str());
 
@@ -833,7 +837,7 @@ mod tests {
         let transport = RecordingTransport {
             commits: Mutex::new(vec![]),
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let mut stream = consumer.metered_sse::<Delta>();
         let directive = directive(&stream.consumer.session().channel_id_str());
 
@@ -858,7 +862,7 @@ mod tests {
         let transport = RecordingTransport {
             commits: Mutex::new(vec![]),
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let stream = consumer.metered_sse::<Delta>();
         let err = stream.ack().await.unwrap_err();
         assert!(err.to_string().contains("mpp.metering"));
@@ -887,7 +891,7 @@ mod tests {
         let transport = RecordingTransport {
             commits: Mutex::new(vec![]),
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let mut stream = consumer.metered_sse::<Delta>();
         let directive = directive(&stream.consumer.session().channel_id_str());
         assert_eq!(directive.amount, "1000");
@@ -924,6 +928,38 @@ mod tests {
         let receipt = stream.ack().await.unwrap();
         assert_eq!(receipt.amount, "1000");
         assert_eq!(consumer.session().cumulative, 1000);
+    }
+
+    #[tokio::test]
+    async fn metered_sse_ack_refuses_a_reservation_past_the_budget() {
+        let session = super::super::session::ActiveSession::new(Pubkey::new_unique(), signer());
+        let transport = RecordingTransport {
+            commits: Mutex::new(vec![]),
+        };
+        let budget = super::super::session_consumer::MeteringBudget::new(500, 1_000).unwrap();
+        let mut consumer = SessionConsumer::new(session, transport, budget);
+        let session_id = consumer.session().channel_id_str();
+        let metering = |amount: &str| SseEvent {
+            event: Some("mpp.metering".to_string()),
+            data: serde_json::to_string(&MeteringDirective {
+                amount: amount.to_string(),
+                ..directive(&session_id)
+            })
+            .unwrap(),
+            id: None,
+            retry: None,
+        };
+
+        let mut stream = consumer.metered_sse::<Delta>();
+        stream.accept_event(metering("501")).unwrap();
+        let err = stream.ack().await.unwrap_err();
+        assert!(err.to_string().contains("per-delivery budget"), "{err}");
+        assert_eq!(consumer.session().cumulative, 0);
+
+        let mut stream = consumer.metered_sse::<Delta>();
+        stream.accept_event(metering("500")).unwrap();
+        assert_eq!(stream.ack().await.unwrap().cumulative, "500");
+        assert_eq!(consumer.session().cumulative, 500);
     }
 
     #[tokio::test]
@@ -1022,7 +1058,7 @@ mod tests {
         let transport = HttpCommitTransport::new()
             .with_default_commit_url(format!("{base_url}/commit"))
             .with_authorization("Bearer sdk-test");
-        let consumer = SessionConsumer::new(session, transport);
+        let consumer = SessionConsumer::new(session, transport, budget());
         let response = reqwest::Client::new()
             .get(format!("{base_url}/stream"))
             .send()
@@ -1129,7 +1165,7 @@ mod tests {
         let transport = HttpCommitTransport::new()
             .with_default_commit_url(format!("{legitimate_url}/commit"))
             .with_authorization("Bearer sdk-test");
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let error = consumer.commit_directive(&directive).await.unwrap_err();
         assert!(error.to_string().contains("does not match"), "{error}");
         assert!(attacker.commits.lock().unwrap().is_empty());
@@ -1170,6 +1206,7 @@ mod tests {
             HttpCommitTransport::new()
                 .with_default_commit_url(format!("{redirector}/commit"))
                 .with_authorization("Bearer sdk-test"),
+            budget(),
         );
         let error = consumer.commit_directive(&directive).await.unwrap_err();
         assert!(error.to_string().contains("307"), "{error}");
@@ -1200,6 +1237,7 @@ mod tests {
             RecordingTransport {
                 commits: Mutex::new(vec![]),
             },
+            budget(),
         );
         let stream = ReqwestMeteredSseStream::<_, Delta>::new(consumer, response);
         let consumer = stream.into_consumer();

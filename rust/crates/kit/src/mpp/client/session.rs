@@ -157,7 +157,16 @@ impl ActiveSession {
 
     /// Prepare a signed voucher adding `amount` without advancing the watermark.
     pub async fn prepare_increment(&self, amount: u64) -> Result<SignedVoucher> {
-        self.prepare_voucher(self.cumulative + amount).await
+        self.prepare_voucher(self.incremented(amount)?).await
+    }
+
+    fn incremented(&self, amount: u64) -> Result<u64> {
+        self.cumulative.checked_add(amount).ok_or_else(|| {
+            Error::Other(format!(
+                "voucher increment {amount} overflows the cumulative {}",
+                self.cumulative
+            ))
+        })
     }
 
     /// Record a prepared voucher as accepted by the server.
@@ -179,7 +188,7 @@ impl ActiveSession {
 
     /// Sign a voucher adding `amount` to the current cumulative.
     pub async fn sign_increment(&mut self, amount: u64) -> Result<SignedVoucher> {
-        self.sign_voucher(self.cumulative + amount).await
+        self.sign_voucher(self.incremented(amount)?).await
     }
 
     /// Build a `SessionAction::Voucher` for an increment without advancing the
