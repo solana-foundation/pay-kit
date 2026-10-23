@@ -352,6 +352,12 @@ pub struct SessionConfig {
     pub suggested_deposit: Option<u64>,
 
     /// Minimum accepted initial channel deposit.
+    ///
+    /// Required when [`fee_payer_signer`](Self::fee_payer_signer) is set: a
+    /// sponsored open makes the sponsor fund the channel and escrow rent, so
+    /// the refundable deposit is what it costs a client to make the sponsor
+    /// lock that SOL. A sponsored server without one refuses to issue
+    /// challenges or accept opens.
     pub minimum_deposit: Option<u64>,
 
     /// Currency identifier accepted in configuration (e.g., "USDC" or a mint).
@@ -388,7 +394,8 @@ pub struct SessionConfig {
     /// Optional operator signer that sponsors session transaction fees and
     /// channel-account rent. When set, challenges advertise `feePayer: true`
     /// and clients leave this signer's fee-payer slot empty for the server to
-    /// co-sign after validating the transaction.
+    /// co-sign after validating the transaction. Requires
+    /// [`minimum_deposit`](Self::minimum_deposit).
     pub fee_payer_signer: Option<std::sync::Arc<dyn solana_keychain::TransactionSigner>>,
 
     /// Inactivity thresholds offered for a new channel.
@@ -453,6 +460,20 @@ impl SessionConfig {
             self.channel_hooks.as_ref(),
             &self.network,
         )
+    }
+
+    /// A sponsor fronts the rent of every channel it opens, so it must name
+    /// the deposit floor that buys that rent rather than accept any non-zero
+    /// deposit.
+    fn check_sponsored_deposit_floor(&self) -> Result<()> {
+        if self.fee_payer_signer.is_some() && self.minimum_deposit.is_none() {
+            return Err(Error::InvalidConfig(
+                "sponsored sessions (fee_payer_signer) require minimum_deposit: the sponsor \
+                 funds each channel's rent"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -799,6 +820,7 @@ impl<S: ChannelStore> SessionServer<S> {
     /// as a non-retryable payment failure at open time.
     pub fn build_challenge_request(&self) -> Result<SessionRequest> {
         self.config.channel_deployment()?;
+        self.config.check_sponsored_deposit_floor()?;
         if self.config.decimals > 9 {
             return Err(Error::InvalidConfig(
                 "session token decimals must be between 0 and 9".to_string(),
@@ -902,6 +924,7 @@ impl<S: ChannelStore> SessionServer<S> {
         payload: &OpenPayload,
     ) -> Result<payment_channels::OpenChannelParams> {
         self.config.channel_deployment()?;
+        self.config.check_sponsored_deposit_floor()?;
         let payer = parse_pubkey_field(&payload.payer, "payer")?;
         let payee = parse_pubkey_field(&payload.payee, "payee")?;
         let mint = parse_pubkey_field(&payload.mint, "mint")?;
@@ -4209,6 +4232,33 @@ mod tests {
             idle_timeout_seconds: 300,
             ..SessionConfig::default()
         }
+    }
+
+    // A sponsor funds each channel's rent; without a deposit floor a 1-unit
+    // deposit buys that rent, so a sponsored server must name the floor.
+    #[test]
+    fn sponsored_sessions_require_a_minimum_deposit() {
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(shared_signer(8));
+        cfg.minimum_deposit = None;
+        let server = SessionServer::new(cfg.clone(), MemoryChannelStore::new());
+        let challenge = server.build_challenge_request().unwrap_err().to_string();
+        assert!(challenge.contains("minimum_deposit"), "{challenge}");
+        let open = valid_open(&server);
+        let open = server.payment_channel_open_params(&open).unwrap_err();
+        assert!(open.to_string().contains("minimum_deposit"), "{open}");
+
+        // Positive controls: a sponsored server with a floor, and an
+        // unsponsored one without, both get past the check.
+        cfg.minimum_deposit = Some(100);
+        let server = SessionServer::new(cfg, MemoryChannelStore::new());
+        let open = valid_open(&server);
+        server.payment_channel_open_params(&open).unwrap();
+        let mut unsponsored = config(VoucherSigner::Client);
+        unsponsored.minimum_deposit = None;
+        let server = SessionServer::new(unsponsored, MemoryChannelStore::new());
+        let open = valid_open(&server);
+        server.payment_channel_open_params(&open).unwrap();
     }
 
     #[test]
