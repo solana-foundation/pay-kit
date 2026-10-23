@@ -401,8 +401,10 @@ pub enum PendingClaim {
 ///
 /// It is also the floor for how long a [`Store`] keeps charge records and
 /// [`ConsumedSignatures`] claims: an MPP server accepting push credentials
-/// refuses any challenge that expires later than this from now, so a paid
-/// signature cannot outlive its replay record.
+/// refuses any challenge that expires later than this from now, and any
+/// pushed transaction confirmed longer ago than this, so a paid signature
+/// cannot outlive its replay record. A store that loses its records (an
+/// in-memory store across a restart) still reopens that window.
 pub const DEFAULT_CHARGE_RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a charge record may sit in [`ChargeRecordState::Reserved`]

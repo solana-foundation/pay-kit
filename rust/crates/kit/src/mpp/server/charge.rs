@@ -2171,6 +2171,8 @@ impl Mpp {
             }
         }
 
+        confirmed_within_replay_retention(tx.block_time, unix_now_secs())?;
+
         let total_amount: u64 = request.amount.parse().map_err(|_| {
             VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
         })?;
@@ -2923,6 +2925,34 @@ fn within_replay_retention(expires: Option<&str>) -> Result<(), VerificationErro
         )));
     }
     Ok(())
+}
+
+/// A push payment confirmed within [`DEFAULT_CHARGE_RECORD_RETENTION`] of
+/// `now`. A push signature is not bound to the challenge it pays, so its
+/// consumed-signature record (kept at least that long after it is claimed) is
+/// all that stops it paying again; an older transaction, or one without a
+/// block time, could outlive that record.
+fn confirmed_within_replay_retention(
+    block_time: Option<i64>,
+    now: i64,
+) -> Result<(), VerificationError> {
+    let block_time = block_time.ok_or_else(|| {
+        VerificationError::credential_mismatch(
+            "Push-mode transaction has no block time; its age cannot be bounded",
+        )
+    })?;
+    let retention = DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64;
+    let age = now.saturating_sub(block_time);
+    if age > retention {
+        return Err(VerificationError::credential_mismatch(format!(
+            "Push-mode transaction confirmed {age}s ago, outside the {retention}s replay retention window"
+        )));
+    }
+    Ok(())
+}
+
+fn unix_now_secs() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 /// The charge-record generation a settlement owns.
@@ -9395,6 +9425,20 @@ mod tests {
     /// JSON-RPC stub for a landed push payment: `getTransaction` returns a
     /// confirmed SOL transfer of `lamports` from `sender` to `recipient`.
     async fn stub_push_rpc(sender: Pubkey, recipient: Pubkey, lamports: u64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        stub_push_rpc_at(sender, recipient, lamports, Some(now)).await
+    }
+
+    /// [`stub_push_rpc`] for a transaction confirmed at `block_time`.
+    async fn stub_push_rpc_at(
+        sender: Pubkey,
+        recipient: Pubkey,
+        lamports: u64,
+        block_time: Option<i64>,
+    ) -> String {
         use axum::{routing::post, Json, Router};
         let app = Router::new().route(
             "/",
@@ -9402,7 +9446,7 @@ mod tests {
                 let result = match request["method"].as_str() {
                     Some("getTransaction") => serde_json::json!({
                         "slot": 1,
-                        "blockTime": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
+                        "blockTime": block_time,
                         "version": 0,
                         "transaction": {
                             "signatures": [request["params"][0]],
@@ -9488,6 +9532,57 @@ mod tests {
         );
         let receipt = mpp.verify(&credential, &expected).await.unwrap();
         assert_eq!(receipt.reference, signature);
+    }
+
+    // A push signature is not bound to the challenge it pays: once its
+    // consumed-signature record expires, only the transaction's age stops a
+    // landed payment from paying a fresh challenge again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_rejects_a_transaction_older_than_the_replay_retention() {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let retention = DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64;
+        let sender = seed_pubkey(14);
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let verify_at = |block_time: Option<i64>| async move {
+            let rpc_url = stub_push_rpc_at(sender, recipient, 1000, block_time).await;
+            let mpp = Mpp::new(Config {
+                realm: Some("test-realm".to_string()),
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                currency: "SOL".to_string(),
+                decimals: 9,
+                network: "devnet".to_string(),
+                rpc_url: Some(rpc_url),
+                accept_push_mode: true,
+                store: Some(Arc::new(MemoryStore::new())),
+                ..Default::default()
+            })
+            .unwrap();
+            let expected = ChargeRequest {
+                amount: "1000".into(),
+                currency: "SOL".into(),
+                recipient: Some(TEST_RECIPIENT.into()),
+                method_details: Some(serde_json::json!({ "network": "devnet", "decimals": 9 })),
+                ..Default::default()
+            };
+            let signature = Signature::from([15u8; 64]).to_string();
+            let credential = build_credential(
+                &mpp,
+                &expected,
+                serde_json::json!({ "type": "signature", "signature": signature }),
+            );
+            mpp.verify(&credential, &expected).await
+        };
+
+        for stale in [Some(now - retention - 60), None] {
+            let err = verify_at(stale).await.unwrap_err();
+            assert!(
+                err.message.contains("replay retention") || err.message.contains("block time"),
+                "{stale:?}: {err:?}"
+            );
+        }
+        // Positive control: a payment confirmed inside the window is accepted.
+        verify_at(Some(now - retention + 60)).await.unwrap();
     }
 
     // A charge that lands while its confirmed record cannot be written is
