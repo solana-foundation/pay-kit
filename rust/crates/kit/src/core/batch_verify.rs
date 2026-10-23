@@ -20,10 +20,12 @@
 //! message under any key whose scalar the signer knows, no crafted key
 //! needed, while `verify_strict` rejects it outright. A mixed-order `R` can
 //! also pass when its deterministic batch coefficient annihilates the torsion
-//! component. [`is_degenerate`] therefore screens every batch input for weak
-//! keys and requires `R` to be torsion-free before the batch equation runs at
-//! all. The per-signature fallback on a failing batch restores `verify_strict`
-//! too.
+//! component, and so can any signature under a mixed-order verifying key
+//! `A = a·B + T` once its coefficient annihilates `T`. [`is_degenerate`]
+//! therefore requires both the key and `R` to be torsion-free before the batch
+//! equation runs at all; anything else is decided by `verify_strict` alone,
+//! the check the onchain Ed25519 precompile applies. The per-signature
+//! fallback on a failing batch restores `verify_strict` too.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -147,14 +149,17 @@ fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
 }
 
 /// Whether `job` can pass the raw batch equation while failing
-/// `verify_strict`: a non-prime-order `R` or a small-order verifying key.
+/// `verify_strict`: a non-prime-order `R`, or a verifying key with a torsion
+/// component (small-order or mixed-order).
 ///
 /// `ed25519_dalek::verify_batch` checks one randomly weighted aggregate
 /// equation. `R = identity` (order 1, small-order) and
 /// `s = H(R‖A‖M)·a mod L` satisfies that equation
 /// for *any* message M, for any key whose private scalar `a` the signer knows
 /// — no weak/crafted key required. A mixed-order `R` can likewise pass when
-/// the transcript-derived coefficient kills its torsion component.
+/// the transcript-derived coefficient kills its torsion component, and so can
+/// a signature under a mixed-order key `A = a·B + T`, whose residual is a
+/// multiple of `T`.
 /// `verify_strict` rejects these through its small-order checks or exact
 /// per-signature equation; batching must exclude them before trusting the
 /// aggregate equation, or a holder of a legitimate signing key (e.g. the payer, in
@@ -164,6 +169,12 @@ fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
 /// service served, nothing ever collectible.
 fn is_degenerate(key: &VerifyingKey, signature: &Signature) -> bool {
     if key.is_weak() {
+        return true;
+    }
+    if !CompressedEdwardsY(key.to_bytes())
+        .decompress()
+        .is_some_and(|point| point.is_torsion_free())
+    {
         return true;
     }
     match CompressedEdwardsY(*signature.r_bytes()).decompress() {
@@ -184,13 +195,15 @@ fn verify_and_reply(batch: Vec<Job>) {
         return;
     }
 
-    // Reject degenerate jobs before batch verification runs, so one can never
-    // ride a passing batch to acceptance. Cheap relative to the multiscalar
-    // multiplication it guards: one point decompression per job.
+    // Decide degenerate jobs with `verify_strict` alone before batch
+    // verification runs, so one can never ride a passing batch to acceptance.
+    // Cheap relative to the multiscalar multiplication it guards: two point
+    // decompressions per job.
     let mut candidates = Vec::with_capacity(batch.len());
     for job in batch {
         if is_degenerate(&job.key, &job.signature) {
-            let _ = job.reply.send(false);
+            let ok = job.key.verify_strict(&job.message, &job.signature).is_ok();
+            let _ = job.reply.send(ok);
         } else {
             candidates.push(job);
         }
@@ -311,6 +324,99 @@ mod tests {
         let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
         let s = r + h * signer.to_scalar();
         Signature::from_components(r_bytes, s.to_bytes())
+    }
+
+    /// A verifying key `A = a·B + T` with an order-2 component `T`, and a
+    /// signature under it with an honest `R = r·B` and `s = r + k·a`. The
+    /// exact equation leaves `k·T`, so `verify_strict` (and the onchain
+    /// precompile) reject it exactly when `k` is odd.
+    fn mixed_order_key_signature(
+        scalar: Scalar,
+        message: &[u8],
+        nonce: u64,
+    ) -> (VerifyingKey, Signature) {
+        let point = scalar * ED25519_BASEPOINT_POINT + EIGHT_TORSION[4];
+        let key = VerifyingKey::from_bytes(&point.compress().to_bytes())
+            .expect("a mixed-order point is a valid key encoding");
+        let r = Scalar::from(nonce);
+        let r_bytes = (r * ED25519_BASEPOINT_POINT).compress().to_bytes();
+        let mut hasher = Sha512::new();
+        hasher.update(r_bytes);
+        hasher.update(key.as_bytes());
+        hasher.update(message);
+        let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
+        let s = r + h * scalar;
+        (key, Signature::from_components(r_bytes, s.to_bytes()))
+    }
+
+    fn reply_for(jobs: Vec<(Vec<u8>, VerifyingKey, Signature)>) -> Vec<bool> {
+        let mut replies = Vec::new();
+        let batch = jobs
+            .into_iter()
+            .map(|(message, key, signature)| {
+                let (reply, rx) = oneshot::channel();
+                replies.push(rx);
+                Job {
+                    message,
+                    key,
+                    signature,
+                    reply,
+                }
+            })
+            .collect();
+        verify_and_reply(batch);
+        replies
+            .into_iter()
+            .map(|mut rx| rx.try_recv().expect("every job is answered"))
+            .collect()
+    }
+
+    #[test]
+    fn mixed_order_key_never_rides_a_passing_batch() {
+        let honest_signer = keypair(11);
+        let honest_message = b"paid request".to_vec();
+        let honest = honest_signer.sign(&honest_message);
+        let scalar = Scalar::from(0x5eed_u64);
+        let message = b"free request".to_vec();
+        let (key, forged) = (1..=4096)
+            .map(|nonce| mixed_order_key_signature(scalar, &message, nonce))
+            .find(|(key, signature)| {
+                key.verify_strict(&message, signature).is_err()
+                    && ed25519_dalek::verify_batch(
+                        &[honest_message.as_slice(), message.as_slice()],
+                        &[honest, *signature],
+                        &[honest_signer.verifying_key(), *key],
+                    )
+                    .is_ok()
+            })
+            .expect("a batch coefficient should annihilate the key's torsion");
+        assert!(!key.is_weak());
+        assert!(is_degenerate(&key, &forged));
+
+        let replies = reply_for(vec![
+            (honest_message, honest_signer.verifying_key(), honest),
+            (message, key, forged),
+        ]);
+        assert_eq!(replies, [true, false]);
+    }
+
+    #[test]
+    fn mixed_order_key_signature_valid_under_verify_strict_still_passes() {
+        let honest_signer = keypair(12);
+        let honest_message = b"paid request".to_vec();
+        let honest = honest_signer.sign(&honest_message);
+        let scalar = Scalar::from(0x5eed_u64);
+        let message = b"also paid".to_vec();
+        let (key, valid) = (1..=64)
+            .map(|nonce| mixed_order_key_signature(scalar, &message, nonce))
+            .find(|(key, signature)| key.verify_strict(&message, signature).is_ok())
+            .expect("an even challenge leaves no torsion residual");
+
+        let replies = reply_for(vec![
+            (honest_message, honest_signer.verifying_key(), honest),
+            (message, key, valid),
+        ]);
+        assert_eq!(replies, [true, true]);
     }
 
     #[test]
