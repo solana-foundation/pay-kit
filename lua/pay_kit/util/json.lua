@@ -8,8 +8,20 @@ local M = {}
 local null_sentinel = {}
 M.null = null_sentinel
 
+-- Marker metatable attached to a decoded empty object. The parser uses this
+-- to disambiguate `{}` (object) from `[]` (array): both decode to a
+-- zero-length Lua table, and `is_array` would otherwise return true for the
+-- former. The metatable is only set on the rare empty-object case (the
+-- common case of an object with keys is unambiguous because its keys are
+-- strings, not 1..n integers). Iteration over the object via `pairs` does
+-- not see this — it lives on the metatable, not the table itself.
+local empty_object_mt = { __is_empty_object = true }
+
 local function is_array(value)
   if type(value) ~= 'table' then
+    return false
+  end
+  if getmetatable(value) == empty_object_mt then
     return false
   end
   local max = 0
@@ -391,7 +403,10 @@ function Parser:parse_object()
   local out = {}
   if self:peek() == '}' then
     self.pos = self.pos + 1
-    return out
+    -- Empty object: tag with a metatable so the encoder emits `{}` rather
+    -- than the array-shaped `[]` that the length-zero `is_array` heuristic
+    -- would otherwise produce. See is_array / empty_object_mt above.
+    return setmetatable(out, empty_object_mt)
   end
   while true do
     local key = self:parse_string()
