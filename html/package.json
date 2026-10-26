@@ -21,7 +21,7 @@
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "esbuild": "^0.25.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0"
   },
   "overrides": {

@@ -193,12 +193,12 @@ async-trait = "0.1"
 redis = { version = "0.32.5", optional = true, features = ["tokio-rustls-comp", "connection-manager"] }
 
 # OpenTelemetry (feature `otel`) — optional.
-opentelemetry = { version = "0.31", optional = true }
-opentelemetry_sdk = { version = "0.31", features = ["logs"], optional = true }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"], optional = true }
-opentelemetry-appender-tracing = { version = "0.31", optional = true }
-opentelemetry-semantic-conventions = { version = "0.31", optional = true }
-tracing-opentelemetry = { version = "0.32", optional = true }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["logs"], optional = true }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"], optional = true }
+opentelemetry-appender-tracing = { version = "0.33", optional = true }
+opentelemetry-semantic-conventions = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 # Errors

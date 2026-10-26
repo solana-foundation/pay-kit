@@ -26,12 +26,21 @@ overrides:
   'brace-expansion@5.0.4': '5.0.12'
   'brace-expansion@5.0.6': '5.0.12'
   'linkify-it': '5.0.2'
-  'markdown-it': '14.3.1'
+  # GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c, GHSA-vfgh-jcmw-g37q: quadratic-time
+  # parsing, patched in 14.3.3. Reaches us via typedoc.
+  'markdown-it': '>=14.3.3 <15'
   'nanoid@3.3.11': '3.3.18'
   'picomatch@2.3.1': '2.3.2'
   postcss: '8.5.23'
   source-map-js: '1.2.2'
-  vite: '8.0.16'
+  # GHSA-587h-7wmj-h5pm and siblings (launch-editor, fs.allow, custom
+  # middleware), patched in 8.1.6. Reaches us via vitest.
+  vite: '>=8.1.6 <9'
+  # GHSA-g7r4-m6w7-qqqr: dev-server file read on Windows, patched in 0.28.1.
+  # Reaches us via tsx, tsup and vite.
+  esbuild: '>=0.28.1 <0.29'
+  # GHSA-4x5r-pxfx-6jf8: file read via sourceMappingURL, patched in 7.29.6.
+  '@babel/core': '>=7.29.6 <8'
   # fast-uri/hono/ip-address floors below track advisories reached via
   # @modelcontextprotocol/sdk (see `pnpm why <pkg>`); bump as new CVEs land.
   '@modelcontextprotocol/sdk': '>=1.31.0'

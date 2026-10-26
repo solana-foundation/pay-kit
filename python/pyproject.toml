@@ -47,7 +47,7 @@ packages = ["src/solana_pay_kit"]
 [tool.uv]
 # docspec-python constrains Black to the vulnerable 23.x line even though its
 # formatter integration remains compatible with current Black releases.
-override-dependencies = ["black>=26.3.1"]
+override-dependencies = ["black>=26.10.1"]
 
 [tool.ruff]
 target-version = "py311"
