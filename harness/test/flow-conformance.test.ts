@@ -56,7 +56,12 @@ function listen(port: number): Promise<Server | undefined> {
     probe.once("error", () => resolve(undefined));
     // No host: the compliance server binds the unspecified address, so probe
     // the same one.
-    probe.listen(port, () => resolve(probe));
+    try {
+      probe.listen(port, () => resolve(probe));
+    } catch {
+      // An out-of-range port throws synchronously instead of emitting "error".
+      resolve(undefined);
+    }
   });
 }
 
@@ -70,13 +75,16 @@ async function getFreePortPair(attempts = 20): Promise<number> {
   for (let i = 0; i < attempts; i++) {
     const first = await listen(0);
     if (!first) continue;
-    const address = first.address();
-    const second =
-      address !== null && typeof address === "object" ? await listen(address.port + 1) : undefined;
-    await close(first);
-    if (second && address !== null && typeof address === "object") {
+    try {
+      const address = first.address();
+      // 65535 has no `port + 1`; draw again rather than probe an invalid port.
+      if (address === null || typeof address !== "object" || address.port >= 65535) continue;
+      const second = await listen(address.port + 1);
+      if (!second) continue;
       await close(second);
       return address.port;
+    } finally {
+      await close(first);
     }
   }
   throw new Error("could not find two adjacent free ports");
