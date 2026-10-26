@@ -2184,6 +2184,9 @@ packages:
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
 snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
@@ -2842,7 +2845,7 @@ snapshots:
       '@solana/program-client-core': 6.10.0(typescript@5.9.3)
       '@solana/subscriptions': 0.5.0(@solana/kit@6.8.0(typescript@5.9.3))(typescript@5.9.3)
       mppx: 0.8.19(express@4.22.2)(typescript@5.9.3)(viem@2.57.2(typescript@5.9.3)(zod@4.4.3))
-      zod: 4.4.3
+      zod: 4.6.7
     transitivePeerDependencies:
       - '@solana/sysvars'
       - '@solana/zk-sdk'
@@ -4315,3 +4318,5 @@ snapshots:
   yaml@2.8.3: {}
 
   zod@4.4.3: {}
+
+  zod@4.6.7: {}

@@ -42,7 +42,13 @@ overrides:
   path-to-regexp: '>=8.4.0'
   qs: '>=6.16.0'
   yaml: '>=2.8.3'
-  body-parser: '>=2.3.0'
+  # GHSA-27r3-jxmh-p828: compressed-body trailing-bytes denial of service,
+  # patched in 2.4.0. Reaches us via mppx > express.
+  body-parser: '>=2.4.0'
+  # GHSA-mrhx-c7xc-m3w5: memory exhaustion validating oversized constrained
+  # collections, patched in 4.6.6. Reaches us directly (packages/mpp) and via
+  # mppx > incur.
+  zod: '>=4.6.6 <5'
   # GHSA-jqcg-44mw-7w3h: forwarded-header denial of service, patched in 2.0.8.
   # Reaches us via mppx > express.
   proxy-addr: '>=2.0.8'

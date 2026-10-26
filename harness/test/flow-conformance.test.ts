@@ -17,7 +17,7 @@
 // harness/expectations/typescript.toml.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
+import { createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -50,20 +50,36 @@ const flowRefs: CaseRef[] = flowCases.map((c) => ({ suite: "flow", id: c.name, c
 // that claims `flow` without an adapter here is a configuration error.
 const FLOW_ADAPTERS = { typescript: typescriptProtocolAdapter } as const;
 
-async function getFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
+function listen(port: number): Promise<Server | undefined> {
+  return new Promise((resolve) => {
     const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      if (address === null || typeof address === "string") {
-        probe.close(() => reject(new Error("could not determine a free port")));
-        return;
-      }
-      const { port } = address;
-      probe.close(() => resolve(port));
-    });
+    probe.once("error", () => resolve(undefined));
+    // No host: the compliance server binds the unspecified address, so probe
+    // the same one.
+    probe.listen(port, () => resolve(probe));
   });
+}
+
+function close(probe: Server): Promise<void> {
+  return new Promise((resolve) => probe.close(() => resolve()));
+}
+
+// The compliance server listens on `port` and on `port + 1` (the redirect
+// origin, `redirect_to_port_offset` in the flow cases), so both must be free.
+async function getFreePortPair(attempts = 20): Promise<number> {
+  for (let i = 0; i < attempts; i++) {
+    const first = await listen(0);
+    if (!first) continue;
+    const address = first.address();
+    const second =
+      address !== null && typeof address === "object" ? await listen(address.port + 1) : undefined;
+    await close(first);
+    if (second && address !== null && typeof address === "object") {
+      await close(second);
+      return address.port;
+    }
+  }
+  throw new Error("could not find two adjacent free ports");
 }
 
 // Mirrors flow_runner.py's wait_for_server: poll GET /free until it answers
@@ -110,7 +126,7 @@ describe("mpp-protocol flow conformance (canonical flows / TypeScript runner)", 
   };
 
   beforeAll(async () => {
-    const port = await getFreePort();
+    const port = await getFreePortPair();
     const baseUrl = `http://127.0.0.1:${port}`;
     server = spawn(tsxBin, [COMPLIANCE_SERVER_PATH], {
       cwd: harnessRoot,
