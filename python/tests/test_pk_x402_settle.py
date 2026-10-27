@@ -766,7 +766,11 @@ async def test_cosign_preserves_client_signature_and_uses_returned_transaction(s
     from solders.signature import Signature
     from solders.system_program import TransferParams, transfer
 
-    from solana_pay_kit.protocols.x402.upto import _cosign_fee_payer
+    from solana_pay_kit._paycore import txv1
+    from solana_pay_kit.protocols.x402.upto import cosign_upto_open
+
+    async def _cosign_fee_payer(transaction_b64: str, signer):
+        return await cosign_upto_open(txv1.decode_transaction(base64.b64decode(transaction_b64)), signer)
 
     class CopyingSigner(MemorySigner):
         async def sign_transaction(self, transaction: VersionedTransaction) -> SignedTransaction:
