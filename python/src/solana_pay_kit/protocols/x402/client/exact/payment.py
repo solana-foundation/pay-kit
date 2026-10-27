@@ -10,7 +10,8 @@ offer carries the on-chain mint on ``asset`` and the sponsor on
 ``extra.feePayer``. The token program and decimals are read from the mint
 account (``extra.tokenProgram`` / ``extra.decimals`` are optional hints).
 
-The built transaction is a v0 ``VersionedTransaction`` whose fee payer is the
+The built transaction is a version-0 (or, when the offer advertises it,
+version-1) transaction whose fee payer is the
 offer's ``extra.feePayer`` (the facilitator, which cosigns server-side) and
 whose transfer authority is the client signer. Instructions are laid out
 exactly as the verifier expects: ComputeBudget SetComputeUnitLimit(20000) +
@@ -27,6 +28,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.errors import InvalidChallengeError
 from solana_pay_kit._paycore.mint_account import fetch_mint_account
 from solana_pay_kit._paycore.mints import derive_ata, resolve_stablecoin_mint
@@ -37,7 +39,7 @@ from solana_pay_kit._paycore.solana import (
     TOKEN_PROGRAM,
     is_native_sol,
 )
-from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+from solana_pay_kit._paycore.transaction import build_partially_signed_transaction
 from solana_pay_kit.protocols.x402.exact.extensions import (
     echo_extensions,
     extensions_is_empty,
@@ -79,6 +81,10 @@ __all__ = [
 _COMPUTE_UNIT_LIMIT = 20_000
 #: ComputeBudget SetComputeUnitPrice microlamports (disc 3, u64 LE, <= MAX).
 _COMPUTE_UNIT_PRICE = 1
+#: Loaded-account-data budget a version-1 payment sets (scheme_exact_svm.md
+#: §1.5: it MUST be set). 4 MiB, matching the Rust, TypeScript and Go clients;
+#: it covers the mainnet Token-2022 program data and the rest of a payment.
+X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT = 4 * 1024 * 1024
 #: Random memo nonce length in bytes when the offer omits ``extra.memo``. The
 #: x402 SVM exact contract requires a Memo of at least 16 bytes; it is
 #: hex-encoded to a UTF-8 string for the Memo instruction data.
@@ -133,8 +139,10 @@ class ChallengeSelection:
     Mirrors the rust ``ChallengeSelection``.
     """
 
-    #: Solana network the client wants to pay on (cluster slug or CAIP-2).
-    #: ``None`` defaults to mainnet.
+    #: Solana network the client is configured for (cluster slug or CAIP-2).
+    #: When set, only offers on that network are selected: a client never pays
+    #: on a network it was not configured for. ``None`` pins nothing: it
+    #: prefers mainnet and otherwise takes the cheapest Solana offer.
     network: str | None = None
     #: Priority-ordered currencies the client will pay in (symbols or mints,
     #: interchangeable). The first server offer matching the highest-priority
@@ -364,7 +372,10 @@ def _select_requirement(
         # unlisted one (mirror rust).
         return None
 
-    candidates = on_preferred or solana
+    # No currency preference: pick the cheapest on the preferred network. Only
+    # a client that pinned no network falls back to the overall cheapest; a
+    # configured network is a requirement, never a preference (mirror rust).
+    candidates = on_preferred if selection.network is not None else (on_preferred or solana)
     if not candidates:
         return None
     cheapest = min(candidates, key=_amount_of)
@@ -452,6 +463,7 @@ async def build_payment(
     memo_nonce: Callable[[], str] | None = None,
     advertised_extensions: dict[str, Any] | None = None,
     payment_identifier_id: str | None = None,
+    max_transaction_version: int | None = None,
 ) -> X402Envelope:
     """Build a signed x402 ``exact`` payment transaction for ``requirement``.
 
@@ -484,6 +496,14 @@ async def build_payment(
     ``extensions`` key is omitted entirely (no empty ``{}``). Mirrors rust
     ``PaymentExtensions::{echoing, requires_payment_identifier,
     with_payment_identifier_id, is_empty}``.
+
+    The message version is negotiated from ``extra.transactionVersions``
+    (scheme_exact_svm.md §1.5): the highest advertised version up to
+    ``max_transaction_version`` (the highest the signer can sign; ``None``
+    means version 1). Absent advertises ``[0]``. An empty list, an entry that
+    is not the integer 0 or 1, or no version the signer can sign is refused
+    with ``unsupported_transaction_version``. Version 1 carries the compute
+    budget in its header instead of ComputeBudget instructions.
     """
     from solders.hash import Hash
     from solders.instruction import AccountMeta, Instruction
@@ -526,10 +546,22 @@ async def build_payment(
         raise InvalidChallengeError("solana_pay_kit: x402 offer is missing the required `extra.feePayer`")
     fee_payer_key = Pubkey.from_string(fee_payer)
 
-    instructions: list[Any] = [
-        _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
-        _compute_unit_price_ix(Instruction, Pubkey, _COMPUTE_UNIT_PRICE),
-    ]
+    try:
+        version = txv1.negotiate(
+            txv1.parse_transaction_versions(extra.get("transactionVersions"), field_name="extra.transactionVersions"),
+            1 if max_transaction_version is None else max_transaction_version,
+        )
+    except txv1.TransactionVersionError as exc:
+        raise InvalidChallengeError(f"unsupported_transaction_version: {exc}") from exc
+
+    # Version 0 leads with the ComputeBudget pair the verifier checks by
+    # index; version 1 carries the same budget in its header config.
+    instructions: list[Any] = []
+    if version == 0:
+        instructions += [
+            _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
+            _compute_unit_price_ix(Instruction, Pubkey, _COMPUTE_UNIT_PRICE),
+        ]
 
     signer_pubkey = signer.pubkey
     recipient_key = Pubkey.from_string(pay_to)
@@ -574,7 +606,16 @@ async def build_payment(
         blockhash_str = await _resolve_blockhash(rpc, recent_blockhash_provider)
     blockhash = Hash.from_string(blockhash_str)
 
-    tx_bytes = await build_partially_signed_v0_transaction(instructions, fee_payer_key, blockhash, signer)
+    config = None
+    if version == 1:
+        config = txv1.TransactionConfig(
+            priority_fee=txv1.priority_fee_lamports(_COMPUTE_UNIT_LIMIT, _COMPUTE_UNIT_PRICE),
+            compute_unit_limit=_COMPUTE_UNIT_LIMIT,
+            loaded_accounts_data_size_limit=X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+        )
+    tx_bytes = await build_partially_signed_transaction(
+        instructions, fee_payer_key, blockhash, signer, version=version, config=config
+    )
 
     # Derive the envelope-level resource BEFORE building the echoed ``accepted``
     # body, then strip the private resource-info key so the echo carries only
@@ -659,6 +700,7 @@ async def build_payment_header(
     memo_nonce: Callable[[], str] | None = None,
     advertised_extensions: dict[str, Any] | None = None,
     payment_identifier_id: str | None = None,
+    max_transaction_version: int | None = None,
 ) -> str:
     """Build the standard-base64 ``PAYMENT-SIGNATURE`` header value.
 
@@ -675,6 +717,7 @@ async def build_payment_header(
         memo_nonce=memo_nonce,
         advertised_extensions=advertised_extensions,
         payment_identifier_id=payment_identifier_id,
+        max_transaction_version=max_transaction_version,
     )
     payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")
@@ -687,6 +730,7 @@ async def build_payment_header_legacy(
     *,
     recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
     memo_nonce: Callable[[], str] | None = None,
+    max_transaction_version: int | None = None,
 ) -> str:
     """Build the legacy standard-base64 ``X-PAYMENT`` header value.
 
@@ -708,6 +752,7 @@ async def build_payment_header_legacy(
         requirement,
         recent_blockhash_provider=recent_blockhash_provider,
         memo_nonce=memo_nonce,
+        max_transaction_version=max_transaction_version,
     )
     # The legacy envelope commits only to scheme + plain network, not an
     # ``accepted`` body. Reuse the signed transaction from the canonical build

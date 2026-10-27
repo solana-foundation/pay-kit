@@ -12,7 +12,7 @@ Paths are file:line at the commit that recorded them.
 ## x402-extra-required-signer-accepted
 
 **Case:** `vector/x402-exact-verify-extra-required-signer-reject`
-**SDKs:** go, lua, php, python, ruby, typescript
+**SDKs:** go, lua, php, ruby, typescript (Python fixed 2026-10-27)
 
 scheme_exact_svm.md §2.1.4: “The transaction MUST NOT require any signatures
 beyond the client and the sponsor (feePayer).” The vector adds a third key as
@@ -23,7 +23,6 @@ x402 verifier accepts, because none compares the header's required signers
 with {fee payer, transfer authority}:
 
 - Go `go/protocols/x402/verify.go:81` (`VerifyExactTransaction`)
-- Python `python/src/solana_pay_kit/protocols/x402/exact/verify.py:83`
 - Ruby `ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/verify.rb:33`;
   `verify_client_signatures!` (`:68`) only checks that each extra signer signed
 - PHP `php/src/Protocols/X402/Exact/Verifier.php:61`
@@ -188,15 +187,14 @@ unguarded). The credential is still refused, by accident.
 ## x402-fee-payer-drain-category
 
 **Case:** `vector/x402-exact-verify-fee-payer-sol-drain-reject`
-**SDKs:** lua, php, python
+**SDKs:** lua, php (Python fixed 2026-10-27)
 
 A System transfer from the sponsor appended after the TransferChecked is
 refused by every verifier. Rust, TypeScript, Go and Ruby report fee-payer
-isolation (§2.1.1, §2.1.3); Lua, PHP and Python reach the static-layout check
+isolation (§2.1.1, §2.1.3); Lua and PHP reach the static-layout check
 first and report `unknown_fourth_instruction`
 (`lua/pay_kit/protocols/x402/exact/verify.lua:289` before `:299`,
-`php/src/Protocols/X402/Exact/Verifier.php:115` before `:129`,
-`python/src/solana_pay_kit/protocols/x402/exact/verify.py:154` before `:169`).
+`php/src/Protocols/X402/Exact/Verifier.php:115` before `:129`).
 The verdict is right; the reason hides the fund-safety violation, and a
 smart-wallet path that relaxes the layout would have to catch it again.
 ## batch-deposit-balance-unchecked
@@ -249,7 +247,7 @@ safe (the proxy-observed credential never settles).
 
 ## x402-client-network-not-checked
 
-**Cases:** `x402-exact-client-wrong-network/{go,kotlin,python,swift}/rust`
+**Cases:** `x402-exact-client-wrong-network/{go,kotlin,swift}/rust` (Python fixed 2026-10-27)
 
 The proxy rewrites every `accepts[].network` to solana mainnet while the
 client is configured (`X402_HARNESS_NETWORK`) for the devnet CAIP-2 id. These
@@ -439,12 +437,14 @@ session types are on the superseded draft).
 
 ## txv1-python
 
-**Cases:** the charge, session and x402 transaction-version vectors listed in `python.toml`
-**SDKs:** python
+**Cases:** the charge and session transaction-version vectors listed in `python.toml`
+**SDKs:** python (x402 `exact` fixed 2026-10-27)
 
-No transaction-version negotiation: builders emit version 0, solders refuses
+No transaction-version negotiation in MPP: builders emit version 0, solders refuses
 the version-1 prefix (`python/tests/test_server_v0_transactions.py`), and no
-request type carries `transactionVersions`.
+request type carries `transactionVersions`. The kit's own version-1 codec
+(`python/src/solana_pay_kit/_paycore/txv1.py`) now backs the x402 `exact`
+client and sponsor.
 
 ## txv1-swift
 
@@ -549,6 +549,7 @@ the vectors or adapters instead:
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `python-x402-double-delivery`, the Python row of `x402-replay-route-missing`, `upto-settlement-funds-recipient-ata`, `session-open-initial-voucher-accepted` (Python), the session wire part of `txv1-python` | Python x402 server refuses a confirmed payment presented again (`signature_consumed`) and grants each confirmation once; the harness x402 server mounts the replay route; upto settlement creates only the payee and treasury accounts and the open is refused until every payout account is usable; session `methodDetails.transactionVersions` and the open-voucher refusal |
+| `x402-extra-required-signer-accepted`, `x402-fee-payer-drain-category`, `x402-client-network-not-checked`, the x402 `exact` vectors and cross cells of `txv1-python` (Python) | `solana_pay_kit` x402 `exact`: version-1 codec, `extra.transactionVersions` negotiation and admission, version-1 header rules, the 400k compute-unit and sponsored priority-fee caps, the required-signer set, fee-payer isolation before the optional allowlist, and a configured client network is never left |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)

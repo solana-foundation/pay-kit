@@ -180,12 +180,29 @@ def test_verify_rejects_ata_create_instruction():
         _compute_limit_ix(),
         _compute_price_ix(),
         _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
-        _ata_create_ix(payer=fee_payer.pubkey(), ata=dest, owner=pay_to, mint=MINT, program=TOKEN_PROGRAM),
+        _ata_create_ix(payer=authority.pubkey(), ata=dest, owner=pay_to, mint=MINT, program=TOKEN_PROGRAM),
     ]
     tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
     assert e.value.code == "invalid_exact_svm_payload_unknown_fourth_instruction"
+
+
+def test_verify_names_the_fee_payer_before_the_optional_allowlist():
+    """§2.1.1 before §3.1: an optional instruction that spends the sponsor's
+    account (here an ATA create it would fund) is refused as fee-payer
+    isolation, the Rust spine's order, not as an unknown instruction."""
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        _ata_create_ix(payer=fee_payer.pubkey(), ata=dest, owner=pay_to, mint=MINT, program=TOKEN_PROGRAM),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts"
 
 
 def test_verify_allows_lighthouse_optional_instruction():
@@ -282,11 +299,32 @@ def test_reject_too_many_instructions():
         _compute_limit_ix(),
         _compute_price_ix(),
         _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
-    ] + [_memo_ix(f"m{i}") for i in range(4)]
+    ] + [_memo_ix(f"m{i}") for i in range(5)]
     tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
     assert e.value.code == "invalid_exact_svm_payload_transaction_instructions_length"
+
+
+def test_seventh_instruction_slot_takes_memo_only():
+    """§3.1: up to seven instructions; slots 4-6 take Lighthouse or Memo, slot 7 Memo only."""
+    from solana_pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    base = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+    ]
+    memos = [_memo_ix(f"m{i}") for i in range(4)]
+    ExactVerifier.verify(_tx_b64(fee_payer, base + memos, [fee_payer, authority]), _requirement(pay_to), [
+        str(fee_payer.pubkey())
+    ])
+    lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x07", [])
+    tx = _tx_b64(fee_payer, base + memos[:3] + [lighthouse], [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_unknown_seventh_instruction"
 
 
 # -- rule 2: compute limit ---------------------------------------------------

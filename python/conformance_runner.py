@@ -434,15 +434,19 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
     signer = _local_signer(secret)
     rpc = _rpc(vector)
     try:
+        # The highest message version the vector's signer can sign; absent
+        # means the SDK default (version 1).
+        max_version = inp.get("signerMaxTransactionVersion")
         if inp.get("x402Version") == X402_VERSION_V1:
             # The legacy v1 producer has no `extensions` concept.
-            return await build_payment_header_legacy(signer, rpc, offer)
+            return await build_payment_header_legacy(signer, rpc, offer, max_transaction_version=max_version)
         return await build_payment_header(
             signer,
             rpc,
             offer,
             advertised_extensions=inp.get("x402AdvertisedExtensions"),
             payment_identifier_id=inp.get("x402PaymentIdentifierId"),
+            max_transaction_version=max_version,
         )
     finally:
         await rpc.aclose()
@@ -465,6 +469,10 @@ def _x402_route_offer(inp: dict[str, Any]) -> X402AcceptsEntry:
     # The route's extra.memo, which the verifier must enforce (§3.1).
     if inp.get("x402ServerMemo"):
         extra["memo"] = inp["x402ServerMemo"]
+    # The sponsor's accepted message versions, advertised on the route's
+    # offer (§1.5); absent accepts version 0 only.
+    if inp.get("x402ServerTransactionVersions") is not None:
+        extra["transactionVersions"] = inp["x402ServerTransactionVersions"]
     return {
         "scheme": EXACT_SCHEME,
         "network": _caip2_for_selection(inp["x402ServerNetwork"]),
@@ -614,7 +622,25 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 # this category so a guard that fires for the wrong reason is flagged rather
 # than passing on outcome alone. Decimals mismatch is enforced through the
 # transfer match key, so it honestly surfaces as `no-matching-transfer`.
+# Transaction versions (SIMD-0385): a message version the server does not
+# accept, or a client whose signer builds no advertised version (x402 §1.5
+# ``unsupported_transaction_version``). Checked before everything else,
+# including the client's invalid-challenge type: the messages also contain
+# generic words. Mirrors the head of harness/src/conformance/reject.ts.
+_VERSION_PATTERN = (
+    r"transaction version .*not accepted|unsupported_transaction_version|signs up to version"
+    r"|advertises no transaction version"
+)
+
 _REJECT_PATTERNS: list[tuple[str, str]] = [
+    (_VERSION_PATTERN, "unsupported-version"),
+    (r"signature slots do not match|invalid client transaction signature", "invalid-payload"),
+    (r"^(?!.*invalid_exact_svm).*must not contain computebudget instructions", "unexpected-instruction"),
+    (r"must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables", "invalid-payload"),
+    # Sponsors bound the priority fee as limit x price (RULINGS S6), and the
+    # exact verifier's per-factor caps.
+    (r"compute_price_instruction_too_high|priority fee .* exceeds the sponsored maximum", "compute-price-over-cap"),
+    (r"compute_limit_instruction_too_high", "compute-limit-over-cap"),
     # Charge verification policy and client challenge checks (mirrors the
     # block at the top of harness/src/conformance/reject.ts).
     # RULINGS SIG1: a client signature that does not verify over the
@@ -633,8 +659,11 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
     # requirements (the SDK's offer match). Before the amount pattern.
     (r"charge_request_mismatch|accepted payment requirement does not match", "accepted-mismatch"),
     # x402 exact SVM verifier reasons.
-    (r"fee_payer_transferring_funds|fee_payer_in_instruction_accounts", "fee-payer-not-authority"),
-    (r"unknown_(fourth|fifth|sixth|optional)_instruction|instructions_length", "unexpected-instruction"),
+    (
+        r"fee_payer_transferring_funds|fee_payer_(in|included_in)_instruction_accounts",
+        "fee-payer-not-authority",
+    ),
+    (r"unknown_(fourth|fifth|sixth|seventh|optional)_instruction|instructions_length", "unexpected-instruction"),
     (r"no_transfer_instruction|recipient_mismatch|mint_mismatch", "no-matching-transfer"),
     (r"_amount_mismatch", "amount-mismatch"),
     (r"no memo instruction found|memo_mismatch|memo_count", "invalid-payload"),
@@ -666,6 +695,8 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
 def _classify_reject(exc: Exception) -> str | None:
     import re
 
+    if re.search(_VERSION_PATTERN, str(exc), re.IGNORECASE):
+        return "unsupported-version"
     # A client refusing a challenge that violates the method spec (decimals
     # missing for a mint, a token program that cannot be read from the mint).
     if isinstance(exc, InvalidChallengeError):
