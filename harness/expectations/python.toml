@@ -100,12 +100,6 @@ ids = [
   "vector/charge-wire-transaction-versions-unknown-reject",
   "vector/charge-wire-transaction-versions-string-entry-reject",
   "vector/charge-wire-transaction-versions-not-array-reject",
-  "vector/session-wire-transaction-versions-both-golden",
-  "vector/session-wire-transaction-versions-v1-only-golden",
-  "vector/session-wire-transaction-versions-v0-golden",
-  "vector/session-wire-transaction-versions-legacy-reject",
-  "vector/session-wire-transaction-versions-unknown-reject",
-  "vector/session-wire-transaction-versions-string-entry-reject",
 ]
 reason = "the request types drop or mis-parse methodDetails/extra.transactionVersions (wire golden or reject): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
 tracking = "FINDINGS.md#txv1-python"
@@ -239,8 +233,3 @@ pattern = "vector/session-use-*"
 [[unsupported]]
 reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
 pattern = "vector/session-build-*"
-
-[[known_failing]]
-id = "vector/session-wire-action-open-initial-voucher-reject"
-reason = "the session open schema accepts an open payload carrying a signed voucher (python/src/solana_pay_kit/protocols/mpp/intents/session.py: the open payload parser refuses `bump` and ignores other unknown keys); draft-solana-session-00 Action open: \"MUST NOT carry an initial voucher\""
-tracking = "FINDINGS.md#session-open-initial-voucher-accepted"
