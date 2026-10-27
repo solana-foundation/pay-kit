@@ -30,19 +30,3 @@ ids = [
   "flow/same_origin_payment_request",
   "flow/same_origin_post_payment_request",
 ]
-
-[[unsupported]]
-reason = "@solana/mpp's session server (createSessionServer, typescript/packages/mpp/src/server/Session.ts) takes no accepted transaction-version set, so a server configured with sessionOpenVerify.server.transactionVersions other than [0] cannot be expressed"
-ids = [
-  "vector/session-open-legacy-reject",
-  "vector/session-open-v0-with-v1-advertised-accept",
-  "vector/session-open-v1-advertised-accept",
-  "vector/session-open-v1-compute-budget-instruction-reject",
-  "vector/session-open-v1-missing-compute-unit-limit-reject",
-  "vector/session-open-v1-priority-fee-over-cap-reject",
-]
-
-[[known_failing]]
-id = "vector/session-open-v1-not-advertised-reject"
-reason = "@solana/mpp's session open verifier (verifyOpenTx, typescript/packages/mpp/src/server/session/on-chain.ts) has no version admission: a version-1 open for a server accepting [0] throws while decoding (`message.instructions is not iterable`) instead of `transaction version 1 is not accepted` (unsupported-version)"
-tracking = "FINDINGS.md#txv1-ts-mpp-session-no-version-admission"

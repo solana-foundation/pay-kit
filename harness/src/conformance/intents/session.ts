@@ -91,6 +91,10 @@ export function codeFor(message: string): RejectCode | undefined {
   const m = message.toLowerCase();
   const has = (needle: string) => m.includes(needle);
   if (has("transaction version") && has("not accepted")) return "unsupported-version";
+  if (has("must not contain computebudget instructions")) return "unexpected-instruction";
+  if (has("must set computeunitlimit") || has("loaded accounts data size limit") || has("-byte limit")) {
+    return "invalid-payload";
+  }
   if (has("used for a different request")) return "invalid-challenge";
   if (has("compute unit price") && (has("exceed") || has("maximum"))) return "compute-price-over-cap";
   if (has("compute unit limit") && (has("exceed") || has("maximum"))) return "compute-limit-over-cap";
@@ -173,13 +177,6 @@ async function sdkServer(
   if (voucherSigner !== "client" && voucherSigner !== "operator") {
     throw new Error(`invalid server.voucherSigner ${String(voucherSigner)}`);
   }
-  const versions = server.transactionVersions as number[] | undefined;
-  if (versions !== undefined && !(new Set(versions).size === 1 && versions.includes(0))) {
-    return unsupported(
-      vector.id,
-      "@solana/mpp's session server takes no accepted transaction-version set (server.transactionVersions other than [0])",
-    );
-  }
   let feePayerSigner: KeyPairSigner | undefined;
   if (typeof server.feePayer === "string") {
     feePayerSigner = await keyOf(input.sessionServerFeePayerSecretKey, "sessionServerFeePayerSecretKey");
@@ -217,6 +214,9 @@ async function sdkServer(
       ? { suggestedDeposit: u64(server.suggestedDeposit, "suggestedDeposit") }
       : {}),
     ...(typeof server.tokenProgram === "string" ? { tokenProgram: server.tokenProgram } : {}),
+    ...(server.transactionVersions !== undefined
+      ? { transactionVersions: server.transactionVersions as SessionParameters["transactionVersions"] }
+      : {}),
     voucherSigner,
   };
   return createSessionServer(parameters);
