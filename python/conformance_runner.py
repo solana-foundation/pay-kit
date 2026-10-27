@@ -136,6 +136,8 @@ async def _build_transaction(vector: dict[str, Any]) -> str:
             external_id=request.external_id,
             compute_unit_limit=compute_unit_limit,
             compute_unit_price=compute_unit_price,
+            # The highest message version the vector's signer can sign.
+            max_transaction_version=inp.get("signerMaxTransactionVersion"),
         )
     finally:
         await rpc.aclose()
@@ -174,13 +176,16 @@ def _shape_from_transaction(transaction_b64: str) -> dict[str, Any]:
     from the System Program transfer (discriminator 2), memos from the Memo
     Program, and compute caps from the ComputeBudget program.
     """
-    from solders.transaction import Transaction, VersionedTransaction  # type: ignore[import-untyped]
+    from solders.transaction import Transaction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.txv1 import MessageV1, decode_transaction
 
     raw = base64.b64decode(transaction_b64)
-    # Versioned first: the legacy parser accepts a v0 wire and misreads it
-    # (the 0x80 prefix lands in the header), so it is only the fallback.
+    # Versioned first (legacy, v0 and v1): the legacy parser accepts a v0
+    # wire and misreads it (the 0x80 prefix lands in the header), so it is
+    # only the fallback.
     try:
-        message = VersionedTransaction.from_bytes(raw).message
+        message = decode_transaction(raw).message
     except Exception:
         message = Transaction.from_bytes(raw).message
 
@@ -234,6 +239,9 @@ def _shape_from_transaction(transaction_b64: str) -> dict[str, Any]:
                 )
             continue
 
+    if isinstance(message, MessageV1):
+        # Version 1 declares its compute budget in the message header.
+        compute_unit_limit = message.config.compute_unit_limit
     shape: dict[str, Any] = {
         "feePayer": keys[0],
         "forbiddenPrograms": [],
@@ -339,6 +347,22 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             raise ValueError(f"invalid session payload: {exc}") from exc
         canonical = wire_json.encode_canonical(decoded)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
+
+    cw = inp.get("chargeWire")
+    if cw:
+        # The charge request through the PRODUCTION parsers (ChargeRequest,
+        # its methodDetails as MethodDetails), re-encoded, as sessionWire
+        # does. Mirrors the Rust and TS runners.
+        try:
+            charge = ChargeRequest.from_dict(cw.get("value"))
+            if charge.method_details is not None:
+                charge.method_details = MethodDetails.from_dict(charge.method_details).to_dict()
+            decoded_charge = charge.to_dict()
+        except Exception as exc:
+            raise ValueError(f"invalid payload: charge request: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded_charge)
         exact["canonicalJson"] = canonical.decode("utf-8")
         exact["base64Url"] = base64url_encode(canonical)
 
@@ -619,6 +643,16 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
     # block at the top of harness/src/conformance/reject.ts).
     # RULINGS SIG1: a client signature that does not verify over the
     # message, or a signature list short of the required signers.
+    # Transaction versions (SIMD-0385): a version the server does not
+    # accept, or no advertised version the signer can build; then the
+    # version-1 envelope rules. First: the messages contain generic words.
+    (
+        r"transaction version .*not accepted|unsupported_transaction_version|signs up to version"
+        r"|advertises no transaction version",
+        "unsupported-version",
+    ),
+    (r"^(?!.*invalid_exact_svm).*must not contain computebudget instructions", "unexpected-instruction"),
+    (r"must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables", "invalid-payload"),
     (r"signature verification failed", "invalid-payload"),
     (r"fee payer (token account )?cannot fund", "fee-payer-is-funds-source"),
     (r"primary amount is zero after splits|split amounts exceed", "splits-exceed-amount"),
