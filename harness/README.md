@@ -1166,8 +1166,9 @@ case is in no scheduled shard.
 | Intent | Claimed cases | Must pass | Known failing |
 | --- | ---: | ---: | ---: |
 | charge | 159 | 136 | 23 |
-| x402-exact | 75 | 58 | 17 |
-| x402-upto | 12 | 8 | 4 |
+| x402-exact | 78 | 61 | 17 |
+| x402-upto | 15 | 11 | 4 |
+| x402-batch | 1 | 1 | 0 |
 
 **charge**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
@@ -1193,9 +1194,9 @@ case is in no scheduled shard.
 | php |  | 6 · 2k |
 | python | 5 · 1k | 6 · 2k |
 | ruby |  | 12 · 4k |
-| rust | 7 | (control) |
+| rust | 8 | (control) |
 | swift | 5 · 1k |  |
-| typescript | 5 | 6 · 1k |
+| typescript | 6 | 7 · 1k |
 
 **x402-upto**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
@@ -1204,8 +1205,15 @@ case is in no scheduled shard.
 | go | 2 · 2k | 1 · 1k |
 | kotlin | 2 |  |
 | python | 2 | 1 · 1k |
-| rust | 2 | (control) |
+| rust | 3 | (control) |
 | swift | 2 |  |
+| typescript |  | 2 |
+
+**x402-batch**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
+
+| SDK | as client | as server |
+| --- | :---: | :---: |
+| rust | 1 | (control) |
 
 9 SDK shards, each one `Conformance / <sdk>` job in `.github/workflows/conformance.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.
 <!-- interop:end -->

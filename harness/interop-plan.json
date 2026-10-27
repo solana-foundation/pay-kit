@@ -37,6 +37,8 @@
     "rust": [
       "mpp:charge:client",
       "mpp:charge:server",
+      "x402:batch-settlement:client",
+      "x402:batch-settlement:server",
       "x402:exact:client",
       "x402:exact:server",
       "x402:upto:client",
@@ -51,7 +53,8 @@
       "mpp:charge:client",
       "mpp:charge:server",
       "x402:exact:client",
-      "x402:exact:server"
+      "x402:exact:server",
+      "x402:upto:server"
     ]
   },
   "cases": [
@@ -214,6 +217,7 @@
     "interop/charge-token2022-split-ata/rust/typescript",
     "interop/charge-token2022-split-ata/swift/rust",
     "interop/charge-token2022-split-ata/typescript/rust",
+    "interop/x402-batch-v1-redeem/rust/rust",
     "interop/x402-exact-basic/go/rust",
     "interop/x402-exact-basic/kotlin/rust",
     "interop/x402-exact-basic/python/rust",
@@ -289,13 +293,19 @@
     "interop/x402-exact-idempotent-resubmit/swift/rust",
     "interop/x402-exact-idempotent-resubmit/typescript/rust",
     "interop/x402-exact-network-mismatch/rust/lua",
+    "interop/x402-exact-v1/rust/rust",
+    "interop/x402-exact-v1/rust/typescript",
+    "interop/x402-exact-v1/typescript/rust",
     "interop/x402-upto-basic/go/rust",
     "interop/x402-upto-basic/kotlin/rust",
     "interop/x402-upto-basic/python/rust",
     "interop/x402-upto-basic/rust/go",
     "interop/x402-upto-basic/rust/python",
     "interop/x402-upto-basic/rust/rust",
+    "interop/x402-upto-basic/rust/typescript",
     "interop/x402-upto-basic/swift/rust",
+    "interop/x402-upto-v1/rust/rust",
+    "interop/x402-upto-v1/rust/typescript",
     "interop/x402-upto-zero-actual/go/rust",
     "interop/x402-upto-zero-actual/kotlin/rust",
     "interop/x402-upto-zero-actual/python/rust",
@@ -578,7 +588,7 @@
         "protocol": true,
         "flow": false
       },
-      "caseCount": 26,
+      "caseCount": 29,
       "cases": [
         "interop/charge-basic/rust/rust",
         "interop/charge-client-expired-challenge/rust/rust",
@@ -597,6 +607,7 @@
         "interop/charge-split-ata/rust/rust",
         "interop/charge-symbol-usdc-localnet/rust/rust",
         "interop/charge-token2022-split-ata/rust/rust",
+        "interop/x402-batch-v1-redeem/rust/rust",
         "interop/x402-exact-basic/rust/rust",
         "interop/x402-exact-client-wrong-network/rust/rust",
         "interop/x402-exact-cross-route-replay/rust/rust",
@@ -604,7 +615,9 @@
         "interop/x402-exact-fault-wrong-amount/rust/rust",
         "interop/x402-exact-fault-wrong-recipient/rust/rust",
         "interop/x402-exact-idempotent-resubmit/rust/rust",
+        "interop/x402-exact-v1/rust/rust",
         "interop/x402-upto-basic/rust/rust",
+        "interop/x402-upto-v1/rust/rust",
         "interop/x402-upto-zero-actual/rust/rust"
       ]
     },
@@ -654,13 +667,13 @@
         "typescript",
         "rust"
       ],
-      "needsProgram": false,
+      "needsProgram": true,
       "offline": {
         "vector": true,
         "protocol": true,
         "flow": true
       },
-      "caseCount": 43,
+      "caseCount": 47,
       "cases": [
         "interop/charge-basic/rust/typescript",
         "interop/charge-basic/typescript/rust",
@@ -704,7 +717,11 @@
         "interop/x402-exact-fault-wrong-amount/rust/typescript",
         "interop/x402-exact-fault-wrong-recipient/rust/typescript",
         "interop/x402-exact-idempotent-resubmit/rust/typescript",
-        "interop/x402-exact-idempotent-resubmit/typescript/rust"
+        "interop/x402-exact-idempotent-resubmit/typescript/rust",
+        "interop/x402-exact-v1/rust/typescript",
+        "interop/x402-exact-v1/typescript/rust",
+        "interop/x402-upto-basic/rust/typescript",
+        "interop/x402-upto-v1/rust/typescript"
       ]
     }
   ]
