@@ -185,10 +185,10 @@ class PreparedActivation:
 
 @dataclass
 class PreparedAccess:
-    """A ``type="proof"`` access credential for this route.
+    """A ``type="proof"`` access payload that parsed for this route.
 
-    Verifying it needs the binding a confirmed activation writes, which is
-    the host's store.
+    Unverified: its signature, payer and binding are not checked. Only the
+    private conformance hook returns it; never grant access on it.
     """
 
     request: SubscriptionRequest
@@ -366,17 +366,38 @@ class SubscriptionServer:
 
     # ── Verify ──
 
-    async def verify_activation(
-        self, credential: PaymentCredential, *, now: int | None = None
-    ) -> PreparedActivation | PreparedAccess:
+    async def verify_activation(self, credential: PaymentCredential, *, now: int | None = None) -> PreparedActivation:
         """The offline half of activation verification, at ``now`` (unix seconds).
 
         Checks the challenge binding and expiry, the request against this
         route, the activation payload and bearer proof, the activation scope,
         the fee-payer co-signature and the fee payer's signature over the
         message. Nothing here reads the chain, consumes replay state or
-        broadcasts: the host broadcasts ``PreparedActivation.transaction``,
-        then reads the delegation it created.
+        broadcasts: the host reserves the activation signature, broadcasts
+        ``PreparedActivation.transaction``, confirms the landed delegation
+        matches the payer, plan and terms, and stores the proof binding.
+
+        A ``type="proof"`` access credential is refused: accepting one needs
+        the binding a confirmed activation writes, which this server does not
+        keep. Hosts verify access against their own binding store, then call
+        :meth:`verify_active_subscription`.
+        """
+        prepared = await self._prepare_pre_broadcast(credential, now=now)
+        if isinstance(prepared, PreparedAccess):
+            raise _invalid(
+                'type="proof" access credentials need the activation binding store, '
+                "which this server does not keep; verify_activation accepts activations only"
+            )
+        return prepared
+
+    async def _prepare_pre_broadcast(
+        self, credential: PaymentCredential, *, now: int | None = None
+    ) -> PreparedActivation | PreparedAccess:
+        """Conformance hook (mirrors Rust ``testkit::verify_activation_pre_broadcast``).
+
+        Not a payment verifier: a ``PreparedAccess`` result means only that a
+        ``type="proof"`` payload parsed for this route; its signature, payer
+        and binding are NOT checked. Never grant access on it.
         """
         moment = datetime.fromtimestamp(now if now is not None else _now_seconds(), UTC)
         prepared = await self._prepare_credential(credential, moment)

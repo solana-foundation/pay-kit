@@ -419,18 +419,25 @@ Use MPP when:
 | `charge/pull`  | ✅     | ✅     |
 | `charge/push`  | —      | ✅     |
 | `session`      | ✅     | ✅     |
-| `subscription` | ✅     | ✅¹    |
+| `subscription` | ✅     | ◐¹     |
 
 ¹ `subscription` (draft-solana-subscription-00): the client
 (`build_subscription_activation_credential`) reads and checks the on-chain
 `Plan` against the challenge before it signs, initializes a missing
 `SubscriptionAuthority` in its own transaction, and binds the reusable bearer
-proof to the delegation. The server (`SubscriptionServer`) issues challenges,
-verifies an activation offline (challenge binding, route terms, bearer proof,
-`source`, activation scope, fee-payer co-signature) and returns the
-transaction to broadcast, and checks on-chain that a subscriber's delegation
-is live and paid (`verify_active_subscription`). Broadcasting the activation
-and storing the proof binding for later `type="proof"` access are the host's.
+proof to the delegation. The server is partial (◐: offline verify and active
+check only). `SubscriptionServer` issues challenges, verifies an activation
+offline (challenge binding, route terms, bearer proof, `source`, activation
+scope, fee-payer co-signature) and returns the transaction to broadcast, and
+checks on-chain that a subscriber's delegation is live and paid
+(`verify_active_subscription`). It does not yet port the Rust kit's
+`verify_credential` end to end: reserving the activation signature (replay
+protection, `signature_consumed`), broadcast and confirm, checking that the
+landed delegation matches the payer, plan and terms with a current authority,
+the proof binding store, `type="proof"` access verification and the receipt
+are the host's. `verify_activation` refuses `type="proof"` credentials.
+Tracked as `python-subscription-server-partial` in
+`harness/expectations/FINDINGS.md`.
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =

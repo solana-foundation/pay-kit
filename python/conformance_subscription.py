@@ -262,7 +262,7 @@ async def _verify_activation(inp: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - a malformed header is a malformed payload
             raise Rejection(str(exc), "invalid-payload") from exc
         try:
-            prepared = await server.verify_activation(credential, now=_now(inp))
+            prepared = await server._prepare_pre_broadcast(credential, now=_now(inp))  # noqa: SLF001 - offline conformance hook
         except Rejection:
             raise
         except Exception as exc:  # noqa: BLE001 - classified by message

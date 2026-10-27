@@ -550,7 +550,23 @@ the vectors or adapters instead:
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `python-x402-double-delivery`, the Python row of `x402-replay-route-missing`, `upto-settlement-funds-recipient-ata`, `session-open-initial-voucher-accepted` (Python), the session wire part of `txv1-python` | Python x402 server refuses a confirmed payment presented again (`signature_consumed`) and grants each confirmation once; the harness x402 server mounts the replay route; upto settlement creates only the payee and treasury accounts and the open is refused until every payout account is usable; session `methodDetails.transactionVersions` and the open-voucher refusal |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
-| Python `subscription` suite unclaimed (no subscription intent) | `solana_pay_kit.protocols.mpp` subscription intent, activation client, offline activation verifier and active-subscription check, subscriptions program helpers; `subscription` claimed (2026-10-27) |
+| Python `subscription` suite unclaimed (no subscription intent) | `solana_pay_kit.protocols.mpp` subscription intent, activation client, offline activation verifier and active-subscription check, subscriptions program helpers; `subscription` claimed (2026-10-27). The end-to-end server stays open as `python-subscription-server-partial` |
+
+## python-subscription-server-partial
+
+**Cases:** none (the vectors stop before the broadcast; Python passes the
+`subscription` suite). **Open since 2026-10-27.**
+
+`SubscriptionServer` (`python/src/solana_pay_kit/protocols/mpp/server/subscription.py`)
+ports only the offline half of the Rust kit's `verify_credential`
+(`rust/crates/kit/src/mpp/server/subscription.rs:420-498`) plus
+`verify_active_subscription`. Missing: reserving the activation signature
+(replay protection, `signature_consumed`), broadcast and confirm,
+`ensure_activation_landed` and `bind_confirmed_activation` (the landed
+delegation matches the payer, plan and terms with a current authority), the
+binding store, `verify_access_credential` for `type="proof"` access, and the
+receipt. `verify_activation` refuses `type="proof"` credentials rather than
+returning an unverified result; `python/README.md` marks the server ◐.
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
 

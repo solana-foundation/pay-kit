@@ -333,9 +333,20 @@ async def test_access_proof_payload() -> None:
     challenge = _challenge(server)
     auth = SubscriptionAuthentication(challenge.id, str(fx.SUBSCRIBER.pubkey()), "sig")
     access = build_subscription_access_credential(challenge, str(fx.delegation_address()), auth)
-    prepared = await server.verify_activation(access, now=fx.NOW)
+    # The conformance hook only parses the proof; it never vouches for it.
+    prepared = await server._prepare_pre_broadcast(access, now=fx.NOW)
     assert isinstance(prepared, PreparedAccess) and prepared.access.authentication == auth
     await _reject(server, replace(access, payload={"type": "proof"}), "Failed to decode proof payload")
+
+
+async def test_public_verify_refuses_forged_proof() -> None:
+    server = _server()
+    challenge = _challenge(server)
+    forged = SubscriptionAuthentication(challenge.id, str(fx.SUBSCRIBER.pubkey()), "sig")
+    access = build_subscription_access_credential(challenge, str(fx.delegation_address()), forged)
+    with pytest.raises(VerificationError, match="need the activation binding store") as info:
+        await server.verify_activation(access, now=fx.NOW)
+    assert info.value.code == "invalid-payload"
 
 
 async def test_authentication_rejects() -> None:
