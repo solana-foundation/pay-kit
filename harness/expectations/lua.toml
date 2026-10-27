@@ -148,6 +148,8 @@ ids = [
   "vector/x402-build-no-intersection-reject",
   "vector/x402-build-empty-advertisement-reject",
   "vector/x402-build-legacy-only-reject",
+  "vector/x402-build-unknown-entry-reject",
+  "vector/x402-build-string-entry-reject",
 ]
 
 [[known_failing]]
@@ -197,6 +199,8 @@ tracking = "FINDINGS.md#txv1-lua"
 [[known_failing]]
 ids = [
   "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-loaded-data-limit-4mib-accept",
+  "vector/x402-verify-v1-loaded-data-limit-small-accept",
   "vector/x402-verify-v1-not-accepted-reject",
   "vector/x402-verify-v1-explicit-v0-sponsor-reject",
   "vector/x402-verify-v1-over-1232-accept",
@@ -253,6 +257,8 @@ tracking = "FINDINGS.md#txv1-lua"
 ids = [
   "cross/x402-build-duplicate-advertisement/rust/lua",
   "cross/x402-build-v1-advertised/rust/lua",
+  "cross/x402-build-duplicate-advertisement/typescript/lua",
+  "cross/x402-build-v1-advertised/typescript/lua",
 ]
 reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-lua"

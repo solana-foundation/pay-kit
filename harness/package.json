@@ -13,7 +13,7 @@
     "coverage:check": "tsx coverage-table.ts --check"
   },
   "dependencies": {
-    "@solana/kit": "^6.5.0",
+    "@solana/kit": "^8.5.0",
     "@solana/mpp": "file:../typescript/packages/mpp",
     "@solana/pay-kit": "file:../typescript/packages/pay-kit",
     "@solana/surfpool": "1.4.0",

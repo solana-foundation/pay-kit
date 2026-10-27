@@ -146,7 +146,11 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             max_age: Some(60),
             fee_payer_key: Some(fee_payer.pubkey().to_string()),
             payment_identifier: PaymentIdentifierPolicy::NotAdvertised,
-        })?,
+        })?
+        // Accept and advertise version 1, as the reference facilitators do.
+        // Surfpool executes version 1 but does not expose the `enable_tx_v1`
+        // feature account, so `Auto` would read it as inactive.
+        .with_tx_v1(solana_pay_kit::core::tx::TxV1Mode::On),
         fee_payer,
         routes,
         settlement_header: env::var("X402_HARNESS_SETTLEMENT_HEADER")

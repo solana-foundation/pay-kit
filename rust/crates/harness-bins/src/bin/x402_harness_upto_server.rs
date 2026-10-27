@@ -123,7 +123,11 @@ fn read_state(
         withdraw_delay: 900,
         fee_payer_signer,
         receiver_authorizer_signer: Some(receiver_authorizer_signer),
-    })?;
+    })?
+    // Accept and advertise version 1, as the reference facilitators do.
+    // Surfpool executes version 1 but does not expose the `enable_tx_v1`
+    // feature account, so `Auto` would read it as inactive.
+    .with_tx_v1(solana_pay_kit::core::tx::TxV1Mode::On);
 
     Ok(UptoHarnessState {
         upto,

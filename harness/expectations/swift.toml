@@ -203,6 +203,9 @@ ids = [
 reason = "unsupported-mode: swift is a client-only SDK and does not implement x402 verify-transaction"
 ids = [
   "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-loaded-data-limit-4mib-accept",
+  "vector/x402-verify-v1-loaded-data-limit-small-accept",
+  "vector/x402-verify-v1-heap-size-reject",
   "vector/x402-verify-v1-not-accepted-reject",
   "vector/x402-verify-v1-explicit-v0-sponsor-reject",
   "vector/x402-verify-v0-with-v1-sponsor-accept",
@@ -261,6 +264,8 @@ ids = [
   "vector/x402-build-no-intersection-reject",
   "vector/x402-build-empty-advertisement-reject",
   "vector/x402-build-legacy-only-reject",
+  "vector/x402-build-unknown-entry-reject",
+  "vector/x402-build-string-entry-reject",
 ]
 reason = "the x402 exact client and sponsor have no transaction-version support (scheme_exact_svm.md §1.5, x402-foundation/x402 PR 3473/3474): the Swift SDK models legacy and version 0 only (swift/Sources/SolanaPayKit/PayCore/Transaction.swift TransactionVersion) and reads no transactionVersions"
 tracking = "FINDINGS.md#txv1-swift"

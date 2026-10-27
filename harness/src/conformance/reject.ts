@@ -114,6 +114,8 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/network mismatch/i, "wrong-network"],
   // @x402/svm exact verifier reason codes.
   [/invalid_exact_svm_network_mismatch/i, "wrong-network"],
+  [/compute_price_instruction_too_high/i, "compute-price-over-cap"],
+  [/compute_limit_instruction_too_high/i, "compute-limit-over-cap"],
   [/invalid_exact_svm_payload_amount_mismatch/i, "amount-mismatch"],
   [
     /invalid_exact_svm_payload_(mint_mismatch|recipient_mismatch|no_transfer_instruction)/i,

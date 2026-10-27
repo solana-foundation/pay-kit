@@ -938,6 +938,239 @@
   },
   {
     "bugType": "defaults",
+    "description": "extra.transactionVersions [2, 1, 0]: version 2 is not a defined entry, so the whole field is invalid and the client fails with unsupported_transaction_version instead of building version 1 from the entries it knows. The build judge verifies the header with a Rust sponsor accepting the offer's versions and compares the message version and header config with the kit's build.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "unsupported_transaction_version: invalid entry 2"
+    },
+    "id": "x402-build-unknown-entry-reject",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "transactionVersions": [
+            2,
+            1,
+            0
+          ]
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402TX-927d17b62e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "A client or server MUST treat a field containing any non-integer entry (a string, null, or \"legacy\") or any integer other than 0 or 1 as invalid and fail closed with unsupported_transaction_version.",
+      "section": "1.5 Transaction Versions (MUST)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
+    "description": "extra.transactionVersions [\"1\", 0]: a stringified version is not a valid entry, so the client fails with unsupported_transaction_version rather than reading it as 1 or skipping it. The build judge verifies the header with a Rust sponsor accepting the offer's versions and compares the message version and header config with the kit's build.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "unsupported_transaction_version: string entry"
+    },
+    "id": "x402-build-string-entry-reject",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "signerSecretKey": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        234,
+        74,
+        108,
+        99,
+        226,
+        156,
+        82,
+        10,
+        190,
+        245,
+        80,
+        123,
+        19,
+        46,
+        197,
+        249,
+        149,
+        71,
+        118,
+        174,
+        190,
+        190,
+        123,
+        146,
+        66,
+        30,
+        234,
+        105,
+        20,
+        70,
+        210,
+        44
+      ],
+      "x402Offer": {
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "extra": {
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "transactionVersions": [
+            "1",
+            0
+          ]
+        },
+        "maxTimeoutSeconds": 300,
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "scheme": "exact"
+      },
+      "x402Version": 2
+    },
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "provenance": "authored",
+    "requirements": [
+      "X402TX-927d17b62e"
+    ],
+    "role": "client",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "A client or server MUST treat a field containing any non-integer entry (a string, null, or \"legacy\") or any integer other than 0 or 1 as invalid and fail closed with unsupported_transaction_version.",
+      "section": "1.5 Transaction Versions (MUST)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "defaults",
     "description": "extra.transactionVersions [\"legacy\"]: clients MUST NOT build legacy, so nothing in the advertisement is buildable and the client fails with unsupported_transaction_version. The build judge verifies the header with a Rust sponsor accepting the offer's versions and compares the message version and header config with the kit's build.",
     "expect": {
       "outcome": "reject",
@@ -1152,7 +1385,7 @@
     "requirements": [
       "X402TX-24efe57db3",
       "X402TX-10b3fe2ef3",
-      "X402TX-d188782061"
+      "X402TX-4c2fd60e66"
     ],
     "role": "server",
     "spec": {
@@ -1586,7 +1819,7 @@
     "provenance": "generated",
     "requirements": [
       "X402TX-dc7b0f3305",
-      "X402TX-d188782061"
+      "X402TX-4c2fd60e66"
     ],
     "role": "server",
     "spec": {
@@ -1915,13 +2148,14 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-936b492daa",
-      "X402TX-644919eb3b"
+      "X402TX-915632f040",
+      "X402TX-4cd70365fd",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "A version-1 transaction that contains a Compute Budget instruction MUST be rejected.",
+      "quote": "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops).",
       "section": "2.2.1 Compute Budget Controls (SHOULD)"
     },
     "tier": "offline"
@@ -2025,13 +2259,13 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-eb681e1701",
-      "X402TX-644919eb3b"
+      "X402TX-997feeb51d",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit.",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
       "section": "2.2.1 Compute Budget Controls (SHOULD)"
     },
     "tier": "offline"
@@ -2135,13 +2369,339 @@
     "mode": "verify-transaction",
     "provenance": "authored",
     "requirements": [
-      "X402TX-eb681e1701",
-      "X402TX-644919eb3b"
+      "X402TX-997feeb51d",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit.",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
+      "section": "2.2.1 Compute Budget Controls (SHOULD)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 header loadedAccountsDataSizeLimit 4194304 (4 MiB), what the TypeScript, Go and Python x402 clients request: the spec requires the limit to be set, not to be the runtime maximum, so a sponsor that demands 64 MiB refuses every reference client. Pair: x402-verify-v1-missing-loaded-data-limit-reject. Mutation: version-1 header loadedAccountsDataSizeLimit set to 4194304.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "x402-verify-v1-loaded-data-limit-4mib-accept",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfX0sInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJnUUlCQXc4QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFJSC9SY2tPRnFneDF0ayszak5ZQytoMlpIOTYvZHJFOFdPMXdMcXlEWHA5aGpxU214ajRweFNDcjcxVUhzVExzWDVsVWQycnI2K2U1SkNIdXBwRkViU0xBWFMvMWxXNlZ1R1E2eEFmMjIxYnE0bU9YU1FYUkFqNXgyajNsTW80Y3BiYTRUK1ZBV1prS2JxSXdqY1pZaFZyWldLWlI0VVZ5WWo5L3JUazl1d0Urd0ZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BPMFFzczVFaFYvRTZrejBCTkNndEF5dGYvczBCb3R2eHQza0dDTjhBTHFjQkFBQUFBQUFBQUVBTkF3QUFBRUFBQlFRS0FBUUFJQUFEQmdJQkRPZ0RBQUFBQUFBQUJuZzBNREoyWlhKcFpubDJNV3h2WVdRd01EQXdNREF3TURBd01EQXdNREF3QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU9SQ29lQ2o0R0FCSjZNR0xYN2daVGhpQlp0OElQRS9Ib3BPQkZqYUdFY2s2eVBIQ29EcjZVd0ZsMll4cEsyN1lzbkhWc0t4bDVmU2I5bTVNUm50SWdBPSJ9fQ==",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+      "x402ServerFeePayerSecretKey": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        253,
+        23,
+        36,
+        56,
+        90,
+        160,
+        199,
+        91,
+        100,
+        251,
+        120,
+        205,
+        96,
+        47,
+        161,
+        217,
+        145,
+        253,
+        235,
+        247,
+        107,
+        19,
+        197,
+        142,
+        215,
+        2,
+        234,
+        200,
+        53,
+        233,
+        246,
+        24
+      ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerTransactionVersions": [
+        0,
+        1
+      ]
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-997feeb51d",
+      "X402TX-f9bcc1a14a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
+      "section": "2.2.1 Compute Budget Controls (SHOULD)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 header loadedAccountsDataSizeLimit 32768 (32 KiB), set but small: accepted at verification. A budget too small to load the payment's programs fails at simulation, which this offline vector does not run. Mutation: version-1 header loadedAccountsDataSizeLimit set to 32768.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "x402-verify-v1-loaded-data-limit-small-accept",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfX0sInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJnUUlCQXc4QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFJSC9SY2tPRnFneDF0ayszak5ZQytoMlpIOTYvZHJFOFdPMXdMcXlEWHA5aGpxU214ajRweFNDcjcxVUhzVExzWDVsVWQycnI2K2U1SkNIdXBwRkViU0xBWFMvMWxXNlZ1R1E2eEFmMjIxYnE0bU9YU1FYUkFqNXgyajNsTW80Y3BiYTRUK1ZBV1prS2JxSXdqY1pZaFZyWldLWlI0VVZ5WWo5L3JUazl1d0Urd0ZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BPMFFzczVFaFYvRTZrejBCTkNndEF5dGYvczBCb3R2eHQza0dDTjhBTHFjQkFBQUFBQUFBQUVBTkF3QUFnQUFBQlFRS0FBUUFJQUFEQmdJQkRPZ0RBQUFBQUFBQUJuZzBNREoyWlhKcFpubDJNV3h2WVdRd01EQXdNREF3TURBd01EQXdNREF3QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQVBLTmIvcWJvcFdzQnBETTNrTUV4TGVKK0hobGJBSk9yd1Q5dll4UTlJRkduZ1E5b0xzZlBGZkpCcjIxd1NNb1QrTTV5REx2MjFCeFAyOENObmVkOVE4PSJ9fQ==",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+      "x402ServerFeePayerSecretKey": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        253,
+        23,
+        36,
+        56,
+        90,
+        160,
+        199,
+        91,
+        100,
+        251,
+        120,
+        205,
+        96,
+        47,
+        161,
+        217,
+        145,
+        253,
+        235,
+        247,
+        107,
+        19,
+        197,
+        142,
+        215,
+        2,
+        234,
+        200,
+        53,
+        233,
+        246,
+        24
+      ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerTransactionVersions": [
+        0,
+        1
+      ]
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-997feeb51d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
+      "section": "2.2.1 Compute Budget Controls (SHOULD)"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "settlement",
+    "description": "Version-1 header requesting a 64 KiB heap (TransactionConfigMask bit 4), the header form of RequestHeapFrame that a sponsor refuses on version 0 (x402-exact-verify-compute-heap-frame-reject). Pair: x402-verify-v1-accept. Mutation: version-1 header heapSize set to 65536.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "x402-verify-v1-heap-size-reject",
+    "input": {
+      "rpcFixtures": {
+        "mints": {
+          "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
+            "decimals": 6,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        "recentBlockhash": "11111111111111111111111111111111"
+      },
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJKMnhjY1J0dUc0M2RyRVNMWXpuSGhMaFFrTFRkZmVwY0tZYmlROUJzSlZhZiIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdfX0sInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJnUUlCQXg4QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFJSC9SY2tPRnFneDF0ayszak5ZQytoMlpIOTYvZHJFOFdPMXdMcXlEWHA5aGpxU214ajRweFNDcjcxVUhzVExzWDVsVWQycnI2K2U1SkNIdXBwRkViU0xBWFMvMWxXNlZ1R1E2eEFmMjIxYnE0bU9YU1FYUkFqNXgyajNsTW80Y3BiYTRUK1ZBV1prS2JxSXdqY1pZaFZyWldLWlI0VVZ5WWo5L3JUazl1d0Urd0ZTbE5hbVNraEJrMGs2SEZnMmpoOGZEVzEzYnlTdTRIa0g2aEFRUVZFalFiZDl1SFhaYUdUMmN2aFJzN3JlYXdjdElYdFgxczNrVHFNOVlWKy93Q3BPMFFzczVFaFYvRTZrejBCTkNndEF5dGYvczBCb3R2eHQza0dDTjhBTHFjQkFBQUFBQUFBQUVBTkF3QUFBQUFFQUFBQkFBVUVDZ0FFQUNBQUF3WUNBUXpvQXdBQUFBQUFBQVo0TkRBeWRtVnlhV1o1ZGpGb1pXRndNREF3TURBd01EQXdNREF3TURBd01BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ1ZtdFZjSWswVC9kTmR6cE0vQUltaDJWUGVoQVVmbko1OHhpVVllRUl6Rmd0RGZsZnFsSzJOaVdESWczUTA0STZ2RjlmNTQzUWlKWU5PVFRBUXRub0oifX0=",
+      "x402ServerAmount": "1000",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerFeePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+      "x402ServerFeePayerSecretKey": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        253,
+        23,
+        36,
+        56,
+        90,
+        160,
+        199,
+        91,
+        100,
+        251,
+        120,
+        205,
+        96,
+        47,
+        161,
+        217,
+        145,
+        253,
+        235,
+        247,
+        107,
+        19,
+        197,
+        142,
+        215,
+        2,
+        234,
+        200,
+        53,
+        233,
+        246,
+        24
+      ],
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerTransactionVersions": [
+        0,
+        1
+      ]
+    },
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "X402TX-997feeb51d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
+      "quote": "Only SetComputeUnitLimit (discriminator 2) and SetComputeUnitPrice (discriminator 3) SHOULD be accepted; other ComputeBudget instruction types expand execution surface without being necessary for payment verification and SHOULD be rejected.",
       "section": "2.2.1 Compute Budget Controls (SHOULD)"
     },
     "tier": "offline"
@@ -2244,12 +2804,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-eb681e1701"
+      "X402TX-997feeb51d"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit.",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
       "section": "2.2.1 Compute Budget Controls (SHOULD)"
     },
     "tier": "offline"
@@ -2353,12 +2913,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-eb681e1701"
+      "X402TX-997feeb51d"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit.",
+      "quote": "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
       "section": "2.2.1 Compute Budget Controls (SHOULD)"
     },
     "tier": "offline"
@@ -2461,13 +3021,13 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-2ad7a3f326",
-      "X402TX-eb681e1701"
+      "X402TX-655bb4a79a",
+      "X402TX-997feeb51d"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1.",
+      "quote": "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than maxPriorityFeeMicroLamports (default 5 lamports/CU) on this path, using the normalization in §1.5 for version 1.",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"
@@ -2571,13 +3131,14 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-2ad7a3f326",
-      "X402TX-eb681e1701"
+      "X402TX-655bb4a79a",
+      "X402TX-997feeb51d",
+      "X402TX-74fb884aa9"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1.",
+      "quote": "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than maxPriorityFeeMicroLamports (default 5 lamports/CU) on this path, using the normalization in §1.5 for version 1.",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"
@@ -2681,12 +3242,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-d188782061"
+      "X402TX-4c2fd60e66"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "A version-1 transaction MUST contain 1 to 5 instructions in this order:",
+      "quote": "For a single-payee charge, a version-1 transaction MUST contain 1 to 5 instructions in this order:",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"

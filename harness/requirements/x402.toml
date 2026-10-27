@@ -1,5 +1,5 @@
 repo = "x402"
-commit = "03b3919b3d422d2b094ea3539e0b577558e1ae86"
+commit = "d587d1bcc3ed07d59722fac6fa9d41ae71f781df"
 files = [
   "specs/x402-specification-v2.md",
   "specs/schemes/exact/scheme_exact.md",
@@ -113,9 +113,9 @@ text = "These are wallet-injected user protection mechanisms and MUST be allowed
 required = true
 
 [[requirement]]
-id = "X402-a8bd75d71b"
+id = "X402-05c2aacafc"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
-text = "The decompiled transaction MUST contain 3 to 7 instructions in this order:"
+text = "For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:"
 required = true
 
 [[requirement]]
@@ -289,9 +289,9 @@ text = "The payload.from signature MUST be present and valid before the facilita
 required = true
 
 [[requirement]]
-id = "X402-c1174b72d8"
+id = "X402-4de59a1f27"
 doc = "specs/schemes/upto/scheme_upto_svm.md"
-text = "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."
+text = "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."
 required = true
 
 [[requirement]]

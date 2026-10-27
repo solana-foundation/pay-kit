@@ -24,6 +24,15 @@ pub struct Message {
 }
 
 impl Message {
+    /// The message version: `"legacy"`, `"0"` or `"1"`.
+    pub fn version(&self) -> &'static str {
+        match self.msg {
+            VersionedMessage::Legacy(_) => "legacy",
+            VersionedMessage::V0(_) => "0",
+            VersionedMessage::V1(_) => "1",
+        }
+    }
+
     fn account(&self, index: u8) -> &str {
         self.keys
             .get(index as usize)

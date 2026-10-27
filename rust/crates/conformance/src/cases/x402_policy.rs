@@ -17,7 +17,7 @@ use crate::mutate::Mutation;
 const VERIFY: &str = "x402-verify-policy.json";
 const BUILD: &str = "x402-build-policy.json";
 
-const STATIC_LAYOUT: &str = "X402-a8bd75d71b";
+const STATIC_LAYOUT: &str = "X402-05c2aacafc";
 const LIGHTHOUSE_ALLOWED: &str = "X402-a1cf65b0f0";
 const FUND_SAFETY: &str = "X402-985ecc1ea3";
 const SIGNATURE_ONLY_FOR_FEES: &str = "X402-0ad718daab";
@@ -90,7 +90,7 @@ crate::registry! {
     x402_exact_verify_unknown_program_reject => reject_case(
         "x402-exact-verify-unknown-program-reject",
         BugType::Settlement,
-        layout_spec("The decompiled transaction MUST contain 3 to 7 instructions in this order:"),
+        layout_spec("For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:"),
         &[STATIC_LAYOUT],
         "An instruction of a program that is neither Lighthouse nor Memo (the Stake program) in an optional position of the static layout.",
         mutated(devnet_route(), Mutation::AddProgramInstruction { program: STAKE_PROGRAM, data: &[0] }),
@@ -98,7 +98,7 @@ crate::registry! {
     x402_exact_verify_compute_heap_frame_reject => reject_case(
         "x402-exact-verify-compute-heap-frame-reject",
         BugType::Settlement,
-        layout_spec("The decompiled transaction MUST contain 3 to 7 instructions in this order:"),
+        layout_spec("For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:"),
         &[STATIC_LAYOUT],
         "Position 1 must be SetComputeUnitLimit (ComputeBudget discriminator 2); here it is RequestHeapFrame (discriminator 1). Only unit limit and unit price are accepted compute budget instructions.",
         mutated(devnet_route(), Mutation::SetComputeBudgetData { index: 0, data: REQUEST_HEAP_FRAME }),
@@ -106,7 +106,7 @@ crate::registry! {
     x402_exact_verify_extra_compute_budget_reject => reject_case(
         "x402-exact-verify-extra-compute-budget-reject",
         BugType::Settlement,
-        layout_spec("The decompiled transaction MUST contain 3 to 7 instructions in this order:"),
+        layout_spec("For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:"),
         &[STATIC_LAYOUT],
         "A third ComputeBudget instruction (RequestHeapFrame) ahead of the unit limit and price, so the transfer is no longer at position 3.",
         mutated(devnet_route(), Mutation::AddComputeBudget { data: REQUEST_HEAP_FRAME }),

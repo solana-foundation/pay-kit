@@ -1158,7 +1158,7 @@
     "role": "both",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "Entries are the integers `0` and `1`, the Wallet Standard `supportedTransactionVersions` vocabulary.",
+      "quote": "Entries MUST be the JSON integers `0` and `1` only.",
       "section": "Transaction versions"
     },
     "tier": "offline"

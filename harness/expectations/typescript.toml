@@ -170,20 +170,14 @@ tracking = "FINDINGS.md#ts-upto-open-size-unbounded"
 
 [[known_failing]]
 ids = [
-  "vector/x402-upto-build-v1-when-advertised",
-  "vector/x402-upto-build-no-common-version-reject",
-  "vector/x402-upto-verify-v1-accept",
   "vector/x402-upto-verify-v1-unadvertised-reject",
   "vector/x402-upto-verify-v1-unadvertised-before-layout-reject",
   "vector/x402-upto-verify-v1-compute-budget-instruction-reject",
   "vector/x402-upto-verify-v1-limit-over-cap-reject",
   "vector/x402-upto-verify-v1-priority-fee-over-cap-reject",
-  "vector/x402-upto-verify-v1-priority-fee-at-cap-accept",
   "vector/x402-upto-verify-v1-priority-fee-over-sponsor-cap-reject",
   "vector/x402-upto-verify-v1-missing-limit-reject",
   "vector/x402-upto-verify-v1-missing-loaded-limit-reject",
-  "vector/x402-upto-verify-v1-small-loaded-limit-accept",
-  "vector/x402-upto-verify-v1-large-accept",
   "vector/x402-upto-verify-v1-oversize-reject",
 ]
 reason = "the vendored @x402/svm 2.26.0 predates transaction-version negotiation (x402-foundation/x402 PR 3710): the client ignores extra.transactionVersions and the facilitator cannot decode a version-1 message"
@@ -312,7 +306,6 @@ reason = "@solana/mpp exposes no subscriptions instruction-data encoder (it buil
 ids = [
   "vector/batch-build-deposit-open",
   "vector/batch-build-terms-payment-flow-authorization",
-  "vector/batch-verify-open-accept",
   "vector/batch-verify-open-channel-pda-mismatch-reject",
   "vector/batch-verify-open-deposit-mismatch-reject",
   "vector/batch-verify-open-diverting-distribution-reject",
@@ -330,14 +323,10 @@ ids = [
   "vector/batch-build-version-intersection-empty-reject",
   "vector/batch-txv1-top-up-legacy-policed-as-v0-reject",
   "vector/batch-txv1-top-up-v0-over-1232-bytes-reject",
-  "vector/batch-txv1-top-up-v1-advertised",
   "vector/batch-txv1-top-up-v1-compute-budget-instruction-reject",
-  "vector/batch-txv1-top-up-v1-loaded-limit-below-max",
   "vector/batch-txv1-top-up-v1-missing-loaded-limit-reject",
   "vector/batch-txv1-top-up-v1-missing-unit-limit-reject",
   "vector/batch-txv1-top-up-v1-not-advertised-reject",
-  "vector/batch-txv1-top-up-v1-over-1232-bytes",
-  "vector/batch-txv1-top-up-v1-priority-fee-at-cap",
   "vector/batch-txv1-top-up-v1-priority-fee-over-cap-reject",
   "vector/batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject",
   "vector/batch-txv1-top-up-v1-unit-limit-over-cap-reject",
@@ -348,21 +337,8 @@ tracking = "FINDINGS.md#ts-batch-transaction-versions"
 [[known_failing]]
 ids = [
   "vector/batch-txv1-refund-v1-not-advertised-reject",
-  "vector/batch-verify-refund-compute-price-over-cap-reject",
-  "vector/batch-verify-refund-disallowed-suffix-reject",
-  "vector/batch-verify-refund-extra-account-reject",
-  "vector/batch-verify-refund-extra-instruction-reject",
-  "vector/batch-verify-refund-fee-payer-not-sponsor-reject",
-  "vector/batch-verify-refund-invalid-payer-signature-reject",
-  "vector/batch-verify-refund-memo-mismatch-reject",
-  "vector/batch-verify-refund-prefix-only-reject",
-  "vector/batch-verify-refund-request-close",
   "vector/batch-verify-refund-sealed-channel-reject",
   "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
-  "vector/batch-verify-refund-without-voucher-reject",
-  "vector/batch-verify-refund-wrong-channel-reject",
-  "vector/batch-wire-payload-refund-cooperative",
-  "vector/batch-wire-payload-refund-transaction-without-voucher-reject",
 ]
 reason = "the vendored facilitator refuses a client-mode refund carrying the voucher (\"cooperative close requires a trusted server binding\") instead of validating the request_close retry, and accepts a refund without the voucher; its wire guard applies the same shape (\"| voucher | BatchVoucher | REQUIRED in client mode.\")"
 tracking = "FINDINGS.md#ts-batch-refund-cooperative"
@@ -472,38 +448,32 @@ ids = [
 # Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
 
 [[unsupported]]
-reason = "neither @solana/mpp buildChargeTransaction nor the @solana/pay-kit x402 client takes a highest signable transaction version (input.signerMaxTransactionVersion)"
+reason = "@solana/mpp buildChargeTransaction takes no highest signable transaction version (input.signerMaxTransactionVersion); the @solana/pay-kit x402 client does (maxTransactionVersion)"
 ids = [
   "vector/charge-build-signer-v0-picks-v0",
   "vector/charge-build-no-buildable-version-reject",
-  "vector/x402-build-signer-v0-picks-v0",
-  "vector/x402-build-no-intersection-reject",
 ]
 
 [[unsupported]]
-reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
+reason = "the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated) with no option to narrow it, so a sponsor configured with [0] explicitly (input.x402ServerTransactionVersions) cannot be expressed"
 ids = [
-  "vector/x402-verify-v1-accept",
-  "vector/x402-verify-v0-with-v1-sponsor-accept",
-  "vector/x402-verify-v1-over-1232-accept",
-  "vector/x402-verify-v0-over-1232-reject",
-  "vector/x402-verify-v1-over-4096-reject",
-  "vector/x402-verify-v1-compute-budget-instruction-reject",
-  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
-  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
-  "vector/x402-verify-v1-compute-limit-at-cap-accept",
-  "vector/x402-verify-v1-compute-limit-over-cap-reject",
-  "vector/x402-verify-v1-priority-fee-at-cap-accept",
-  "vector/x402-verify-v1-priority-fee-over-cap-reject",
-  "vector/x402-verify-v1-too-many-instructions-reject",
-  "vector/x402-verify-v1-underpay-reject",
-  "vector/x402-verify-v1-wrong-recipient-reject",
-  "vector/x402-verify-v1-wrong-mint-reject",
-  "vector/x402-verify-v1-decimals-reject",
-  "vector/x402-verify-v1-fee-payer-authority-reject",
-  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
-  "vector/x402-verify-v1-extra-signer-reject",
+  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
 ]
+
+[[known_failing]]
+id = "vector/x402-verify-v1-compute-limit-over-cap-reject"
+reason = "the @x402/svm exact facilitator has no default compute unit cap (maxComputeUnits is unset in the runner and in pay-kit), so a version-1 computeUnitLimit of 200001 is sponsored (scheme_exact_svm.md §2.2.1 \"MUST NOT exceed the configured maximum\")"
+tracking = "FINDINGS.md#txv1-ts-x402-v1-policy"
+
+[[known_failing]]
+id = "vector/x402-verify-v1-decimals-reject"
+reason = "the @x402/svm exact static path does not compare TransferChecked decimals with the mint's and relies on simulation, which the offline runner stubs, so a 9-decimal transfer of a 6-decimal mint is accepted (scheme_exact_svm.md §1.4)"
+tracking = "FINDINGS.md#txv1-ts-x402-v1-policy"
+
+[[known_failing]]
+id = "vector/x402-verify-v1-extra-signer-reject"
+reason = "as for version 0: the @x402/svm static path accepts a third required signer (scheme_exact_svm.md §2.1.4); maxRequiredSignatures is unset in pay-kit (typescript/packages/pay-kit/src/config.ts)"
+tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
 
 [[known_failing]]
 ids = [
@@ -567,15 +537,10 @@ tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
 
 [[known_failing]]
 ids = [
-  "vector/x402-build-v1-advertised",
-  "vector/x402-build-duplicate-advertisement",
-  "vector/x402-build-empty-advertisement-reject",
-  "vector/x402-build-legacy-only-reject",
   "vector/x402-verify-v1-not-accepted-reject",
-  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
 ]
-reason = "the vendored x402 @03b3919b predates x402-foundation/x402 PR 3474: the exact client ignores extra.transactionVersions (always builds version 0, never refuses), and the facilitator has no version gate, so a version-1 transaction fails as signature_invalid instead of unsupported_transaction_version (scheme_exact_svm.md §1.5)"
-tracking = "FINDINGS.md#txv1-ts-x402-pre-3474"
+reason = "the @x402/svm exact facilitator always accepts [0, 1], so a valid version-1 transaction is sponsored where a sponsor with the default accepted set [0] rejects it with unsupported_transaction_version (scheme_exact_svm.md §1.5)"
+tracking = "FINDINGS.md#txv1-ts-x402-fixed-accepted-set"
 
 # Cross-verification of the transaction-version builds.
 
@@ -610,23 +575,8 @@ reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK
 tracking = "FINDINGS.md#txv1-ts-mpp-server-no-version-admission"
 
 [[unsupported]]
-reason = "the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])"
-ids = [
-  "cross/x402-build-duplicate-advertisement/go/typescript",
-  "cross/x402-build-duplicate-advertisement/python/typescript",
-  "cross/x402-build-duplicate-advertisement/rust/typescript",
-  "cross/x402-build-duplicate-advertisement/swift/typescript",
-  "cross/x402-build-duplicate-advertisement/typescript/typescript",
-  "cross/x402-build-signer-v0-picks-v0/go/typescript",
-  "cross/x402-build-signer-v0-picks-v0/python/typescript",
-  "cross/x402-build-signer-v0-picks-v0/rust/typescript",
-  "cross/x402-build-signer-v0-picks-v0/swift/typescript",
-  "cross/x402-build-v1-advertised/go/typescript",
-  "cross/x402-build-v1-advertised/python/typescript",
-  "cross/x402-build-v1-advertised/rust/typescript",
-  "cross/x402-build-v1-advertised/swift/typescript",
-  "cross/x402-build-v1-advertised/typescript/typescript",
-]
+reason = "the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated) with no option to narrow it, so a sponsor configured with [0] explicitly (input.x402ServerTransactionVersions) cannot be expressed"
+pattern = "cross/x402-build-v0-advertised/*/typescript"
 
 [[unsupported]]
 reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify, input.sessionServerVerify)"
@@ -668,3 +618,8 @@ tracking = "FINDINGS.md#session-open-initial-voucher-accepted"
 id = "vector/x402-upto-build-foreign-blockhash-reject"
 reason = "the vendored upstream @x402/svm upto client signs extra.recentBlockhash without asking its RPC whether the blockhash is live on the client's cluster (resolveBlockhash in the svm mechanism's shared utils)"
 tracking = "FINDINGS.md#upto-client-blockhash-not-checked"
+
+[[known_failing]]
+id = "vector/batch-verify-voucher-receiver-authorizer-missing-reject"
+reason = "@x402/svm 2.28 validates the payload shape before the receiver authorizer, so a channelConfig without receiverAuthorizer is refused as invalid_batch_settlement_svm_payload_type, not receiver_authorizer_mismatch (scheme_batch_settlement_svm.md: both MUST be present and equal); it is still refused"
+tracking = "FINDINGS.md#batch-ts-receiver-authorizer-missing-code"

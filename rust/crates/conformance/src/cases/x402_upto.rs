@@ -54,7 +54,7 @@ const REDERIVE_PDA: &str = "X402-cf373442ff";
 const OPEN_ENCODES: &str = "X402-d75fb10a6f";
 const DEPOSIT_NO_VOUCHER: &str = "X402-f747c74e76";
 const STATIC_INSPECT: &str = "X402-52c9f1e405";
-const NO_LOOKUP_TABLES: &str = "X402-c1174b72d8";
+const NO_LOOKUP_TABLES: &str = "X402-4de59a1f27";
 const FEE_PAYER_EQ: &str = "X402-9d68660de5";
 const SIGNER_SET: &str = "X402-9af8f33cd6";
 const FROM_SIGNATURE: &str = "X402-bcbf7025e5";
@@ -85,11 +85,11 @@ const TV_CLIENT: &str = "X402TX-61c735c7a9";
 const TV_CLIENT_EMPTY: &str = "X402TX-2909c4b4ec";
 const TV_REJECT_FIRST: &str = "X402TX-5267172b18";
 const TV_SIZE: &str = "X402TX-dc7b0f3305";
-const TV_V1_BUDGET: &str = "X402TX-644919eb3b";
+const TV_V1_BUDGET: &str = "X402TX-f9bcc1a14a";
 const TV_MESSAGE: &str = "X402TX-4de59a1f27";
 const TV_NO_PREFIX: &str = "X402TX-125d312b26";
-const TV_V1_CAPS: &str = "X402TX-0f874a9c63";
-const TV_V1_NO_CB: &str = "X402TX-936b492daa";
+const TV_V1_CAPS: &str = "X402TX-703c03cfb5";
+const TV_V1_NO_CB: &str = "X402TX-915632f040";
 const TV_LEGACY: &str = "X402TX-77742f428c";
 const TV_OPEN_VERSION: &str = "X402TX-d444d01b9e";
 
@@ -195,7 +195,7 @@ fn s_txv1_budget() -> SpecRef {
     spec(
         TXV1,
         "Top-level instruction layout",
-        "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed 400000, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= 5000000 computeUnitLimit.",
+        "computeUnitLimit (bit 2) MUST be set and MUST NOT exceed 400000, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy priorityFee * 1000000 <= 5000000 * computeUnitLimit, evaluated without overflow.",
     )
 }
 
@@ -525,7 +525,7 @@ crate::registry! {
     x402_upto_verify_legacy_message_accept => accept(
         "x402-upto-verify-legacy-message-accept",
         POLICY_FILE,
-        spec(SVM, "Message and signer rules", "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."),
+        spec(SVM, "Message and signer rules", "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."),
         &[NO_LOOKUP_TABLES],
         "The same open compiled as a legacy (unversioned) message is accepted and policed like version 0.",
         with(base(), Tamper::Form(Form::Legacy)),
@@ -883,7 +883,7 @@ crate::registry! {
     x402_upto_verify_lookup_table_reject => reject(
         "x402-upto-verify-lookup-table-reject",
         POLICY_FILE,
-        spec(SVM, "Message and signer rules", "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."),
+        spec(SVM, "Message and signer rules", "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."),
         &[NO_LOOKUP_TABLES],
         BugType::AuthBypass,
         base(),
@@ -1159,7 +1159,7 @@ crate::registry! {
     x402_upto_verify_compute_duplicate_limit_reject => reject(
         "x402-upto-verify-compute-duplicate-limit-reject",
         POLICY_FILE,
-        spec(SVM, "Top-level instruction layout", "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
+        spec(SVM, "Top-level instruction layout", "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
         &[LAYOUT],
         BugType::Wire,
         base(),
@@ -1170,7 +1170,7 @@ crate::registry! {
     x402_upto_verify_compute_duplicate_price_reject => reject(
         "x402-upto-verify-compute-duplicate-price-reject",
         POLICY_FILE,
-        spec(SVM, "Top-level instruction layout", "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
+        spec(SVM, "Top-level instruction layout", "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
         &[LAYOUT],
         BugType::Wire,
         base(),
@@ -1701,7 +1701,7 @@ crate::registry! {
     x402_upto_verify_v1_compute_budget_instruction_reject => reject(
         "x402-upto-verify-v1-compute-budget-instruction-reject",
         TXV1_FILE,
-        spec(TXV1, "Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."),
+        spec(TXV1, "Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops)."),
         &[TV_V1_NO_CB, TV_NO_PREFIX],
         BugType::Wire,
         with(VerifySpec::honest(v1_route()), Tamper::Form(Form::v1())),

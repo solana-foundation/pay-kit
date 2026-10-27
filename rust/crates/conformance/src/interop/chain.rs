@@ -283,7 +283,8 @@ impl Chain {
         loop {
             let v = self.send(
                 "getTransaction",
-                json!([signature, {"commitment": "confirmed", "encoding": "base64", "maxSupportedTransactionVersion": 0}]),
+                // Version 1 (SIMD-0385) settlements are read back too.
+                json!([signature, {"commitment": "confirmed", "encoding": "base64", "maxSupportedTransactionVersion": 1}]),
             );
             match v {
                 Ok(v) if !v.is_null() => return Ok(v),

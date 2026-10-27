@@ -30,16 +30,19 @@ const INTERSECT_HIGHEST: &str = "X402TX-61c735c7a9";
 const EMPTY_FAILS: &str = "X402TX-2909c4b4ec";
 const SPONSOR_SET: &str = "X402TX-24efe57db3";
 const SIZE_LIMITS: &str = "X402TX-dc7b0f3305";
-const V1_BUDGET: &str = "X402TX-644919eb3b";
-const V1_CAPS: &str = "X402TX-eb681e1701";
-const V1_NO_BUDGET_IX: &str = "X402TX-936b492daa";
-const V1_LAYOUT: &str = "X402TX-d188782061";
-const FAST_PATH_PRICE: &str = "X402TX-2ad7a3f326";
+const V1_BUDGET: &str = "X402TX-f9bcc1a14a";
+const V1_CAPS: &str = "X402TX-997feeb51d";
+const V1_NO_BUDGET_IX: &str = "X402TX-915632f040";
+const V1_CLIENT_NO_BUDGET_IX: &str = "X402TX-4cd70365fd";
+const V1_FEE_PRECISION: &str = "X402TX-74fb884aa9";
+const V1_LAYOUT: &str = "X402TX-4c2fd60e66";
+const FAST_PATH_PRICE: &str = "X402TX-655bb4a79a";
 const EXACTLY_ONE: &str = "X402TX-ee90546220";
 const NOT_LESS: &str = "X402TX-516a2d7b57";
 const FEE_PAYER_ISOLATION: &str = "X402TX-dd5384e0fe";
 const SELF_SPEND: &str = "X402TX-bc031b7add";
 const TRANSFER_MATCH: &str = "X402TX-f9c2b66234";
+const INVALID_ENTRY: &str = "X402TX-927d17b62e";
 
 const BOTH: &[u8] = &[0, 1];
 
@@ -87,7 +90,7 @@ fn caps_spec() -> SpecRef {
     spec(
         SVM,
         "2.2.1 Compute Budget Controls (SHOULD)",
-        "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= maxPriorityFeeMicroLamports computeUnitLimit.",
+        "In a version-1 transaction the same caps apply to the message config values instead (§1.5): computeUnitLimit (bit 2) MUST be set and MUST NOT exceed the configured maximum, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy",
     )
 }
 
@@ -95,7 +98,7 @@ fn layout_spec() -> SpecRef {
     spec(
         SVM,
         "3.1 Path 1 — Static Layout Verification (standard wallets)",
-        "A version-1 transaction MUST contain 1 to 5 instructions in this order:",
+        "For a single-payee charge, a version-1 transaction MUST contain 1 to 5 instructions in this order:",
     )
 }
 
@@ -294,6 +297,26 @@ crate::registry! {
     )
     .authored(None)
     .build();
+    x402_build_unknown_entry_reject => build(
+        "x402-build-unknown-entry-reject",
+        spec(SVM, "1.5 Transaction Versions (MUST)", "A client or server MUST treat a field containing any non-integer entry (a string, null, or \"legacy\") or any integer other than 0 or 1 as invalid and fail closed with unsupported_transaction_version."),
+        &[INVALID_ENTRY],
+        "extra.transactionVersions [2, 1, 0]: version 2 is not a defined entry, so the whole field is invalid and the client fails with unsupported_transaction_version instead of building version 1 from the entries it knows.",
+        build_with(v1_offer(json!([2, 1, 0])), json!({})),
+        reject(RejectCode::UnsupportedVersion, "unsupported_transaction_version: invalid entry 2"),
+    )
+    .authored(None)
+    .build();
+    x402_build_string_entry_reject => build(
+        "x402-build-string-entry-reject",
+        spec(SVM, "1.5 Transaction Versions (MUST)", "A client or server MUST treat a field containing any non-integer entry (a string, null, or \"legacy\") or any integer other than 0 or 1 as invalid and fail closed with unsupported_transaction_version."),
+        &[INVALID_ENTRY],
+        "extra.transactionVersions [\"1\", 0]: a stringified version is not a valid entry, so the client fails with unsupported_transaction_version rather than reading it as 1 or skipping it.",
+        build_with(v1_offer(json!(["1", 0])), json!({})),
+        reject(RejectCode::UnsupportedVersion, "unsupported_transaction_version: string entry"),
+    )
+    .authored(None)
+    .build();
     x402_build_legacy_only_reject => build(
         "x402-build-legacy-only-reject",
         spec(SVM, "1.5 Transaction Versions (MUST)", "They are never advertised in extra.transactionVersions and clients MUST NOT build them."),
@@ -378,8 +401,8 @@ crate::registry! {
     x402_verify_v1_compute_budget_instruction_reject => verify(
         "x402-verify-v1-compute-budget-instruction-reject",
         BugType::Settlement,
-        spec(SVM, "2.2.1 Compute Budget Controls (SHOULD)", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."),
-        &[V1_NO_BUDGET_IX, V1_BUDGET],
+        spec(SVM, "2.2.1 Compute Budget Controls (SHOULD)", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops)."),
+        &[V1_NO_BUDGET_IX, V1_CLIENT_NO_BUDGET_IX, V1_BUDGET],
         "Version-1 static layout preceded by a SetComputeUnitLimit instruction: the runtime ignores it under version 1, so a sponsor bounding it bounds nothing. Pair: x402-verify-v1-accept.",
         layout(MessageFormat::V1, Some(BOTH), Some(Mutation::AddComputeBudget { data: LIMIT_IX })),
         from_table(&Mutation::AddComputeBudget { data: LIMIT_IX }),
@@ -404,6 +427,33 @@ crate::registry! {
     )
     .authored(None)
     .build();
+    x402_verify_v1_loaded_data_limit_4mib_accept => verify(
+        "x402-verify-v1-loaded-data-limit-4mib-accept",
+        BugType::Settlement,
+        caps_spec(),
+        &[V1_CAPS, V1_BUDGET],
+        "Version-1 header loadedAccountsDataSizeLimit 4194304 (4 MiB), what the TypeScript, Go and Python x402 clients request: the spec requires the limit to be set, not to be the runtime maximum, so a sponsor that demands 64 MiB refuses every reference client. Pair: x402-verify-v1-missing-loaded-data-limit-reject.",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1LoadedAccountsDataSizeLimit { bytes: 4 * 1024 * 1024 })),
+        Expect::Accept(Pin::Outcome),
+    ).build();
+    x402_verify_v1_loaded_data_limit_small_accept => verify(
+        "x402-verify-v1-loaded-data-limit-small-accept",
+        BugType::Settlement,
+        caps_spec(),
+        &[V1_CAPS],
+        "Version-1 header loadedAccountsDataSizeLimit 32768 (32 KiB), set but small: accepted at verification. A budget too small to load the payment's programs fails at simulation, which this offline vector does not run.",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1LoadedAccountsDataSizeLimit { bytes: 32 * 1024 })),
+        Expect::Accept(Pin::Outcome),
+    ).build();
+    x402_verify_v1_heap_size_reject => verify(
+        "x402-verify-v1-heap-size-reject",
+        BugType::Settlement,
+        spec(SVM, "2.2.1 Compute Budget Controls (SHOULD)", "Only SetComputeUnitLimit (discriminator 2) and SetComputeUnitPrice (discriminator 3) SHOULD be accepted; other ComputeBudget instruction types expand execution surface without being necessary for payment verification and SHOULD be rejected."),
+        &[V1_CAPS],
+        "Version-1 header requesting a 64 KiB heap (TransactionConfigMask bit 4), the header form of RequestHeapFrame that a sponsor refuses on version 0 (x402-exact-verify-compute-heap-frame-reject). Pair: x402-verify-v1-accept.",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1HeapSize { bytes: 64 * 1024 })),
+        from_table(&Mutation::V1HeapSize { bytes: 64 * 1024 }),
+    ).build();
     x402_verify_v1_compute_limit_at_cap_accept => verify(
         "x402-verify-v1-compute-limit-at-cap-accept",
         BugType::Settlement,
@@ -425,7 +475,7 @@ crate::registry! {
     x402_verify_v1_priority_fee_at_cap_accept => verify(
         "x402-verify-v1-priority-fee-at-cap-accept",
         BugType::Settlement,
-        spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1."),
+        spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than maxPriorityFeeMicroLamports (default 5 lamports/CU) on this path, using the normalization in §1.5 for version 1."),
         &[FAST_PATH_PRICE, V1_CAPS],
         "Version-1 priorityFee 1500 lamports over 300 units: exactly 5 lamports (5000000 micro-lamports) per unit, the fast-path cap, and under the 2000 lamport cap a sponsor may put on the total fee (scheme_exact_svm.md §2.2.1). Accepted (the cap is inclusive).",
         layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1Budget { limit: 300, lamports: 1_500 })),
@@ -434,8 +484,8 @@ crate::registry! {
     x402_verify_v1_priority_fee_over_cap_reject => verify(
         "x402-verify-v1-priority-fee-over-cap-reject",
         BugType::Settlement,
-        spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than 5 lamports/CU on this path, using the normalization in §1.5 for version 1."),
-        &[FAST_PATH_PRICE, V1_CAPS],
+        spec(SVM, "3.1 Path 1 — Static Layout Verification (standard wallets)", "The legacy/version-0 Compute Budget price and the version-1 total priority fee MUST each be no greater than maxPriorityFeeMicroLamports (default 5 lamports/CU) on this path, using the normalization in §1.5 for version 1."),
+        &[FAST_PATH_PRICE, V1_CAPS, V1_FEE_PRECISION],
         "Version-1 priorityFee 1501 lamports over 300 units: one lamport above priorityFee * 1000000 <= 5000000 * 300, and still under a 2000 lamport cap on the total fee, so only the per-unit rule rejects it. A sponsor that compares the lamport total with the per-unit cap accepts it.",
         layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1Budget { limit: 300, lamports: 1_501 })),
         from_table(&Mutation::V1Budget { limit: 300, lamports: 1_501 }),

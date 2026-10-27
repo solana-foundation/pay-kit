@@ -340,6 +340,14 @@ fn paid_once(s: &Scenario, before: &Balances, after: &Balances) -> Result<(), St
 fn settled(ctx: &Ctx<'_>, s: &Scenario, acc: &Accounts, signature: &str) -> Result<(), String> {
     let tx = ctx.chain.transaction(signature, SETTLEMENT_DEADLINE)?;
     let message = settle::decode(&tx)?;
+    if let Some(version) = s.settled_version {
+        if message.version() != version.to_string() {
+            return Err(format!(
+                "settled transaction is version {}, expected version {version}",
+                message.version()
+            ));
+        }
+    }
     settle::assert_shape(s, acc, &message)
 }
 

@@ -104,7 +104,7 @@
     "provenance": "generated",
     "requirements": [
       "X402-a1cf65b0f0",
-      "X402-a8bd75d71b"
+      "X402-05c2aacafc"
     ],
     "role": "server",
     "spec": {
@@ -209,12 +209,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-a8bd75d71b"
+      "X402-05c2aacafc"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "The decompiled transaction MUST contain 3 to 7 instructions in this order:",
+      "quote": "For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"
@@ -314,12 +314,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-a8bd75d71b"
+      "X402-05c2aacafc"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "The decompiled transaction MUST contain 3 to 7 instructions in this order:",
+      "quote": "For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"
@@ -419,12 +419,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-a8bd75d71b"
+      "X402-05c2aacafc"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/exact/scheme_exact_svm.md",
-      "quote": "The decompiled transaction MUST contain 3 to 7 instructions in this order:",
+      "quote": "For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:",
       "section": "3.1 Path 1 — Static Layout Verification (standard wallets)"
     },
     "tier": "offline"

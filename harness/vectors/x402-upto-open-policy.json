@@ -700,12 +700,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-c1174b72d8"
+      "X402-4de59a1f27"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
-      "quote": "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups.",
+      "quote": "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups.",
       "section": "Message and signer rules"
     },
     "tier": "offline"
@@ -1413,12 +1413,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-c1174b72d8"
+      "X402-4de59a1f27"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
-      "quote": "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups.",
+      "quote": "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups.",
       "section": "Message and signer rules"
     },
     "tier": "offline"
@@ -5709,7 +5709,7 @@
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
-      "quote": "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction.",
+      "quote": "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction.",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -5887,7 +5887,7 @@
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/upto/scheme_upto_svm.md",
-      "quote": "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction.",
+      "quote": "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction.",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"

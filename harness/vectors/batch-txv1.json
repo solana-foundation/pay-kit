@@ -156,12 +156,12 @@
     "requirements": [
       "X402TX-4de59a1f27",
       "X402TX-d444d01b9e",
-      "X402TX-644919eb3b"
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "A version-1 transaction carries its compute budget in the message `TransactionConfig`.",
+      "quote": "A version-1 transaction carries its compute budget in the message's `TransactionConfigMask` and the config values that follow it",
       "section": "Transaction versions"
     },
     "tier": "offline"
@@ -646,12 +646,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-936b492daa"
+      "X402TX-915632f040"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "A version-1 transaction that contains a Compute Budget instruction MUST be rejected.",
+      "quote": "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops).",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -812,13 +812,13 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63",
-      "X402TX-644919eb3b"
+      "X402TX-703c03cfb5",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`computeUnitLimit` MUST be present and MUST NOT exceed `400000`",
+      "quote": "`computeUnitLimit` (bit 2) MUST be set and MUST NOT exceed `400000`",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -979,13 +979,13 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63",
-      "X402TX-644919eb3b"
+      "X402TX-703c03cfb5",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`loadedAccountsDataSizeLimit` MUST be present",
+      "quote": "`loadedAccountsDataSizeLimit` (bit 3) MUST be set",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -1145,13 +1145,13 @@
     "mode": "verify-transaction",
     "provenance": "authored",
     "requirements": [
-      "X402TX-0f874a9c63",
-      "X402TX-644919eb3b"
+      "X402TX-703c03cfb5",
+      "X402TX-f9bcc1a14a"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`loadedAccountsDataSizeLimit` MUST be present",
+      "quote": "`loadedAccountsDataSizeLimit` (bit 3) MUST be set",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -1312,12 +1312,12 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63"
+      "X402TX-703c03cfb5"
     ],
     "role": "server",
     "spec": {
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`computeUnitLimit` MUST be present and MUST NOT exceed `400000`",
+      "quote": "`computeUnitLimit` (bit 2) MUST be set and MUST NOT exceed `400000`",
       "section": "Top-level instruction layout"
     },
     "tier": "offline"
@@ -1478,7 +1478,7 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63"
+      "X402TX-703c03cfb5"
     ],
     "role": "server",
     "spec": {
@@ -1643,7 +1643,7 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63"
+      "X402TX-703c03cfb5"
     ],
     "role": "server",
     "spec": {
@@ -1809,7 +1809,7 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402TX-0f874a9c63"
+      "X402TX-703c03cfb5"
     ],
     "role": "server",
     "spec": {

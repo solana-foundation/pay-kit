@@ -563,20 +563,40 @@ throws while decoding (`Cannot read properties of undefined (reading
 version-0 transaction is accepted for a challenge that advertises `[1]` only,
 legacy is accepted, and the version-0 size limit is not applied.
 
-## txv1-ts-x402-pre-3474
+## txv1-ts-x402-fixed-accepted-set
 
-**Cases:** `vector/x402-build-v1-advertised`, `vector/x402-build-duplicate-advertisement`, `vector/x402-build-empty-advertisement-reject`, `vector/x402-build-legacy-only-reject`, `vector/x402-verify-v1-not-accepted-reject`, `vector/x402-verify-v1-explicit-v0-sponsor-reject`
+**Cases:** `vector/x402-verify-v1-not-accepted-reject` (`vector/x402-verify-v1-explicit-v0-sponsor-reject` is `[[unsupported]]` for the same reason)
 **SDKs:** typescript
 
-The vendored x402 (`typescript/external/x402` @03b3919b) predates
-x402-foundation/x402 PR 3474 (feat/svm-transaction-versions-exact). The exact
-client ignores `extra.transactionVersions` (always version 0, never
-refuses), and the facilitator has no version gate: a version-1 transaction
-fails as `invalid_exact_svm_payload_signature_invalid` instead of
-`unsupported_transaction_version`. PR 3474 adds the gate and the client
-intersection but advertises `[0]` only; version 1 itself is not implemented
-upstream yet, so the version-1 accept and policy vectors stay
-`[[unsupported]]` (no accepted-version set to configure) until it is.
+The vendored `@x402/svm` (`typescript/external/x402` on solana-foundation/x402
+`feat/svm-client-transaction-v1`, x402-foundation/x402 PR 3971) accepts and
+advertises versions `[0, 1]` (legacy tolerated) with no facilitator option to
+narrow the set. A sponsor whose accepted set is the default `[0]` must refuse a
+version-1 transaction with `unsupported_transaction_version` (scheme_exact_svm.md
+§1.5); the TypeScript facilitator sponsors it. Clients can narrow what they
+build (`transactionVersions`, pay-kit `maxTransactionVersion`), sponsors cannot.
+
+## txv1-ts-x402-v1-policy
+
+**Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`, `vector/x402-verify-v1-decimals-reject`
+**SDKs:** typescript
+
+Two sponsor-policy gaps of the `@x402/svm` exact static path, independent of
+the message version. It applies no compute unit cap unless `maxComputeUnits` is
+configured (the spec's reference default is 400,000; the Rust kit caps at
+200,000), and it does not compare the TransferChecked decimals with the mint's,
+leaving that to simulation, which the offline runner stubs.
+
+## batch-ts-receiver-authorizer-missing-code
+
+**Cases:** `vector/batch-verify-voucher-receiver-authorizer-missing-reject`
+**SDKs:** typescript
+
+`@x402/svm` 2.28 validates the batch payload's shape first, so a
+`channelConfig` without `receiverAuthorizer` is refused as
+`invalid_batch_settlement_svm_payload_type`. The case expects
+`invalid_batch_settlement_svm_receiver_authorizer_mismatch` (both MUST be
+present and equal). The payment is still refused; only the reason differs.
 
 ## txv1-go
 

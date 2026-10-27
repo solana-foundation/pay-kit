@@ -190,7 +190,7 @@ async function verify(
   };
   const facilitator = new x402Facilitator().register(
     requirements.network as Network,
-    new BatchFacilitator(signer, { rpcUrl: rpcUrl(input) }),
+    new BatchFacilitator(signer),
   );
   let payload: PaymentPayload;
   try {

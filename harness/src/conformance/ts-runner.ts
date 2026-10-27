@@ -189,9 +189,6 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       outcome: "unsupported-mode",
     };
   }
-  if (input.signerMaxTransactionVersion !== undefined) {
-    return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-  }
   const signer = await createKeyPairSignerFromBytes(new Uint8Array(input.signerSecretKey));
   let captured: string | undefined;
   const server = createServer((req, res) => {
@@ -213,6 +210,7 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
     // vector judges the payment the SDK builds, so allow every payment.
     const client = await createPayKitClient({
       accept: ["x402"],
+      maxTransactionVersion: input.signerMaxTransactionVersion,
       permissions: false,
       rpcUrl: rpcUrlOf(vector),
       signer,
@@ -248,12 +246,18 @@ type X402VerifyInput = ConformanceVector["input"];
 // Transaction-version knobs the TypeScript SDKs do not expose. The runner
 // cannot express them, so it reports unsupported-mode instead of guessing.
 const SIGNER_VERSION_UNSUPPORTED =
-  "unsupported-mode: neither @solana/mpp buildChargeTransaction nor the @solana/pay-kit x402 client takes a highest signable transaction version (input.signerMaxTransactionVersion)";
+  "unsupported-mode: @solana/mpp buildChargeTransaction takes no highest signable transaction version (input.signerMaxTransactionVersion)";
 const SPONSOR_VERSIONS_UNSUPPORTED =
-  "unsupported-mode: the vendored @x402/svm exact facilitator (x402 @03b3919b, before x402-foundation/x402 PR 3474) has no accepted transaction-version set to configure (input.x402ServerTransactionVersions other than [0])";
+  "unsupported-mode: the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated), with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])";
 
 function sponsorVersionsExpressible(versions: ConformanceVector["input"]["x402ServerTransactionVersions"]): boolean {
-  return versions === undefined || (versions.length === 1 && versions[0] === 0);
+  // Absent is the default accepted set [0]; the facilitator accepts a superset,
+  // which only changes the verdict for a version-1 transaction (listed in
+  // harness/expectations/typescript.toml).
+  if (versions === undefined) return true;
+  // A repeated entry names the same version (RULINGS T1): compare as sets.
+  const set = new Set(versions);
+  return set.size === 2 && set.has(0) && set.has(1);
 }
 
 async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult> {

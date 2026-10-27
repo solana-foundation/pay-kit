@@ -182,6 +182,7 @@ async function build(vector: ConformanceVector): Promise<RunnerResult> {
     // Permissions are the client's spending policy, not wire behaviour.
     const client = await createPayKitClient({
       accept: ["x402"],
+      maxTransactionVersion: input.x402ClientMaxTransactionVersion as 0 | 1 | undefined,
       permissions: false,
       rpcUrl: rpcUrlOf(vector),
       signer,

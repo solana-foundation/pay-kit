@@ -111,9 +111,9 @@ const TX_FACILITATOR_REJECTS: &str = "X402TX-5267172b18";
 const TX_CLIENT_INTERSECT: &str = "X402TX-61c735c7a9";
 const TX_CLIENT_EMPTY: &str = "X402TX-2909c4b4ec";
 const TX_SIZE: &str = "X402TX-dc7b0f3305";
-const TX_V1_BUDGET: &str = "X402TX-644919eb3b";
-const TX_V1_CAPS: &str = "X402TX-0f874a9c63";
-const TX_V1_NO_CB: &str = "X402TX-936b492daa";
+const TX_V1_BUDGET: &str = "X402TX-f9bcc1a14a";
+const TX_V1_CAPS: &str = "X402TX-703c03cfb5";
+const TX_V1_NO_CB: &str = "X402TX-915632f040";
 const TX_SERVER_COPIES: &str = "X402TX-f39a33ff74";
 
 // ── spec references ──
@@ -1142,7 +1142,7 @@ crate::registry! {
         json_pin(),
     ).build();
     batch_wire_requirements_unknown_transaction_version_reject => wire_case(
-        "batch-wire-requirements-unknown-transaction-version-reject", tx_versions_spec("Entries are the integers `0` and `1`, the Wallet Standard `supportedTransactionVersions` vocabulary."), &[TX_SERVER_COPIES],
+        "batch-wire-requirements-unknown-transaction-version-reject", tx_versions_spec("Entries MUST be the JSON integers `0` and `1` only."), &[TX_SERVER_COPIES],
         "extra.transactionVersions [0, 2]: 2 is not a transaction message version.",
         wire("requirements", requirements_with(&[("transactionVersions", json!([0, 2]))])),
         rej(RejectCode::InvalidPayload),
@@ -1542,7 +1542,7 @@ crate::registry! {
         Expect::Accept(Pin::Outcome),
     );
     batch_verify_top_up_legacy_message => policy_case(
-        "batch-verify-top-up-legacy-message", policy_spec("The message MAY be legacy or version `0`, but it MUST NOT contain Address Lookup Table lookups."), &[STATIC_VALIDATE],
+        "batch-verify-top-up-legacy-message", policy_spec("The message version MUST be one advertised in `extra.transactionVersions` (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."), &[STATIC_VALIDATE],
         "The canonical top_up compiled as a legacy (unversioned) message: accepted and policed like version 0.",
         fx::sponsored_legacy(vec![fx::top_up_ix(&cfg(), TOP_UP_AMOUNT_ADDED), fx::memo_ix(fx::MEMO)]),
         Expect::Accept(Pin::Outcome),
@@ -1627,7 +1627,7 @@ crate::registry! {
         rej(RejectCode::SetupTransaction),
     );
     batch_verify_top_up_duplicate_limit_reject => policy_case(
-        "batch-verify-top-up-duplicate-limit-reject", policy_spec("An optional Compute Budget prefix containing at most one `SetComputeUnitLimit` instruction"), &[LAYOUT],
+        "batch-verify-top-up-duplicate-limit-reject", policy_spec("In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one `SetComputeUnitLimit` instruction"), &[LAYOUT],
         "Two SetComputeUnitLimit instructions.",
         top_up_tx(vec![fx::compute_ix(&fx::unit_limit(200_000)), fx::compute_ix(&fx::unit_limit(200_000))], TOP_UP_AMOUNT_ADDED, memo()),
         rej(RejectCode::SetupTransaction),
@@ -1873,7 +1873,7 @@ crate::registry! {
 
     // ── transaction versions (x402-txv1) ──
     batch_txv1_top_up_v1_advertised => txv1_case(
-        "batch-txv1-top-up-v1-advertised", tx_versions_spec("A version-1 transaction carries its compute budget in the message `TransactionConfig`."), &[TX_ADVERTISED, TX_DEPOSIT_VERSION, TX_V1_BUDGET],
+        "batch-txv1-top-up-v1-advertised", tx_versions_spec("A version-1 transaction carries its compute budget in the message's `TransactionConfigMask` and the config values that follow it"), &[TX_ADVERTISED, TX_DEPOSIT_VERSION, TX_V1_BUDGET],
         "The route advertises transactionVersions [0, 1]: a version-1 top_up with computeUnitLimit, loadedAccountsDataSizeLimit and a priorityFee within the cap in its header, no ComputeBudget instruction, is accepted.",
         v1_input(&v1_route(), v1_top_up(fx::v1_budget(), vec![])),
         Expect::Accept(Pin::Outcome),
@@ -1891,31 +1891,31 @@ crate::registry! {
         Expect::Accept(Pin::Outcome),
     ).build();
     batch_txv1_top_up_v1_compute_budget_instruction_reject => txv1_case(
-        "batch-txv1-top-up-v1-compute-budget-instruction-reject", t("Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."), &[TX_V1_NO_CB],
+        "batch-txv1-top-up-v1-compute-budget-instruction-reject", t("Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops)."), &[TX_V1_NO_CB],
         "A version-1 top_up that also carries a SetComputeUnitLimit instruction.",
         v1_input(&v1_route(), v1_top_up(fx::v1_budget(), vec![fx::compute_ix(&fx::unit_limit(200_000))])),
         rej(RejectCode::SetupTransaction),
     ).build();
     batch_txv1_top_up_v1_missing_unit_limit_reject => txv1_case(
-        "batch-txv1-top-up-v1-missing-unit-limit-reject", t("Top-level instruction layout", "`computeUnitLimit` MUST be present and MUST NOT exceed `400000`"), &[TX_V1_CAPS, TX_V1_BUDGET],
+        "batch-txv1-top-up-v1-missing-unit-limit-reject", t("Top-level instruction layout", "`computeUnitLimit` (bit 2) MUST be set and MUST NOT exceed `400000`"), &[TX_V1_CAPS, TX_V1_BUDGET],
         "A version-1 top_up whose header config omits computeUnitLimit (it would be budgeted zero).",
         v1_input(&v1_route(), v1_top_up(solana_message::v1::TransactionConfig::empty().with_loaded_accounts_data_size_limit(64 * 1024 * 1024), vec![])),
         rej(RejectCode::SetupTransaction),
     ).build();
     batch_txv1_top_up_v1_missing_loaded_limit_reject => txv1_case(
-        "batch-txv1-top-up-v1-missing-loaded-limit-reject", t("Top-level instruction layout", "`loadedAccountsDataSizeLimit` MUST be present"), &[TX_V1_CAPS, TX_V1_BUDGET],
+        "batch-txv1-top-up-v1-missing-loaded-limit-reject", t("Top-level instruction layout", "`loadedAccountsDataSizeLimit` (bit 3) MUST be set"), &[TX_V1_CAPS, TX_V1_BUDGET],
         "A version-1 top_up whose header config omits loadedAccountsDataSizeLimit.",
         v1_input(&v1_route(), v1_top_up(solana_message::v1::TransactionConfig::empty().with_compute_unit_limit(200_000), vec![])),
         rej(RejectCode::SetupTransaction),
     ).build();
     batch_txv1_top_up_v1_loaded_limit_below_max => txv1_case(
-        "batch-txv1-top-up-v1-loaded-limit-below-max", t("Top-level instruction layout", "`loadedAccountsDataSizeLimit` MUST be present"), &[TX_V1_CAPS, TX_V1_BUDGET],
+        "batch-txv1-top-up-v1-loaded-limit-below-max", t("Top-level instruction layout", "`loadedAccountsDataSizeLimit` (bit 3) MUST be set"), &[TX_V1_CAPS, TX_V1_BUDGET],
         "A version-1 top_up whose header sets loadedAccountsDataSizeLimit 32 MiB (present, below the runtime maximum): the spec requires the field, not a particular value, and a sponsor may only tighten caps it names.",
         v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_loaded_accounts_data_size_limit(32 * 1024 * 1024), vec![])),
         Expect::AcceptAuthored(json!({})),
     ).authored(None).build();
     batch_txv1_top_up_v1_unit_limit_over_cap_reject => txv1_case(
-        "batch-txv1-top-up-v1-unit-limit-over-cap-reject", t("Top-level instruction layout", "`computeUnitLimit` MUST be present and MUST NOT exceed `400000`"), &[TX_V1_CAPS],
+        "batch-txv1-top-up-v1-unit-limit-over-cap-reject", t("Top-level instruction layout", "`computeUnitLimit` (bit 2) MUST be set and MUST NOT exceed `400000`"), &[TX_V1_CAPS],
         "Header computeUnitLimit 400001.",
         v1_input(&v1_route(), v1_top_up(fx::v1_budget().with_compute_unit_limit(400_001), vec![])),
         rej(RejectCode::SetupTransaction),

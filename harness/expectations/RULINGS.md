@@ -107,11 +107,10 @@ as required MUST reject a payload without a valid id.
 
 **S5. Overpayment is tolerated by default.** scheme_exact_svm.md §1.4: “A
 matching transfer MAY exceed PaymentRequirements.amount ... it MUST NOT be
-less.” The generic scheme_exact.md SVM bullet (“Amount exactness: the
-transferred amount MUST equal maxAmountRequired”) is listed under “Examples
-include”, uses the v1 field name, and is superseded by the network binding's
-normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
-as an explicit stricter policy; default verifiers MUST accept it.
+less.” The generic scheme_exact.md SVM bullet once required the transferred
+amount to equal maxAmountRequired; it now agrees with the network binding (“Amount: the transfer to `payTo` MUST be at least
+`amount`”). §2.3 lets a sponsor reject overpayment only as an explicit
+stricter policy; default verifiers MUST accept it.
 
 **S6. A sponsor bounds the priority fee as limit times price.**
 scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
@@ -341,19 +340,24 @@ requirement) is `invalid-challenge`; wire objects that do not parse are
 
 Pinned drafts: `external/mpp-specs-txv1` (solana-foundation/mpp-specs
 feat/solana-transaction-versions `77aa6a1`, charge and session) and
-`external/x402-txv1` (x402-foundation/x402 PR 3473, solana-foundation/x402
-`3d723dd`, scheme_exact_svm.md §1.5).
+`external/x402-txv1` (x402-foundation/x402 PR 3473, merged; solana-foundation/x402
+`d587d1b`, scheme_exact_svm.md §1.5).
 
 **T1. `transactionVersions` is an array of the integers 0 and 1, read as a
 set.** MPP: “Each entry is the integer `0` or `1`, the Wallet Standard
 `supportedTransactionVersions` vocabulary without `"legacy"`.” x402: “Entries
-are the integers `0` and `1`”. Neither text allows a string entry, a bare
+MUST be the JSON integers `0` and `1` only.” Neither text allows a string entry, a bare
 integer or another version, so an MPP charge or session request carrying one
 is malformed and the SDK's request type refuses it (`invalid-payload` in the
 wire vectors). A repeated entry names the same version: `[1, 1]` advertises
-{1}, and a client builds version 1. x402 clients intersect the advertisement
-with what they can build, so an unknown entry in an x402 offer is not by
-itself a reason to refuse; the vectors pin no x402 verdict for one.
+{1}, and a client builds version 1. x402 is explicit about the rest: “A
+client or server MUST treat a field containing any non-integer entry (a
+string, null, or "legacy") or any integer other than 0 or 1 as invalid and
+fail closed with unsupported_transaction_version.” An x402 client therefore
+refuses the whole offer (`unsupported-version`) rather than dropping the
+entries it does not know and building from the rest
+(`x402-build-unknown-entry-reject`, `x402-build-string-entry-reject`,
+`x402-build-legacy-only-reject`).
 
 **T2. Present and empty is not absent.** Only an omitted field defaults:
 MPP “Defaults to `[0]` when omitted”, x402 “When the field is absent, the

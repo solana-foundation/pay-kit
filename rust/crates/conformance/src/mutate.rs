@@ -165,6 +165,14 @@ pub enum Mutation {
     /// Version 1: remove the header `loadedAccountsDataSizeLimit` (budgeted
     /// zero bytes).
     V1DropLoadedAccountsDataSizeLimit,
+    /// Version 1: set the header `loadedAccountsDataSizeLimit`. Whether a
+    /// value below the runtime maximum is a reject depends on the suite's
+    /// rule, so `expected` is `None`: cases using it are authored.
+    V1LoadedAccountsDataSizeLimit { bytes: u32 },
+    /// Version 1: set the header `heapSize` (a RequestHeapFrame in the
+    /// header). Sponsors refuse it as they refuse RequestHeapFrame on
+    /// version 0.
+    V1HeapSize { bytes: u32 },
     /// Replace the n-th Memo instruction's text with `len` hex characters,
     /// to move the serialized size across a version's limit. Whether that is
     /// a reject depends on the format, so `expected` is `None`.
@@ -235,6 +243,7 @@ impl Mutation {
                 V1DropComputeUnitLimit | V1DropLoadedAccountsDataSizeLimit,
                 Suite::Charge | Suite::X402Exact | Suite::Session,
             ) => Some(InvalidPayload),
+            (V1HeapSize { .. }, Suite::X402Exact) => Some(InvalidPayload),
             (AddLookupTable, Suite::Charge | Suite::X402Exact | Suite::Session) => {
                 Some(InvalidPayload)
             }
@@ -363,6 +372,12 @@ impl Mutation {
             Mutation::V1DropLoadedAccountsDataSizeLimit => {
                 "version-1 header loadedAccountsDataSizeLimit removed".into()
             }
+            Mutation::V1LoadedAccountsDataSizeLimit { bytes } => {
+                format!("version-1 header loadedAccountsDataSizeLimit set to {bytes}")
+            }
+            Mutation::V1HeapSize { bytes } => {
+                format!("version-1 header heapSize set to {bytes}")
+            }
             Mutation::PadMemo { memo, len } => {
                 format!("memo #{memo} replaced with {len} hex characters")
             }
@@ -426,7 +441,9 @@ impl Mutation {
             | Mutation::V1PriorityFee { .. }
             | Mutation::V1Budget { .. }
             | Mutation::V1DropComputeUnitLimit
-            | Mutation::V1DropLoadedAccountsDataSizeLimit => {
+            | Mutation::V1DropLoadedAccountsDataSizeLimit
+            | Mutation::V1LoadedAccountsDataSizeLimit { .. }
+            | Mutation::V1HeapSize { .. } => {
                 let mut config = v1_config(&tx.message)
                     .ok_or_else(|| format!("{self:?} needs a version-1 message"))?;
                 match self {
@@ -439,6 +456,10 @@ impl Mutation {
                         config.priority_fee = Some(*lamports);
                     }
                     Mutation::V1DropComputeUnitLimit => config.compute_unit_limit = None,
+                    Mutation::V1LoadedAccountsDataSizeLimit { bytes } => {
+                        config.loaded_accounts_data_size_limit = Some(*bytes)
+                    }
+                    Mutation::V1HeapSize { bytes } => config.heap_size = Some(*bytes),
                     _ => config.loaded_accounts_data_size_limit = None,
                 }
                 let mut out = compile_as(MessageFormat::V1, &decompile(&tx.message)?, config)?;
@@ -764,7 +785,9 @@ impl Mutation {
             | Mutation::V1PriorityFee { .. }
             | Mutation::V1Budget { .. }
             | Mutation::V1DropComputeUnitLimit
-            | Mutation::V1DropLoadedAccountsDataSizeLimit => {
+            | Mutation::V1DropLoadedAccountsDataSizeLimit
+            | Mutation::V1LoadedAccountsDataSizeLimit { .. }
+            | Mutation::V1HeapSize { .. } => {
                 unreachable!("handled above")
             }
         }

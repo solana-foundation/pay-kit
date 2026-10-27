@@ -266,6 +266,9 @@ pub struct Scenario {
     pub servers: Participants,
     pub pre_create_platform_ata: bool,
     pub compute_unit_limit: Option<u32>,
+    /// Message version the settled transaction must have, when the scenario
+    /// pins one (`None`: any accepted version).
+    pub settled_version: Option<u8>,
 }
 
 impl Scenario {
@@ -358,7 +361,13 @@ const BASE: Scenario = Scenario {
     servers: Participants::All,
     pre_create_platform_ata: false,
     compute_unit_limit: None,
+    settled_version: None,
 };
+
+const X402_V1_SDKS: Participants = Participants::Only(
+    &["rust", "typescript"],
+    "only the Rust and TypeScript x402 adapters build version-1 transactions and advertise transactionVersions [0, 1]; the other SDKs build version 0 only (harness/expectations FINDINGS txv1-*)",
+);
 
 const ONLY_TS_CLIENT_COMPUTE: Participants = Participants::Only(
     &["typescript"],
@@ -619,6 +628,17 @@ pub const SCENARIOS: &[Scenario] = &[
         description: "A client pays a 1000-base-unit x402 exact requirement; the sponsor settles exactly one transferChecked to payTo's ATA.",
         spec: spec(EXACT_SVM_DOC, "1.4 Exactly One Matching Transfer (MUST)", "Across all top-level instructions and the full CPI trace, **exactly one** transfer MUST match the requirements"),
         network: SOLANA_DEVNET,
+        ..BASE
+    },
+    Scenario {
+        id: "x402-exact-v1",
+        intent: Intent::X402Exact,
+        description: "The sponsor advertises extra.transactionVersions [0, 1] and the client builds version 1 (SIMD-0385): the payment settles on chain as a version-1 transaction carrying its compute budget in the message config.",
+        spec: spec(EXACT_SVM_DOC, "1.5 Transaction Versions (MUST)", "The client MUST intersect the advertised versions (`[0]` when the field is absent) with the versions it and its signer support, then build the highest version in that intersection."),
+        network: SOLANA_DEVNET,
+        settled_version: Some(1),
+        clients: X402_V1_SDKS,
+        servers: X402_V1_SDKS,
         ..BASE
     },
     Scenario {
