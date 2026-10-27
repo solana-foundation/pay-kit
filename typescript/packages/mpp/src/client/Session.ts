@@ -12,6 +12,7 @@ import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
 import { encodeVoucherMessageLoose } from '../shared/voucher.js';
+import type { TransactionVersion } from '../utils/transaction-versions.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -91,6 +92,12 @@ export interface SessionMethodDetails {
      */
     readonly recentSlot?: string | undefined;
     readonly tokenProgram?: string | undefined;
+    /**
+     * Transaction message versions the server accepts for the client-built
+     * `open` and `topUp` transactions (mpp-specs-txv1 Transaction Versions).
+     * Absent means `[0]`; legacy is never accepted.
+     */
+    readonly transactionVersions?: TransactionVersion[] | undefined;
     readonly ttlSeconds?: number | undefined;
     readonly voucherSigner?: SessionVoucherSigner | undefined;
 }

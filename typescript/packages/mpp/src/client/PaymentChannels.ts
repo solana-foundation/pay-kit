@@ -15,8 +15,11 @@ import {
     getUtf8Encoder,
     partiallySignTransactionMessageWithSigners,
     pipe,
+    setTransactionMessageComputeUnitLimit,
     setTransactionMessageFeePayer,
     setTransactionMessageLifetimeUsingBlockhash,
+    setTransactionMessageLoadedAccountsDataSizeLimit,
+    setTransactionMessagePriorityFeeLamports,
     type TransactionSigner,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
@@ -37,6 +40,11 @@ import {
     PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 } from '../generated/payment-channels/index.js';
 import {
+    MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
+    negotiateTransactionVersion,
+    type TransactionVersion,
+} from '../utils/transaction-versions.js';
+import {
     ActiveSession,
     type AmountLike,
     DEFAULT_SESSION_EXPIRES_AT,
@@ -52,6 +60,14 @@ import type { SessionOpener } from './SessionFetch.js';
 const U64_MAX = (1n << 64n) - 1n;
 const RENT_SYSVAR = 'SysvarRent111111111111111111111111111111111';
 const DEFAULT_GRACE_PERIOD_SECONDS = 900;
+/**
+ * The compute unit limit a version-1 open carries when the caller sets no
+ * budget: the runtime default (200,000 units per instruction) capped at the
+ * 400,000 a sponsor accepts for an open. Mirrors the Rust kit's
+ * `OPEN_MAX_COMPUTE_UNIT_LIMIT` default in `build_open_payment_channel_tx_with_options`.
+ */
+const OPEN_DEFAULT_UNITS_PER_INSTRUCTION = 200_000;
+const OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000;
 
 /** Placeholder signature used while the operator still needs to broadcast the open transaction. */
 /**
@@ -109,6 +125,14 @@ export async function buildOpenPaymentChannelTransaction(
     parameters: buildOpenPaymentChannelTransaction.Parameters,
 ): Promise<PaymentChannelOpenTransaction> {
     const { request, signer } = parameters;
+    // mpp-specs-txv1 Transaction Versions: "Clients MUST build one of the
+    // advertised versions and SHOULD build the highest one their signer can
+    // produce." Refused up front, before anything is fetched or signed, when
+    // no advertised version is buildable.
+    const version = negotiateTransactionVersion(
+        request.methodDetails.transactionVersions,
+        parameters.maxTransactionVersion,
+    );
     // The open transaction is bound to the challenge: the blockhash comes
     // from the challenged `recentBlockhash` (an explicit override is for
     // tests and custom flows) and `openSlot` defaults to the challenged
@@ -189,12 +213,35 @@ export async function buildOpenPaymentChannelTransaction(
     // server broadcasts (and the program enforces freshness), not this client.
     const lifetime = { blockhash: recentBlockhash as Blockhash, lastValidBlockHeight: U64_MAX };
 
-    const txMessage = pipe(
-        createTransactionMessage({ version: 0 }),
+    // The @solana/kit 6.x types do not list version 1 yet (its runtime does):
+    // a version-1 message is typed as a version-0 one, and the budget setters
+    // below write the version-1 header config at runtime.
+    const messageVersion = version as 0;
+    const baseMessage = pipe(
+        createTransactionMessage({ version: messageVersion }),
         msg => setTransactionMessageFeePayer(feePayer, msg),
         msg => setTransactionMessageLifetimeUsingBlockhash(lifetime, msg),
         msg => appendTransactionMessageInstructions([instruction], msg),
     );
+    // Version 1 carries the compute budget in the message header and never
+    // as ComputeBudget instructions; unset, it is budgeted zero and cannot
+    // execute. A version-0 open carries no budget prefix.
+    const txMessage =
+        version === 1
+            ? pipe(
+                  baseMessage,
+                  msg =>
+                      setTransactionMessageComputeUnitLimit(
+                          Math.min(
+                              OPEN_DEFAULT_UNITS_PER_INSTRUCTION * msg.instructions.length,
+                              OPEN_MAX_COMPUTE_UNIT_LIMIT,
+                          ),
+                          msg,
+                      ),
+                  msg => setTransactionMessagePriorityFeeLamports(0n, msg as never) as typeof msg,
+                  msg => setTransactionMessageLoadedAccountsDataSizeLimit(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES, msg),
+              )
+            : baseMessage;
     const signedTx = await partiallySignTransactionMessageWithSigners(txMessage);
 
     return {
@@ -235,6 +282,7 @@ export function createPaymentChannelSessionOpener(
             authorizedSigner,
             deposit: parameters.deposit,
             gracePeriod: parameters.gracePeriod,
+            maxTransactionVersion: parameters.maxTransactionVersion,
             openSlot: parameters.openSlot,
             programAddress: parameters.programAddress,
             recentBlockhash: parameters.recentBlockhash,
@@ -307,6 +355,14 @@ export declare namespace buildOpenPaymentChannelTransaction {
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
         /**
+         * Highest transaction message version the signer can sign (a hardware
+         * wallet may sign version 0 only). The open is built at the highest
+         * version the challenge's `methodDetails.transactionVersions` (absent:
+         * `[0]`) advertises up to this cap; the build is refused before
+         * signing when none qualifies. Unrestricted when omitted.
+         */
+        readonly maxTransactionVersion?: TransactionVersion | undefined;
+        /**
          * Slot used as a channel PDA seed. Defaults to the challenged
          * `methodDetails.recentSlot`; an override may be earlier than the
          * challenged slot, never later.
@@ -344,6 +400,14 @@ export declare namespace createPaymentChannelSessionOpener {
         readonly gracePeriod?: number | undefined;
         /** Selected inactivity threshold; must be one of the challenge's offered values. */
         readonly idleTimeoutSeconds?: number | undefined;
+        /**
+         * Highest transaction message version the signer can sign (a hardware
+         * wallet may sign version 0 only). The open is built at the highest
+         * version the challenge's `methodDetails.transactionVersions` (absent:
+         * `[0]`) advertises up to this cap; the build is refused before
+         * signing when none qualifies. Unrestricted when omitted.
+         */
+        readonly maxTransactionVersion?: TransactionVersion | undefined;
         /**
          * Slot used as a channel PDA seed. Defaults to the challenged
          * `methodDetails.recentSlot`; an override may be earlier than the
