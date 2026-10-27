@@ -1919,6 +1919,7 @@ pub(crate) fn validate_open_instruction(
         pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
         crate::core::tx::LoadedDataLimitRule::Present,
     )?;
+    crate::core::tx::reject_v1_heap_request(&tx.message)?;
 
     let keys = tx.message.static_account_keys();
     let ix = find_canonical_open_instruction(tx, keys, program_id, expected_memo)?;

@@ -338,6 +338,8 @@ fn check_envelope(
         crate::core::tx::LoadedDataLimitRule::Present,
     )
     .map_err(|e| err(format!("{label} transaction: {e}")))?;
+    crate::core::tx::reject_v1_heap_request(&tx.message)
+        .map_err(|e| err(format!("{label} transaction: {e}")))?;
 
     let payer = pc::parse_pubkey(&expected.config.payer)
         .map_err(|e| err(format!("channelConfig.payer: {e}")))?;

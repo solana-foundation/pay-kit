@@ -183,6 +183,21 @@ pub fn check_v1_budget_caps_with(
     Ok(Some(declared))
 }
 
+/// Reject a version-1 message that requests a heap size. A sponsor bounds
+/// the compute a co-signed transaction may buy; version 0 refuses
+/// `RequestHeapFrame` for the same reason (x402 scheme_*_svm.md §2.2.1: other
+/// ComputeBudget instruction types "SHOULD be rejected"). Other versions pass.
+pub fn reject_v1_heap_request(message: &VersionedMessage) -> Result<()> {
+    if let VersionedMessage::V1(v1) = message {
+        if v1.config.heap_size.is_some() {
+            return Err(Error::Other(
+                "version 1 transaction config must not request a heap size".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Version-0 (and legacy) counterpart of [`check_v1_budget_caps`] for a
 /// message a server co-signs: every ComputeBudget instruction carries no
 /// accounts, no opcode is duplicated or unsupported (a loaded-data limit

@@ -18,6 +18,10 @@ use crate::x402::{
     X402_VERSION_V2,
 };
 
+/// Loaded-account-data budget an x402 `exact` client sets on a version-1
+/// payment, matching the TypeScript, Go and Python reference clients.
+pub const X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+
 /// Build a payment transaction from x402 payment requirements.
 ///
 /// Returns a `PaymentPayload` ready to be wrapped in `PAYMENT-SIGNATURE`.
@@ -59,7 +63,13 @@ pub async fn build_payment(
 
     // Compute budget. Canonical SVM exact validates these by index; on version
     // 0 they are the first two instructions, on version 1 the header config.
-    let budget = crate::core::tx::ComputeBudget::new(20_000, 1);
+    // Version 1 also carries a loaded-account-data budget (§1.5: it MUST be
+    // set); the reference x402 clients request 4 MiB, which covers the mainnet
+    // Token-2022 program data (about 1.4 MiB) and the rest of a payment.
+    let budget = crate::core::tx::ComputeBudget {
+        loaded_accounts_data_size_limit: X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+        ..crate::core::tx::ComputeBudget::new(20_000, 1)
+    };
 
     let cluster = signing_cluster(requirements)?;
     let mint = try_resolve_mint(&requirements.currency, Some(cluster))?;
