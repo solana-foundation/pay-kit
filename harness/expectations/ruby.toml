@@ -38,7 +38,6 @@ ids = [
   "vector/charge-build-zero-amount-reject",
 ]
 
-
 [[unsupported]]
 reason = "ruby SDK is server-only: x402 build-transaction has no client builder"
 ids = [
@@ -222,7 +221,3 @@ ids = [
 ]
 reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-ruby"
-[[known_failing]]
-id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
-reason = "the x402 exact verifier caps the unit price alone (ruby/lib/pay_kit/protocols/x402/protocol/schemes/exact/verify.rb:147), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
-tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"

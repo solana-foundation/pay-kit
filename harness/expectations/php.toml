@@ -38,7 +38,6 @@ ids = [
   "vector/charge-build-zero-amount-reject",
 ]
 
-
 [[unsupported]]
 reason = "php is server-only: x402 build-transaction is not supported (no client envelope builder)"
 ids = [
@@ -254,7 +253,3 @@ ids = [
 ]
 reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-php"
-[[known_failing]]
-id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
-reason = "the x402 exact verifier caps the unit price alone (php/src/Protocols/X402/Exact/Verifier.php:184), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
-tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"
