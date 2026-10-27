@@ -39,21 +39,12 @@ test('full e2e: payment completes and returns fortune', async ({ page }) => {
   await page.waitForLoadState('networkidle', { timeout: 30_000 });
   await page.waitForTimeout(3000);
 
+  // The page must build a transaction the server admits (version 0: MPP
+  // servers refuse legacy messages), so only the paid response passes. A
+  // re-rendered payment page or an RFC 9457 problem document is a failure.
   const content = await page.content();
-  const isFortuneResponse = content.includes('"fortune"');
-  const isPaymentPage = content.includes('Payment Required');
-  // mppx >= 0.5.8 answers a rejected payment with an RFC 9457 problem
-  // document instead of re-rendering the payment page; reaching it still
-  // proves the service-worker payment flow ran end-to-end.
-  const isProblemResponse = content.includes('paymentauth.org/problems/');
-
-  expect(isFortuneResponse || isPaymentPage || isProblemResponse).toBe(true);
-
-  if (isFortuneResponse) {
-    console.log('Payment succeeded — got a fortune!');
-  } else {
-    console.log('Service worker flow worked, but transaction was not accepted by server.');
-  }
+  expect(content).not.toContain('paymentauth.org/problems/');
+  expect(content).toContain('"fortune"');
 });
 
 test('service worker endpoint returns javascript', async ({ page }) => {
