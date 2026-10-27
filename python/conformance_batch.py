@@ -227,8 +227,12 @@ def _canonical(vector_id: str, inp: dict[str, Any]) -> dict[str, Any]:
 
 
 def _server(server: dict[str, Any], rpc_url: str, store: MemoryBatchChannelStore) -> X402BatchSettlement:
+    # The vector's accepted set goes to the SDK as-is: an absent field takes
+    # the SDK default, and BatchConfig validates whatever set is supplied.
     versions = server.get("transactionVersions")
-    v1 = isinstance(versions, list) and 1 in versions
+    if versions is not None and not isinstance(versions, list):
+        raise _Unsupported(f"batchServer.transactionVersions must be a list, got {versions!r}")
+    accepted: dict[str, Any] = {} if versions is None else {"transaction_versions": tuple(versions)}
     config = BatchConfig(
         pay_to=_str(server, "payTo"),
         cluster=_str(server, "cluster"),
@@ -240,7 +244,7 @@ def _server(server: dict[str, Any], rpc_url: str, store: MemoryBatchChannelStore
         memo=server.get("memo") if isinstance(server.get("memo"), str) else None,
         receiver_authorizer=server.get("receiverAuthorizer") if isinstance(server.get("receiverAuthorizer"), str) else None,
         rpc_url=rpc_url,
-        transaction_versions=(0, 1) if v1 else (0,),
+        **accepted,
     )
     return X402BatchSettlement(config, store)
 
