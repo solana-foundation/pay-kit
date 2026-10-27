@@ -89,15 +89,22 @@ export function subscription(parameters: subscription.Parameters) {
         store = Store.memory(),
         splits,
         subscriptionExpires,
-        secretKey,
-        realm,
     } = parameters;
 
-    if (secretKey !== undefined && secretKey.length === 0) {
+    if (parameters.secretKey !== undefined && parameters.secretKey.length === 0) {
         throw new Error('secretKey must be a non-empty string when set');
     }
-    if (realm !== undefined && realm.length === 0) {
+    if (parameters.realm !== undefined && parameters.realm.length === 0) {
         throw new Error('realm must be a non-empty string when set');
+    }
+    // Resolve the HMAC secret and realm the way `Mppx.create` does, so a host
+    // that configures them through the environment gets the same binding.
+    const secretKey = parameters.secretKey ?? readEnv(SECRET_KEY_ENV);
+    const realm = parameters.realm ?? readEnv(REALM_ENV);
+    if (parameters.secretKey !== undefined && realm === undefined) {
+        // The HMAC covers the echoed realm; without a configured realm two
+        // services sharing a secret would accept each other's challenges.
+        throw new Error('realm is required when secretKey is set (pass realm or set MPP_REALM)');
     }
 
     if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
@@ -374,6 +381,28 @@ type RouteBinding = {
     subscriptionProgram: string;
 };
 
+/** Environment variables `Mppx.create` reads for its secret and realm, checked in order. */
+const SECRET_KEY_ENV = ['MPP_SECRET_KEY'] as const;
+const REALM_ENV = [
+    'MPP_REALM',
+    'FLY_APP_NAME',
+    'HEROKU_APP_NAME',
+    'RAILWAY_PUBLIC_DOMAIN',
+    'RENDER_EXTERNAL_HOSTNAME',
+    'VERCEL_URL',
+    'WEBSITE_HOSTNAME',
+] as const;
+
+function readEnv(names: readonly string[]): string | undefined {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    if (!env) return undefined;
+    for (const name of names) {
+        const value = env[name];
+        if (value) return value;
+    }
+    return undefined;
+}
+
 /** `mainnet-beta` and `mainnet` name the same cluster; an omitted network means mainnet. */
 function canonicalNetwork(network: string | undefined): string {
     if (network === undefined || network === 'mainnet-beta') return 'mainnet';
@@ -391,13 +420,19 @@ function assertChallengeBoundToRoute(
     route: Partial<ChallengeRequest> | undefined,
     binding: RouteBinding,
 ): void {
-    if (binding.secretKey !== undefined) {
-        if (
-            typeof challenge.id !== 'string' ||
-            !Challenge.verify(challenge as unknown as Challenge.Challenge, { secretKey: binding.secretKey })
-        ) {
-            throw new Error('Challenge HMAC mismatch: this server did not issue the echoed challenge');
-        }
+    // Fail closed: without both a secret and a realm the SDK cannot prove the
+    // echoed challenge is its own, so it refuses rather than trusting it
+    // (the Rust server makes both required for the same reason).
+    if (binding.secretKey === undefined || binding.realm === undefined) {
+        throw new Error(
+            'Subscription verify requires secretKey and realm (pass them to subscription() or set MPP_SECRET_KEY and MPP_REALM)',
+        );
+    }
+    if (
+        typeof challenge.id !== 'string' ||
+        !Challenge.verify(challenge as unknown as Challenge.Challenge, { secretKey: binding.secretKey })
+    ) {
+        throw new Error('Challenge HMAC mismatch: this server did not issue the echoed challenge');
     }
     if (challenge.method !== Methods.subscription.name) {
         throw new Error(
@@ -407,7 +442,7 @@ function assertChallengeBoundToRoute(
     if (challenge.intent !== Methods.subscription.intent) {
         throw new Error(`Credential intent \`${String(challenge.intent)}\` is not a subscription`);
     }
-    if (binding.realm !== undefined && challenge.realm !== binding.realm) {
+    if (challenge.realm !== binding.realm) {
         throw new Error(
             `Credential realm \`${String(challenge.realm)}\` does not match this server (expected \`${binding.realm}\`)`,
         );
@@ -1468,7 +1503,12 @@ export declare namespace subscription {
         planId: string;
         /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
         puller: string;
-        /** 402 realm the challenges were issued under. When set, `verify` refuses any other realm. */
+        /**
+         * 402 realm the challenges were issued under; `verify` refuses any
+         * other realm. Falls back to the environment variables `Mppx.create`
+         * reads (`MPP_REALM`, then platform hostnames). Required whenever
+         * `secretKey` is passed.
+         */
         realm?: string;
         /** Base58 of the primary recipient wallet. MUST match what plan.destinations resolves to. */
         recipient: string;
@@ -1476,9 +1516,11 @@ export declare namespace subscription {
         rpcUrl?: string;
         /**
          * HMAC secret the challenges were issued under (the `secretKey` given
-         * to `Mppx.create`). When set, `verify` itself refuses a credential
-         * whose echoed challenge id is not the HMAC this server computes, so a
-         * host that calls `verify` outside `Mppx.create` keeps tier-1 binding.
+         * to `Mppx.create`). Falls back to `MPP_SECRET_KEY`. `verify` itself
+         * refuses a credential whose echoed challenge id is not the HMAC this
+         * server computes, and fails closed when neither this nor the
+         * environment provides a secret, so a host that calls `verify` outside
+         * `Mppx.create` cannot skip tier-1 binding.
          */
         secretKey?: string;
         /** Optional fee-payer signer. When set, the server co-signs activation as fee payer. */

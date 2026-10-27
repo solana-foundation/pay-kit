@@ -91,6 +91,23 @@ function verify(method: ReturnType<typeof subscription>, challenge: unknown, rou
 
 const BOUND = /Missing transaction data/;
 
+/** Run `fn` with the given environment variables set (or unset when `undefined`), then restore them. */
+function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
+    const saved = Object.fromEntries(Object.keys(vars).map(name => [name, process.env[name]]));
+    const apply = (values: Record<string, string | undefined>) => {
+        for (const [name, value] of Object.entries(values)) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+    };
+    apply(vars);
+    try {
+        return fn();
+    } finally {
+        apply(saved);
+    }
+}
+
 describe('subscription().verify() route binding', () => {
     test('a challenge this route issued passes binding', async () => {
         await expect(verify(server(), issue(routeRequest()))).rejects.toThrow(BOUND);
@@ -106,9 +123,39 @@ describe('subscription().verify() route binding', () => {
         await expect(verify(server(), other)).rejects.toThrow(/did not issue/);
     });
 
-    test('skips the HMAC check when no secretKey is configured', async () => {
+    test('fails closed when neither the parameters nor the environment give a secret', async () => {
+        const unbound = withEnv({ MPP_REALM: undefined, MPP_SECRET_KEY: undefined }, () =>
+            server({ realm: undefined, secretKey: undefined }),
+        );
+        await expect(verify(unbound, issue(routeRequest()))).rejects.toThrow(/requires secretKey and realm/);
         const forged = { ...issue(routeRequest()), id: 'forged' };
-        await expect(verify(server({ secretKey: undefined }), forged)).rejects.toThrow(BOUND);
+        await expect(verify(unbound, forged)).rejects.toThrow(/requires secretKey and realm/);
+    });
+
+    test('fails closed when a secret comes from the environment but no realm does', async () => {
+        const noRealm = withEnv({ MPP_REALM: undefined, MPP_SECRET_KEY: SECRET }, () =>
+            server({ realm: undefined, secretKey: undefined }),
+        );
+        await expect(verify(noRealm, issue(routeRequest()))).rejects.toThrow(/requires secretKey and realm/);
+    });
+
+    test('resolves the secret and realm from MPP_SECRET_KEY and MPP_REALM', async () => {
+        const fromEnv = withEnv({ MPP_REALM: REALM, MPP_SECRET_KEY: SECRET }, () =>
+            server({ realm: undefined, secretKey: undefined }),
+        );
+        await expect(verify(fromEnv, issue(routeRequest()))).rejects.toThrow(BOUND);
+        await expect(verify(fromEnv, { ...issue(routeRequest()), id: 'forged' })).rejects.toThrow(/HMAC mismatch/);
+        await expect(verify(fromEnv, issue(routeRequest(), { realm: 'other.example.com' }))).rejects.toThrow(
+            /realm `other.example.com` does not match this server/,
+        );
+    });
+
+    test('explicit parameters win over the environment', async () => {
+        const explicit = withEnv(
+            { MPP_REALM: 'env.example.com', MPP_SECRET_KEY: 'env-secret-that-differs-of-32-bytes' },
+            () => server(),
+        );
+        await expect(verify(explicit, issue(routeRequest()))).rejects.toThrow(BOUND);
     });
 
     test('refuses another method, intent or realm', async () => {
@@ -123,9 +170,17 @@ describe('subscription().verify() route binding', () => {
         );
     });
 
-    test('accepts any realm when none is configured', async () => {
-        const challenge = issue(routeRequest(), { realm: 'other.example.com' });
-        await expect(verify(server({ realm: undefined }), challenge)).rejects.toThrow(BOUND);
+    test('refuses an explicit secretKey without a realm at configuration', () => {
+        // The HMAC covers the echoed realm, so without this server's realm two
+        // services sharing a secret would accept each other's challenges.
+        withEnv({ MPP_REALM: undefined }, () => {
+            expect(() => server({ realm: undefined })).toThrow(/realm is required when secretKey is set/);
+        });
+    });
+
+    test('refuses a challenge another realm issued under the same secret', async () => {
+        const sibling = issue(routeRequest(), { realm: 'sibling.example.com' });
+        await expect(verify(server(), sibling)).rejects.toThrow(/realm `sibling.example.com` does not match/);
     });
 
     test('refuses another mint, recipient, program or plan', async () => {
