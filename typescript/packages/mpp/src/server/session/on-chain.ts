@@ -844,7 +844,11 @@ export async function submitTopUpTx(args: {
     let signature: Signature;
     try {
         signature = await args.rpc
-            .sendTransaction(args.transaction, { encoding: 'base64', skipPreflight: false })
+            .sendTransaction(args.transaction, {
+                encoding: 'base64',
+                preflightCommitment: 'confirmed',
+                skipPreflight: false,
+            })
             .send();
     } catch (error) {
         // A duplicate of an already-landed top-up dies at preflight with
@@ -1012,7 +1016,9 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
     };
     let signature: Signature;
     try {
-        signature = await args.rpc.sendTransaction(wire, { encoding: 'base64', skipPreflight: false }).send();
+        signature = await args.rpc
+            .sendTransaction(wire, { encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false })
+            .send();
         await waitForSignatureConfirmation({
             context: 'submitOpenTx',
             options: args.confirm,
@@ -1146,7 +1152,9 @@ export async function submitSettleAndDistribute(
 
     const instructions: ServerInstruction[] = [...settle.instructions, ...createAtas, distribute];
     const wire = await args.buildAndSignWireTransaction(instructions);
-    const signature = await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
+    const signature = await args.rpc
+        .sendTransaction(wire, { encoding: 'base64', preflightCommitment: 'confirmed' })
+        .send();
     return { instructions, signature };
 }
 
