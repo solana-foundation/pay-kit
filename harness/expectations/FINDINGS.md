@@ -495,6 +495,23 @@ the vectors or adapters instead:
 | `x402-extra-required-signer-accepted`, `x402-fee-payer-drain-category`, `x402-client-network-not-checked`, the x402 `exact` vectors and cross cells of `txv1-python` (Python) | `solana_pay_kit` x402 `exact`: version-1 codec, `extra.transactionVersions` negotiation and admission, version-1 header rules, the 400k compute-unit and sponsored priority-fee caps, the required-signer set, fee-payer isolation before the optional allowlist, and a configured client network is never left |
 | `charge-client-sol-token-program-ignored`, `charge-client-fee-payer-without-key`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated` (Python), `python-charge-sol-ata-creation-required-order`, `charge-server-fee-payer-not-checked`, the charge vectors and charge cross cells of `txv1-python` | Python MPP charge client and server: challenge-shape checks and a u64 amount before building, version negotiation and version-1 builds, version admission with the version-1 header budget caps, and account 0 held to `feePayerKey` |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
+| Python `subscription` suite unclaimed (no subscription intent) | `solana_pay_kit.protocols.mpp` subscription intent, activation client, offline activation verifier and active-subscription check, subscriptions program helpers; `subscription` claimed (2026-10-27). The end-to-end server stays open as `python-subscription-server-partial` |
+
+## python-subscription-server-partial
+
+**Cases:** none (the vectors stop before the broadcast; Python passes the
+`subscription` suite). **Open since 2026-10-27.**
+
+`SubscriptionServer` (`python/src/solana_pay_kit/protocols/mpp/server/subscription.py`)
+ports only the offline half of the Rust kit's `verify_credential`
+(`rust/crates/kit/src/mpp/server/subscription.rs:420-498`) plus
+`verify_active_subscription`. Missing: reserving the activation signature
+(replay protection, `signature_consumed`), broadcast and confirm,
+`ensure_activation_landed` and `bind_confirmed_activation` (the landed
+delegation matches the payer, plan and terms with a current authority), the
+binding store, `verify_access_credential` for `type="proof"` access, and the
+receipt. `verify_activation` refuses `type="proof"` credentials rather than
+returning an unverified result; `python/README.md` marks the server ◐.
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
 

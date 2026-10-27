@@ -34,6 +34,7 @@ from typing import Any
 from solana_keychain import MemorySigner
 from solders.keypair import Keypair
 
+import conformance_subscription
 from solana_pay_kit._paycore.errors import InvalidChallengeError
 from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.solana import (
@@ -605,6 +606,9 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     if vector.get("intent") == "x402-exact":
         return _run_x402(vector)
 
+    if vector.get("intent") == "subscription":
+        return conformance_subscription.run(vector)
+
     if vector.get("intent") == "session" and mode == "verify-transaction":
         if not (vector.get("input") or {}).get("sessionVoucherVerify"):
             return {"id": vector_id, "outcome": "unsupported-mode", "error": "unsupported-mode: session verify input"}
@@ -759,7 +763,7 @@ def _result_for(vector: dict[str, Any]) -> dict[str, Any]:
 
 # Intents this runner implements; pkc checks them against
 # harness/expectations/python.toml.
-_INTENTS = ["charge", "x402-exact", "session"]
+_INTENTS = ["charge", "x402-exact", "session", "subscription"]
 
 
 def _serve() -> None:
