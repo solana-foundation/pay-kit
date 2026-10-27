@@ -663,6 +663,8 @@ mod tests {
                 voucher_signer: None,
                 operator: None,
                 max_idle_secs: None,
+                max_claim_channels: None,
+                max_settle_channels: None,
             },
         };
         let config = BatchChannelConfig {

@@ -67,7 +67,8 @@ use crate::x402::protocol::schemes::batch_settlement::{
     BatchChannelConfig, BatchError, BatchExtra, BatchPayload, BatchPaymentPayload, BatchRefund,
     BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra, BatchSettlementResponse,
     ChannelStateSnapshot, SetupForm, TransactionExpectations, VoucherState,
-    BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS, VOUCHER_EXPIRES_AT,
+    BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS,
+    V1_MAX_CLAIM_CHANNELS, V1_MAX_SETTLE_CHANNELS, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
@@ -809,6 +810,17 @@ impl X402BatchSettlement {
         crate::core::tx::highest(&self.accepted_versions)
     }
 
+    /// Channels per claim and per settle redemption transaction: the
+    /// version-1 capacities when redemptions are built as version 1, four
+    /// otherwise (scheme_batch_settlement_svm.md, facilitator-built
+    /// transactions).
+    fn redemption_capacity(&self) -> (usize, usize) {
+        match self.tx_version() {
+            TxVersion::V1 => (V1_MAX_CLAIM_CHANNELS, V1_MAX_SETTLE_CHANNELS),
+            TxVersion::V0 => (MAX_CLAIMS_PER_BATCH, MAX_CLAIMS_PER_BATCH),
+        }
+    }
+
     /// Route this handler's chain reads through `rpc` (a mock in tests).
     #[cfg(test)]
     pub(crate) fn with_rpc_client(mut self, rpc: RpcClient) -> Self {
@@ -926,6 +938,12 @@ impl X402BatchSettlement {
                 voucher_signer: None,
                 operator: None,
                 max_idle_secs: None,
+                // The redemption capacity of the message version this server
+                // builds redemptions in; absent (four) when that is version 0.
+                max_claim_channels: (self.tx_version() == TxVersion::V1)
+                    .then_some(V1_MAX_CLAIM_CHANNELS as u32),
+                max_settle_channels: (self.tx_version() == TxVersion::V1)
+                    .then_some(V1_MAX_SETTLE_CHANNELS as u32),
             },
         })
     }
@@ -3378,7 +3396,9 @@ impl X402BatchSettlement {
             });
             claimed_watermarks.push((channel_id.clone(), state.cumulative));
         }
-        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        let signatures = self
+            .submit_groups(groups, self.redemption_capacity().0)
+            .await?;
         for (channel_id, claimed) in claimed_watermarks {
             self.store
                 .update_channel(
@@ -3442,7 +3462,9 @@ impl X402BatchSettlement {
             });
             distributed_watermarks.push((channel_id.clone(), onchain.settlement.settled));
         }
-        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        let signatures = self
+            .submit_groups(groups, self.redemption_capacity().1)
+            .await?;
         // A successful distribute proves the claim watermark was already
         // visible and paid. Persist it immediately so the next lifecycle tick
         // does not re-submit the same channel merely because the RPC account
@@ -4590,6 +4612,8 @@ mod tests {
                 voucher_signer: None,
                 operator: None,
                 max_idle_secs: None,
+                max_claim_channels: None,
+                max_settle_channels: None,
             },
         };
         let (_, config, channel) = client(&fee_payer, &requirements);
@@ -4644,6 +4668,67 @@ mod tests {
         let json = serde_json::to_value(&requirements).unwrap();
         assert!(json["extra"].get("paymentFlow").is_none());
         assert!(json["extra"].get("channelProgram").is_none());
+    }
+
+    /// The advertised version-1 claim capacity packs into one transaction:
+    /// 18 Ed25519+settle pairs fit 4096 bytes, where version 0 needs five.
+    #[test]
+    fn eighteen_claims_pack_into_one_version_1_transaction() {
+        let program_id = Pubkey::from_str(pc::PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
+        let groups: Vec<ChannelInstructionGroup> = (0..V1_MAX_CLAIM_CHANNELS)
+            .map(|_| ChannelInstructionGroup {
+                channel_id: Pubkey::new_unique().to_string(),
+                instructions: pc::build_settle_instructions(
+                    &Pubkey::new_unique(),
+                    &Pubkey::new_unique(),
+                    &[7u8; 64],
+                    123_456_789,
+                    0,
+                    &program_id,
+                )
+                .unwrap(),
+            })
+            .collect();
+        let fee_payer = Pubkey::new_unique();
+        let v1 = pack(
+            TxVersion::V1,
+            groups.clone(),
+            &fee_payer,
+            None,
+            V1_MAX_CLAIM_CHANNELS,
+        );
+        assert_eq!(v1.len(), 1);
+        let v0 = pack(
+            TxVersion::V0,
+            groups,
+            &fee_payer,
+            None,
+            MAX_CLAIMS_PER_BATCH,
+        );
+        assert_eq!(
+            v0.len(),
+            V1_MAX_CLAIM_CHANNELS.div_ceil(MAX_CLAIMS_PER_BATCH)
+        );
+    }
+
+    #[test]
+    fn requirements_advertise_the_redemption_capacity_of_version_1() {
+        let (mut handler, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let v0 = handler.requirements("0.001").unwrap();
+        assert_eq!(handler.redemption_capacity(), (4, 4));
+        assert_eq!(v0.extra.max_claim_channels, None);
+        assert_eq!(v0.extra.max_settle_channels, None);
+
+        handler.accepted_versions = vec![TxVersion::V0, TxVersion::V1];
+        let v1 = handler.requirements("0.001").unwrap();
+        assert_eq!(handler.redemption_capacity(), (18, 13));
+        let json = serde_json::to_value(&v1).unwrap();
+        assert_eq!(json["extra"]["maxClaimChannels"], 18);
+        assert_eq!(json["extra"]["maxSettleChannels"], 13);
+        assert_eq!(
+            json["extra"]["transactionVersions"],
+            serde_json::json!([0, 1])
+        );
     }
 
     #[tokio::test]
