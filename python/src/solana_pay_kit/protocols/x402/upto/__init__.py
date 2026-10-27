@@ -48,6 +48,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     build_distribute_instruction,
     build_settle_and_seal_instructions,
     decode_channel_account,
+    find_associated_token_address,
     treasury_owner,
     voucher_message_bytes,
 )
@@ -335,6 +336,8 @@ class X402Upto:
                     "open transaction fee payer must be the advertised fee payer", code="payment_invalid"
                 )
 
+            await self._ensure_payouts_ready(rpc, mint, token_program, distribution, fee_payer_pubkey)
+
             cosigned = await _cosign_fee_payer(open_tx, signer)
             sent = await rpc.send_raw_transaction(cosigned)
             await rpc.await_confirmation(str(sent.value))
@@ -443,13 +446,11 @@ class X402Upto:
             create_treasury_ata = create_idempotent_associated_token_account(
                 fee_payer, treasury, verified.mint, verified.token_program
             )
-            create_recipient_atas = [
-                create_idempotent_associated_token_account(
-                    fee_payer, entry.recipient, verified.mint, verified.token_program
-                )
-                for entry in verified.distribution
-            ]
-            instructions = [*instructions, create_payee_ata, create_treasury_ata, *create_recipient_atas, distribute]
+            # Recipient accounts are never created here: the open was refused
+            # unless each already existed and was usable (_ensure_payouts_ready),
+            # and funding them would let an owner close and recreate the
+            # account to collect the fee payer's rent on every settlement.
+            instructions = [*instructions, create_payee_ata, create_treasury_ata, distribute]
 
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
@@ -525,6 +526,43 @@ class X402Upto:
         beneficiary = Pubkey.from_string(requirements["payTo"])
         return [Distribution(recipient=beneficiary, bps=10_000)]
 
+    async def _ensure_payouts_ready(
+        self,
+        rpc: SolanaRpc,
+        mint: Pubkey,
+        token_program: Pubkey,
+        distribution: list[Distribution],
+        fee_payer: Pubkey,
+    ) -> None:
+        """Settlement readiness (scheme_upto_svm.md Phase 3 step 8).
+
+        Every distribution recipient's token account must already exist and
+        be usable before the deposit is escrowed: settlement never creates
+        it, and the program forfeits a payout to an unusable account. The
+        fee payer's own account is the payee seat settlement creates itself.
+        A failed read is a refusal too. Mirrors the Rust
+        ``X402Upto::ensure_payouts_ready``.
+        """
+        for entry in distribution:
+            if entry.recipient == fee_payer:
+                continue
+            ata, _ = find_associated_token_address(entry.recipient, mint, token_program)
+            try:
+                account = await rpc.get_account_info(str(ata))
+            except Exception as exc:  # noqa: BLE001
+                raise InvalidProofError(f"payout token account read failed: {exc}", code="payment_invalid") from exc
+            problem = (
+                "does not exist"
+                if account is None
+                else _unusable_token_account(account[1], account[0], entry.recipient, mint, token_program)
+            )
+            if problem is not None:
+                raise InvalidProofError(
+                    f"payout token account {ata} of {entry.recipient} {problem}; it must be an "
+                    "initialized token account before payments settle to it",
+                    code="payment_invalid",
+                )
+
     async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Channel:
         account = await rpc.get_account_info(str(channel_id))
         if account is None:
@@ -586,6 +624,64 @@ class X402Upto:
 
 
 # -- module-level helpers ---------------------------------------------------
+
+
+_TOKEN_ACCOUNT_LEN = 165
+_TOKEN_ACCOUNT_INITIALIZED = 1
+_TOKEN_ACCOUNT_FROZEN = 2
+_TOKEN_ACCOUNT_TYPE = 2
+_EXTENSION_IMMUTABLE_OWNER = 7
+
+
+def _unsupported_account_extension(data: bytes) -> int | None:
+    """The first Token-2022 account extension other than ImmutableOwner."""
+    if len(data) == _TOKEN_ACCOUNT_LEN:
+        return None
+    if data[_TOKEN_ACCOUNT_LEN] != _TOKEN_ACCOUNT_TYPE:
+        return data[_TOKEN_ACCOUNT_LEN]
+    cursor = _TOKEN_ACCOUNT_LEN + 1
+    while cursor < len(data):
+        if not any(data[cursor:]):
+            return None
+        header = data[cursor : cursor + 4]
+        if len(header) < 4:
+            return 0xFFFF
+        extension = int.from_bytes(header[0:2], "little")
+        length = int.from_bytes(header[2:4], "little")
+        if extension != _EXTENSION_IMMUTABLE_OWNER:
+            return extension
+        cursor += 4 + length
+        if cursor > len(data):
+            return 0xFFFF
+    return None
+
+
+def _unusable_token_account(
+    program: str, data: bytes, owner: Pubkey, mint: Pubkey, token_program: Pubkey
+) -> str | None:
+    """Why a token account cannot receive a payout, or ``None`` when it can.
+
+    Mirrors the Rust ``unusable_settlement_account``.
+    """
+    if program != str(token_program):
+        return "is not owned by the declared token program"
+    if len(data) < _TOKEN_ACCOUNT_LEN:
+        return "is not an initialized token account"
+    account_mint = Pubkey.from_bytes(data[0:32])
+    account_owner = Pubkey.from_bytes(data[32:64])
+    state = data[108]
+    if account_mint != mint:
+        return f"holds mint {account_mint} rather than {mint}"
+    if account_owner != owner:
+        return f"is owned by {account_owner} rather than {owner}"
+    if state == _TOKEN_ACCOUNT_FROZEN:
+        return "is frozen"
+    extension = _unsupported_account_extension(data)
+    if extension is not None:
+        return f"carries token account extension {extension}, which this server will not settle through"
+    if state != _TOKEN_ACCOUNT_INITIALIZED:
+        return f"is in account state {state}"
+    return None
 
 
 def _decode_envelope(header: str) -> dict[str, Any]:

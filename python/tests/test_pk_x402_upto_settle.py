@@ -30,6 +30,7 @@ from solana_pay_kit import (
 )
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import Distribution
+from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
@@ -59,6 +60,7 @@ class _FakeRpc:
 
     async def send_raw_transaction(self, raw: bytes):
         self.sent.append(raw)
+        self._holder["sent"] = raw  # type: ignore[assignment]
 
         class _Resp:
             value = "SIG-upto"
@@ -96,7 +98,14 @@ def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] 
     eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT))
     holder: dict[str, tuple[bytes, str] | None] = {"account": None}
     monkeypatch.setattr(upto_mod, "SolanaRpc", lambda *_a, **_k: _FakeRpc(holder))
+    # The stub answers every address with the channel account; settlement
+    # readiness has its own tests below.
+    monkeypatch.setattr(X402Upto, "_ensure_payouts_ready", _payouts_ready)
     return eng, cfg, holder
+
+
+async def _payouts_ready(*_a, **_k) -> None:
+    return None
 
 
 def _gate(cfg) -> Gate:
@@ -535,3 +544,77 @@ def test_parse_payload_missing_field() -> None:
 def test_parse_payload_not_a_dict() -> None:
     with pytest.raises(InvalidProofError, match="malformed"):
         upto_mod._parse_payload("nope")  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_settlement_creates_only_the_payee_and_treasury_accounts(monkeypatch) -> None:
+    # Recipient token accounts are never funded by the fee payer: settle,
+    # the payee and treasury creates, distribute (plus the Ed25519 verify).
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
+    eng, cfg, holder = _engine(monkeypatch)
+    await eng.settle_actual(_verified(cfg), 50000)
+    raw = holder["sent"]
+    assert isinstance(raw, bytes)
+    message = VersionedTransaction.from_bytes(raw).message
+    programs = [str(message.account_keys[ix.program_id_index]) for ix in message.instructions]
+    ata_program = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    assert programs.count(ata_program) == 2
+    assert len(programs) == 5
+
+
+def _token_account(mint: Pubkey, owner: Pubkey, state: int = 1, tail: bytes = b"") -> bytes:
+    data = bytearray(165)
+    data[0:32] = bytes(mint)
+    data[32:64] = bytes(owner)
+    data[108] = state
+    return bytes(data) + tail
+
+
+class _AccountsRpc(SolanaRpc):
+    def __init__(self, answer) -> None:
+        self._answer = answer
+
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+@pytest.mark.asyncio
+async def test_an_open_is_refused_until_every_payout_account_is_usable(monkeypatch) -> None:
+    eng, cfg, _ = _engine(monkeypatch)
+    monkeypatch.undo()
+    mint = Pubkey.from_string(str(Keypair().pubkey()))
+    other_mint = Pubkey.from_string(str(Keypair().pubkey()))
+    token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+    recipient = Pubkey.from_string(str(Keypair().pubkey()))
+    fee_payer = Pubkey.from_string(_op_pubkey(cfg))
+    distribution = [Distribution(recipient=recipient, bps=10_000)]
+    program = str(token_program)
+    cases = [
+        (None, "does not exist"),
+        (RuntimeError("rpc down"), "read failed"),
+        ((_token_account(mint, recipient), str(Keypair().pubkey())), "not owned by the declared token program"),
+        ((b"\x00" * 10, program), "not an initialized token account"),
+        ((_token_account(other_mint, recipient), program), "holds mint"),
+        ((_token_account(mint, fee_payer), program), "is owned by"),
+        ((_token_account(mint, recipient, state=2), program), "is frozen"),
+        ((_token_account(mint, recipient, state=0), program), "account state 0"),
+        ((_token_account(mint, recipient, tail=bytes([2, 1, 0, 0, 0])), program), "extension 1"),
+    ]
+    for answer, needle in cases:
+        with pytest.raises(InvalidProofError, match=needle):
+            await eng._ensure_payouts_ready(  # noqa: SLF001
+                _AccountsRpc(answer), mint, token_program, distribution, fee_payer
+            )
+    # Positive controls: a plain and an ImmutableOwner Token-2022 account,
+    # and the fee payer's own seat, which settlement creates itself.
+    immutable = bytes([2, 7, 0, 0, 0]) + bytes(10)
+    for data in (_token_account(mint, recipient), _token_account(mint, recipient, tail=immutable)):
+        await eng._ensure_payouts_ready(  # noqa: SLF001
+            _AccountsRpc((data, program)), mint, token_program, distribution, fee_payer
+        )
+    await eng._ensure_payouts_ready(  # noqa: SLF001
+        _AccountsRpc(None), mint, token_program, [Distribution(recipient=fee_payer, bps=10_000)], fee_payer
+    )

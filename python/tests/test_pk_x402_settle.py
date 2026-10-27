@@ -218,14 +218,17 @@ async def test_verify_and_settle_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_replay_same_transaction_recovers_confirmed_settlement(monkeypatch):
+async def test_replay_of_a_confirmed_settlement_is_consumed(monkeypatch):
+    # One payment, one delivery: the second presentation of a settled
+    # payment is refused, never served again (scheme_exact.md).
     store = MemoryStore()
     rpcs: list = []
     adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch, rpcs=rpcs)
     header = _build_envelope(adapter, gate, op_kp)
-    first = await adapter.verify_and_settle(gate, _Req(header))
-    recovered = await adapter.verify_and_settle(gate, _Req(header))
-    assert recovered.transaction == first.transaction
+    await adapter.verify_and_settle(gate, _Req(header))
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
     assert rpcs[0].confirm_calls == 1
     assert rpcs[0].send_calls == 1
     assert len(rpcs) == 1
@@ -494,8 +497,10 @@ async def test_recovery_does_not_replace_concurrently_confirmed_state(monkeypatc
         return rpc
 
     monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
-    payment = await adapter.verify_and_settle(gate, _Req(header))
-    assert payment.transaction == signature
+    # The request it took over from confirmed (and served) it meanwhile.
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"
     assert recovery_rpcs == []
     record = await store.get(consumed_signature_key(signature))
     assert isinstance(record, dict)
@@ -934,3 +939,17 @@ async def test_fully_signed_two_signer_payment_settles(monkeypatch):
     header, landed = _with_client_signatures(_build_envelope(adapter, gate, op_kp), op_kp, lambda tx: tx)
     payment = await adapter.verify_and_settle(gate, _Req(header))
     assert payment.transaction == str(landed.signatures[0])
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_settlement_is_granted_once(monkeypatch):
+    # A recovery and the request it took over from can both confirm the
+    # same landing; the served marker lets only one of them serve.
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(store=store, monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    signature = await _settlement_signature(header, op_kp)
+    await store.put(f"{consumed_signature_key(signature)}:served", True)
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "signature_consumed"

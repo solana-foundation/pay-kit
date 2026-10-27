@@ -217,11 +217,8 @@ class X402Adapter:
             raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
         current = await self._store.get(replay_key)
         should_broadcast = current is None
-        skip_confirmation = False
         if current is not None:
-            skip_confirmation = await _recover_replay_record(
-                self._store, replay_key, binding, replay_record, current, now
-            )
+            await _recover_replay_record(self._store, replay_key, binding, replay_record, current, now)
 
         rpc: SolanaRpc | None = None
         sent_here = False
@@ -234,9 +231,7 @@ class X402Adapter:
                 # retry would find it already processed and refuse it.
                 if not await ledger.claim(signature, replay_record):
                     current = await self._store.get(replay_key)
-                    skip_confirmation = await _recover_replay_record(
-                        self._store, replay_key, binding, replay_record, current, now
-                    )
+                    await _recover_replay_record(self._store, replay_key, binding, replay_record, current, now)
                 else:
                     rpc = SolanaRpc(rpc_url)
                     try:
@@ -280,33 +275,38 @@ class X402Adapter:
             # ``transaction-failed`` (included but reverted) or
             # ``transaction-not-found`` (never confirmed inside the window).
             #
-            if not skip_confirmation:
-                if rpc is None:
-                    rpc = SolanaRpc(rpc_url)
-                try:
-                    # A request that did not send it is reconciling a payment
-                    # an earlier one sent, which may have left the node's
-                    # recent status cache: search the history.
-                    await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
-                    await self._store.put(
-                        replay_key,
-                        {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Keep the pending lease after a failure. A retry can
-                    # atomically take over after expiry and determine whether
-                    # the transaction landed, without permitting two concurrent
-                    # requests to return successful fulfillment.
-                    if proves_settlement_failed(exc):
-                        # It landed and failed: it moved nothing.
-                        raise InvalidProofError(
-                            f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
-                        ) from exc
-                    # No status yet is never proof it did not execute.
-                    raise _settlement_in_progress(signature, f"not confirmed yet: {exc}") from exc
+            if rpc is None:
+                rpc = SolanaRpc(rpc_url)
+            try:
+                # A request that did not send it is reconciling a payment
+                # an earlier one sent, which may have left the node's
+                # recent status cache: search the history.
+                await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
+                await self._store.put(
+                    replay_key,
+                    {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Keep the pending lease after a failure. A retry can
+                # atomically take over after expiry and determine whether
+                # the transaction landed, without permitting two concurrent
+                # requests to return successful fulfillment.
+                if proves_settlement_failed(exc):
+                    # It landed and failed: it moved nothing.
+                    raise InvalidProofError(
+                        f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
+                    ) from exc
+                # No status yet is never proof it did not execute.
+                raise _settlement_in_progress(signature, f"not confirmed yet: {exc}") from exc
         finally:
             if rpc is not None:
                 await rpc.aclose()
+
+        # One confirmed payment grants one request. A recovery and the request
+        # it took over from can both see the confirmation; only the first to
+        # take the grant serves (the Rust ``ConsumedSignatures::confirm``).
+        if not await self._store.put_if_absent(f"{replay_key}:served", True):
+            raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
         accepted_network = accepted.get("network")
         response_body: X402ResponseEnvelope = {
@@ -605,15 +605,20 @@ async def _recover_replay_record(
     replay_record: dict[str, object],
     current: object,
     now: float,
-) -> bool:
-    """Claim an expired settlement for confirmation, or return a confirmed replay."""
+) -> None:
+    """Take over an expired pending settlement to confirm it.
+
+    A confirmed settlement is consumed: presenting it again is refused with
+    ``signature_consumed``, never served a second time (scheme_exact.md "A
+    consumed primitive MUST produce a settlement failure, never a success";
+    the Rust ``settle_exact`` ``PendingClaim::Consumed``). Only an expired
+    pending claim of the same bytes is resumed.
+    """
     if not isinstance(current, dict):
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
     current_record = cast("dict[str, object]", current)
     if current_record.get("binding") != binding:
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-    if current_record.get("state") == "confirmed":
-        return True
     if current_record.get("state") != "pending" or not isinstance(current_record.get("leaseUntil"), int | float):
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
@@ -631,11 +636,9 @@ async def _recover_replay_record(
     latest_record = cast("dict[str, object]", latest)
     if latest_record.get("binding") != binding:
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-    if latest_record.get("state") == "confirmed":
-        return True
     if latest_record.get("state") == "pending" and latest_record.get("leaseUntil") == lease_until:
         await store.put(replay_key, replay_record)
-        return False
+        return
     raise InvalidProofError(
         "solana_pay_kit: signature_consumed: settlement recovery state changed",
         code="signature_consumed",

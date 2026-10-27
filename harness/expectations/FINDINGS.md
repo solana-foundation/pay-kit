@@ -199,24 +199,6 @@ first and report `unknown_fourth_instruction`
 `python/src/solana_pay_kit/protocols/x402/exact/verify.py:154` before `:169`).
 The verdict is right; the reason hides the fund-safety violation, and a
 smart-wallet path that relaxes the layout would have to catch it again.
-## upto-settlement-funds-recipient-ata
-
-**Case:** `interop/x402-upto-basic/rust/python`
-**SDKs:** python
-
-An upto settlement co-signed by the fee payer that also creates each
-distribution recipient's token account pays that account's rent, even for a
-zero-amount settlement. A recipient the operator does not control can close
-the account after each settlement and keep the rent. Rust creates only the
-fee payer's payee account and the treasury account, and instead refuses an
-open whose recipients lack a usable token account (scheme_upto_svm.md Phase 3
-settlement readiness), so a payout is never forfeited to the treasury. Python
-appends `create_idempotent_associated_token_account` for every recipient
-(`python/src/solana_pay_kit/protocols/x402/upto/__init__.py:446`). Fix: drop
-the recipient creations and check recipient token accounts before co-signing
-the open; dropping the creations alone would forfeit payouts to accounts that
-do not exist.
-
 ## batch-deposit-balance-unchecked
 
 **Case:** `vector/batch-verify-open-unfunded-payer-reject`,
@@ -231,23 +213,6 @@ and the transaction's blockhash before it reserves the request
 2.28.0 verify reads no balance; its deposit settle simulates the
 transaction, which the offline harness signer stubs, so the vector cannot
 observe it there.
-
-## session-open-initial-voucher-accepted
-
-**Case:** `vector/session-wire-action-open-initial-voucher-reject`
-**SDKs:** typescript, python
-
-draft-solana-session-00 §Action "open": “`Action: "open"` MUST NOT carry an
-initial voucher. The first voucher is exchanged off-chain in a subsequent
-metered request, after the channel is confirmed on-chain.” Both session
-wire schemas special-case the forbidden `bump` field (TypeScript:
-`bump: z.optional(z.never())` in `typescript/packages/mpp/src/Methods.ts`;
-Python: `open payload must not include bump` in
-`python/src/solana_pay_kit/protocols/mpp/intents/session.py`) but drop or
-ignore every other unknown key, so an open carrying a `voucher` parses and
-re-encodes without it. Rust's `OpenPayload` is `deny_unknown_fields`. Fix:
-refuse a `voucher` key on the open payload (or refuse unknown keys
-outright).
 
 ## Interop findings (`pkc run --tier interop`, 2026-10-20)
 
@@ -326,7 +291,7 @@ recipient. Previously masked by `serverIds`.
 
 ## x402-replay-route-missing
 
-**Cases:** `x402-exact-cross-route-replay/rust/{go,lua,php,python,ruby,ruby-x402-server}`
+**Cases:** `x402-exact-cross-route-replay/rust/{go,lua,php,ruby,ruby-x402-server}`
 
 These x402 adapters do not mount `MPP_HARNESS_REPLAY_SOURCE_PATH`, so the
 cross-route case cannot present a cheap-route payment (404). Only the Rust and
@@ -344,16 +309,6 @@ fresh challenge with no code, Lua and PHP `invalid_proof`, Ruby a raw RPC
 error. TypeScript rejects a cross-route payment with `payment_invalid`
 (sdkCode `accepted_mismatch`) instead of `charge_request_mismatch`. x402 has
 no shared reject-code table yet; the refusals are correct.
-
-## python-x402-double-delivery
-
-**Case:** `x402-exact-idempotent-resubmit/rust/python`
-
-The Python x402 server answers a second presentation of an already-settled
-payment with **200 and serves the resource again**. One payment, two
-deliveries. scheme_exact.md: “Such methods MUST deduplicate settlements
-atomically across every process serving `/settle`”, and “A consumed primitive
-MUST produce a settlement failure, never a success.” Security-relevant.
 
 Open findings from the x402 `upto` (SVM) vectors (`x402-upto-*.json`,
 2026-10-21). Rust is driven through
@@ -593,6 +548,7 @@ the vectors or adapters instead:
 | --- | --- |
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
+| `python-x402-double-delivery`, the Python row of `x402-replay-route-missing`, `upto-settlement-funds-recipient-ata`, `session-open-initial-voucher-accepted` (Python), the session wire part of `txv1-python` | Python x402 server refuses a confirmed payment presented again (`signature_consumed`) and grants each confirmation once; the harness x402 server mounts the replay route; upto settlement creates only the payee and treasury accounts and the open is refused until every payout account is usable; session `methodDetails.transactionVersions` and the open-voucher refusal |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
