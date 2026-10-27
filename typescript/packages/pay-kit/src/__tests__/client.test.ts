@@ -273,6 +273,76 @@ describe('createPayKitClient', () => {
         });
     });
 
+    describe('MPP charge transaction versions', () => {
+        /** Pays a USDC charge advertising `[0, 1]` and returns the message version byte of the credential. */
+        async function payMppCharge(maxTransactionVersion?: 0 | 1): Promise<number> {
+            const mint = resolveStablecoinMint('USDC', 'mainnet');
+            if (!mint) throw new Error('missing mainnet USDC mint');
+            const merchant = await generateKeyPairSigner();
+            const challenge = Challenge.serialize({
+                id: 'versions',
+                intent: 'charge',
+                method: 'solana',
+                realm: 'test',
+                request: {
+                    amount: '1000',
+                    currency: mint,
+                    methodDetails: {
+                        decimals: 6,
+                        network: 'mainnet',
+                        tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                        recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        transactionVersions: [0, 1],
+                    },
+                    recipient: merchant.address,
+                },
+            });
+            let sent: string | undefined;
+            mockFetch.mockImplementation((input: RequestInfo | URL) => {
+                const header = input instanceof Request ? input.headers.get('authorization') : null;
+                if (header) {
+                    sent = header;
+                    return Promise.resolve(response(200));
+                }
+                return Promise.resolve(response(402, { 'www-authenticate': challenge }));
+            });
+            const client = await createPayKitClient({
+                accept: ['mpp'],
+                maxTransactionVersion,
+                permissions: false,
+                rpcUrl: RPC_URL,
+                signer,
+            });
+
+            expect((await client.fetch('https://api.test/paid')).status).toBe(200);
+            if (!sent) throw new Error('client did not send a credential');
+            const encoded = sent
+                .replace(/^Payment\s+/, '')
+                .replace(/-/g, '+')
+                .replace(/_/g, '/');
+            const credential = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as {
+                payload: { transaction: string };
+            };
+            const bytes = Buffer.from(credential.payload.transaction, 'base64');
+            // Version 1 puts the message first; version 0 after the signatures.
+            return bytes[0]! & 0x80 ? bytes[0]! : bytes[1 + 64 * bytes[0]!]!;
+        }
+
+        it('builds version 1 when the challenge lists [0, 1]', async () => {
+            expect(await payMppCharge()).toBe(0x81);
+        });
+
+        it('builds version 0 for a signer limited to version 0', async () => {
+            expect(await payMppCharge(0)).toBe(0x80);
+        });
+
+        it('rejects a maxTransactionVersion other than 0 or 1 on an MPP-only client', () => {
+            expect(() =>
+                createPayKitClient({ accept: ['mpp'], maxTransactionVersion: 2 as never, rpcUrl: RPC_URL, signer }),
+            ).toThrow(ConfigurationError);
+        });
+    });
+
     it('denies an MPP split to a recipient outside the allowlist before signing', async () => {
         const mint = resolveStablecoinMint('USDC', 'mainnet');
         if (!mint) throw new Error('missing mainnet USDC mint');
