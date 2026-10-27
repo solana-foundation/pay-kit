@@ -1,5 +1,5 @@
 repo = "x402"
-commit = "769662b7de5ed3b12ff4a773eb369c59c1c3c322"
+commit = "f7043a123097e674fca864c39c58adcb0c9c649d"
 files = [
   "specs/x402-specification-v2.md",
   "specs/schemes/exact/scheme_exact.md",

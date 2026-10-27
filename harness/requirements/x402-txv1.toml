@@ -1,5 +1,5 @@
 repo = "x402-txv1"
-commit = "769662b7de5ed3b12ff4a773eb369c59c1c3c322"
+commit = "f7043a123097e674fca864c39c58adcb0c9c649d"
 files = [
   "specs/schemes/exact/scheme_exact_svm.md",
   "specs/schemes/upto/scheme_upto_svm.md",

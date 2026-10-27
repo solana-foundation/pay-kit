@@ -341,7 +341,7 @@ requirement) is `invalid-challenge`; wire objects that do not parse are
 Pinned drafts: `external/mpp-specs-txv1` (solana-foundation/mpp-specs
 feat/solana-transaction-versions `77aa6a1`, charge and session) and
 `external/x402-txv1` (x402-foundation/x402 PR 3473, merged; solana-foundation/x402
-`769662b`, scheme_exact_svm.md §1.5).
+`f7043a1`, scheme_exact_svm.md §1.5).
 
 **T1. `transactionVersions` is an array of the integers 0 and 1, read as a
 set.** MPP: “Each entry is the integer `0` or `1`, the Wallet Standard
