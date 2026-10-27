@@ -74,7 +74,10 @@ export async function assertTransactionSignaturesVerify(
             throw new Error('transaction signature verification failed');
         }
         const key = await getPublicKeyFromAddress(address as Address);
-        if (!(await verifySignature(key, signature, decoded.messageBytes))) {
+        // A copy, not the decoder's view into the wire bytes: @solana/kit
+        // before 8.0 verifies a version-1 message view against the wrong bytes
+        // (the message leads the version-1 wire format).
+        if (!(await verifySignature(key, signature, new Uint8Array(decoded.messageBytes)))) {
             throw new Error('transaction signature verification failed');
         }
     }
@@ -98,7 +101,10 @@ export async function coSignBase64Transaction(
     clientTxBase64: string,
 ): Promise<Base64EncodedWireTransaction> {
     const txBytes = getBase64Codec().encode(clientTxBase64);
-    const decoded = getTransactionDecoder().decode(txBytes);
+    const wire = getTransactionDecoder().decode(txBytes);
+    // Sign a copy of the message bytes, not the decoder's view into the wire
+    // bytes (see assertTransactionSignaturesVerify).
+    const decoded = { ...wire, messageBytes: new Uint8Array(wire.messageBytes) as unknown as typeof wire.messageBytes };
 
     // The signer must already be listed in the transaction's signatures map.
     if (decoded.signatures[signer.address] === undefined) {

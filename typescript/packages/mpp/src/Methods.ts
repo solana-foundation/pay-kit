@@ -31,6 +31,14 @@ const voucherExpiresAt = z
         ),
     );
 
+/**
+ * `methodDetails.transactionVersions` (mpp-specs-txv1 Transaction Versions):
+ * the transaction message versions the server accepts, an array of the JSON
+ * integers 0 and 1. Servers MUST NOT advertise "legacy"; strings, other
+ * numbers and a bare integer are refused. Absent means `[0]`.
+ */
+const transactionVersions = z.array(z.union([z.literal(0), z.literal(1)]));
+
 const signedVoucher = z.object({
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     signature: z.string(),
@@ -118,6 +126,8 @@ export const charge = Method.from({
                 ),
                 /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from the currency mint. */
                 tokenProgram: z.optional(z.string()),
+                /** Transaction message versions the server accepts (0 and/or 1). Absent means [0]. */
+                transactionVersions: z.optional(transactionVersions),
             }),
             /** Base58-encoded recipient public key. */
             recipient: z.string(),
@@ -364,6 +374,8 @@ export const session = Method.from({
                 recentBlockhash: z.optional(z.string()),
                 recentSlot: z.optional(z.string()),
                 tokenProgram: z.optional(z.string()),
+                /** Transaction message versions the server accepts for the open and topUp transactions. Absent means [0]. */
+                transactionVersions: z.optional(transactionVersions),
                 ttlSeconds: z.optional(z.number()),
                 voucherSigner: z.optional(sessionVoucherSigner),
             }),
