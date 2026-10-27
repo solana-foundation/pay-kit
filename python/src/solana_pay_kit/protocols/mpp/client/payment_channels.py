@@ -32,7 +32,8 @@ from solana_pay_kit._paycore.solana import (
     default_token_program_for_currency,
     validate_network,
 )
-from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+from solana_pay_kit._paycore.transaction import build_partially_signed_transaction
+from solana_pay_kit._paycore.txv1 import negotiate, runtime_default_unit_limit, v1_config
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     Distribution,
     OpenChannelParams,
@@ -71,6 +72,11 @@ __all__ = [
 DEFAULT_GRACE_PERIOD_SECONDS = 900
 
 _U64_MAX = 2**64 - 1
+
+#: Compute unit ceiling of the default version-1 open budget: the runtime
+#: default (200,000 units per instruction) capped at what a sponsor accepts
+#: for an open. Mirrors the Rust kit's ``OPEN_MAX_COMPUTE_UNIT_LIMIT``.
+_OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000
 
 
 class BlockhashValidator(Protocol):
@@ -230,6 +236,12 @@ class PaymentChannelOpenOptions:
     salt: int | None = None
     #: SPL token program; defaults to the program resolved from the currency.
     token_program: Pubkey | None = None
+    #: Highest transaction message version the signer can sign (a hardware
+    #: wallet may sign version 0 only); ``None`` is unrestricted. The open is
+    #: built at the highest version the challenge's
+    #: ``methodDetails.transactionVersions`` (absent: ``[0]``) advertises up
+    #: to this cap, and refused before signing when none qualifies.
+    max_transaction_version: int | None = None
 
 
 @dataclass
@@ -430,6 +442,7 @@ async def build_open_payment_channel_transaction(
     ``feePayerKey`` and leaves that signature slot empty for the server.
     Otherwise the payer is also the fee payer.
     """
+    version = _negotiate_open_version(request, options)
     payer = _signer_pubkey(signer)
     details = request.method_details
     advertised_fee_payer = (
@@ -448,7 +461,7 @@ async def build_open_payment_channel_transaction(
         options,
     )
     return await _build_open_payment_channel_tx(
-        signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request)
+        signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request), version
     )
 
 
@@ -467,6 +480,7 @@ async def create_payment_channel_session_opener(
     :class:`PaymentChannelOpenOptions`).
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
+    version = _negotiate_open_version(request, options.open)
     if request.method_details.voucher_signer == "operator":
         _require_string(request.method_details.operator, "operator")
         if options.authentication is None:
@@ -498,7 +512,7 @@ async def create_payment_channel_session_opener(
         options.open,
     )
     blockhash = _resolve_open_blockhash(recent_blockhash, request)
-    tx = await _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash)
+    tx = await _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash, version)
     session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
     action = SessionAction.open_action(
         open_.open_payload(
@@ -510,29 +524,48 @@ async def create_payment_channel_session_opener(
     return PaymentChannelSessionOpen(open=open_, session=session, action=action)
 
 
+def _negotiate_open_version(request: SessionRequest, options: PaymentChannelOpenOptions | None) -> int:
+    """The message version of the open (mpp-specs-txv1 Transaction Versions):
+    "Clients MUST build one of the advertised versions and SHOULD build the
+    highest one their signer can produce." Raises
+    :class:`~solana_pay_kit._paycore.txv1.TransactionVersionError` before
+    anything is signed when no advertised version is buildable.
+    """
+    max_version = options.max_transaction_version if options is not None else None
+    return negotiate(request.method_details.transaction_versions, max_version)
+
+
 async def _build_open_payment_channel_tx(
     signer: TransactionSigner,
     open_: PaymentChannelOpen,
     fee_payer: Pubkey,
     recent_blockhash: Hash | str,
+    version: int = 0,
 ) -> PaymentChannelOpenTransaction:
     """Assemble the open message and partial-sign only the payer slot.
 
-    Builds a v0 transaction whose fee payer is the operator (its signature
-    slot left as the default placeholder) and whose payer signature slot is
-    filled in, serialized as standard-alphabet base64 with padding.
+    Builds a ``version`` transaction whose fee payer is the operator (its
+    signature slot left as the default placeholder) and whose payer
+    signature slot is filled in, serialized as standard-alphabet base64 with
+    padding. A version-0 open carries no ComputeBudget prefix; a version-1
+    open carries its budget in the message header (the runtime default
+    limit, capped at the open ceiling, no priority fee and the maximum
+    loaded-accounts data size), never as instructions.
     """
     blockhash = recent_blockhash if isinstance(recent_blockhash, Hash) else Hash.from_string(recent_blockhash)
     open_params = open_.open_channel_params()
     # rentPayer is pinned to the operator / fee payer already in scope.
     open_params.rent_payer = fee_payer
     ix = build_open_instruction(open_params)
+    config = v1_config(min(runtime_default_unit_limit(1), _OPEN_MAX_COMPUTE_UNIT_LIMIT), 0) if version == 1 else None
     try:
-        wire = await build_partially_signed_v0_transaction(
+        wire = await build_partially_signed_transaction(
             [ix],
             fee_payer,
             blockhash,
             signer,
+            version=version,
+            config=config,
         )
     except ValueError as exc:
         raise ValueError("payment-channel open signing failed: payer is not a transaction signer") from exc

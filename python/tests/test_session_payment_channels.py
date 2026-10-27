@@ -253,3 +253,97 @@ def test_unique_salt_and_generated_signer() -> None:
     assert 0 <= unique_salt() <= 2**64 - 1
     signer = generate_authorized_signer()
     assert len(bytes(signer.pubkey)) == 32
+
+
+class _RefusingSigner(MemorySigner):
+    """A payer whose signing must never be reached."""
+
+    async def sign_transaction(self, transaction):  # type: ignore[no-untyped-def]
+        raise AssertionError("signed before the version was negotiated")
+
+    async def sign_message(self, message):  # type: ignore[no-untyped-def]
+        raise AssertionError("signed before the version was negotiated")
+
+
+def _advertising(versions: list[int] | None, *, fee_payer: Keypair | None = None) -> SessionRequest:
+    request = _request(fee_payer=fee_payer)
+    request.method_details.transaction_versions = versions
+    return request
+
+
+async def _open_tx(request: SessionRequest, max_version: int | None = None) -> bytes:
+    built = await build_open_payment_channel_transaction(
+        request,
+        MemorySigner(_kp(3)),
+        _kp(4).pubkey(),
+        Hash.default(),
+        options=PaymentChannelOpenOptions(salt=7, open_slot=42, max_transaction_version=max_version),
+    )
+    return base64.b64decode(built.transaction, validate=True)
+
+
+@pytest.mark.parametrize("versions", [[0, 1], [1], [1, 1]])
+async def test_open_builds_the_highest_advertised_version(versions: list[int]) -> None:
+    from solana_pay_kit._paycore.txv1 import (
+        MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
+        declared_budget,
+        decode_transaction,
+        message_version,
+        signed_message_bytes,
+    )
+
+    tx = decode_transaction(await _open_tx(_advertising(versions)))
+    assert message_version(tx.message) == 1
+    # The budget lives in the header; no ComputeBudget instruction.
+    budget = declared_budget(tx.message)
+    assert budget.unit_limit == 200_000
+    assert budget.unit_price_micro_lamports == 0
+    assert budget.loaded_accounts_data_size_limit == MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
+    assert len(tx.message.instructions) == 1
+    payer = _kp(3).pubkey()
+    assert tx.message.account_keys[0] == payer
+    assert tx.signatures[0].verify(payer, signed_message_bytes(tx.message))
+
+
+async def test_sponsored_v1_open_leaves_the_fee_payer_slot_empty() -> None:
+    from solana_pay_kit._paycore.txv1 import decode_transaction, message_version, signed_message_bytes
+
+    sponsor = _kp(5)
+    tx = decode_transaction(await _open_tx(_advertising([0, 1], fee_payer=sponsor)))
+    assert message_version(tx.message) == 1
+    assert tx.message.account_keys[0] == sponsor.pubkey()
+    assert tx.signatures[0] == Signature.default()
+    assert tx.signatures[1].verify(_kp(3).pubkey(), signed_message_bytes(tx.message))
+
+
+@pytest.mark.parametrize(("versions", "max_version"), [(None, None), ([0], None), ([0, 1], 0)])
+async def test_open_builds_v0_when_v1_is_not_negotiated(versions: list[int] | None, max_version: int | None) -> None:
+    raw = await _open_tx(_advertising(versions), max_version)
+    assert is_v0_wire_bytes(raw)
+    assert raw[1 + 64 * raw[0]] == 0x80
+    assert len(VersionedTransaction.from_bytes(raw).message.instructions) == 1
+
+
+@pytest.mark.parametrize(
+    ("versions", "max_version", "message"),
+    [([1], 0, "signs up to version 0"), ([], None, "advertises no transaction version")],
+)
+async def test_open_refuses_an_unbuildable_advertisement_before_signing(
+    versions: list[int], max_version: int | None, message: str
+) -> None:
+    from solana_pay_kit._paycore.txv1 import TransactionVersionError
+
+    request = _advertising(versions)
+    options = PaymentChannelOpenOptions(salt=7, open_slot=42, max_transaction_version=max_version)
+    with pytest.raises(TransactionVersionError, match=message):
+        await build_open_payment_channel_transaction(
+            request, _RefusingSigner(_kp(3)), _kp(4).pubkey(), Hash.default(), options=options
+        )
+    with pytest.raises(TransactionVersionError, match=message):
+        await create_payment_channel_session_opener(
+            request,
+            _RefusingSigner(_kp(3)),
+            MemorySigner(_kp(4)),
+            Hash.default(),
+            PaymentChannelSessionOpenOptions(open=options),
+        )
