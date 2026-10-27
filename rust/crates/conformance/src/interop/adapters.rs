@@ -126,6 +126,18 @@ const RUST_UPTO_SERVER: Native = native(
     "../rust",
     "x402_harness_upto_server",
 );
+const RUST_BATCH_CLIENT: Native = native(
+    "rust-client-rust-x402-batch",
+    "rust",
+    "../rust",
+    "x402_harness_batch_client",
+);
+const RUST_BATCH_SERVER: Native = native(
+    "rust-server-rust-x402-batch",
+    "rust",
+    "../rust",
+    "x402_harness_batch_server",
+);
 const GO_CLIENT: Native = native("go-client-go", "go", "go-client", "paykit-client");
 const GO_SERVER: Native = native("go-server-go", "go", "go-server", "paykit-server");
 const SWIFT_CLIENT: Native = native(
@@ -264,7 +276,7 @@ const fn a(
     }
 }
 
-use Intent::{Charge, Session, X402Exact, X402Upto};
+use Intent::{Charge, Session, X402Batch, X402Exact, X402Upto};
 use Launch::{Native as N, Source as S};
 use Role::{Client as C, Server as Sv};
 
@@ -373,6 +385,9 @@ pub const ADAPTERS: &[Adapter] = &[
     a("rust", "rust", Sv, X402Upto, "rust", N(RUST_UPTO_SERVER)),
     a("go", "go", Sv, X402Upto, "go-paykit", N(GO_SERVER)),
     a("python", "python", Sv, X402Upto, "python", S(PY_SERVER)),
+    // x402 batch-settlement: only the Rust SDK implements it.
+    a("rust", "rust", C, X402Batch, "rust", N(RUST_BATCH_CLIENT)),
+    a("rust", "rust", Sv, X402Batch, "rust", N(RUST_BATCH_SERVER)),
     // MPP session.
     a(
         "python",

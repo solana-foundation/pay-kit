@@ -269,6 +269,10 @@ pub struct Scenario {
     /// Message version the settled transaction must have, when the scenario
     /// pins one (`None`: any accepted version).
     pub settled_version: Option<u8>,
+    /// `x402-batch`: channels the client opens before the server redeems
+    /// them all at once. Each is paid by its deposit, and the first one by a
+    /// second voucher.
+    pub batch_channels: Option<u8>,
 }
 
 impl Scenario {
@@ -284,6 +288,11 @@ impl Scenario {
         if let Some(actual) = self.actual_amount {
             return actual.parse().expect("actual amount");
         }
+        if let Some(channels) = self.batch_channels {
+            // One request per deposit plus a second voucher on the first channel.
+            let per_request: u64 = self.amount.parse().expect("amount");
+            return per_request * (u64::from(channels) + 1);
+        }
         let total: u64 = self.amount.parse().expect("amount");
         total
             - self
@@ -294,7 +303,7 @@ impl Scenario {
     }
 
     pub fn needs_payment_channels(&self) -> bool {
-        self.intent == Intent::X402Upto
+        matches!(self.intent, Intent::X402Upto | Intent::X402Batch)
     }
 }
 
@@ -306,6 +315,7 @@ const EXACT_DOC: &str = "x402/specs/schemes/exact/scheme_exact.md";
 const EXACT_SVM_DOC: &str = "x402/specs/schemes/exact/scheme_exact_svm.md";
 const UPTO_DOC: &str = "x402/specs/schemes/upto/scheme_upto.md";
 const UPTO_SVM_DOC: &str = "x402/specs/schemes/upto/scheme_upto_svm.md";
+const BATCH_SVM_DOC: &str = "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md";
 
 const fn spec(doc: &'static str, section: &'static str, quote: &'static str) -> Spec {
     Spec {
@@ -362,7 +372,13 @@ const BASE: Scenario = Scenario {
     pre_create_platform_ata: false,
     compute_unit_limit: None,
     settled_version: None,
+    batch_channels: None,
 };
+
+const ONLY_RUST_BATCH: Participants = Participants::Only(
+    &["rust"],
+    "x402 batch-settlement is implemented only by the Rust SDK in pay-kit",
+);
 
 const X402_V1_SDKS: Participants = Participants::Only(
     &["rust", "typescript"],
@@ -721,6 +737,19 @@ pub const SCENARIOS: &[Scenario] = &[
         network: SOLANA_DEVNET,
         servers: PIVOT_SERVER,
         expect: Expect::NoCredential,
+        ..BASE
+    },
+    // ── x402 batch-settlement ──
+    Scenario {
+        id: "x402-batch-v1-redeem",
+        intent: Intent::X402Batch,
+        description: "The client opens five channels (each paid by its deposit) and pays a second voucher on the first; the server then redeems them all. More than four channels claimed in one transaction proves the version-1 capacity: one version-1 claim and one version-1 distribute, and payTo receives all six charges.",
+        spec: spec(BATCH_SVM_DOC, "Facilitator-built transactions and batching capacity", "The facilitator MAY build any message version the network supports."),
+        network: SOLANA_DEVNET,
+        settled_version: Some(1),
+        batch_channels: Some(5),
+        clients: ONLY_RUST_BATCH,
+        servers: ONLY_RUST_BATCH,
         ..BASE
     },
     // ── x402 upto (harness/src/intents/x402-upto.ts) ──

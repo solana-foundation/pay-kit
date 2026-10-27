@@ -17,7 +17,7 @@ flow = false
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
 # Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
-interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:upto:server"]
+interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:upto:server", "x402:batch-settlement:client", "x402:batch-settlement:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true

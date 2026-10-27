@@ -51,6 +51,7 @@ export const INTEROP_CLAIMS: readonly string[] = [
   "mpp:charge",
   "x402:exact",
   "x402:upto",
+  "x402:batch-settlement",
   "mpp:session",
 ].flatMap((intent) => [`${intent}:client`, `${intent}:server`]);
 

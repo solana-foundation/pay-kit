@@ -218,16 +218,19 @@ pub fn environment(s: &Scenario, acc: &Accounts, rpc_url: &str) -> BTreeMap<Stri
         set("MPP_HARNESS_COMPUTE_UNIT_LIMIT", limit.to_string());
     }
     match s.intent {
-        Intent::X402Exact | Intent::X402Upto => {
+        Intent::X402Exact | Intent::X402Upto | Intent::X402Batch => {
             set(
                 "PAY_KIT_HARNESS_PROTOCOL",
-                if s.intent == Intent::X402Upto {
-                    "x402-upto"
-                } else {
-                    "x402"
+                match s.intent {
+                    Intent::X402Upto => "x402-upto",
+                    Intent::X402Batch => "x402-batch",
+                    _ => "x402",
                 }
                 .into(),
             );
+            if let Some(channels) = s.batch_channels {
+                set("X402_HARNESS_BATCH_CHANNELS", channels.to_string());
+            }
             set("X402_HARNESS_AMOUNT", s.amount.into());
             if let Some(actual) = s.actual_amount {
                 set("X402_HARNESS_ACTUAL_AMOUNT", actual.into());
@@ -382,6 +385,86 @@ fn assert_paid(
     Ok(())
 }
 
+/// `x402-batch`: every deposit open landed; the server redeemed every channel
+/// with one claim and one distribute transaction while they fit one version-1
+/// transaction (18 claims, 13 distributes); each redemption transaction has
+/// the scenario's message version; and `payTo` received every charge.
+fn assert_batch_redeemed(
+    ctx: &Ctx<'_>,
+    s: &Scenario,
+    acc: &Accounts,
+    result: &ClientResult,
+    before: &Balances,
+) -> Result<(), String> {
+    if result.status != 200 || !result.ok || result.body["paid"] != true {
+        return Err(format!(
+            "expected every payment and the redemption to succeed, got {} (ok={}): {}",
+            result.status, result.ok, result.body
+        ));
+    }
+    let signatures = |pointer: &str| -> Result<Vec<String>, String> {
+        result
+            .body
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("the client reported no {pointer}"))?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or(format!("{pointer}: {v}"))
+            })
+            .collect()
+    };
+    let channels = usize::from(
+        s.batch_channels
+            .ok_or("x402-batch scenario without channels")?,
+    );
+    let deposits = signatures("/deposits")?;
+    if deposits.len() != channels {
+        return Err(format!(
+            "{} deposits for {channels} channels",
+            deposits.len()
+        ));
+    }
+    for signature in &deposits {
+        settle::decode(&ctx.chain.transaction(signature, SETTLEMENT_DEADLINE)?)?;
+    }
+    for (pointer, capacity) in [
+        ("/redemption/claims", BATCH_V1_CLAIM_CAPACITY),
+        ("/redemption/distributes", BATCH_V1_SETTLE_CAPACITY),
+    ] {
+        let redeemed = signatures(pointer)?;
+        let want = if s.settled_version == Some(1) && channels <= capacity {
+            1
+        } else {
+            redeemed.len().max(1)
+        };
+        if redeemed.len() != want {
+            return Err(format!(
+                "{pointer}: {} transactions for {channels} channels, expected {want}",
+                redeemed.len()
+            ));
+        }
+        for signature in &redeemed {
+            let message = settle::decode(&ctx.chain.transaction(signature, SETTLEMENT_DEADLINE)?)?;
+            if let Some(version) = s.settled_version {
+                if message.version() != version.to_string() {
+                    return Err(format!(
+                        "{pointer}: {signature} is version {}, expected version {version}",
+                        message.version()
+                    ));
+                }
+            }
+        }
+    }
+    paid_once(s, before, &balances(ctx, s, acc)?)
+}
+
+/// Channels one version-1 claim / distribute carries (scheme_batch_settlement_svm.md).
+const BATCH_V1_CLAIM_CAPACITY: usize = 18;
+const BATCH_V1_SETTLE_CAPACITY: usize = 13;
+
 fn fault_context(case: &Case, acc: &Accounts) -> FaultContext {
     FaultContext {
         intent: case.scenario.intent,
@@ -484,6 +567,9 @@ fn judge(
             .map_err(|e| format!("client adapter failed: {}", e.message))
     };
     match (s.kind, s.expect) {
+        (Kind::Standard, Expect::Paid { .. }) if s.intent == Intent::X402Batch => {
+            assert_batch_redeemed(ctx, s, acc, need_client()?, before)
+        }
         (Kind::Standard, Expect::Paid { onchain }) => {
             assert_paid(ctx, s, acc, need_client()?, before, onchain)
         }

@@ -39,3 +39,11 @@ path = "src/bin/x402_harness_upto_client.rs"
 [[bin]]
 name = "x402_harness_upto_server"
 path = "src/bin/x402_harness_upto_server.rs"
+
+[[bin]]
+name = "x402_harness_batch_client"
+path = "src/bin/x402_harness_batch_client.rs"
+
+[[bin]]
+name = "x402_harness_batch_server"
+path = "src/bin/x402_harness_batch_server.rs"

@@ -230,6 +230,14 @@ impl Chain {
             // create it (draft-solana-charge-00 "SPL Tokens").
             self.fund_token(&acc.pay_to.pubkey, mint, 1, program)?;
             self.fund_token(&acc.upto_pay_to.pubkey, mint, 1, program)?;
+            // batch-settlement: the sponsor holds the channel's zero-share
+            // payee seat, whose token account the settlement simulation reads.
+            // Its distribute also pays the protocol treasury's token account,
+            // which a deployed cluster already has.
+            if scenario.intent == super::claims::Intent::X402Batch {
+                self.fund_token(&acc.fee_payer.pubkey, mint, 0, program)?;
+                self.fund_token(PAYMENT_CHANNEL_TREASURY_OWNER, mint, 0, program)?;
+            }
             if scenario.pre_create_platform_ata {
                 self.fund_token(&acc.platform.pubkey, mint, 0, program)?;
             }
