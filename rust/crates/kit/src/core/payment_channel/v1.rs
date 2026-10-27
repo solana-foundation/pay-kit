@@ -919,12 +919,24 @@ pub async fn build_open_payment_channel_tx_with_options(
             data: memo.as_bytes().to_vec(),
         });
     }
+    // A version-1 open must carry its budget in the header. Without one the
+    // builder budgets the runtime default (200,000 units per instruction),
+    // which an open with both memos would put over the 400,000 a sponsor
+    // accepts for an open, so the default is capped at that ceiling.
+    let budget = match (options.version, options.compute_budget) {
+        (TxVersion::V1, None) => {
+            let mut budget = ComputeBudget::runtime_default(instructions.len());
+            budget.unit_limit = budget.unit_limit.min(OPEN_MAX_COMPUTE_UNIT_LIMIT);
+            Some(budget)
+        }
+        (_, budget) => budget,
+    };
     let mut tx = crate::core::tx::build_unsigned(
         options.version,
         fee_payer,
         &instructions,
         recent_blockhash,
-        options.compute_budget.as_ref(),
+        budget.as_ref(),
     )?;
     crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
@@ -1545,6 +1557,30 @@ mod tests {
             options,
         )
         .await
+    }
+
+    /// A version-1 open built without an explicit budget stays within the
+    /// 400,000 units a sponsor accepts, even with both memos (three
+    /// instructions, whose runtime default would be 600,000).
+    #[tokio::test]
+    async fn a_default_version_1_open_budget_stays_within_the_open_cap() {
+        let open = build_open(&OpenTxOptions {
+            memo: Some("invoice-42".into()),
+            binding_memo: Some("binding".into()),
+            version: TxVersion::V1,
+            ..Default::default()
+        })
+        .await
+        .expect("version-1 open");
+        let tx = crate::core::tx::decode(&open.transaction).unwrap();
+        let solana_message::VersionedMessage::V1(message) = &tx.message else {
+            panic!("version-1 message expected");
+        };
+        assert_eq!(message.instructions.len(), 3);
+        assert_eq!(
+            message.config.compute_unit_limit,
+            Some(OPEN_MAX_COMPUTE_UNIT_LIMIT)
+        );
     }
 
     #[tokio::test]
