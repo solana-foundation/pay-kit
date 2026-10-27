@@ -1,13 +1,16 @@
 /**
  * On-chain settlement E2E — the regression net the structural harness lacks.
  *
- * Boots a mainnet-forking surfnet (@solana/surfpool 1.4, which executes the
+ * Boots a mainnet-forking surfnet (@solana/surfpool 1.5, which executes the
  * deployed payment-channels program) and drives the real pay-kit client/server
  * end-to-end. A success is only returned after settlement CONFIRMS on-chain, so
  * this catches settlement-class regressions the byte-shape harness cannot — e.g.
  * the `TreasuryAccountMismatch` (0x961) that made `upto` silently 402 after
  * payment. (surfpool-sdk 1.2 could not run the program — "unsupported BPF
  * instruction" — which is a chief reason these regressions evaded local CI.)
+ * 1.5 is the first release that executes version-1 transactions, which the
+ * x402 clients build once the server advertises `transactionVersions: [0, 1]`;
+ * 1.6.1 fails MPP charge simulation with "Blockhash not found".
  *
  * Network-gated: surfpool forks from a mainnet datasource RPC. Set
  * HARNESS_ONCHAIN=1 to run; SURFPOOL_DATASOURCE_RPC_URL sets that datasource

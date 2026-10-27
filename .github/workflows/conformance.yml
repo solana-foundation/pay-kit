@@ -277,7 +277,7 @@ jobs:
           path: harness/results/
           if-no-files-found: ignore
 
-  # Real on-chain settlement: forks mainnet (surfpool 1.4) and executes the
+  # Real on-chain settlement: forks mainnet (surfpool 1.5) and executes the
   # deployed payment-channels program, so a green run proves settlement lands.
   onchain:
     name: onchain
