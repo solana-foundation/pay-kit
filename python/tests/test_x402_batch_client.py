@@ -1,5 +1,7 @@
 """x402 ``batch-settlement`` client builders and the sponsor's transaction policy."""
 
+# pyright: reportOptionalMemberAccess=false
+
 from __future__ import annotations
 
 import base64
@@ -97,7 +99,9 @@ async def _opened(req: BatchRequirements | None = None, version: int | None = No
     return await build_deposit(signer(), req, terms, 10_000, BLOCKHASH, OPEN_SLOT, salt=42)
 
 
-def _expectations(channel: BatchChannel, versions: tuple[int, ...] = (0,), memo: str | None = "invoice-42") -> TransactionExpectations:
+def _expectations(
+    channel: BatchChannel, versions: tuple[int, ...] = (0,), memo: str | None = "invoice-42"
+) -> TransactionExpectations:
     return TransactionExpectations(
         program_id=PROGRAM_ID,
         fee_payer=FEE_PAYER.pubkey(),
@@ -163,8 +167,10 @@ def test_terms_resolve_the_challenge() -> None:
     ],
 )
 def test_terms_refusals(extra: dict[str, Any], message: str) -> None:
-    with pytest.raises(ValueError, match=message) if not message.startswith("invalid_") else pytest.raises(
-        BatchSettlementError, match=message
+    with (
+        pytest.raises(ValueError, match=message)
+        if not message.startswith("invalid_")
+        else pytest.raises(BatchSettlementError, match=message)
     ):
         _terms(requirements(**extra), max_tx_version=0)
 
@@ -213,7 +219,9 @@ async def test_deposit_version_1() -> None:
     channel, payload = await _opened(req)
     tx = decode_transaction(payload.deposit.transaction)
     assert txv1.is_v1(tx) and tx.message.config.compute_unit_limit == 400_000
-    validate_setup_transaction(payload.deposit.transaction, SetupForm.OPEN, _expectations(channel, (0, 1)), 10_000, SLOT)
+    validate_setup_transaction(
+        payload.deposit.transaction, SetupForm.OPEN, _expectations(channel, (0, 1)), 10_000, SLOT
+    )
     with pytest.raises(BatchSettlementError) as exc:
         validate_setup_transaction(payload.deposit.transaction, SetupForm.OPEN, _expectations(channel), 10_000, SLOT)
     assert _code(exc) == codes.UNSUPPORTED_TRANSACTION_VERSION
@@ -233,7 +241,9 @@ async def test_deposit_refusals() -> None:
     with pytest.raises(ValueError, match="operator grant"):
         await build_deposit(signer(), requirements(), capped, 10_000, BLOCKHASH, OPEN_SLOT)
     with pytest.raises(ValueError, match="256-byte"):
-        await build_deposit(signer(), requirements(), dataclasses.replace(terms, memo="m" * 257), 10_000, BLOCKHASH, OPEN_SLOT)
+        await build_deposit(
+            signer(), requirements(), dataclasses.replace(terms, memo="m" * 257), 10_000, BLOCKHASH, OPEN_SLOT
+        )
 
 
 async def test_server_mode_builds_carry_payer_proofs() -> None:
@@ -250,13 +260,17 @@ async def test_server_mode_builds_carry_payer_proofs() -> None:
     proof = await channel.authorization_payload(signer(), 1000, 10**10)
     assert proof.type == "authorization"
     with pytest.raises(ValueError, match="operator grant"):
-        await build_top_up(signer(), channel, dataclasses.replace(terms, server_signed_max_deposit=10_500), 1000, BLOCKHASH)
+        await build_top_up(
+            signer(), channel, dataclasses.replace(terms, server_signed_max_deposit=10_500), 1000, BLOCKHASH
+        )
 
 
 async def test_top_up_refund_and_request_close() -> None:
     channel, _ = await _opened()
     channel.charged_cumulative_amount = 3000
-    assert channel.can_cover(1000) and not BatchChannel(channel.channel_id, channel.config, 9500, 10_000).can_cover(1000)
+    assert channel.can_cover(1000) and not BatchChannel(channel.channel_id, channel.config, 9500, 10_000).can_cover(
+        1000
+    )
     with pytest.raises(ValueError, match="client-signed"):
         await channel.authorization_payload(signer(), 1, 1)
     terms = _terms()
@@ -280,7 +294,9 @@ def _response(charged: str = "4000", amount: str = "1000", **extra: Any) -> Batc
     state = ChannelStateSnapshot("c", "10000", "0", 0, charged)
     defaults: dict[str, Any] = {"commitment_id": "c:4000", "charged_amount": amount, "channel_state": state}
     defaults.update(extra)
-    return BatchSettlementResponse(success=True, transaction="", network=NETWORK, extra=BatchSettlementExtra(**defaults))
+    return BatchSettlementResponse(
+        success=True, transaction="", network=NETWORK, extra=BatchSettlementExtra(**defaults)
+    )
 
 
 async def test_apply_payment_response() -> None:
@@ -329,7 +345,9 @@ async def test_apply_authorization_response() -> None:
     def response(amount: int = 1800, charged: str | None = "800", **extra: Any) -> BatchSettlementResponse:
         defaults: dict[str, Any] = {"commitment_id": "c", "charged_amount": charged, "voucher": server_voucher(amount)}
         defaults.update(extra)
-        return BatchSettlementResponse(success=True, transaction="", network=NETWORK, extra=BatchSettlementExtra(**defaults))
+        return BatchSettlementResponse(
+            success=True, transaction="", network=NETWORK, extra=BatchSettlementExtra(**defaults)
+        )
 
     foreign = dataclasses.replace(proof, payer=str(STRANGER.pubkey()))
     cases: list[tuple[Any, BatchAuthorization, int | None]] = [
@@ -360,7 +378,12 @@ async def test_adopt_corrective_state() -> None:
     proof = await channel.sign_next_voucher(signer(), 3000)
 
     def corrective(**state: Any) -> BatchRequirements:
-        snapshot = {"channel_id": str(channel.channel_id), "balance": "10000", "total_claimed": "0", "withdraw_requested_at": 0}
+        snapshot = {
+            "channel_id": str(channel.channel_id),
+            "balance": "10000",
+            "total_claimed": "0",
+            "withdraw_requested_at": 0,
+        }
         snapshot.update(state)
         return requirements(
             channel_state=ChannelStateSnapshot(**snapshot),
@@ -374,7 +397,10 @@ async def test_adopt_corrective_state() -> None:
         (requirements(), codes.INVALID_CUMULATIVE_AMOUNT_MISMATCH),
         (corrective(channel_id=str(STRANGER.pubkey())), codes.INVALID_CHANNEL_ID_MISMATCH),
         (corrective(charged_cumulative_amount="x"), codes.INVALID_CUMULATIVE_AMOUNT_MISMATCH),
-        (dataclasses.replace(corrective(), extra=dataclasses.replace(corrective().extra, voucher_state=None)), codes.INVALID_CUMULATIVE_AMOUNT_MISMATCH),
+        (
+            dataclasses.replace(corrective(), extra=dataclasses.replace(corrective().extra, voucher_state=None)),
+            codes.INVALID_CUMULATIVE_AMOUNT_MISMATCH,
+        ),
     ):
         with pytest.raises(BatchSettlementError) as exc:
             channel.adopt_corrective_state(req)
@@ -422,7 +448,9 @@ async def test_top_up_policy_refusals() -> None:
     memo = _memo("invoice-42")
     third = Instruction(MEMO, b"invoice-42", [AccountMeta(STRANGER.pubkey(), True, False)])
     lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [])
-    fee_payer_lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [AccountMeta(FEE_PAYER.pubkey(), False, False)])
+    fee_payer_lighthouse = Instruction(
+        Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [AccountMeta(FEE_PAYER.pubkey(), False, False)]
+    )
     cases: list[tuple[list[Instruction], str]] = [
         ([ix], "exactly one Memo"),
         ([ix, _memo("other")], "does not match the declared"),
@@ -434,9 +462,18 @@ async def test_top_up_policy_refusals() -> None:
         ([_limit(500_000), ix, memo], "exceeds maximum"),
         ([_price(6_000_000), ix, memo], "exceeds maximum"),
         ([_limit(400_000), _price(10_000), ix, memo], "sponsored fee maximum"),
-        ([Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), b"\x04\x00\x00\x00\x01", []), ix, memo], "unsupported ComputeBudget"),
         (
-            [Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), bytes(_limit(1).data), [AccountMeta(PAYER.pubkey(), True, False)])],
+            [Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), b"\x04\x00\x00\x00\x01", []), ix, memo],
+            "unsupported ComputeBudget",
+        ),
+        (
+            [
+                Instruction(
+                    Pubkey.from_string(COMPUTE_BUDGET_PROGRAM),
+                    bytes(_limit(1).data),
+                    [AccountMeta(PAYER.pubkey(), True, False)],
+                )
+            ],
             "no payment-channels instruction",
         ),
         ([memo, ix], "unexpected program"),
@@ -458,12 +495,19 @@ async def test_top_up_policy_refusals() -> None:
         BatchChannel(channel.channel_id, dataclasses.replace(channel.config, payer=str(FEE_PAYER.pubkey())), 0, 0),
     )
     # The sponsor must not be an instruction account of a top-up.
-    sponsor_account = Instruction(ix.program_id, bytes(ix.data), [*ix.accounts, AccountMeta(FEE_PAYER.pubkey(), False, False)])
+    sponsor_account = Instruction(
+        ix.program_id, bytes(ix.data), [*ix.accounts, AccountMeta(FEE_PAYER.pubkey(), False, False)]
+    )
     assert "exactly 6 accounts" in await _policy_refusal(await _sponsored([sponsor_account, memo]), channel)
     v1 = await _sponsored([ix, memo], version=1)
     validate_setup_transaction(v1, SetupForm.TOP_UP, _expectations(channel, (0, 1)), 6000, None)
     no_loaded_limit = await build_partially_signed_transaction(
-        [ix, memo], FEE_PAYER.pubkey(), BLOCKHASH, signer(), version=1, config=txv1.TransactionConfig(compute_unit_limit=1)
+        [ix, memo],
+        FEE_PAYER.pubkey(),
+        BLOCKHASH,
+        signer(),
+        version=1,
+        config=txv1.TransactionConfig(compute_unit_limit=1),
     )
     detail = await _policy_refusal(base64.b64encode(no_loaded_limit).decode(), channel, versions=(0, 1))
     assert "loaded accounts data size" in detail
@@ -485,7 +529,9 @@ async def test_open_policy_refusals() -> None:
         with pytest.raises(BatchSettlementError, match=message):
             validate_setup_transaction(tx, SetupForm.OPEN, expected, deposit, slot)
     with pytest.raises(BatchSettlementError) as exc:
-        validate_setup_transaction(tx, SetupForm.OPEN, dataclasses.replace(expected, receiver_authorizer=STRANGER.pubkey()), 10_000, SLOT)
+        validate_setup_transaction(
+            tx, SetupForm.OPEN, dataclasses.replace(expected, receiver_authorizer=STRANGER.pubkey()), 10_000, SLOT
+        )
     assert _code(exc) == codes.INVALID_RECEIVER_AUTHORIZER_MISMATCH
     for config, message in (
         (dataclasses.replace(channel.config, withdraw_delay=7200), codes.INVALID_WITHDRAW_DELAY_MISMATCH),
@@ -495,19 +541,33 @@ async def test_open_policy_refusals() -> None:
         with pytest.raises(BatchSettlementError, match=message):
             validate_setup_transaction(tx, SetupForm.OPEN, dataclasses.replace(expected, config=config), 10_000, SLOT)
     with pytest.raises(BatchSettlementError, match="must pay 100%"):
-        validate_setup_transaction(tx, SetupForm.OPEN, dataclasses.replace(expected, receiver=STRANGER.pubkey()), 10_000, SLOT)
+        validate_setup_transaction(
+            tx, SetupForm.OPEN, dataclasses.replace(expected, receiver=STRANGER.pubkey()), 10_000, SLOT
+        )
     with pytest.raises(BatchSettlementError, match="mismatch"):
-        validate_setup_transaction(tx, SetupForm.OPEN, dataclasses.replace(expected, token_program=Pubkey.from_string(TOKEN_2022_PROGRAM)), 10_000, SLOT)
+        validate_setup_transaction(
+            tx,
+            SetupForm.OPEN,
+            dataclasses.replace(expected, token_program=Pubkey.from_string(TOKEN_2022_PROGRAM)),
+            10_000,
+            SLOT,
+        )
     # A bare open (no binding memo) fails the layout scan.
     decoded = decode_transaction(tx)
     open_ix = decoded.message.instructions[0]
     keys = decoded.message.account_keys
-    bare = Instruction(PROGRAM_ID, bytes(open_ix.data), [AccountMeta(keys[i], i < 2, True) for i in bytes(open_ix.accounts)])
+    bare = Instruction(
+        PROGRAM_ID, bytes(open_ix.data), [AccountMeta(keys[i], i < 2, True) for i in bytes(open_ix.accounts)]
+    )
     with pytest.raises(BatchSettlementError, match="binding Memo"):
-        validate_setup_transaction(await _sponsored([bare, _memo("invoice-42")]), SetupForm.OPEN, expected, 10_000, SLOT)
+        validate_setup_transaction(
+            await _sponsored([bare, _memo("invoice-42")]), SetupForm.OPEN, expected, 10_000, SLOT
+        )
     binding = _memo(receiver_binding_memo(RECEIVER_AUTHORIZER.pubkey()))
     with pytest.raises(BatchSettlementError, match="exactly one binding Memo"):
-        validate_setup_transaction(await _sponsored([bare, _memo("invoice-42"), binding, binding]), SetupForm.OPEN, expected, 10_000, SLOT)
+        validate_setup_transaction(
+            await _sponsored([bare, _memo("invoice-42"), binding, binding]), SetupForm.OPEN, expected, 10_000, SLOT
+        )
 
 
 async def test_decode_and_form_detection() -> None:
@@ -538,19 +598,42 @@ async def test_request_close_policy() -> None:
     retry = await build_refund_request_close(signer(), channel, terms, BLOCKHASH)
     expected = _expectations(channel)
     with pytest.raises(BatchSettlementError) as exc:
-        validate_request_close_transaction(retry.transaction, dataclasses.replace(expected, accepted_versions=(1,)))
+        validate_request_close_transaction(
+            retry.transaction or "", dataclasses.replace(expected, accepted_versions=(1,))
+        )
     assert _code(exc) == codes.UNSUPPORTED_TRANSACTION_VERSION
     with pytest.raises(BatchSettlementError) as exc:
         validate_request_close_transaction("!!", expected)
     assert _code(exc) == codes.INVALID_REFUND_TRANSACTION
-    request_close = Instruction(PROGRAM_ID, b"\x05", [AccountMeta(PAYER.pubkey(), True, False), AccountMeta(channel.channel_id, False, True)])
+    request_close = Instruction(
+        PROGRAM_ID, b"\x05", [AccountMeta(PAYER.pubkey(), True, False), AccountMeta(channel.channel_id, False, True)]
+    )
     memo = _memo("invoice-42")
     for instructions, message in (
         ([request_close], "exactly one Memo"),
         ([Instruction(PROGRAM_ID, b"\x05\x00", list(request_close.accounts)), memo], "takes no arguments"),
-        ([Instruction(PROGRAM_ID, b"\x05", [*request_close.accounts, AccountMeta(MINT, False, False)]), memo], "exactly 2 accounts"),
-        ([Instruction(PROGRAM_ID, b"\x05", [request_close.accounts[0], AccountMeta(STRANGER.pubkey(), False, True)]), memo], "channel mismatch"),
-        ([Instruction(PROGRAM_ID, b"\x05", [request_close.accounts[0], AccountMeta(channel.channel_id, False, False)]), memo], "must be writable"),
+        (
+            [Instruction(PROGRAM_ID, b"\x05", [*request_close.accounts, AccountMeta(MINT, False, False)]), memo],
+            "exactly 2 accounts",
+        ),
+        (
+            [
+                Instruction(
+                    PROGRAM_ID, b"\x05", [request_close.accounts[0], AccountMeta(STRANGER.pubkey(), False, True)]
+                ),
+                memo,
+            ],
+            "channel mismatch",
+        ),
+        (
+            [
+                Instruction(
+                    PROGRAM_ID, b"\x05", [request_close.accounts[0], AccountMeta(channel.channel_id, False, False)]
+                ),
+                memo,
+            ],
+            "must be writable",
+        ),
     ):
         with pytest.raises(BatchSettlementError) as exc:
             validate_request_close_transaction(await _sponsored(instructions), expected)

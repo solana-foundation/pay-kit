@@ -1,6 +1,8 @@
 """x402 ``batch-settlement`` resource server: verify, reserve, commit, refund
 and redemption, against an in-memory RPC double; plus the channel store."""
 
+# pyright: reportOptionalMemberAccess=false
+
 from __future__ import annotations
 
 import base64
@@ -33,7 +35,11 @@ from solana_pay_kit.protocols.x402.batch_settlement.store import (
     MemoryBatchChannelStore,
     Reservation,
 )
-from solana_pay_kit.protocols.x402.batch_settlement.types import BatchPayload, BatchRequirements, BatchSettlementResponse
+from solana_pay_kit.protocols.x402.batch_settlement.types import (
+    BatchPayload,
+    BatchRequirements,
+    BatchSettlementResponse,
+)
 from solana_pay_kit.protocols.x402.client.batch_settlement import (
     BatchChannel,
     build_deposit,
@@ -100,7 +106,9 @@ class Harness:
         if any(d[:1] == b"\x01" and len(d) > 60 for d in data):  # open
             self.rpc.put(self.channel.channel_id, channel_account(deposit=self.channel.deposit), PROGRAM_ID)
         elif any(d[:1] == b"\x05" and len(d) == 1 for d in data):  # request_close
-            self.rpc.put(self.channel.channel_id, channel_account(status=2, closure_started_at=1_800_000_000), PROGRAM_ID)
+            self.rpc.put(
+                self.channel.channel_id, channel_account(status=2, closure_started_at=1_800_000_000), PROGRAM_ID
+            )
         elif any(d[:1] == b"\x04" for d in data):  # settle_and_seal (+ distribute) closes the channel
             self.rpc.accounts.pop(str(self.channel.channel_id), None)
 
@@ -139,7 +147,7 @@ class Harness:
 
 def test_construction_guards() -> None:
     rpc = FakeRpc()
-    for overrides, message in (
+    cases: list[tuple[dict[str, Any], str]] = [
         ({"pay_to": ""}, "pay_to is required"),
         ({"withdraw_delay": 899}, codes.INVALID_WITHDRAW_DELAY_OUT_OF_RANGE),
         ({"channel_snapshot_max_age_seconds": 3400}, "reservation lease"),
@@ -147,7 +155,8 @@ def test_construction_guards() -> None:
         ({"transaction_versions": ()}, "at least one"),
         ({"currency": "SOL"}, "SPL token"),
         ({"token_program": "11111111111111111111111111111111"}, codes.INVALID_TOKEN_PROGRAM),
-    ):
+    ]
+    for overrides, message in cases:
         with pytest.raises((ValueError, BatchSettlementError), match=message):
             server(rpc, **overrides)
     default_authorizer = server(rpc, receiver_authorizer=None, program_id=str(PROGRAM_ID))
@@ -160,7 +169,12 @@ def test_construction_guards() -> None:
 async def test_requirements_and_challenges() -> None:
     h = Harness()
     req = h.requirements
-    assert (req.amount, req.network, req.extra.transaction_versions, req.extra.max_claim_channels) == ("1000", NETWORK, None, None)
+    assert (req.amount, req.network, req.extra.transaction_versions, req.extra.max_claim_channels) == (
+        "1000",
+        NETWORK,
+        None,
+        None,
+    )
     assert h.server.redemption_capacity() == (4, 4) and h.server.accepted_versions == (0,)
     v1 = Harness(versions=(0, 1))
     assert v1.requirements.extra.transaction_versions == [0, 1]
@@ -255,8 +269,14 @@ async def test_voucher_refusals() -> None:
     h = Harness()
     await h.pay(await h.open())
     payload = await h.voucher()
+    assert payload.voucher is not None
     channel = str(h.channel.channel_id)  # type: ignore[union-attr]
-    assert await h.refusal(dataclasses.replace(payload, voucher=dataclasses.replace(payload.voucher, max_claimable_amount="99999"))) == codes.INVALID_VOUCHER_SIGNATURE  # type: ignore[arg-type]
+    assert (
+        await h.refusal(
+            dataclasses.replace(payload, voucher=dataclasses.replace(payload.voucher, max_claimable_amount="99999"))
+        )
+        == codes.INVALID_VOUCHER_SIGNATURE
+    )  # type: ignore[arg-type]
     over = BatchChannel(h.channel.channel_id, h.channel.config, 1000, 1500)  # type: ignore[union-attr]
     h.channel = over
     big = await over.voucher_payload(signer(), 1000)
@@ -268,11 +288,16 @@ async def test_voucher_refusals() -> None:
     assert await h.refusal(payload) == codes.INVALID_CHANNEL_CLOSING
     await h.store.put(dataclasses.replace(record, sealed=True))
     assert await h.refusal(payload) == codes.INVALID_CLOSE_STATE
-    await h.store.put(dataclasses.replace(record, binding=ChannelBinding("batch-settlement", pay_to=str(STRANGER.pubkey()))))
+    await h.store.put(
+        dataclasses.replace(record, binding=ChannelBinding("batch-settlement", pay_to=str(STRANGER.pubkey())))
+    )
     assert await h.refusal(payload) == codes.INVALID_CHANNEL_STATE
     await h.store.put(record)
     # Accepted requirements other than the route's.
-    assert await h.refusal(payload, dataclasses.replace(h.requirements, amount="2000")) == codes.INVALID_PAYMENT_REQUIREMENTS
+    assert (
+        await h.refusal(payload, dataclasses.replace(h.requirements, amount="2000"))
+        == codes.INVALID_PAYMENT_REQUIREMENTS
+    )
     envelope = json.loads(base64.b64decode(h.header(payload)))
     envelope["x402Version"] = 1
     assert await h.refusal(base64.b64encode(json.dumps(envelope).encode()).decode()) == codes.INVALID_X402_VERSION
@@ -317,13 +342,19 @@ async def test_unknown_channel_and_record_without_binding() -> None:
     record = await h.store.get(str(channel.channel_id))
     assert record is not None and record.binding == h.server.binding() and record.grace_period == 3600
     # A record whose channel is not onchain cannot be completed.
-    await h.store.put(BatchChannelRecord(str(channel.channel_id), str(PAYER.pubkey()), deposit=10_000, observed_at=h.clock.now))
+    await h.store.put(
+        BatchChannelRecord(str(channel.channel_id), str(PAYER.pubkey()), deposit=10_000, observed_at=h.clock.now)
+    )
     h.rpc.accounts.pop(str(channel.channel_id))
     assert await h.refusal(await h.voucher()) == codes.INVALID_CHANNEL_STATE
     # A mismatching onchain channel is refused.
     h.rpc.put(channel.channel_id, channel_account(payee=STRANGER.pubkey()), PROGRAM_ID)
     assert await h.refusal(await h.voucher()) == codes.INVALID_CHANNEL_STATE
-    await h.store.put(BatchChannelRecord(str(channel.channel_id), str(PAYER.pubkey()), deposit=10_000, grace_period=900, observed_at=h.clock.now))
+    await h.store.put(
+        BatchChannelRecord(
+            str(channel.channel_id), str(PAYER.pubkey()), deposit=10_000, grace_period=900, observed_at=h.clock.now
+        )
+    )
     assert await h.refusal(await h.voucher()) == codes.INVALID_CHANNEL_STATE
 
 
@@ -332,10 +363,17 @@ async def test_deposit_refusals_and_top_up() -> None:
     payload = await h.open()
     for mutate, code in (
         (lambda: h.rpc.put(MINT, b"\x00" * 82, TOKEN_2022_PROGRAM), codes.INVALID_TOKEN_PROGRAM),
-        (lambda: h.rpc.accounts.pop(str(find_associated_token_address(PAY_TO, MINT, TOKEN)[0])), codes.INVALID_SETTLEMENT_SIMULATION),
+        (
+            lambda: h.rpc.accounts.pop(str(find_associated_token_address(PAY_TO, MINT, TOKEN)[0])),
+            codes.INVALID_SETTLEMENT_SIMULATION,
+        ),
         (lambda: setattr(h.rpc, "blockhash_valid", False), codes.INVALID_SETTLEMENT_SIMULATION),
         (
-            lambda: h.rpc.put(find_associated_token_address(PAYER.pubkey(), MINT, TOKEN)[0], token_account(MINT, PAYER.pubkey(), 5), TOKEN),
+            lambda: h.rpc.put(
+                find_associated_token_address(PAYER.pubkey(), MINT, TOKEN)[0],
+                token_account(MINT, PAYER.pubkey(), 5),
+                TOKEN,
+            ),
             codes.INVALID_SETTLEMENT_SIMULATION,
         ),
         (lambda: h.rpc.put(h.channel.channel_id, channel_account(), PROGRAM_ID), codes.INVALID_CHANNEL_STATE),  # type: ignore[union-attr]

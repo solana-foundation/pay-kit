@@ -45,7 +45,17 @@ from solana_pay_kit.protocols.x402.batch_settlement.verify import (
     sign_close_authorization,
     verify_close_authorization,
 )
-from tests._batch_fixture import FEE_PAYER, MINT, NETWORK, PAY_TO, PAYER, RECEIVER_AUTHORIZER, STRANGER, requirements, signer
+from tests._batch_fixture import (
+    FEE_PAYER,
+    MINT,
+    NETWORK,
+    PAY_TO,
+    PAYER,
+    RECEIVER_AUTHORIZER,
+    STRANGER,
+    requirements,
+    signer,
+)
 
 CONFIG: dict[str, Any] = {
     "openSlot": 341000000,
@@ -130,7 +140,12 @@ def test_requirements_refuse_malformed_fields(mutate: Any, message: str) -> None
 def test_payload_variants_round_trip() -> None:
     channel = derive_channel_id(_config(), str(FEE_PAYER.pubkey()))
     voucher = _voucher(channel, 1000).to_dict()
-    deposit = {"type": "deposit", "channelConfig": CONFIG, "voucher": voucher, "deposit": {"amount": "1", "transaction": "AQID"}}
+    deposit = {
+        "type": "deposit",
+        "channelConfig": CONFIG,
+        "voucher": voucher,
+        "deposit": {"amount": "1", "transaction": "AQID"},
+    }
     assert wire_roundtrip("payload", deposit)["deposit"] == {"amount": "1", "transaction": "AQID"}
     refund = {"type": "refund", "channelConfig": CONFIG, "voucher": voucher, "transaction": "AQID", "amount": "5"}
     assert wire_roundtrip("payload", refund)["amount"] == "5"
@@ -157,7 +172,14 @@ def test_payload_variants_round_trip() -> None:
         ({"type": "refund", "channelConfig": CONFIG}, codes.INVALID_PAYLOAD_TYPE),
         ({"type": "withdraw", "channelConfig": CONFIG}, "unknown variant"),
         ({"type": "voucher", "channelId": "x"}, "missing field `channelConfig`"),
-        ({"type": "voucher", "channelConfig": CONFIG, "voucher": {"channelId": "a", "maxClaimableAmount": 1, "expiresAt": 0, "signature": "s"}}, "maxClaimableAmount must be a string"),
+        (
+            {
+                "type": "voucher",
+                "channelConfig": CONFIG,
+                "voucher": {"channelId": "a", "maxClaimableAmount": 1, "expiresAt": 0, "signature": "s"},
+            },
+            "maxClaimableAmount must be a string",
+        ),
         ({"type": "voucher", "channelConfig": {**CONFIG, "withdrawDelay": 1.5}}, "withdrawDelay"),
         ([], "must be a JSON object"),
     ],
@@ -178,7 +200,12 @@ def test_refund_with_voucher_and_authorization_is_refused() -> None:
         "expiresAt": 1,
         "signature": "s",
     }
-    raw = {"type": "refund", "channelConfig": CONFIG, "voucher": _voucher(channel, 0).to_dict(), "authorization": authorization}
+    raw = {
+        "type": "refund",
+        "channelConfig": CONFIG,
+        "voucher": _voucher(channel, 0).to_dict(),
+        "authorization": authorization,
+    }
     with pytest.raises(BatchWireError, match="not both"):
         BatchPayload.from_dict(raw)
 
@@ -208,7 +235,12 @@ def test_redemptions_bound_their_batch_sizes() -> None:
 
 
 def test_responses_and_envelopes() -> None:
-    response = {"success": True, "network": NETWORK, "transaction": "", "extra": {"commitmentId": "c:1", "chargedAmount": "1"}}
+    response = {
+        "success": True,
+        "network": NETWORK,
+        "transaction": "",
+        "extra": {"commitmentId": "c:1", "chargedAmount": "1"},
+    }
     out = wire_roundtrip("settlementResponse", response)
     assert out["amount"] == ""
     assert BatchSettlementResponse.from_dict(response).channel_state() is None
@@ -337,7 +369,9 @@ def test_payload_type_policies() -> None:
     assert _code(exc) == codes.INVALID_CLOSE_AMOUNT_UNSUPPORTED
     check_no_refund_amount(BatchPayload("voucher", config, voucher=voucher, amount="1"))
     with pytest.raises(BatchSettlementError) as exc:
-        check_no_client_close_authorization(BatchPayload("refund", config, voucher=voucher, close_authorization=object()))  # type: ignore[arg-type]
+        check_no_client_close_authorization(
+            BatchPayload("refund", config, voucher=voucher, close_authorization=object())  # type: ignore[arg-type]
+        )
     assert _code(exc) == codes.INVALID_CLOSE_AUTHORIZATION
 
 
@@ -366,7 +400,12 @@ async def test_close_authorization_sign_and_verify() -> None:
     scope = CloseAuthorizationScope(NETWORK, PROGRAM_ID, FEE_PAYER.pubkey(), channel, 5000, 0)
     digest = close_authorization_digest(scope, 100)
     assert len(digest) == 32
-    assert close_authorization_digest(CloseAuthorizationScope("solana:x", PROGRAM_ID, FEE_PAYER.pubkey(), channel, 5000, 0), 100) != digest
+    assert (
+        close_authorization_digest(
+            CloseAuthorizationScope("solana:x", PROGRAM_ID, FEE_PAYER.pubkey(), channel, 5000, 0), 100
+        )
+        != digest
+    )
     authorization = await sign_close_authorization(signer(RECEIVER_AUTHORIZER), scope, 100)
     verify_close_authorization(authorization, RECEIVER_AUTHORIZER.pubkey(), scope, now=50, max_timeout_seconds=300)
     for now, timeout, key in ((100, 300, RECEIVER_AUTHORIZER), (0, 50, RECEIVER_AUTHORIZER), (50, 300, STRANGER)):
@@ -377,7 +416,9 @@ async def test_close_authorization_sign_and_verify() -> None:
     with pytest.raises(BatchSettlementError, match="64 base58 bytes"):
         verify_close_authorization(bad, RECEIVER_AUTHORIZER.pubkey(), scope, now=50, max_timeout_seconds=300)
     with pytest.raises(BatchSettlementError):
-        close_authorization_digest(CloseAuthorizationScope("n" * 70_000, PROGRAM_ID, FEE_PAYER.pubkey(), channel, 1, 0), 1)
+        close_authorization_digest(
+            CloseAuthorizationScope("n" * 70_000, PROGRAM_ID, FEE_PAYER.pubkey(), channel, 1, 0), 1
+        )
     with pytest.raises(BatchSettlementError):
         close_authorization_digest(CloseAuthorizationScope(NETWORK, PROGRAM_ID, FEE_PAYER.pubkey(), channel, -1, 0), 1)
 
