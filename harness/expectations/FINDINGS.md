@@ -439,7 +439,7 @@ session types are on the superseded draft).
 
 ## txv1-python
 
-**Cases:** the charge, session and x402 transaction-version vectors listed in `python.toml`
+**Cases:** the charge and x402 transaction-version vectors listed in `python.toml`
 **SDKs:** python
 
 No transaction-version negotiation: builders emit version 0, solders refuses
@@ -549,6 +549,7 @@ the vectors or adapters instead:
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `python-x402-double-delivery`, the Python row of `x402-replay-route-missing`, `upto-settlement-funds-recipient-ata`, `session-open-initial-voucher-accepted` (Python), the session wire part of `txv1-python` | Python x402 server refuses a confirmed payment presented again (`signature_consumed`) and grants each confirmation once; the harness x402 server mounts the replay route; upto settlement creates only the payee and treasury accounts and the open is refused until every payout account is usable; session `methodDetails.transactionVersions` and the open-voucher refusal |
+| Python session server and client (`session-open-*`, `session-voucher-verify-*`, `session-topup-*`, `session-close-*`, `session-use-*`, `session-build-*`, the session part of `txv1-python`; previously runner gaps) | the Python runner drives the session server (`session_testkit` pre-broadcast open and top-up checks, `verify_voucher`, `process_close`, `process_use`) and the client opener; the server binds the open's mint and channel PDA, admits versions 0 and 1 per `transactionVersions` (never legacy) with the charge compute caps and exact account privileges, refuses a top-up to a closing channel before broadcast and pins its fee payer to the channel's rent payer (co-signing a sponsored one), and charges a metered `use` with `authenticate_use` then `charge_operator_request`; the client checks the challenge's method details and that `recentBlockhash` is live on its cluster |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
