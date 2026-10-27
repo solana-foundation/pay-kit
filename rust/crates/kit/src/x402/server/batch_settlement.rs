@@ -6464,8 +6464,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_deferred_distribute_runs_once_the_grace_period_after_the_seal_ends() {
         let now = now_unix() as i64;
-        // Grace 3600 s: inside it the distribute still waits.
-        let inside = now - 3_599;
+        // Grace 3600 s: inside it the distribute still waits. The margin
+        // keeps a slow run from crossing the deadline between `now` here and
+        // the check in `finalize_close`.
+        let inside = now - 3_000;
         assert_eq!(
             finalize_close_once(CHANNEL_STATUS_SEALED, false, Some(inside)).await,
             (0, Some(inside))
