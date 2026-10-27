@@ -31,44 +31,6 @@ ids = [
   "flow/same_origin_post_payment_request",
 ]
 
-[[known_failing]]
-ids = [
-]
-
-[[known_failing]]
-ids = [
-]
-
-[[known_failing]]
-ids = [
-]
-
-[[unsupported]]
-ids = [
-]
-
-[[unsupported]]
-ids = [
-]
-# Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
-[[unsupported]]
-ids = [
-]
-
-[[known_failing]]
-
-[[known_failing]]
-
-[[unsupported]]
-
-
-
-# draft-solana-session-00 server and client vectors run against @solana/mpp's
-# createSessionServer and createPaymentChannelSessionOpener
-# (harness/src/conformance/intents/session.ts). The transaction-versions
-# open vectors (mpp-specs feat/solana-transaction-versions) wait on session
-# version admission.
-
 [[unsupported]]
 reason = "@solana/mpp's session server (createSessionServer, typescript/packages/mpp/src/server/Session.ts) takes no accepted transaction-version set, so a server configured with sessionOpenVerify.server.transactionVersions other than [0] cannot be expressed"
 ids = [
