@@ -256,3 +256,73 @@ describe('Instruction discriminators', () => {
         expect(SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR).toBe(10);
     });
 });
+
+// draft-solana-subscription-00 §Shared Fields: amount and periodCount "MUST be
+// a string representation of a positive integer in base 10 with no sign,
+// decimal point, exponent, or surrounding whitespace. Leading zeros MUST NOT
+// be used." §Method Details: tokenProgram "MUST be the SPL Token program or the
+// SPL Token-2022 program".
+describe('Methods.subscription request format', () => {
+    function request(overrides: { amount?: string; periodCount?: string; tokenProgram?: string } = {}) {
+        return {
+            amount: overrides.amount ?? '10000000',
+            currency: MINT,
+            methodDetails: {
+                decimals: 6,
+                mint: MINT,
+                planAddress: PLAN_ID,
+                puller: PULLER,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                tokenProgram: overrides.tokenProgram ?? TOKEN_PROGRAM,
+            },
+            periodCount: overrides.periodCount ?? '30',
+            periodUnit: 'day',
+            recipient: RECIPIENT,
+        };
+    }
+
+    test.each(['010000000', '0', '+10000000', '-1', '1e7', '10000000.0', ' 10000000', '10000000 ', ''])(
+        'rejects amount %j',
+        amount => {
+            expect(subscriptionMethod.schema.request.safeParse(request({ amount })).success).toBe(false);
+        },
+    );
+
+    test('rejects an amount above u64', () => {
+        expect(subscriptionMethod.schema.request.safeParse(request({ amount: '18446744073709551616' })).success).toBe(
+            false,
+        );
+        expect(subscriptionMethod.schema.request.safeParse(request({ amount: '18446744073709551615' })).success).toBe(
+            true,
+        );
+    });
+
+    test.each(['030', '0', '+30', '30.0', '3e1', ' 30', '30\n'])('rejects periodCount %j', periodCount => {
+        expect(subscriptionMethod.schema.request.safeParse(request({ periodCount })).success).toBe(false);
+    });
+
+    test('rejects a tokenProgram that is neither SPL Token nor Token-2022', () => {
+        expect(
+            subscriptionMethod.schema.request.safeParse(request({ tokenProgram: '11111111111111111111111111111111' }))
+                .success,
+        ).toBe(false);
+        expect(
+            subscriptionMethod.schema.request.safeParse(
+                request({ tokenProgram: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' }),
+            ).success,
+        ).toBe(true);
+    });
+});
+
+describe('mapSubscriptionPeriodToHours with the wire periodCount', () => {
+    test('maps a canonical decimal string', () => {
+        expect(mapSubscriptionPeriodToHours('day', '30')).toBe(720);
+        expect(mapSubscriptionPeriodToHours('week', '2')).toBe(336);
+    });
+
+    test.each(['030', '+30', '30.0', '3e1', ' 30', '0'])('rejects %j', periodCount => {
+        expect(() => mapSubscriptionPeriodToHours('day', periodCount)).toThrow(
+            /periodCount must be a positive base-10 integer/,
+        );
+    });
+});

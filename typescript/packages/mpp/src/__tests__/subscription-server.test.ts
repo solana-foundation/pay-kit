@@ -24,11 +24,12 @@ import {
     setTransactionMessageLifetimeUsingBlockhash,
     type TransactionSigner,
 } from '@solana/kit';
-import { findAssociatedTokenPda } from '@solana-program/token';
+import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 import { Challenge, Credential } from 'mppx';
 import { Mppx, Store } from 'mppx/server';
 
 import {
+    SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
@@ -113,9 +114,17 @@ async function buildActivationTransactionBase64(
             | 'reorder'
             | 'no-subscribe'
             | 'no-transfer';
+        /** Create an ATA idempotently for this owner before subscribe. */
+        ataOwner?: 'recipient' | 'subscriber';
+        /** Override the ATA instruction's data (e.g. empty: non-idempotent Create). */
+        ataData?: Uint8Array;
+        /** Prepend an initialize_subscription_authority for this authority. */
+        authorityInit?: 'subscriber' | 'unrelated';
         feePayerKey?: string;
         memo?: string;
         receiver?: string;
+        /** Plan account named by the subscribe instruction (defaults to PLAN_ID). */
+        subscribePlan?: string;
         version?: 'legacy' | 0;
     } = {},
 ): Promise<{
@@ -124,11 +133,74 @@ async function buildActivationTransactionBase64(
     transaction: string;
 }> {
     const subscriber = await generateKeyPairSigner();
+    const subscriptionAuthority = await deriveSubscriptionAuthorityPda({
+        mint: address(MINT),
+        programId: address(SUBSCRIPTIONS_PROGRAM),
+        subscriber: subscriber.address,
+    });
+    const subscribePlan = address(options.subscribePlan ?? PLAN_ID);
+    const subscriptionDelegation = await deriveSubscriptionPda({
+        planPda: subscribePlan,
+        programId: address(SUBSCRIPTIONS_PROGRAM),
+        subscriber: subscriber.address,
+    });
+    // Codama layout: subscriber, merchant, planPda, subscriptionPda,
+    // subscriptionAuthorityPda, systemProgram, eventAuthority, selfProgram, payer.
     const subscribeIx: Instruction = {
-        accounts: [{ address: subscriber.address, role: AccountRole.WRITABLE_SIGNER }],
+        accounts: [
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+            { address: address(PULLER), role: AccountRole.READONLY },
+            { address: subscribePlan, role: AccountRole.READONLY },
+            { address: subscriptionDelegation, role: AccountRole.WRITABLE },
+            { address: subscriptionAuthority, role: AccountRole.READONLY },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+            { address: address(RECIPIENT), role: AccountRole.READONLY },
+            { address: address(SUBSCRIPTIONS_PROGRAM), role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+        ],
         data: new Uint8Array([SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR]),
         programAddress: address(SUBSCRIPTIONS_PROGRAM),
     };
+    const [subscriberAta] = await findAssociatedTokenPda({
+        mint: address(MINT),
+        owner: subscriber.address,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const unrelated = await generateKeyPairSigner();
+    const initAuthorityOwner = options.authorityInit === 'unrelated' ? unrelated.address : subscriber.address;
+    const initAuthorityIx: Instruction = {
+        accounts: [
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+            {
+                address: await deriveSubscriptionAuthorityPda({
+                    mint: address(MINT),
+                    programId: address(SUBSCRIPTIONS_PROGRAM),
+                    subscriber: initAuthorityOwner,
+                }),
+                role: AccountRole.WRITABLE,
+            },
+            { address: address(MINT), role: AccountRole.READONLY },
+            { address: subscriberAta, role: AccountRole.WRITABLE },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+            { address: address(TOKEN_PROGRAM), role: AccountRole.READONLY },
+        ],
+        data: new Uint8Array([SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR]),
+        programAddress: address(SUBSCRIPTIONS_PROGRAM),
+    };
+    const ataOwner = options.ataOwner === 'recipient' ? address(RECIPIENT) : subscriber.address;
+    const [createdAta] = await findAssociatedTokenPda({
+        mint: address(MINT),
+        owner: ataOwner,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const idempotentAtaIx = getCreateAssociatedTokenIdempotentInstruction({
+        ata: createdAta,
+        mint: address(MINT),
+        owner: ataOwner,
+        payer: subscriber,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const ataIx: Instruction = { ...idempotentAtaIx, data: options.ataData ?? idempotentAtaIx.data };
     const [recipientAta] = await findAssociatedTokenPda({
         mint: address(MINT),
         owner: address(options.receiver ?? RECIPIENT),
@@ -185,6 +257,8 @@ async function buildActivationTransactionBase64(
             instructions = [subscribeIx, transferIx];
     }
     if (options.memo !== undefined) instructions.push(memoIx);
+    if (options.authorityInit !== undefined) instructions.unshift(initAuthorityIx);
+    if (options.ataOwner !== undefined) instructions.unshift(ataIx);
 
     const txMessage = pipe(
         createTransactionMessage({ version: options.version ?? 0 }),
@@ -445,6 +519,7 @@ describe('validateActivationInstructions', () => {
         amount: '10000000',
         methodDetails: {
             mint: MINT,
+            planAddress: PLAN_ID,
             subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
             tokenProgram: TOKEN_PROGRAM,
         },
@@ -524,6 +599,64 @@ describe('validateActivationInstructions', () => {
         await expect(
             __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
         ).resolves.toBeUndefined();
+    });
+
+    test("accepts an idempotent creation of the subscriber's own ATA", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ ataOwner: 'subscriber' });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).resolves.toBeUndefined();
+    });
+
+    // draft-solana-subscription-00: the activation contains "no instructions
+    // other than those above plus optional compute-budget and memo
+    // instructions"; the recipient's ATA is not the server's to create.
+    test("rejects creation of the recipient's ATA", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ ataOwner: 'recipient' });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/ATA creation owner does not match the activation subscriber/);
+    });
+
+    // §Authorization Scope Verification: "uses methodDetails.planAddress as the Plan account".
+    test('rejects a subscribe instruction naming another Plan account', async () => {
+        const other = await generateKeyPairSigner();
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            subscribePlan: other.address,
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/subscribe accounts do not match the challenged activation/);
+    });
+
+    test("accepts initialize_subscription_authority for the subscriber's (subscriber, mint) authority", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            authorityInit: 'subscriber',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).resolves.toBeUndefined();
+    });
+
+    test('rejects initialize_subscription_authority for an unrelated authority', async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            authorityInit: 'unrelated',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/initialize_subscription_authority is not allowed/);
+    });
+
+    test('rejects an ATA instruction with empty data instead of crashing', async () => {
+        // Empty data is the non-idempotent CreateAssociatedTokenAccount; the
+        // kit decoder omits `data` for it.
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            ataData: new Uint8Array(),
+            ataOwner: 'subscriber',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/Only idempotent ATA creation is allowed/);
     });
 
     test('rejects transfer_subscription to an ATA owned by another recipient', async () => {
@@ -689,7 +822,7 @@ describe('encoding helpers', () => {
 // verify() — end-to-end push-mode happy path
 // ══════════════════════════════════════════════════════════════════════
 
-describe('subscription().verify() (push mode)', () => {
+describe('subscription().verify()', () => {
     test('rejects activation when first-period charge did not execute', async () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
         const authentication = await buildAuthentication('test-challenge', subscriber);
@@ -774,7 +907,7 @@ describe('subscription().verify() (push mode)', () => {
         ).rejects.toThrow(/first-period charge/);
     });
 
-    test('rejects type="signature" with feePayer=true', async () => {
+    test('rejects type="signature" with feePayer=true as push mode', async () => {
         globalThis.fetch = async () => rpcSuccess({});
         const method = subscription({
             decimals: 6,
@@ -810,7 +943,7 @@ describe('subscription().verify() (push mode)', () => {
                 } as never,
                 request: {} as never,
             }),
-        ).rejects.toThrow(/fee sponsorship/);
+        ).rejects.toThrow(/Push-mode/);
     });
 
     test('rejects an unknown payload type', async () => {
@@ -1413,11 +1546,17 @@ describe('subscription().verify() (push mode)', () => {
         ).rejects.toThrow(/RPC error/);
     });
 
-    test('rejects when push-mode signature is replayed (consumed)', async () => {
-        const store = Store.memory();
-        const sig = 'replayedSig0000000000000000000000000000000000';
-        await store.put(`solana-subscription:consumed:${sig}`, true);
-        globalThis.fetch = async () => rpcSuccess({});
+    // draft-solana-subscription-00 §Payload: "Solana subscription activation
+    // uses type=\"transaction\"". A client-broadcast signature is refused as an
+    // invalid payload before the server reads anything from the RPC.
+    test('rejects a push-mode (type="signature") activation without touching the RPC', async () => {
+        const { subscriber } = await buildActivationTransactionBase64();
+        const authentication = await buildAuthentication('push-challenge', subscriber);
+        let rpcCalls = 0;
+        globalThis.fetch = async () => {
+            rpcCalls += 1;
+            return rpcSuccess({});
+        };
         const method = subscription({
             decimals: 6,
             mint: MINT,
@@ -1428,13 +1567,13 @@ describe('subscription().verify() (push mode)', () => {
             puller: PULLER,
             recipient: RECIPIENT,
             rpcUrl: 'https://mock-rpc',
-            store,
             tokenProgram: TOKEN_PROGRAM,
         });
         await expect(
             method.verify!({
                 credential: {
                     challenge: {
+                        id: 'push-challenge',
                         request: {
                             amount: '10000000',
                             currency: MINT,
@@ -1451,36 +1590,30 @@ describe('subscription().verify() (push mode)', () => {
                             recipient: RECIPIENT,
                         },
                     },
-                    payload: { signature: sig, type: 'signature' },
+                    payload: { authentication, signature: 'activation-signature', type: 'signature' },
                 } as never,
                 request: {} as never,
             }),
-        ).rejects.toThrow(/already consumed/);
+        ).rejects.toThrow(/Push-mode \(type="signature"\) subscription activation is not supported/);
+        expect(rpcCalls).toBe(0);
     });
 
-    test('concurrent push-mode activation returns exactly one receipt', async () => {
-        const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('concurrent-challenge', subscriber);
-        const accountB64 = Buffer.from(buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n)).toString('base64');
-        globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            if (body.method === 'getTransaction') {
-                await Promise.resolve();
-                return rpcSuccess({ meta: { err: null }, transaction: [transaction, 'base64'], version: 0 });
-            }
-            if (body.method === 'getAccountInfo') {
-                return rpcSuccess({
-                    value: {
-                        data: [accountB64, 'base64'],
-                        executable: false,
-                        lamports: 0,
-                        owner: SUBSCRIPTIONS_PROGRAM,
-                        rentEpoch: 0,
-                    },
-                });
-            }
-            return rpcSuccess({});
-        };
+    function writeU64Le(buf: Uint8Array, offset: number, value: bigint) {
+        for (let i = 0; i < 8; i += 1) {
+            buf[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
+        }
+    }
+});
+
+// draft-solana-subscription-00 §Source Verification: "If source is present,
+// servers MUST verify that it uses the did:pkh:solana: method and that its
+// address matches the subscriber signer extracted from the activation
+// transaction."
+describe('subscription().verify() credential source', () => {
+    async function verifyWithSource(source: (subscriber: string) => string | undefined) {
+        const { subscriber, subscriberAddress, transaction } = await buildActivationTransactionBase64();
+        const authentication = await buildAuthentication('source-challenge', subscriber);
+        globalThis.fetch = () => Promise.reject(new Error('RPC reached'));
         const method = subscription({
             decimals: 6,
             mint: MINT,
@@ -1494,65 +1627,21 @@ describe('subscription().verify() (push mode)', () => {
             store: Store.memory(),
             tokenProgram: TOKEN_PROGRAM,
         });
-        const credential = {
-            challenge: {
-                id: 'concurrent-challenge',
-                request: {
-                    amount: '10000000',
-                    currency: MINT,
-                    methodDetails: {
-                        decimals: 6,
-                        mint: MINT,
-                        planAddress: PLAN_ID,
-                        subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                        puller: PULLER,
-                        tokenProgram: TOKEN_PROGRAM,
-                    },
-                    periodCount: '30',
-                    periodUnit: 'day',
-                    recipient: RECIPIENT,
-                },
-            },
-            payload: { authentication, signature: 'same-activation-signature', type: 'signature' },
-        } as never;
-
-        const results = await Promise.allSettled(
-            Array.from({ length: 16 }, () => method.verify!({ credential, request: {} as never })),
-        );
-        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-        expect(results.filter(result => result.status === 'rejected')).toHaveLength(15);
-    });
-
-    describe('push-mode reported transaction version', () => {
-        function pushModeMethod(store = Store.memory()) {
-            return subscription({
-                decimals: 6,
-                mint: MINT,
-                network: 'devnet',
-                periodCount: 30,
-                periodUnit: 'day',
-                planId: PLAN_ID,
-                puller: PULLER,
-                recipient: RECIPIENT,
-                rpcUrl: 'https://mock-rpc',
-                store,
-                tokenProgram: TOKEN_PROGRAM,
-            });
-        }
-
-        function pushModeCredential(challengeId: string, authentication: unknown, signature: string) {
-            return {
+        const value = source(subscriberAddress);
+        return method.verify!({
+            credential: {
                 challenge: {
-                    id: challengeId,
+                    id: 'source-challenge',
                     request: {
                         amount: '10000000',
                         currency: MINT,
                         methodDetails: {
                             decimals: 6,
                             mint: MINT,
+                            network: 'devnet',
                             planAddress: PLAN_ID,
-                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                             puller: PULLER,
+                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                             tokenProgram: TOKEN_PROGRAM,
                         },
                         periodCount: '30',
@@ -1560,126 +1649,33 @@ describe('subscription().verify() (push mode)', () => {
                         recipient: RECIPIENT,
                     },
                 },
-                payload: { authentication, signature, type: 'signature' },
-            } as never;
-        }
-
-        function mockPushModeFetch(transaction: string, subscriberAddress: string, version: unknown) {
-            const accountB64 = Buffer.from(buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n)).toString(
-                'base64',
-            );
-            globalThis.fetch = async (_input, init) => {
-                const body = JSON.parse(init?.body as string) as { method?: string };
-                if (body.method === 'getTransaction') {
-                    return rpcSuccess({
-                        meta: { err: null },
-                        transaction: [transaction, 'base64'],
-                        ...(version === undefined ? {} : { version }),
-                    });
-                }
-                if (body.method === 'getAccountInfo') {
-                    return rpcSuccess({
-                        value: {
-                            data: [accountB64, 'base64'],
-                            executable: false,
-                            lamports: 0,
-                            owner: SUBSCRIPTIONS_PROGRAM,
-                            rentEpoch: 0,
-                        },
-                    });
-                }
-                return rpcSuccess({});
-            };
-        }
-
-        test('settles a legacy activation reported by the RPC like a version-0 one', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64({
-                version: 'legacy',
-            });
-            const authentication = await buildAuthentication('version-challenge', subscriber);
-            const store = Store.memory();
-            const method = pushModeMethod(store);
-            const credential = pushModeCredential('version-challenge', authentication, 'legacy-activation-signature');
-
-            mockPushModeFetch(transaction, subscriberAddress, 'legacy');
-            const receipt = await method.verify!({ credential, request: {} as never });
-            expect(receipt.status).toBe('success');
-            expect(await store.get('solana-subscription:consumed:legacy-activation-signature')).not.toBeNull();
+                payload: { authentication, transaction, type: 'transaction' },
+                ...(value === undefined ? {} : { source: value }),
+            } as never,
+            request: {} as never,
         });
-
-        test('rejects when the RPC does not report the activation transaction version', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-            const authentication = await buildAuthentication('no-version-challenge', subscriber);
-            mockPushModeFetch(transaction, subscriberAddress, undefined);
-            await expect(
-                pushModeMethod().verify!({
-                    credential: pushModeCredential('no-version-challenge', authentication, 'no-version-signature'),
-                    request: {} as never,
-                }),
-            ).rejects.toThrow('RPC did not report the transaction version');
-        });
-
-        test('accepts a version 0 activation reported by the RPC', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-            const authentication = await buildAuthentication('v0-challenge', subscriber);
-            mockPushModeFetch(transaction, subscriberAddress, 0);
-            const receipt = await pushModeMethod().verify!({
-                credential: pushModeCredential('v0-challenge', authentication, 'v0-activation-signature'),
-                request: {} as never,
-            });
-            expect(receipt.status).toBe('success');
-            expect(receipt.reference).toBe('v0-activation-signature');
-        });
-    });
-
-    test('rejects when push-mode getTransaction returns null', async () => {
-        globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            if (body.method === 'getTransaction') return rpcSuccess(null);
-            return rpcSuccess({});
-        };
-        const method = subscription({
-            decimals: 6,
-            mint: MINT,
-            network: 'devnet',
-            periodCount: 30,
-            periodUnit: 'day',
-            planId: PLAN_ID,
-            puller: PULLER,
-            recipient: RECIPIENT,
-            rpcUrl: 'https://mock-rpc',
-            tokenProgram: TOKEN_PROGRAM,
-        });
-        await expect(
-            method.verify!({
-                credential: {
-                    challenge: {
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
-                    payload: { signature: 'newsig', type: 'signature' },
-                } as never,
-                request: {} as never,
-            }),
-        ).rejects.toThrow(/not found/);
-    });
-
-    function writeU64Le(buf: Uint8Array, offset: number, value: bigint) {
-        for (let i = 0; i < 8; i += 1) {
-            buf[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
-        }
     }
+
+    test('rejects a source naming another address', async () => {
+        const other = (await generateKeyPairSigner()).address;
+        await expect(verifyWithSource(() => `did:pkh:solana:devnet:${other}`)).rejects.toThrow(
+            /Credential source does not match the activation subscriber/,
+        );
+    });
+
+    test('rejects a source using another DID method', async () => {
+        await expect(verifyWithSource(subscriber => `did:pkh:eip155:1:${subscriber}`)).rejects.toThrow(
+            /Credential source must be a did:pkh:solana DID/,
+        );
+        await expect(verifyWithSource(subscriber => `did:pkh:solana:${subscriber}`)).rejects.toThrow(
+            /Credential source must be a did:pkh:solana DID/,
+        );
+    });
+
+    test('accepts a source matching the subscriber and an absent source', async () => {
+        await expect(verifyWithSource(subscriber => `did:pkh:solana:devnet:${subscriber}`)).rejects.toThrow(
+            /RPC reached/,
+        );
+        await expect(verifyWithSource(() => undefined)).rejects.toThrow(/RPC reached/);
+    });
 });

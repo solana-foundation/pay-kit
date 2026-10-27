@@ -465,3 +465,131 @@ test('#10 createCredential rejects a network that does not match expectedNetwork
     });
     await expect(method.createCredential({ challenge })).rejects.toThrow(/does not match the expected network/);
 });
+
+// ── draft-solana-charge-00 challenge checks the client applies before any RPC ──
+
+/** An RPC endpoint that fails the test if the builder asks it anything. */
+const UNREACHABLE_RPC = 'http://127.0.0.1:1';
+
+function splRequest(
+    overrides: { amount?: string; network?: string; splits?: Array<{ amount: string; recipient: string }> } = {},
+) {
+    return {
+        amount: overrides.amount ?? '1000',
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: {
+            decimals: 6,
+            network: overrides.network ?? 'devnet',
+            recentBlockhash: BLOCKHASH,
+            ...(overrides.splits ? { splits: overrides.splits } : {}),
+            tokenProgram: TOKEN_PROGRAM,
+        },
+    };
+}
+
+// §Method Details, splits: "An array of at most 8 additional payment splits."
+test('buildChargeTransaction refuses more than 8 splits', async () => {
+    const signer = await newSigner();
+    const splits = Array.from({ length: 9 }, () => ({ amount: '10', recipient: RECIPIENT }));
+    await expect(
+        buildChargeTransaction({ request: splRequest({ splits }), rpcUrl: UNREACHABLE_RPC, signer }),
+    ).rejects.toThrow(/Too many splits: 9 \(maximum 8\)/);
+});
+
+test('buildChargeTransaction accepts exactly 8 splits', async () => {
+    const signer = await newSigner();
+    const splits = Array.from({ length: 8 }, () => ({ amount: '10', recipient: RECIPIENT }));
+    await expect(
+        buildChargeTransaction({ request: splRequest({ splits }), rpcUrl: UNREACHABLE_RPC, signer }),
+    ).resolves.toBeTruthy();
+});
+
+// §Method Details, tokenProgram: "MUST NOT be present when currency is \"sol\"".
+test('buildChargeTransaction refuses a SOL charge whose challenge carries tokenProgram', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({
+            request: {
+                amount: '1000',
+                currency: 'sol',
+                recipient: RECIPIENT,
+                methodDetails: { network: 'localnet', recentBlockhash: BLOCKHASH, tokenProgram: TOKEN_PROGRAM },
+            },
+            rpcUrl: UNREACHABLE_RPC,
+            signer,
+        }),
+    ).rejects.toThrow(/tokenProgram must not be present when currency is "sol"/);
+});
+
+// §Method Details, network: "MUST be one of \"mainnet\", \"devnet\", or \"localnet\"".
+test('buildChargeTransaction refuses an unknown network instead of falling back to mainnet', async () => {
+    const signer = await newSigner();
+    for (const network of ['testnet', 'mainnet-alpha', '']) {
+        await expect(
+            buildChargeTransaction({ request: splRequest({ network }), rpcUrl: UNREACHABLE_RPC, signer }),
+        ).rejects.toThrow(/Unsupported challenge network/);
+    }
+});
+
+test('buildChargeTransaction accepts the mainnet-beta alias', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({
+            request: {
+                ...splRequest({ network: 'mainnet-beta' }),
+                currency: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            },
+            rpcUrl: UNREACHABLE_RPC,
+            signer,
+        }),
+    ).resolves.toBeTruthy();
+});
+
+// §Request Schema, amount: "a positive integer that fits in a 64-bit unsigned integer".
+test('buildChargeTransaction refuses an amount above u64 with an explicit check', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({
+            request: splRequest({ amount: '18446744073709551616' }),
+            rpcUrl: UNREACHABLE_RPC,
+            signer,
+        }),
+    ).rejects.toThrow(/Invalid amount: amount 18446744073709551616 does not fit in a u64/);
+});
+
+test('buildChargeTransaction accepts an amount of exactly u64::MAX', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({
+            request: splRequest({ amount: '18446744073709551615' }),
+            rpcUrl: UNREACHABLE_RPC,
+            signer,
+        }),
+    ).resolves.toBeTruthy();
+});
+
+test('buildChargeTransaction refuses a zero amount', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({ request: splRequest({ amount: '0' }), rpcUrl: UNREACHABLE_RPC, signer }),
+    ).rejects.toThrow(/Splits consume the entire amount/);
+});
+
+test.each(['-1', '1e3', ' 1000', '1000.0', ''])('buildChargeTransaction refuses amount %j', async amount => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({ request: splRequest({ amount }), rpcUrl: UNREACHABLE_RPC, signer }),
+    ).rejects.toThrow(/Invalid amount/);
+});
+
+test('buildChargeTransaction refuses a split amount above u64', async () => {
+    const signer = await newSigner();
+    await expect(
+        buildChargeTransaction({
+            request: splRequest({ splits: [{ amount: '18446744073709551616', recipient: RECIPIENT }] }),
+            rpcUrl: UNREACHABLE_RPC,
+            signer,
+        }),
+    ).rejects.toThrow(/Invalid amount: split amount .* does not fit in a u64/);
+});

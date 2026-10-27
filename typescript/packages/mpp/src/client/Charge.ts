@@ -30,6 +30,7 @@ import { Credential, Method } from 'mppx';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
+    CANONICAL_NETWORKS,
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
     normalizeNetwork,
@@ -180,8 +181,26 @@ export async function buildChargeTransaction(
         splits,
     } = methodDetails;
 
+    // Challenge checks that need no RPC: refuse an out-of-spec challenge before
+    // anything is fetched or signed.
+    assertSupportedChallengeNetwork(network);
+    // A zero amount is refused below: no split arithmetic leaves the primary
+    // recipient a positive amount.
+    const totalAmount = parseU64Amount(amount, 'amount');
+    if (splits !== undefined && splits.length > MAX_SPLITS) {
+        throw new Error(`Too many splits: ${splits.length} (maximum ${MAX_SPLITS})`);
+    }
+    for (const split of splits ?? []) {
+        parseU64Amount(split.amount, 'split amount');
+    }
+
     // currency is "sol" for native, or the mint address for SPL tokens.
     const mint = resolveStablecoinMint(currency, network);
+    // draft-solana-charge-00 §Method Details, tokenProgram: "MUST NOT be
+    // present when `currency` is \"sol\"".
+    if (!mint && tokenProgramAddr !== undefined) {
+        throw new Error('methodDetails.tokenProgram must not be present when currency is "sol"');
+    }
 
     const rpcUrl =
         parameters.rpcUrl ?? DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ?? DEFAULT_RPC_URLS.mainnet;
@@ -211,7 +230,7 @@ export async function buildChargeTransaction(
 
     // Compute primary amount (total minus splits).
     const splitsTotal = (splits ?? []).reduce((sum, s) => sum + BigInt(s.amount), 0n);
-    const primaryAmount = BigInt(amount) - splitsTotal;
+    const primaryAmount = totalAmount - splitsTotal;
     if (primaryAmount <= 0n) {
         throw new Error('Splits consume the entire amount; primary recipient must receive a positive amount');
     }
@@ -401,6 +420,40 @@ export async function buildChargeTransaction(
 }
 
 // ── Helpers ──
+
+/** draft-solana-charge-00 §Method Details: "An array of at most 8 additional payment splits." */
+const MAX_SPLITS = 8;
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * draft-solana-charge-00 §Method Details, network: "MUST be one of
+ * \"mainnet\", \"devnet\", or \"localnet\"" (the legacy `mainnet-beta` spelling
+ * is accepted as an alias). An unknown cluster is refused rather than paid
+ * through the mainnet RPC.
+ */
+function assertSupportedChallengeNetwork(network: string | undefined): void {
+    if (network === undefined) return;
+    if (!(CANONICAL_NETWORKS as readonly string[]).includes(normalizeNetwork(network))) {
+        throw new Error(`Unsupported challenge network "${network}" (allowed: ${CANONICAL_NETWORKS.join(', ')})`);
+    }
+}
+
+/**
+ * draft-solana-charge-00 §Request Schema, amount: "The value MUST be a
+ * positive integer that fits in a 64-bit unsigned integer". Checked
+ * explicitly so the refusal names the amount instead of surfacing a codec
+ * error from instruction encoding.
+ */
+function parseU64Amount(value: string, label: string): bigint {
+    if (!/^[0-9]+$/.test(value)) {
+        throw new Error(`Invalid amount: ${label} "${value}" is not a base-10 integer`);
+    }
+    const parsed = BigInt(value);
+    if (parsed > U64_MAX) {
+        throw new Error(`Invalid amount: ${label} ${value} does not fit in a u64`);
+    }
+    return parsed;
+}
 
 /**
  * Always-on expiry refusal for the client (audit #10): refuse to sign a

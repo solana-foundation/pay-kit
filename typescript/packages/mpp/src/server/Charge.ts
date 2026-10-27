@@ -369,6 +369,35 @@ type CompiledInstruction = {
     programAddressIndex: number;
 };
 
+/** Solana's maximum serialized transaction size (the 1232-byte packet payload). */
+const MAX_TRANSACTION_SIZE_BYTES = 1232;
+
+/**
+ * The kit decoder omits `accountIndices` and `data` when an instruction has
+ * none. Fill them with empty values so policy checks reject such instructions
+ * instead of crashing on `undefined`.
+ */
+function normalizeCompiledMessage(
+    decoded: ReturnType<ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']>,
+) {
+    const message = decoded as unknown as Omit<CompiledMessage, 'instructions'> & {
+        instructions?: readonly Partial<CompiledInstruction>[];
+    };
+    const { instructions } = message;
+    if (instructions === undefined) {
+        // Not a legacy or version-0 message layout.
+        throw new Error(`unsupported message version ${String((decoded as { version?: unknown }).version)}`);
+    }
+    return {
+        ...message,
+        instructions: instructions.map(ix => ({
+            accountIndices: ix.accountIndices ?? [],
+            data: ix.data ?? new Uint8Array(),
+            programAddressIndex: ix.programAddressIndex ?? -1,
+        })),
+    } as CompiledMessage;
+}
+
 /**
  * RPC-free pre-broadcast verification of a base64-encoded charge transaction
  * against the challenge it answers: split-count, address-lookup-table,
@@ -395,11 +424,24 @@ export async function verifyChargeTransaction(clientTxBase64: string, challenge:
 }
 
 async function verifyChargeTransactionShape(clientTxBase64: string, challenge: ChallengeRequest) {
+    let txBytes: Uint8Array;
+    try {
+        txBytes = new Uint8Array(getBase64Codec().encode(clientTxBase64));
+    } catch (e) {
+        throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // draft-solana-charge-00 §Transaction payload: "The transaction MUST be a
+    // valid Solana versioned transaction that does not exceed the 1232-byte
+    // transaction size limit."
+    if (txBytes.byteLength > MAX_TRANSACTION_SIZE_BYTES) {
+        throw new Error(
+            `Transaction is ${txBytes.byteLength} bytes, over the ${MAX_TRANSACTION_SIZE_BYTES}-byte limit`,
+        );
+    }
     let message: CompiledMessage;
     try {
-        const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+        message = normalizeCompiledMessage(getCompiledTransactionMessageDecoder().decode(decoded.messageBytes));
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }

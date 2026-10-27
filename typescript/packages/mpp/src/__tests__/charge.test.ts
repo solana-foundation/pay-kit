@@ -4031,3 +4031,85 @@ test('#3 interpretPostTimeoutStatus: rpc error returns timeout with detail', () 
     const outcome = interpretPostTimeoutStatus(null, 'connection refused');
     expect(outcome).toEqual({ detail: 'connection refused', kind: 'timeout' });
 });
+
+// draft-solana-charge-00 §Transaction payload: "The transaction MUST be a valid
+// Solana versioned transaction that does not exceed the 1232-byte transaction
+// size limit."
+test('verifyChargeTransaction rejects a transaction over the 1232-byte limit', async () => {
+    const signer = await generateKeyPairSigner();
+    const memo = (char: string) => char.repeat(560);
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        externalId: memo('a'),
+        methodDetails: {
+            network: 'devnet',
+            recentBlockhash: BLOCKHASH,
+            splits: [
+                { amount: '1000', memo: memo('b'), recipient: '3pF8Kg2aHbNvJkLMwEqR7YtDxZ5sGhJn4UV6mWcXrT9A' },
+                { amount: '1000', memo: memo('c'), recipient: '11111111111111111111111111111112' },
+            ],
+        },
+        recipient: RECIPIENT,
+    };
+    // The client builder does not bound the size; the verifier must.
+    const tx = await buildChargeTransaction({ request, signer });
+    expect(getBase64Codec().encode(tx).byteLength).toBeGreaterThan(1232);
+    await expect(verifyChargeTransaction(tx, request)).rejects.toThrow(
+        /Transaction is \d+ bytes, over the 1232-byte limit/,
+    );
+});
+
+test('verifyChargeTransaction accepts a transaction within the 1232-byte limit', async () => {
+    const signer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        externalId: 'a'.repeat(400),
+        methodDetails: { network: 'devnet', recentBlockhash: BLOCKHASH },
+        recipient: RECIPIENT,
+    };
+    const tx = await buildChargeTransaction({ request, signer });
+    expect(getBase64Codec().encode(tx).byteLength).toBeLessThanOrEqual(1232);
+    await expect(verifyChargeTransaction(tx, request)).resolves.toBeUndefined();
+});
+
+// An ATA Create (non-idempotent) instruction carries empty data, which the kit
+// decoder omits; the policy check must reject it, not crash with a TypeError.
+test('verifyChargeTransaction rejects a non-idempotent (empty-data) ATA creation as a policy violation', async () => {
+    const payer = await generateKeyPairSigner();
+    const split = '3pF8Kg2aHbNvJkLMwEqR7YtDxZ5sGhJn4UV6mWcXrT9A';
+    const mint = address(USDC_MINT);
+    const tokenProgram = address(TOKEN_PROGRAM);
+    const ataOf = async (owner: string) =>
+        (await findAssociatedTokenPda({ mint, owner: address(owner), tokenProgram }))[0];
+    const sourceAta = await ataOf(payer.address);
+    const transfer = async (owner: string, amount: bigint) =>
+        getTransferCheckedInstruction(
+            { amount, authority: payer, decimals: 6, destination: await ataOf(owner), mint, source: sourceAta },
+            { programAddress: tokenProgram },
+        );
+    const idempotent = await createAssociatedTokenAccountIdempotent(payer.address, address(split), mint, tokenProgram);
+    const createNonIdempotent: Instruction = { ...idempotent, data: new Uint8Array() };
+    const instructions = [await transfer(RECIPIENT, 750n), createNonIdempotent, await transfer(split, 250n)];
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(payer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(message));
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000',
+            currency: USDC_MINT,
+            methodDetails: {
+                decimals: 6,
+                network: 'devnet',
+                splits: [{ amount: '250', ataCreationRequired: true, recipient: split }],
+                tokenProgram: TOKEN_PROGRAM,
+            },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Only idempotent ATA creation is allowed/);
+});

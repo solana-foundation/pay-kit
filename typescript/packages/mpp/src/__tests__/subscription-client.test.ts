@@ -18,6 +18,7 @@ import {
 import { getPlanEncoder, getSubscriptionAuthorityEncoder } from '@solana/subscriptions';
 
 import {
+    ASSOCIATED_TOKEN_PROGRAM,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
@@ -57,7 +58,21 @@ function rpcSuccess(result: unknown) {
  * blockhash for getLatestBlockhash, accept sendTransaction, and report the
  * signature as confirmed.
  */
-function defaultMockFetch(opts: { authorityExists?: boolean } = { authorityExists: true }): typeof globalThis.fetch {
+const ZERO = '11111111111111111111111111111111';
+
+/** Pad a Plan address list to the program's fixed four slots with the zero address. */
+function padded(list: readonly string[]): Address[] {
+    return [...list, ZERO, ZERO, ZERO, ZERO].slice(0, 4).map(entry => address(entry));
+}
+
+function defaultMockFetch(
+    opts: {
+        authorityExists?: boolean;
+        planDestinations?: readonly string[];
+        planOwner?: string;
+        planPullers?: readonly string[];
+    } = { authorityExists: true },
+): typeof globalThis.fetch {
     return async (_input: RequestInfo | URL, init?: RequestInit) => {
         const body = JSON.parse(init?.body as string) as { method?: string; params?: unknown[] };
         switch (body.method) {
@@ -67,26 +82,16 @@ function defaultMockFetch(opts: { authorityExists?: boolean } = { authorityExist
                     const encoded = getPlanEncoder().encode({
                         bump: 1,
                         data: {
-                            destinations: [
-                                address(RECIPIENT),
-                                address('11111111111111111111111111111111'),
-                                address('11111111111111111111111111111111'),
-                                address('11111111111111111111111111111111'),
-                            ],
+                            destinations: padded(opts.planDestinations ?? [RECIPIENT]),
                             endTs: 0n,
                             metadataUri: '',
                             mint: address(MINT),
                             planId: 1n,
-                            pullers: [
-                                address(PULLER),
-                                address('11111111111111111111111111111111'),
-                                address('11111111111111111111111111111111'),
-                                address('11111111111111111111111111111111'),
-                            ],
+                            pullers: padded(opts.planPullers ?? [PULLER]),
                             terms: { amount: 10_000_000n, createdAt: 1n, periodHours: 720n },
                         },
                         discriminator: 1,
-                        owner: address(PULLER),
+                        owner: address(opts.planOwner ?? PULLER),
                         status: 1,
                     });
                     return rpcSuccess({
@@ -94,7 +99,7 @@ function defaultMockFetch(opts: { authorityExists?: boolean } = { authorityExist
                         value: accountValue(getBase64Codec().decode(encoded)),
                     });
                 }
-                if (!opts.authorityExists) return rpcSuccess({ context: { slot: 1 }, value: null });
+                if (opts.authorityExists === false) return rpcSuccess({ context: { slot: 1 }, value: null });
                 const encoded = getSubscriptionAuthorityEncoder().encode({
                     bump: 1,
                     discriminator: 0,
@@ -131,7 +136,7 @@ function accountValue(data: string) {
 }
 
 type CompiledMessage = {
-    instructions: readonly { data: Uint8Array; programAddressIndex: number }[];
+    instructions: readonly { accountIndices?: readonly number[]; data: Uint8Array; programAddressIndex: number }[];
     staticAccounts: readonly { toString(): string }[];
 };
 
@@ -352,6 +357,161 @@ describe('buildSubscriptionActivationTransaction', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// Challenge and plan checks (draft-solana-subscription-00)
+// ══════════════════════════════════════════════════════════════════════
+
+/** An RPC that fails the test if the builder asks it anything. */
+const noRpc: typeof globalThis.fetch = () => Promise.reject(new Error('the builder must refuse before any RPC call'));
+
+describe('buildSubscriptionActivationTransaction challenge checks', () => {
+    // §Activation: "no instructions other than those above plus optional
+    // compute-budget and memo instructions" — only the subscriber's own ATA
+    // (as the Rust kit builds) is created; never the recipient's.
+    test("creates only the subscriber's ATA, not the recipient's", async () => {
+        globalThis.fetch = defaultMockFetch();
+        const signer = await generateKeyPairSigner();
+        const tx = await buildSubscriptionActivationTransaction({
+            request: baseRequest(),
+            rpcUrl: 'https://mock-rpc',
+            signer,
+        });
+        const message = decodeMessage(tx);
+        const ataCreations = message.instructions.filter(
+            ix => message.staticAccounts[ix.programAddressIndex].toString() === ASSOCIATED_TOKEN_PROGRAM,
+        );
+        expect(ataCreations).toHaveLength(1);
+        const owner = message.staticAccounts[ataCreations[0].accountIndices![2]].toString();
+        expect(owner).toBe(signer.address);
+    });
+
+    // §Intent Semantics: "clients MUST validate that address before signing".
+    test('refuses an untrusted subscriptionProgram before any RPC call', async () => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        const request = baseRequest();
+        request.methodDetails.subscriptionProgram = 'Vote111111111111111111111111111111111111111';
+        await expect(
+            buildSubscriptionActivationTransaction({ request, rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/Untrusted subscription program Vote111111111111111111111111111111111111111/);
+    });
+
+    test('trusts the subscriptionProgram named by trustedSubscriptionProgram', async () => {
+        const other = 'Vote111111111111111111111111111111111111111';
+        // The pin passes; the mock plan is owned by the canonical program, so
+        // the build then stops at the plan-owner check.
+        globalThis.fetch = defaultMockFetch();
+        const signer = await generateKeyPairSigner();
+        const request = baseRequest();
+        request.methodDetails.subscriptionProgram = other;
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request,
+                rpcUrl: 'https://mock-rpc',
+                signer,
+                trustedSubscriptionProgram: other,
+            }),
+        ).rejects.toThrow(/owner does not match the program/);
+    });
+
+    // §Currency Formats: "Implementations MUST treat currency and
+    // methodDetails.mint as the same value".
+    test('refuses a challenge whose currency differs from methodDetails.mint', async () => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        const request = { ...baseRequest(), currency: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' };
+        await expect(
+            buildSubscriptionActivationTransaction({ request, rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/currency must match methodDetails\.mint/);
+    });
+
+    // §Shared Fields: positive base-10 integers, no sign, decimal point,
+    // exponent, whitespace, or leading zeros.
+    test.each(['010000000', '0', '+10000000', '1e7', '10000000.0', ' 10000000', '-1', ''])(
+        'refuses amount %j',
+        async amount => {
+            globalThis.fetch = noRpc;
+            const signer = await generateKeyPairSigner();
+            await expect(
+                buildSubscriptionActivationTransaction({
+                    request: { ...baseRequest(), amount },
+                    rpcUrl: 'https://mock-rpc',
+                    signer,
+                }),
+            ).rejects.toThrow(/amount must be a positive base-10 integer/);
+        },
+    );
+
+    test('refuses an amount above u64', async () => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: { ...baseRequest(), amount: '18446744073709551616' },
+                rpcUrl: 'https://mock-rpc',
+                signer,
+            }),
+        ).rejects.toThrow(/does not fit in a u64/);
+    });
+
+    test.each(['030', '+30', '30.0', '3e1', ' 30', '30 ', '0'])('refuses periodCount %j', async periodCount => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: { ...baseRequest(), periodCount },
+                rpcUrl: 'https://mock-rpc',
+                signer,
+            }),
+        ).rejects.toThrow(/periodCount must be a positive base-10 integer/);
+    });
+
+    // §Method Details: tokenProgram "MUST be the SPL Token program or the SPL Token-2022 program".
+    test('refuses a tokenProgram other than SPL Token or Token-2022', async () => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        const request = baseRequest();
+        request.methodDetails.tokenProgram = ZERO;
+        await expect(
+            buildSubscriptionActivationTransaction({ request, rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/tokenProgram must be/);
+    });
+
+    // §Method Details: puller "MUST be plan.owner or appear in plan.pullers".
+    test('refuses a puller that is neither plan.owner nor in plan.pullers', async () => {
+        const stranger = (await generateKeyPairSigner()).address;
+        globalThis.fetch = defaultMockFetch({ planOwner: stranger, planPullers: [stranger] });
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({ request: baseRequest(), rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/neither plan\.owner nor in plan\.pullers/);
+    });
+
+    test('accepts a puller listed in plan.pullers that is not plan.owner', async () => {
+        const merchant = (await generateKeyPairSigner()).address;
+        globalThis.fetch = defaultMockFetch({ planOwner: merchant, planPullers: [PULLER] });
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({ request: baseRequest(), rpcUrl: 'https://mock-rpc', signer }),
+        ).resolves.toBeTypeOf('string');
+    });
+
+    // §Method Details: "reject request objects referencing a plan with an
+    // empty destination whitelist, more than one non-zero destination, or a
+    // destination different from recipient".
+    test.each([
+        ['an empty destination whitelist', []],
+        ['two non-zero destinations', [RECIPIENT, PULLER]],
+        ['a destination other than recipient', [PULLER]],
+    ])('refuses a plan with %s', async (_label, planDestinations) => {
+        globalThis.fetch = defaultMockFetch({ planDestinations });
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({ request: baseRequest(), rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/plan\.destinations must be exactly one address equal to recipient/);
+    });
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // subscription() — Method.toClient wrapper (createCredential)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -420,6 +580,24 @@ describe('subscription() client wrapper', () => {
         expect(cred).toBeTruthy();
         expect(calls).toContain('sendTransaction');
         expect(calls).toContain('getSignatureStatuses');
+    });
+
+    test('refuses an untrusted subscriptionProgram before signing the bearer proof', async () => {
+        globalThis.fetch = noRpc;
+        const signer = await generateKeyPairSigner();
+        let proofs = 0;
+        const method = subscriptionClient({
+            onAuthentication: () => {
+                proofs += 1;
+            },
+            rpcUrl: 'https://mock-rpc',
+            signer,
+        });
+        const request = baseRequest();
+        request.methodDetails.subscriptionProgram = 'Vote111111111111111111111111111111111111111';
+        const challenge = { ...((await buildChallenge()) as object), request } as never;
+        await expect(method.createCredential!({ challenge })).rejects.toThrow(/Untrusted subscription program/);
+        expect(proofs).toBe(0);
     });
 
     test('rejects broadcast=true combined with feePayer sponsorship', async () => {

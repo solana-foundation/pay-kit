@@ -4,14 +4,44 @@ import { type Address, getAddressEncoder, getProgramDerivedAddress } from '@sola
 const MAX_PERIOD_HOURS = 8760;
 
 /**
+ * draft-solana-subscription-00 §Shared Fields: `amount` and `periodCount` are
+ * positive base-10 integers "with no sign, decimal point, exponent, or
+ * surrounding whitespace. Leading zeros MUST NOT be used."
+ */
+const POSITIVE_DECIMAL_INTEGER = /^[1-9][0-9]*$/;
+
+/**
+ * Parse a wire `amount` or `periodCount` under the profile's strict integer
+ * format, refusing what `Number()` or `BigInt()` would silently accept
+ * (`"030"`, `"+30"`, `"30.0"`, `"3e1"`, `" 30"`).
+ *
+ * @throws If `value` is not a positive base-10 integer without leading zeros.
+ */
+export function parseSubscriptionInteger(value: string, field: 'amount' | 'periodCount'): bigint {
+    if (typeof value !== 'string' || !POSITIVE_DECIMAL_INTEGER.test(value)) {
+        throw new Error(
+            `${field} must be a positive base-10 integer with no sign, decimal point, exponent, whitespace, or leading zeros, got ${JSON.stringify(value)}`,
+        );
+    }
+    return BigInt(value);
+}
+
+/**
  * Map the shared subscription period to the subscriptions program's
  * `period_hours` value. The Solana profile only supports `day` and `week`;
  * `month` cannot be represented exactly because the on-chain program uses
  * fixed elapsed seconds.
  *
+ * `periodCount` may be the wire string, which is held to the profile's strict
+ * integer format, or a number (server configuration).
+ *
  * @throws If the inputs cannot be represented on-chain.
  */
-export function mapSubscriptionPeriodToHours(periodUnit: 'day' | 'week', periodCount: number): number {
+export function mapSubscriptionPeriodToHours(periodUnit: 'day' | 'week', periodCountInput: number | string): number {
+    const periodCount =
+        typeof periodCountInput === 'string'
+            ? Number(parseSubscriptionInteger(periodCountInput, 'periodCount'))
+            : periodCountInput;
     if (!Number.isInteger(periodCount) || periodCount <= 0) {
         throw new Error(`periodCount must be a positive integer, got ${periodCount}`);
     }
