@@ -261,7 +261,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 117 | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 117 |
-| vector session | 192 | 8 · 184u | 3 · 189u | — | — | 192 | — | 192 | 3 · 189u | 192 |
+| vector session | 200 | 8 · 192u | 3 · 197u | — | — | 200 | — | 200 | 3 · 197u | 200 |
 | vector subscription | 123 | — | — | — | — | 123 | — | 123 | — | 123 |
 | vector x402-batch-settlement | 175 | — | — | — | — | 175 | — | 175 | — | 175 |
 | vector x402-exact | 78 | 49 · 29k | — | 34 · 21u · 23k | 34 · 23u · 21k | 78 | 30 · 21u · 27k | 78 | 14 · 55u · 9k | 78 |
@@ -547,10 +547,10 @@ come from the same extraction as `pkc req-lint`.
 | `MPPTX-3f51d8e008`* | draft-solana-charge-00.md § Transaction Versions | 3 | 0 · 3k | — | 0 · 1u · 2k | 0 · 1u · 2k | 3 | 0 · 1u · 2k | 3 | 0 · 2u · 1k | 3 |
 | `MPPTX-46848f6fce`* | draft-solana-charge-00.md § Transaction Versions | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 2 | 0 · 1k | 2 | 0 · 2u | 2 |
 | `MPPTX-5b29a4494f`* | draft-solana-charge-00.md § Transaction Versions | 5 | 0 · 2u · 3k | 0 · 2u | 0 · 3k | 0 · 3k | 5 | 0 · 3k | 5 | 0 · 4u · 1k | 5 |
-| `MPPTX-8a036b6610`* | draft-solana-charge-00.md § Transaction Versions | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 2 | 0 · 1k | 2 | 0 · 2u | 2 |
+| `MPPTX-8a036b6610`* | draft-solana-charge-00.md § Transaction Versions | 5 | 0 · 4u · 1k | 0 · 4u | 0 · 1k | 0 · 1k | 5 | 0 · 1k | 5 | 0 · 5u | 5 |
 | `MPPTX-8a988b0f7a`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 1u · 5k | 0 · 1u | 0 · 5k | 0 · 5k | 6 | 0 · 5k | 6 | 0 · 6u | 6 |
-| `MPPTX-d180d03a99`* | draft-solana-charge-00.md § Transaction Versions | 11 | 3 · 8k | — | 0 · 11u | 0 · 11u | 11 | 0 · 11u | 11 | 3 · 8k | 11 |
-| `MPPTX-d53a9f42dd`* | draft-solana-charge-00.md § Transaction Versions | 3 | 0 · 1u · 2k | 0 · 1u | 0 · 2k | 0 · 2k | 3 | 2 | 3 | 0 · 3u | 3 |
+| `MPPTX-d180d03a99`* | draft-solana-charge-00.md § Transaction Versions | 19 | 3 · 8u · 8k | 0 · 8u | 0 · 11u | 0 · 11u | 19 | 0 · 11u | 19 | 3 · 8u · 8k | 19 |
+| `MPPTX-d53a9f42dd`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 4u · 2k | 0 · 4u | 0 · 2k | 0 · 2k | 6 | 2 | 6 | 0 · 6u | 6 |
 | `MPPTX-5410e1de47`* | draft-solana-session-00.md § Action: "open" | 7 | 0 · 7u | 0 · 7u | — | — | 7 | — | 7 | 0 · 7u | 7 |
 | `MPPTX-4563533e08`* | draft-solana-session-00.md § Action: "topUp" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
 | `X402-063b58b983`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
