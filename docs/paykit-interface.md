@@ -104,7 +104,7 @@ Canonical defaults (today they drift):
 | `operator.signer` | `Signer.demo` (refused on mainnet at boot) |
 | `operator.fee_payer` | `true` |
 | `mpp.realm` | `"App"` |
-| `mpp.expires_in` | **120 seconds** (Ruby currently says 300 — align down) |
+| `mpp.expires_in` | **120 seconds** |
 | `x402.scheme` | `"exact"` |
 | `preflight` | `true` |
 
@@ -265,7 +265,6 @@ What each SDK changes to meet this spec. Everything not listed is already
 conformant.
 
 **Ruby**
-- `mpp.expires_in` default 300 → 120.
 - Add `accepts?(protocol)` on `Gate`; keep `x402_accepted?` / `mpp_accepted?`
   as deprecated aliases for one release.
 - Add `payer` and ensure `scheme` on `Payment`.
