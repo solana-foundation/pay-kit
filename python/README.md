@@ -334,13 +334,27 @@ because stock x402 facilitators settle to one address.
 |--------------------|:------:|:------:|
 | `exact`            | ✅     | ✅     |
 | `upto`             | ✅     | ✅     |
-| `batch-settlement` | —      | —      |
+| `batch-settlement` | ✅     | ✅     |
 
 `upto` charges for actual usage up to a ceiling: the client opens a payment
 channel depositing the authorized maximum, the handler meters the response and
 reports it via the `Charge` dependency, then the gate settles the actual amount
 and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
 (rather than `require_payment`) and needs an operator signer.
+
+`batch-settlement` ships as
+`solana_pay_kit.protocols.x402.batch_settlement` (the self-facilitating
+`X402BatchSettlement` server: deposit and voucher verification, claim, settle
+and close) and `solana_pay_kit.protocols.x402.client.batch_settlement`
+(deposit, top-up, voucher and refund builders). It is not yet exposed as a
+gate adapter.
+
+Every scheme accepts version 0 transactions by default and can also accept
+version 1 (SIMD-0385), advertising the set on `extra.transactionVersions`:
+`X402Config.transaction_versions=(0, 1)` for `exact` gates, the
+`transaction_versions` argument of `X402Upto` for `upto`, and
+`BatchConfig.transaction_versions` for `batch-settlement`. Legacy messages are
+policed as version 0.
 
 ### Client
 
@@ -457,7 +471,9 @@ fresh `recentBlockhash`, parses and validates the `Authorization: Payment`
 credential, pins the echoed charge request, decodes the client-signed
 transaction and checks recipient, amount, mint, splits, ATA, memos, and
 compute budget, rejects Surfpool-signed transactions on non-localnet
-networks, optionally fee-payer co-signs (legacy + v0), broadcasts via
+networks, refuses legacy messages and admits only the versions the challenge
+advertises in `methodDetails.transactionVersions` (`[0]` by default; version 1
+gets the SIMD-0385 budget checks), optionally fee-payer co-signs, broadcasts via
 `sendTransaction`, consumes the signature in the replay store, awaits
 confirmation, and emits `payment-receipt` with the on-chain signature.
 
