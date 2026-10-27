@@ -241,6 +241,15 @@ class BatchChannelRecord:
     def has_in_flight_authorization(self) -> bool:
         return bool(self.pending) or self.pending_setup is not None
 
+    def has_blocking_authorization(self, now: int) -> bool:
+        """Whether a reservation (of any stage, served or not) or a setup is
+        still inside its lease at ``now``, which holds the close finalizer's
+        seal. A dead lease never blocks: nobody else can release it, and the
+        seal's fence refuses its late commit."""
+        if self.pending_setup is not None and self.pending_setup.expires_at > now:
+            return True
+        return any(p.expires_at > now for p in self.pending)
+
     def record_observation(self, lifecycle: str, started_at: int | None, slot: int | None, now: int) -> bool:
         """Apply an onchain observation; ``False`` when the read is behind the
         recorded slot (its close fences still apply, the snapshot is not renewed).

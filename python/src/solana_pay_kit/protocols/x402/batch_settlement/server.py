@@ -36,9 +36,11 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import struct
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -51,6 +53,7 @@ from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.currency import parse_units
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
 from solana_pay_kit._paycore.paymentchannels import (
     PROGRAM_ID,
@@ -58,11 +61,12 @@ from solana_pay_kit._paycore.paymentchannels import (
     Distribution,
     build_distribute_instruction,
     build_ed25519_verify_instruction,
+    build_seal_instruction,
     build_settle_and_seal_instructions,
     find_associated_token_address,
     voucher_message_bytes,
 )
-from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.rpc import PreflightRejectedError, SolanaRpc
 from solana_pay_kit._paycore.solana import default_rpc_url, default_token_program_for_currency, resolve_mint
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.settle import SettleInstructionData
@@ -153,6 +157,8 @@ __all__ = [
     "caip2_network_for_cluster",
     "unusable_settlement_account",
 ]
+
+_log = logging.getLogger(__name__)
 
 PAYMENT_REQUIRED_HEADER = "PAYMENT-REQUIRED"
 PAYMENT_RESPONSE_HEADER = "PAYMENT-RESPONSE"
@@ -398,6 +404,88 @@ class BatchAccess:
 class _Observation:
     channel: Channel | None
     slot: int
+
+
+class GraceSealKind(Enum):
+    """What :meth:`X402BatchSettlement.finalize_close` does for a ``Closing`` channel."""
+
+    #: A reservation is still inside its lease: sealing now would freeze the
+    #: watermark below the charge its handler is earning, so wait, on both
+    #: sides of the grace deadline.
+    IN_FLIGHT = "in_flight"
+    #: Inside the grace period with nothing above the onchain watermark (or no
+    #: voucher): leave it for the permissionless path.
+    NOTHING_TO_APPLY = "nothing_to_apply"
+    #: Apply the latest voucher with ``settle_and_seal``, inside the grace period.
+    APPLY = "apply"
+    #: The grace period ran out and nothing is in flight: permissionless
+    #: ``seal`` at the frozen onchain watermark.
+    SEAL_FROZEN = "seal_frozen"
+
+
+@dataclass(frozen=True)
+class GraceSealPlan:
+    kind: GraceSealKind
+    cumulative: int = 0
+    signature: str = ""
+    expires_at: int = 0
+
+
+def grace_seal_plan(record: BatchChannelRecord, onchain_settled: int, past_deadline: bool, now: int) -> GraceSealPlan:
+    """Choose the finalization action from the durable record, the onchain
+    ``settled`` watermark and whether the grace deadline passed. Pure; the
+    caller records the close and fences the choice in the same transition.
+
+    A live reservation of any stage (served but not yet committed included)
+    or a live setup defers the seal. A dead lease never blocks it: its late
+    commit is refused by the fence the chosen seal writes."""
+    if record.has_blocking_authorization(now):
+        return GraceSealPlan(GraceSealKind.IN_FLIGHT)
+    if past_deadline:
+        return GraceSealPlan(GraceSealKind.SEAL_FROZEN)
+    signature = record.highest_voucher_signature
+    if signature is None or record.cumulative <= onchain_settled:
+        return GraceSealPlan(GraceSealKind.NOTHING_TO_APPLY)
+    return GraceSealPlan(
+        GraceSealKind.APPLY,
+        cumulative=record.cumulative,
+        signature=signature,
+        expires_at=record.highest_voucher_expires_at or VOUCHER_EXPIRES_AT,
+    )
+
+
+@dataclass
+class _Group:
+    """One channel's instructions, kept together in one transaction."""
+
+    channel_id: str
+    instructions: list[Instruction]
+
+
+@dataclass
+class _Submitted:
+    """Every outcome of a drained redemption submission."""
+
+    signatures: list[str] = field(default_factory=lambda: [])
+    #: Channels whose transaction confirmed.
+    landed: list[str] = field(default_factory=lambda: [])
+    failures: list[str] = field(default_factory=lambda: [])
+    total: int = 0
+
+    def raise_on_failure(self) -> None:
+        if self.failures:
+            raise BatchServerError(
+                f"{len(self.failures)} of {self.total} settlement submissions failed after all outcomes were "
+                f"drained; confirmed signatures: [{', '.join(self.signatures)}]; failures: [{'; '.join(self.failures)}]"
+            )
+
+
+def _failed_on_chain(exc: Exception) -> bool:
+    """The transaction executed and failed (preflight or confirmed), so none of
+    its instructions applied; any other error leaves the outcome unknown."""
+    return isinstance(exc, PreflightRejectedError) or (
+        isinstance(exc, PaymentError) and exc.code == "transaction-failed"
+    )
 
 
 class X402BatchSettlement:
@@ -1516,8 +1604,9 @@ class X402BatchSettlement:
         instructions = self._seal_and_distribute_instructions(
             channel, onchain, parse_pubkey(config.payer_authorizer), voucher.signature, cumulative, voucher.expires_at
         )
-        signatures = await self._submit_groups([instructions], 1)
-        signature = signatures[0] if signatures else ""
+        submitted = await self._submit_groups([_Group(outcome.channel_id, instructions)], 1)
+        submitted.raise_on_failure()
+        signature = submitted.signatures[0] if submitted.signatures else ""
         after = await self._lookup_channel(channel)
         if after is not None and after.status != _CHANNEL_STATUS_DISTRIBUTED:
             raise _err(INVALID_CLOSE_STATE, f"cooperative close confirmed but the channel is in status {after.status}")
@@ -1670,20 +1759,50 @@ class X402BatchSettlement:
             raise _err(INVALID_SETTLEMENT_SIMULATION, f"deposit transaction landed but failed: {status.get('err')}")
         return status.get("confirmationStatus") in ("confirmed", "finalized")
 
-    async def _submit_groups(self, groups: list[list[Instruction]], max_per_tx: int) -> list[str]:
+    async def _submit_groups(self, groups: list[_Group], max_per_tx: int) -> _Submitted:
         """Sign and submit redemption groups, at most ``max_per_tx`` channels per
-        transaction, built in this server's highest accepted version."""
-        signatures: list[str] = []
+        transaction, built in this server's highest accepted version.
+
+        Every transaction is drained: a failure never stops the ones after it.
+        A packed transaction that executed and failed applied nothing, so each
+        of its channels is submitted again alone, and one failing channel does
+        not fail its neighbours. The caller records what landed, then raises
+        :meth:`_Submitted.raise_on_failure`."""
+        result = _Submitted()
+        if not groups:
+            return result
+        size = max(max_per_tx, 1)
+        pending: deque[list[_Group]] = deque(groups[start : start + size] for start in range(0, len(groups), size))
+        result.total = len(pending)
         version = self._tx_version()
-        for start in range(0, len(groups), max(max_per_tx, 1)):
-            instructions = [ix for group in groups[start : start + max_per_tx] for ix in group]
-            hint = await self._rpc.get_latest_blockhash()
-            blockhash = Hash.from_string(str(hint.value.blockhash))
-            wire = await self._sign_redemption(instructions, blockhash, version)
-            sent = await self._rpc.send_raw_transaction(wire)
-            await self._rpc.await_confirmation(str(sent.value))
-            signatures.append(str(sent.value))
-        return signatures
+        while pending:
+            batch = pending.popleft()
+            try:
+                signature = await self._submit_one([ix for group in batch for ix in group.instructions], version)
+            except Exception as exc:  # noqa: BLE001 - every outcome is drained, then reported together
+                if _failed_on_chain(exc) and len(batch) > 1:
+                    _log.warning(
+                        "packed settlement of %d channels failed on-chain; submitting each channel alone: %s",
+                        len(batch),
+                        exc,
+                    )
+                    result.total += len(batch) - 1
+                    pending.extend([group] for group in batch)
+                    continue
+                channels = ", ".join(group.channel_id for group in batch)
+                result.failures.append(f"channels [{channels}]: {exc}")
+                continue
+            result.signatures.append(signature)
+            result.landed.extend(group.channel_id for group in batch)
+        return result
+
+    async def _submit_one(self, instructions: list[Instruction], version: int) -> str:
+        hint = await self._rpc.get_latest_blockhash()
+        blockhash = Hash.from_string(str(hint.value.blockhash))
+        wire = await self._sign_redemption(instructions, blockhash, version)
+        sent = await self._rpc.send_raw_transaction(wire)
+        await self._rpc.await_confirmation(str(sent.value))
+        return str(sent.value)
 
     async def _sign_redemption(self, instructions: list[Instruction], blockhash: Hash, version: int) -> bytes:
         from solders.message import MessageV0  # type: ignore[import-untyped]
@@ -1705,8 +1824,8 @@ class X402BatchSettlement:
     async def claim(self, channel_ids: Sequence[str]) -> list[str]:
         """Advance each channel's onchain ``settled`` watermark to its latest
         stored voucher (program ``settle``). The channels stay open."""
-        groups: list[list[Instruction]] = []
-        claimed: list[tuple[str, int]] = []
+        groups: list[_Group] = []
+        claimed: dict[str, int] = {}
         for channel_id in channel_ids:
             onchain = await self._lookup_channel(parse_pubkey(channel_id))
             if onchain is None or onchain.status != _CHANNEL_STATUS_OPEN or onchain.closure_started_at != 0:
@@ -1716,19 +1835,23 @@ class X402BatchSettlement:
             if state.highest_voucher_signature is None or state.cumulative <= state.settled_on_chain:
                 continue
             groups.append(
-                self._settle_instructions(
-                    parse_pubkey(channel_id),
-                    parse_pubkey(state.payer_authorizer),
-                    state.highest_voucher_signature,
-                    state.cumulative,
-                    state.highest_voucher_expires_at or VOUCHER_EXPIRES_AT,
+                _Group(
+                    channel_id,
+                    self._settle_instructions(
+                        parse_pubkey(channel_id),
+                        parse_pubkey(state.payer_authorizer),
+                        state.highest_voucher_signature,
+                        state.cumulative,
+                        state.highest_voucher_expires_at or VOUCHER_EXPIRES_AT,
+                    ),
                 )
             )
-            claimed.append((channel_id, state.cumulative))
-        signatures = await self._submit_groups(groups, self.redemption_capacity()[0])
-        for channel_id, cumulative in claimed:
-            await self._update_settled(channel_id, cumulative)
-        return signatures
+            claimed[channel_id] = state.cumulative
+        submitted = await self._submit_groups(groups, self.redemption_capacity()[0])
+        for channel_id in submitted.landed:
+            await self._update_settled(channel_id, claimed[channel_id])
+        submitted.raise_on_failure()
+        return submitted.signatures
 
     async def _update_settled(
         self, channel_id: str, settled: int, distributed: int | None = None
@@ -1749,8 +1872,8 @@ class X402BatchSettlement:
     async def settle(self, channel_ids: Sequence[str]) -> list[str]:
         """Pay each channel's newly claimed delta to ``payTo`` (program
         ``distribute``). The channels stay open."""
-        groups: list[list[Instruction]] = []
-        distributed: list[tuple[str, int]] = []
+        groups: list[_Group] = []
+        distributed: dict[str, int] = {}
         for channel_id in channel_ids:
             channel = parse_pubkey(channel_id)
             onchain = await self._lookup_channel(channel)
@@ -1758,67 +1881,199 @@ class X402BatchSettlement:
                 continue
             if onchain.settlement.settled <= onchain.settlement.payout_watermark:
                 continue
-            groups.append([self._distribute_instruction(channel, onchain)])
-            distributed.append((channel_id, onchain.settlement.settled))
-        signatures = await self._submit_groups(groups, self.redemption_capacity()[1])
-        for channel_id, settled in distributed:
-            await self._update_settled(channel_id, settled, settled)
-        return signatures
+            groups.append(_Group(channel_id, [self._distribute_instruction(channel, onchain)]))
+            distributed[channel_id] = onchain.settlement.settled
+        submitted = await self._submit_groups(groups, self.redemption_capacity()[1])
+        for channel_id in submitted.landed:
+            await self._update_settled(channel_id, distributed[channel_id], distributed[channel_id])
+        submitted.raise_on_failure()
+        return submitted.signatures
 
     async def finalize_close(self, channel_ids: Sequence[str]) -> list[str]:
-        """Seal each channel its payer started closing with this server's latest
-        voucher (``settle_and_seal``) and distribute it, inside the grace period.
-        A channel with a paid request still reserved is skipped until it settles."""
-        groups: list[list[Instruction]] = []
-        sealed: list[tuple[str, int]] = []
+        """Finalize channels the payer moved to ``Closing``.
+
+        Inside the grace period, a voucher above the onchain ``settled`` is
+        applied with ``settle_and_seal``; with nothing to apply the channel is
+        left for the permissionless path. Past ``closure_started_at +
+        grace_period`` the program refuses any voucher, so the channel is
+        sealed permissionlessly (``seal``) at the frozen watermark. Either way
+        the sealed ``distribute`` follows in the same transaction, unless the
+        payer's refund account cannot take a due refund (see
+        :meth:`_distribute_cleared`). A channel another crank already sealed
+        gets only its ``distribute``.
+
+        The close is recorded and the plan chosen in one store transition
+        (:meth:`_plan_close`): a reservation still inside its lease defers the
+        seal, and a chosen seal fences the record so no later commit lands
+        above it. One channel per transaction; a failing channel does not
+        strand the others, and the records of those that landed are updated
+        before the failures are raised together."""
         now = self._clock()
+        groups: list[_Group] = []
+        applied: dict[str, int] = {}
+        already_distributed: list[str] = []
         for channel_id in channel_ids:
             channel = parse_pubkey(channel_id)
             onchain = await self._lookup_channel(channel)
             if onchain is None:
                 continue
+            if onchain.status == _CHANNEL_STATUS_DISTRIBUTED:
+                already_distributed.append(channel_id)
+                continue
             if onchain.status == _CHANNEL_STATUS_SEALED:
-                groups.append([self._distribute_instruction(channel, onchain)])
+                # A permissionless seal may have landed after an earlier pass,
+                # or an earlier pass sealed and deferred the distribute.
+                sealed_at = await self._first_sealed_at(channel_id, now)
+                if await self._distribute_cleared(channel_id, onchain, onchain.settlement.settled, sealed_at, now):
+                    groups.append(_Group(channel_id, [self._distribute_instruction(channel, onchain)]))
                 continue
             if onchain.status != _CHANNEL_STATUS_CLOSING:
                 continue
-            state = await self._store.get(channel_id)
-            if state is None or any(not p.handler_succeeded and p.expires_at > now for p in state.pending):
+            past_deadline = now >= onchain.closure_started_at + onchain.grace_period
+            chosen = await self._plan_close(
+                channel_id, onchain.closure_started_at, onchain.settlement.settled, past_deadline, now
+            )
+            if chosen is None and not past_deadline:
                 continue
-            cumulative = max(state.cumulative, onchain.settlement.settled)
-            closed_at = max(onchain.closure_started_at, 1)
+            plan = None if chosen is None else chosen[0]
+            kind = GraceSealKind.SEAL_FROZEN if plan is None else plan.kind
+            if kind is GraceSealKind.IN_FLIGHT:
+                _log.info(
+                    "channel %s is closing with a request in flight%s; deferring the seal",
+                    channel_id,
+                    " past the grace deadline" if past_deadline else "",
+                )
+                continue
+            if kind is GraceSealKind.NOTHING_TO_APPLY:
+                continue
+            if kind is GraceSealKind.SEAL_FROZEN:
+                settled = onchain.settlement.settled
+                instructions = [build_seal_instruction(channel=channel, program_id=self._program_id)]
+            else:
+                assert chosen is not None and plan is not None
+                state = chosen[1]
+                settled = plan.cumulative
+                instructions = build_settle_and_seal_instructions(
+                    payee=self._fee_payer,
+                    channel=channel,
+                    authorized_signer=parse_pubkey(state.payer_authorizer),
+                    signature=bytes(Signature.from_string(plan.signature)),
+                    cumulative=plan.cumulative,
+                    expires_at=plan.expires_at,
+                    program_id=self._program_id,
+                )
+                applied[channel_id] = plan.cumulative
+            if await self._distribute_cleared(channel_id, onchain, settled, now, now):
+                instructions.append(self._distribute_instruction(channel, onchain))
+            groups.append(_Group(channel_id, instructions))
+        submitted = await self._submit_groups(groups, 1)
+        for channel_id in [*submitted.landed, *already_distributed]:
 
-            def freeze(
-                record: BatchChannelRecord | None, cumulative: int = cumulative, closed_at: int = closed_at
+            def mark(
+                record: BatchChannelRecord | None, watermark: int | None = applied.get(channel_id)
             ) -> BatchChannelRecord | None:
                 if record is None:
-                    raise BatchStoreError("channel not found")
-                record.close_requested_at = record.close_requested_at or closed_at
-                record.final_cumulative = cumulative
-                return record
-
-            await self._store.update(channel_id, freeze)
-            groups.append(
-                self._seal_and_distribute_instructions(
-                    channel,
-                    onchain,
-                    parse_pubkey(state.payer_authorizer),
-                    state.highest_voucher_signature,
-                    cumulative,
-                    state.highest_voucher_expires_at or VOUCHER_EXPIRES_AT,
-                )
-            )
-            sealed.append((channel_id, cumulative))
-        signatures = await self._submit_groups(groups, 1)
-        for channel_id, cumulative in sealed:
-
-            def mark(record: BatchChannelRecord | None, cumulative: int = cumulative) -> BatchChannelRecord | None:
-                if record is None:
-                    raise BatchStoreError("channel not found")
+                    return None
                 record.sealed = True
-                record.sealed_at = record.sealed_at or self._clock()
-                record.settled_on_chain = max(record.settled_on_chain, cumulative)
+                record.sealed_at = record.sealed_at or now
+                if watermark is not None:
+                    record.settled_on_chain = max(record.settled_on_chain, watermark)
+                record.last_activity_at = now
                 return record
 
             await self._store.update(channel_id, mark)
-        return signatures
+        submitted.raise_on_failure()
+        return submitted.signatures
+
+    async def _plan_close(
+        self, channel_id: str, closure_started_at: int, onchain_settled: int, past_deadline: bool, now: int
+    ) -> tuple[GraceSealPlan, BatchChannelRecord] | None:
+        """Record the payer's close and choose the finalizer's plan in one
+        atomic store transition; ``None`` for a channel this store never knew.
+
+        Choosing a seal (``APPLY``, ``SEAL_FROZEN``) fences the watermark at the
+        amount the seal carries, so a commit delayed across its lease expiry
+        finds the fence and is refused. Plans that do not seal leave the record
+        open for the next pass (the recorded close already refuses new
+        reservations on every replica)."""
+        closed_at = closure_started_at if closure_started_at > 0 else now
+        chosen: list[tuple[GraceSealPlan, BatchChannelRecord]] = []
+
+        def mutate(record: BatchChannelRecord | None) -> BatchChannelRecord | None:
+            if record is None:
+                return None
+            record.close_requested_at = record.close_requested_at or max(closed_at, 1)
+            plan = grace_seal_plan(record, onchain_settled, past_deadline, now)
+            if plan.kind is GraceSealKind.APPLY:
+                record.final_cumulative = plan.cumulative
+            elif plan.kind is GraceSealKind.SEAL_FROZEN:
+                record.final_cumulative = onchain_settled
+            chosen.append((plan, record))
+            return record
+
+        await self._store.update(channel_id, mutate)
+        return chosen[0] if chosen else None
+
+    async def _first_sealed_at(self, channel_id: str, now: int) -> int:
+        """When this server first saw ``channel_id`` sealed, recording ``now``
+        when it had not; ``now`` for a channel this store has no record of."""
+
+        def mutate(record: BatchChannelRecord | None) -> BatchChannelRecord | None:
+            if record is not None:
+                record.sealed_at = record.sealed_at or now
+            return record
+
+        updated = await self._store.update(channel_id, mutate)
+        return updated.sealed_at if updated is not None and updated.sealed_at is not None else now
+
+    async def _distribute_cleared(
+        self, channel_id: str, onchain: Channel, settled: int, sealed_at: int, now: int
+    ) -> bool:
+        """Whether the sealed ``distribute`` of a channel sealed at ``settled``
+        (at ``sealed_at``) may run now.
+
+        The program forfeits a due refund to the treasury when the payer's
+        token account cannot take it, so such a channel is sealed without its
+        distribute and a later pass retries: as soon as the account is usable
+        or the payer withdrew, and anyway once the channel has been sealed for
+        its grace period, so the payer cannot hold the payout hostage."""
+        if onchain.payer_withdrawn_at != 0:
+            return True
+        refund = onchain.deposit - max(settled, onchain.settlement.settled)
+        if refund <= 0:
+            return True
+        payer = Pubkey.from_bytes(onchain.payer.to_bytes())
+        mint, token_program = self.mint(), self.token_program()
+        address, _ = find_associated_token_address(payer, mint, token_program)
+        try:
+            account = await self._get_account(address)
+        except Exception as exc:  # noqa: BLE001
+            raise BatchServerError(f"payer refund account {address}: {exc}") from exc
+        reason = (
+            "does not exist"
+            if account is None
+            else unusable_settlement_account(account[1], account[0], payer, mint, token_program)
+        )
+        if reason is None:
+            return True
+        until = sealed_at + onchain.grace_period
+        if now >= until:
+            _log.warning(
+                "channel %s: payer refund account %s %s past the deadline; distributing, the %d refund goes to "
+                "the treasury",
+                channel_id,
+                address,
+                reason,
+                refund,
+            )
+            return True
+        _log.warning(
+            "channel %s: payer refund account %s %s; sealing without distributing the %d refund until it can be "
+            "paid, or until %d",
+            channel_id,
+            address,
+            reason,
+            refund,
+            until,
+        )
+        return False

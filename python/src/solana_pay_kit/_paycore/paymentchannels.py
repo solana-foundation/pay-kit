@@ -42,6 +42,7 @@ from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import C
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.distribute import distribute
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.open import open as open_channel
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.reclaim import reclaim
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.seal import seal
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.settle_and_seal import settle_and_seal
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.top_up import top_up
 from solana_pay_kit.protocols.programs.paymentchannels.shared.instruction import AccountMeta as ProgramAccountMeta
@@ -75,6 +76,7 @@ __all__ = [
     "build_ed25519_verify_instruction",
     "build_open_instruction",
     "build_reclaim_instruction",
+    "build_seal_instruction",
     "build_settle_and_seal_instructions",
     "build_top_up_instruction",
     "decode_channel_account",
@@ -661,6 +663,17 @@ def build_distribute_instruction(
         ),
         program_id,
     )
+
+
+def build_seal_instruction(*, channel: Pubkey, program_id: Pubkey = PROGRAM_ID) -> Instruction:
+    """Build the permissionless ``seal`` instruction.
+
+    The program accepts it for a ``Closing`` channel once
+    ``closure_started_at + grace_period`` has passed, sealing at the frozen
+    onchain ``settled`` watermark (no voucher). Mirrors the Rust
+    ``build_seal_instruction``.
+    """
+    return _solders_instruction(seal(channel=_program_key(channel)), program_id)
 
 
 def build_reclaim_instruction(
