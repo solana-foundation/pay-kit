@@ -12,9 +12,6 @@
 //     grace-period settlement window and the single recorded close.
 //   - client: the challenge checks the open builder makes before signing.
 
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
-
 import {
     createSignableMessage,
     generateKeyPairSigner,
@@ -26,9 +23,12 @@ import {
     getTransactionEncoder,
     type KeyPairSigner,
 } from '@solana/kit';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { buildOpenPaymentChannelTransaction } from '../client/PaymentChannels.js';
+import { type ClusterRpcStub, stubClusterRpc } from './cluster-rpc-stub.js';
+
+import { buildOpenPaymentChannelTransaction, createPaymentChannelSessionOpener } from '../client/PaymentChannels.js';
+import { DEFAULT_RPC_URLS } from '../constants.js';
 import { type SessionRequest, signSessionAuthentication } from '../client/Session.js';
 import { createSessionServer } from '../server/Session.js';
 import {
@@ -39,6 +39,16 @@ import {
 import { type ChannelState, createMemorySessionStore, type SessionStore } from '../server/session/store.js';
 import { buildAndSignWireTransaction } from '../server/session/wire-tx.js';
 import { encodeVoucherMessageLoose, verifyVoucherSignature } from '../shared/voucher.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+let clusterRpc: ClusterRpcStub;
+beforeEach(() => {
+    clusterRpc = stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const USDC_DEVNET_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
@@ -673,43 +683,55 @@ describe('client open builder challenge checks', () => {
     });
 
     describe('with the client cluster RPC', () => {
-        let live = true;
-        let rpcUrl = '';
-        const server = createServer((req, res) => {
-            let body = '';
-            req.on('data', chunk => (body += chunk));
-            req.on('end', () => {
-                const { id, method } = JSON.parse(body) as { id: number; method: string };
-                res.setHeader('content-type', 'application/json');
-                if (method === 'isBlockhashValid') {
-                    res.end(JSON.stringify({ id, jsonrpc: '2.0', result: { context: { slot: 1 }, value: live } }));
-                } else {
-                    res.end(JSON.stringify({ error: { code: -32601, message: 'unsupported' }, id, jsonrpc: '2.0' }));
-                }
+        const build = (k: Awaited<ReturnType<typeof keys>>, rpcUrl?: string) =>
+            buildOpenPaymentChannelTransaction({
+                authorizedSigner: k.sessionSigner.address,
+                deposit: 1_000n,
+                request: openRequest(k),
+                ...(rpcUrl ? { rpcUrl } : {}),
+                signer: k.payer,
             });
-        });
-        beforeAll(async () => {
-            await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-            rpcUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-        });
-        afterAll(() => {
-            server.close();
-        });
 
         test('a live challenged blockhash builds; a foreign one is refused before signing', async () => {
             const k = await keys();
-            const build = () =>
+            const rpcUrl = 'http://cluster.test:8899';
+            await expect(build(k, rpcUrl)).resolves.toMatchObject({ payer: k.payer.address });
+            expect(clusterRpc.checks.at(-1)?.url).toBe(rpcUrl);
+            clusterRpc.live = false;
+            await expect(build(k, rpcUrl)).rejects.toThrow(/is not a live blockhash on the client's cluster/);
+        });
+
+        test('the check runs by default against the challenged network RPC', async () => {
+            const k = await keys();
+            await expect(build(k)).resolves.toMatchObject({ payer: k.payer.address });
+            expect(clusterRpc.checks).toEqual([{ blockhash: BLOCKHASH, url: DEFAULT_RPC_URLS.devnet }]);
+            clusterRpc.live = false;
+            await expect(build(k)).rejects.toThrow(/is not a live blockhash on the client's cluster/);
+        });
+
+        test('the session opener runs the check by default too', async () => {
+            const k = await keys();
+            clusterRpc.live = false;
+            const opener = createPaymentChannelSessionOpener({ signer: k.payer });
+            await expect(
+                opener({ challenge: { id: 'challenge-1', request: openRequest(k) } } as never),
+            ).rejects.toThrow(/is not a live blockhash on the client's cluster/);
+            expect(clusterRpc.checks).toHaveLength(1);
+        });
+
+        test("an explicit blockhash override is the caller's own and skips the check", async () => {
+            const k = await keys();
+            clusterRpc.live = false;
+            await expect(
                 buildOpenPaymentChannelTransaction({
                     authorizedSigner: k.sessionSigner.address,
                     deposit: 1_000n,
+                    recentBlockhash: BLOCKHASH,
                     request: openRequest(k),
-                    rpcUrl,
                     signer: k.payer,
-                });
-            live = true;
-            await expect(build()).resolves.toMatchObject({ payer: k.payer.address });
-            live = false;
-            await expect(build()).rejects.toThrow(/is not a live blockhash on the client's cluster/);
+                }),
+            ).resolves.toMatchObject({ payer: k.payer.address });
+            expect(clusterRpc.checks).toHaveLength(0);
         });
     });
 });

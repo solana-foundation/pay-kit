@@ -15,13 +15,23 @@
 
 import {
     address,
+    appendTransactionMessageInstructions,
+    type Blockhash,
+    compileTransaction,
+    createTransactionMessage,
     generateKeyPairSigner,
+    getBase64EncodedWireTransaction,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
     getCompiledTransactionMessageEncoder,
     getTransactionDecoder,
     getTransactionEncoder,
     type KeyPairSigner,
+    partiallySignTransaction,
+    pipe,
+    setTransactionMessageFeePayer,
+    setTransactionMessageLifetimeUsingBlockhash,
+    verifySignature,
 } from '@solana/kit';
 import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { findAssociatedTokenPda } from '@solana-program/token';
@@ -602,6 +612,116 @@ describe('session() verify() topUp', () => {
             ),
         ).rejects.toThrow(/failed on-chain/);
         expect(sent).toHaveLength(1);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
+    });
+});
+
+// ── verify() — sponsored topUp ──────────────────────────────────────────
+
+/**
+ * A top-up whose fee payer is the channel's sponsor, signed by the channel
+ * payer only: the sponsor's slot is left for the server to co-sign.
+ */
+async function buildSponsoredTopUpWire(f: Fixture, sponsor: KeyPairSigner, amount: bigint): Promise<string> {
+    const instruction = await buildTopUpInstruction({
+        amount,
+        channelId: f.channel.address,
+        mint: USDC_DEVNET_MINT,
+        payer: f.payer,
+        tokenProgram: TOKEN_PROGRAM,
+    });
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        m => setTransactionMessageFeePayer(sponsor.address, m),
+        m =>
+            setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: BLOCKHASH as Blockhash, lastValidBlockHeight: 100n },
+                m,
+            ),
+        m => appendTransactionMessageInstructions([instruction], m),
+    );
+    const signed = await partiallySignTransaction([f.payer.keyPair], compileTransaction(message));
+    return getBase64EncodedWireTransaction(signed);
+}
+
+describe('session() verify() sponsored topUp', () => {
+    async function sponsoredFixture() {
+        const f = await makeFixture();
+        const sponsor = await generateKeyPairSigner();
+        const mock = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, mock.rpc, { feePayer: true, feePayerSigner: sponsor });
+        await seedChannel(f, { rentPayer: sponsor.address });
+        const credential = (transaction: string) =>
+            makeCred(f, { action: 'topUp', additionalAmount: '4000', channelId: f.channel.address, transaction });
+        return { ...mock, credential, f, method, sponsor };
+    }
+
+    test('the sponsor co-signs the client top-up before broadcast', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+        const clientTx = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        expect(clientTx.signatures[sponsor.address]).toBeNull();
+
+        const receipt = await verify(method, credential(wire));
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const broadcast = getTransactionDecoder().decode(getBase64Codec().encode(sent[0]!));
+        // Same message, now carrying a valid sponsor signature next to the payer's.
+        expect(broadcast.messageBytes).toEqual(clientTx.messageBytes);
+        const sponsorSignature = broadcast.signatures[sponsor.address];
+        expect(sponsorSignature).toBeTruthy();
+        expect(
+            await verifySignature(sponsor.keyPair.publicKey, sponsorSignature as never, broadcast.messageBytes),
+        ).toBe(true);
+        expect(
+            await verifySignature(
+                f.payer.keyPair.publicKey,
+                broadcast.signatures[f.payer.address] as never,
+                broadcast.messageBytes,
+            ),
+        ).toBe(true);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(5_000n);
+    });
+
+    test('a resubmitted sponsored top-up credits the deposit exactly once', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+
+        await verify(method, credential(wire));
+        const replay = await verify(method, credential(wire));
+        expect(replay.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.deposit).toBe(5_000n);
+        expect(state?.processedTopUpSignatures).toHaveLength(1);
+    });
+
+    test('a pre-filled sponsor signature slot is refused before broadcast', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        const prefilled = getBase64Codec().decode(
+            getTransactionEncoder().encode({
+                messageBytes: tx.messageBytes,
+                signatures: { ...tx.signatures, [sponsor.address]: new Uint8Array(64).fill(7) } as never,
+            }),
+        );
+
+        await expect(verify(method, credential(prefilled))).rejects.toThrow(
+            /fee-payer signature slot must be empty before server co-signing/,
+        );
+        expect(sent).toHaveLength(0);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
+    });
+
+    test('a top-up the client paid for itself under a sponsored channel is refused', async () => {
+        const { credential, f, method, rpc, sent } = await sponsoredFixture();
+        const selfPaid = await buildTopUpWire(f, rpc, 4_000n);
+
+        await expect(verify(method, credential(selfPaid))).rejects.toThrow(
+            /fee payer does not match the challenge policy/,
+        );
+        expect(sent).toHaveLength(0);
         expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
     });
 });

@@ -22,7 +22,9 @@ import {
     getTransactionDecoder,
     getProgramDerivedAddress,
 } from '@solana/kit';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { stubClusterRpc } from './cluster-rpc-stub.js';
 
 import { buildOpenPaymentChannelTransaction, derivePaymentChannelOpen } from '../client/PaymentChannels.js';
 import { session as clientSession, type SessionRequest } from '../client/Session.js';
@@ -33,6 +35,15 @@ import {
     PAYMENT_CHANNELS_PROGRAM_ID,
     verifyOpenTx,
 } from '../server/session/on-chain.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+beforeEach(() => {
+    stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 // resolveStablecoinMint('USDC', 'devnet')

@@ -34,6 +34,7 @@ import type {
     SignedVoucher,
 } from '../shared/session-types.js';
 import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
+import { coSignBase64Transaction } from '../utils/transactions.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     deriveChannelAddress,
@@ -1449,17 +1450,27 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     }
     // Idempotent replay: this exact transaction was already credited, so
     // report success without re-broadcasting (a re-broadcast of a landed
-    // transaction fails at preflight).
-    const topUpSignature = transactionSignatureFromWire(payload.transaction) as unknown as string;
+    // transaction fails at preflight). The transaction id is the fee
+    // payer's signature, so a sponsored top-up (fee-payer slot left for the
+    // server) is identified only after the sponsor co-signs it below.
     const stored = await config.store.getChannel(payload.channelId);
-    if (stored?.processedTopUpSignatures?.includes(topUpSignature)) {
-        // txHash is reserved for the close receipt's settlement signature
-        // (draft-solana-session-00 receipt table); a top-up does not settle
-        // on-chain funds itself, so it carries no txHash.
-        return sessionReceipt(stored, receiptOptions);
-    }
+    const replayed = (signature: string): boolean => stored?.processedTopUpSignatures?.includes(signature) ?? false;
+    // txHash is reserved for the close receipt's settlement signature
+    // (draft-solana-session-00 receipt table); a top-up does not settle
+    // on-chain funds itself, so it carries no txHash.
+    const clientSignature = feePayerSignatureFromWire(payload.transaction);
+    if (stored && clientSignature && replayed(clientSignature)) return sessionReceipt(stored, receiptOptions);
 
     const { additionalAmount, existing, sponsor } = await prepareTopUp(config, payload);
+
+    // A sponsored top-up is co-signed only after `prepareTopUp` verified it
+    // (sponsor as fee payer, its slot empty, every client signature valid).
+    const transaction =
+        sponsor && config.feePayerSigner
+            ? await coSignBase64Transaction(config.feePayerSigner, payload.transaction)
+            : payload.transaction;
+    const topUpSignature = transactionSignatureFromWire(transaction) as unknown as string;
+    if (stored && replayed(topUpSignature)) return sessionReceipt(stored, receiptOptions);
 
     await submitTopUpTx({
         additionalAmount,
@@ -1467,9 +1478,8 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         channelProgram: config.resolvedProgramId.toString(),
         currentDeposit: existing.deposit,
         payer: existing.payer,
-        payerSigner: sponsor ? config.feePayerSigner : undefined,
         rpc: config.rpc as SubmitOpenRpc,
-        transaction: payload.transaction,
+        transaction,
     });
 
     const result = await config.store.updateChannel(payload.channelId, current => {
@@ -2141,5 +2151,14 @@ export declare namespace session {
         readonly unitType?: string;
         /** Voucher signing authority advertised by this session. */
         readonly voucherSigner?: SessionVoucherSigner;
+    }
+}
+
+/** The fee payer's signature (the transaction id) of a wire transaction, or `undefined` while its slot is empty. */
+function feePayerSignatureFromWire(transaction: string): string | undefined {
+    try {
+        return transactionSignatureFromWire(transaction) as unknown as string;
+    } catch {
+        return undefined;
     }
 }

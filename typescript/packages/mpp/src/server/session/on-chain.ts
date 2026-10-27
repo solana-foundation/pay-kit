@@ -648,10 +648,14 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             computeBudgetIxs.push(ix);
             continue;
         }
+        // Every non-ComputeBudget instruction must be the single expected
+        // open: a second payment-channels instruction (another discriminator,
+        // empty data, or a second open) would ride along under the sponsor's
+        // co-signature. Mirrors the Rust SessionServer instruction allowlist.
         // Some decoders omit `data` entirely for empty instruction data.
-        if (!ix.data || ix.data.length < 1) continue;
-        if (ix.data[0] !== OPEN_DISCRIMINATOR) continue;
-        if (openIx) throw new Error('verifyOpenTx: transaction contains more than one open instruction');
+        if (!ix.data || ix.data.length < 1 || ix.data[0] !== OPEN_DISCRIMINATOR || openIx) {
+            throw new Error('verifyOpenTx: open transaction contains an unexpected instruction');
+        }
         openIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
     }
     if (!openIx) {

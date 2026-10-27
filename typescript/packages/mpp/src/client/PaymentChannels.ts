@@ -23,6 +23,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
+    DEFAULT_RPC_URLS,
     defaultTokenProgramForCurrency,
     normalizeNetwork,
     resolveStablecoinMint,
@@ -116,9 +117,11 @@ export async function buildOpenPaymentChannelTransaction(
     const recentBlockhash = resolveOpenBlockhash(parameters.recentBlockhash, request);
     // The challenged blockhash must be live on the cluster the client pays
     // on: an open signed over another cluster's blockhash would be valid
-    // there. An explicit override is the caller's own blockhash.
-    if (!parameters.recentBlockhash && parameters.rpcUrl) {
-        await assertLiveChallengeBlockhash(parameters.rpcUrl, recentBlockhash);
+    // there. The check is mandatory (Rust `OpenBlockhash::verify`): without
+    // an explicit `rpcUrl` it runs against the challenged network's default
+    // RPC. An explicit override is the caller's own blockhash.
+    if (!parameters.recentBlockhash) {
+        await assertLiveChallengeBlockhash(resolveClusterRpcUrl(parameters.rpcUrl, request), recentBlockhash);
     }
     const open = await preparePaymentChannelOpen({
         ...parameters,
@@ -320,10 +323,11 @@ export declare namespace buildOpenPaymentChannelTransaction {
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         readonly request: SessionRequest;
         /**
-         * RPC of the cluster the client pays on. When set, the challenged
+         * RPC of the cluster the client pays on. The challenged
          * `recentBlockhash` must be live there (`isBlockhashValid`) before
-         * the open is signed; the blockhash and slot themselves always come
-         * from the challenge.
+         * the open is signed; defaults to the challenged network's public
+         * RPC. The blockhash and slot themselves always come from the
+         * challenge.
          */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
@@ -351,10 +355,11 @@ export declare namespace createPaymentChannelSessionOpener {
         readonly recentBlockhash?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         /**
-         * RPC of the cluster the client pays on. When set, the challenged
+         * RPC of the cluster the client pays on. The challenged
          * `recentBlockhash` must be live there (`isBlockhashValid`) before
-         * the open is signed; the blockhash and slot themselves always come
-         * from the challenge.
+         * the open is signed; defaults to the challenged network's public
+         * RPC. The blockhash and slot themselves always come from the
+         * challenge.
          */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
@@ -502,6 +507,13 @@ function validateSessionChallenge(request: SessionRequest): void {
     if (details.gracePeriodSeconds === 0) {
         throw new Error('session challenge gracePeriodSeconds must be greater than zero');
     }
+}
+
+/** The client's cluster RPC: the explicit `rpcUrl`, else the challenged network's default. */
+function resolveClusterRpcUrl(rpcUrl: string | undefined, request: SessionRequest): string {
+    if (rpcUrl) return rpcUrl;
+    const network = normalizeNetwork(request.methodDetails.network ?? 'mainnet');
+    return DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS.mainnet;
 }
 
 /** Refuse a challenged blockhash the client's own cluster does not know as live. */
