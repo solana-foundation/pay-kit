@@ -13,7 +13,7 @@ import time
 from dataclasses import replace
 
 import pytest
-from solana_keychain import MemorySigner
+from solana_keychain import MemorySigner, SignedTransaction
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.instruction import AccountMeta, Instruction  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -151,6 +151,34 @@ async def test_sponsored_open_is_cosigned_in_memory() -> None:
     assert _decoded(payload).signatures[0] == Signature.default()
     await session_testkit.verify_open_pre_broadcast(server, payload, _context())
     cosigned = await cosign_session_transaction(base64.b64decode(payload.transaction), MemorySigner(SPONSOR))
+    verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+
+
+class _TransactionOnlySigner:
+    """A remote backend that signs transactions but refuses arbitrary messages."""
+
+    def __init__(self, backend: MemorySigner) -> None:
+        self._backend = backend
+
+    @property
+    def pubkey(self) -> Pubkey:
+        return self._backend.pubkey
+
+    async def is_available(self) -> bool:
+        return True
+
+    async def sign_message(self, message: bytes) -> Signature:
+        raise AssertionError("a version-0 co-sign must not request a message signature")
+
+    async def sign_transaction(self, transaction: VersionedTransaction) -> SignedTransaction:
+        return await self._backend.sign_transaction(transaction)
+
+
+async def test_sponsored_open_cosigns_with_a_transaction_only_signer() -> None:
+    server = _server(_sponsored())
+    payload = await _open(server)
+    signer = _TransactionOnlySigner(MemorySigner(SPONSOR))
+    cosigned = await cosign_session_transaction(base64.b64decode(payload.transaction), signer)  # type: ignore[arg-type]
     verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
 
 

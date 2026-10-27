@@ -34,6 +34,7 @@ from solana_pay_kit._paycore.transaction import (
 )
 from solana_pay_kit._paycore.txv1 import (
     DEFAULT_ACCEPTED_VERSIONS,
+    TransactionV1,
     TransactionVersionError,
     check_envelope,
     check_v0_budget_caps,
@@ -530,11 +531,18 @@ def verify_channel_privileges(message: Any, expected: Any, fee_payer: Pubkey) ->
 async def cosign_session_transaction(raw: bytes, fee_payer_signer: TransactionSigner) -> bytes:
     """Fill the fee payer's (slot 0) signature on a client-signed session
     transaction, in memory, for every transaction version. The caller has
-    already verified the client's signatures and that slot 0 is this key."""
+    already verified the client's signatures and that slot 0 is this key.
+
+    Version 0 goes through ``sign_transaction`` so transaction-only signers
+    (remote backends that refuse arbitrary messages) keep working; solders
+    cannot represent version 1, so it signs the exact message bytes."""
     tx = decode_any_transaction(raw)
     keys = list(tx.message.account_keys)
     if not keys or keys[0] != fee_payer_signer.pubkey:
         raise PaymentError("session fee payer is not the transaction fee payer", code="invalid-payload")
+    if not isinstance(tx, TransactionV1):
+        signed = await fee_payer_signer.sign_transaction(tx)
+        return bytes(signed.transaction)
     signature = await fee_payer_signer.sign_message(signed_message_bytes(tx.message))
     signatures = list(tx.signatures)
     signatures[0] = signature if isinstance(signature, Signature) else Signature.from_bytes(bytes(signature))
