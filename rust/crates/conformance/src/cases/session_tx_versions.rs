@@ -3,12 +3,12 @@
 //! (`external/mpp-specs-txv1`, solana-foundation/mpp-specs
 //! feat/solana-transaction-versions).
 //!
-//! Single-shot coverage is the challenge wire: the session request parsed and
-//! re-encoded through the SDK's own session schema (`sessionWire`). The
-//! version admission of client-submitted `open` and `topUp` transactions
-//! needs a session open/topUp verify mode (a session server configured from
-//! the vector plus a built open transaction) that the vector ABI does not
-//! have yet; see the branch report.
+//! Three layers: the challenge wire (the session request parsed and
+//! re-encoded through the SDK's own session schema, `sessionWire`), the
+//! server's version admission of a client-submitted `open`
+//! (`sessionOpenVerify`), and the client's version negotiation when it
+//! builds that `open` (`sessionOpenBuild`): the highest advertised version
+//! its signer can sign, refused before signing when there is none.
 
 use serde_json::{json, Value};
 
@@ -17,6 +17,7 @@ use crate::case::{
     SessionOpenSpec, SpecRef, Suite,
 };
 use crate::mutate::Mutation;
+use crate::realize::session::{Authorized, BuildRecipe, Edit, Server};
 use crate::tx::MessageFormat;
 
 const SESSION: &str = "mpp-specs-txv1/specs/methods/solana/draft-solana-session-00.md";
@@ -180,6 +181,106 @@ fn open_case(
 
 const LIMIT_IX: &[u8] = &[2, 0x40, 0x0d, 0x03, 0x00];
 
+const BUILD_ADVERTISED: &str = "MPPTX-d180d03a99";
+
+fn build_spec() -> SpecRef {
+    spec(
+        SESSION,
+        "Transaction Versions",
+        "Clients MUST build one of the advertised versions and SHOULD build the highest one their signer can produce.",
+    )
+}
+
+/// The session server of the client build vectors, advertising `versions`
+/// (`None`: the field omitted, so `[0]`). The kit server takes `[0]` or
+/// `[0, 1]`; a challenge advertising anything else is that server's
+/// challenge with `methodDetails.transactionVersions` edited.
+fn build_server(versions: Option<&[u8]>, sponsored: bool) -> Server {
+    Server {
+        sponsored,
+        transaction_versions: versions.map(<[u8]>::to_vec),
+        ..Server::default()
+    }
+}
+
+fn build_recipe(server: Server) -> BuildRecipe {
+    BuildRecipe {
+        server,
+        authorized: Authorized::SessionKey,
+        edits: vec![],
+        client_blockhash: None,
+        signer_max_version: None,
+    }
+}
+
+/// The challenge of `server` with its advertisement replaced by `versions`.
+fn advertising(server: Server, versions: Value) -> BuildRecipe {
+    BuildRecipe {
+        edits: vec![Edit::Set("/methodDetails/transactionVersions", versions)],
+        ..build_recipe(server)
+    }
+}
+
+fn signer_max(recipe: BuildRecipe, version: u8) -> BuildRecipe {
+    BuildRecipe {
+        signer_max_version: Some(version),
+        ..recipe
+    }
+}
+
+fn build_case(
+    id: &str,
+    reqs: &[&str],
+    description: &str,
+    recipe: BuildRecipe,
+    expect: Expect,
+) -> CaseBuilder {
+    let mut notes = Vec::new();
+    if !recipe.edits.is_empty() {
+        let edits: Vec<String> = recipe.edits.iter().map(Edit::describe).collect();
+        notes.push(format!(
+            "Challenge edit: {}.",
+            edits.join("; ").replace("credential ", "challenge ")
+        ));
+    }
+    if let Some(max) = recipe.signer_max_version {
+        notes.push(format!(
+            "The signer signs up to version {max} (input.signerMaxTransactionVersion)."
+        ));
+    }
+    let description = std::iter::once(description.to_string())
+        .chain(notes)
+        .collect::<Vec<_>>()
+        .join(" ");
+    CaseBuilder::new(
+        id,
+        FILE,
+        Suite::Session,
+        Intent::Session,
+        Mode::BuildTransaction,
+        Role::Client,
+        BugType::Defaults,
+        build_spec(),
+        &description,
+        Input::SessionBuild(Box::new(recipe)),
+        expect,
+    )
+    .requirements(reqs)
+}
+
+/// What a version build vector pins: the message version, the fee payer,
+/// the blockhash and the signature slots (the build judge also compares the
+/// message, version-1 header config included, with the kit's build).
+fn built() -> Expect {
+    Expect::Accept(Pin::ExactBytes(vec![
+        "messageVersion",
+        "channelId",
+        "feePayer",
+        "recentBlockhash",
+        "signatureSlots",
+    ]))
+}
+
 crate::registry! {
     session_open_v1_advertised_accept => open_case(
         "session-open-v1-advertised-accept",
@@ -264,6 +365,64 @@ crate::registry! {
         None,
         Some(Mutation::V1PriorityFee { lamports: 10_000_000 }),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+    ).build();
+
+    // ── client build negotiation ───────────────────────────────────────────
+    session_build_v1_advertised => build_case(
+        "session-build-v1-advertised",
+        &[BUILD_ADVERTISED, V1_LIMITS_SET, V1_NO_BUDGET_IX],
+        "The session challenge advertises transactionVersions [0, 1] and the signer is unrestricted: the client builds the highest advertised version, a version-1 open with its compute budget (computeUnitLimit, loadedAccountsDataSizeLimit) in the message header and no ComputeBudget instruction. The kit's session server admits it.",
+        build_recipe(build_server(Some(&[0, 1]), false)),
+        built(),
+    ).build();
+    session_build_v1_only_advertised => build_case(
+        "session-build-v1-only-advertised",
+        &[BUILD_ADVERTISED, V1_LIMITS_SET, V1_NO_BUDGET_IX],
+        "The session challenge advertises [1] only: the client MUST build a version-1 open (version 0 is not advertised). The judge's server accepts [0, 1].",
+        advertising(build_server(Some(&[0, 1]), false), json!([1])),
+        built(),
+    ).build();
+    session_build_v0_only_advertised => build_case(
+        "session-build-v0-only-advertised",
+        &[BUILD_ADVERTISED],
+        "The session challenge advertises [0] explicitly: the client builds a version-0 open even though it could build version 1.",
+        advertising(build_server(None, false), json!([0])),
+        built(),
+    ).build();
+    session_build_absent_builds_v0 => build_case(
+        "session-build-absent-builds-v0",
+        &[BUILD_ADVERTISED],
+        "transactionVersions absent: the server accepts version 0 only, so the client builds a version-0 open. A client that builds version 1 here sends a version the server never advertised.",
+        build_recipe(build_server(None, false)),
+        built(),
+    ).build();
+    session_build_v1_sponsored => build_case(
+        "session-build-v1-sponsored",
+        &[BUILD_ADVERTISED, V1_LIMITS_SET, V1_NO_BUDGET_IX],
+        "A fee-sponsored session challenge advertising [0, 1]: a version-1 open whose fee payer (and rentPayer) is feePayerKey, the client signing only as payer; the sponsor slot stays empty.",
+        build_recipe(build_server(Some(&[0, 1]), true)),
+        built(),
+    ).build();
+    session_build_signer_v0_picks_v0 => build_case(
+        "session-build-signer-v0-picks-v0",
+        &[BUILD_ADVERTISED],
+        "The session challenge advertises [0, 1] but the signer signs version 0 only (e.g. a hardware wallet): the highest version the signer can produce is 0, and 0 is advertised.",
+        signer_max(build_recipe(build_server(Some(&[0, 1]), false)), 0),
+        built(),
+    ).build();
+    session_build_no_buildable_version_reject => build_case(
+        "session-build-no-buildable-version-reject",
+        &[BUILD_ADVERTISED],
+        "The session challenge advertises [1] only and the signer signs version 0 only: no advertised version is buildable, so the client MUST refuse before signing rather than send version 0. Pair: session-build-v1-only-advertised.",
+        signer_max(advertising(build_server(Some(&[0, 1]), false), json!([1])), 0),
+        Expect::Reject { code: RejectCode::UnsupportedVersion, reason: Some("no advertised version is buildable".into()) },
+    ).build();
+    session_build_empty_advertisement_reject => build_case(
+        "session-build-empty-advertisement-reject",
+        &[BUILD_ADVERTISED],
+        "transactionVersions [] (present, empty): only an omitted field defaults to [0]. No version is advertised, so the client refuses before signing (RULINGS T2). Pair: session-build-v0-only-advertised.",
+        advertising(build_server(None, false), json!([])),
+        Expect::Reject { code: RejectCode::UnsupportedVersion, reason: Some("an empty advertisement offers no version".into()) },
     ).build();
 
     session_wire_transaction_versions_both_golden => wire(

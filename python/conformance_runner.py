@@ -857,6 +857,7 @@ async def _session_open_build(vector: dict[str, Any]) -> dict[str, Any]:
             open=PaymentChannelOpenOptions(
                 deposit=_u64(params.get("deposit"), "deposit"),
                 salt=_u64(params.get("salt"), "salt"),
+                max_transaction_version=inp.get("signerMaxTransactionVersion"),
             )
         ),
     )
@@ -943,7 +944,11 @@ def _session_reject(vector: dict[str, Any], exc: Exception) -> dict[str, Any]:
     message = str(exc)
     result: dict[str, Any] = {"id": vector.get("id", ""), "outcome": "reject", "error": message}
     if vector.get("mode") == "build-transaction":
-        if re.search(_SESSION_BUILD_REJECT, message, re.IGNORECASE):
+        # No advertised version the signer can build; first, since the
+        # message also names the challenge's field.
+        if re.search(r"advertises no transaction version|signs up to version", message, re.IGNORECASE):
+            result["rejectCode"] = "unsupported-version"
+        elif re.search(_SESSION_BUILD_REJECT, message, re.IGNORECASE):
             result["rejectCode"] = "invalid-challenge"
         return result
     for pattern, code in _SESSION_REJECT_PATTERNS:

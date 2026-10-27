@@ -541,6 +541,11 @@ async fn use_voucher<S: ChannelStore>(
 fn build_code_for(message: &str) -> Option<&'static str> {
     let m = message.to_ascii_lowercase();
     let has = |n: &str| m.contains(n);
+    // No advertised version the signer can build; first, since the message
+    // also names the challenge's field.
+    if has("advertises no transaction version") || has("signs up to version") {
+        return Some("unsupported-version");
+    }
     (has("challenge")
         || has("network")
         || has("program")
@@ -577,6 +582,17 @@ async fn build(input: &Value) -> Result<Outcome, Rejection> {
         .await
         .map_err(|e| refuse(e.to_string()))?;
     let deposit = u64_field(params, "deposit")?.ok_or("sessionOpenBuild.deposit missing")?;
+    // The highest version the signer signs (a hardware wallet that signs
+    // version 0 only); absent is unrestricted.
+    let max_tx_version = match u64_field(input, "signerMaxTransactionVersion")? {
+        None => None,
+        Some(v) => Some(
+            u8::try_from(v)
+                .ok()
+                .and_then(|v| TxVersion::try_from(v).ok())
+                .ok_or("invalid signerMaxTransactionVersion")?,
+        ),
+    };
     let opened = create_payment_channel_session_opener(
         &request,
         &payer,
@@ -586,6 +602,7 @@ async fn build(input: &Value) -> Result<Outcome, Rejection> {
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt: u64_field(params, "salt")?,
+                max_tx_version,
                 ..Default::default()
             },
             ..Default::default()

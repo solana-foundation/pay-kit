@@ -15,8 +15,9 @@
 // - sessionOpenVerify: the same server's `verifyOpenPreBroadcast` on the
 //   vector's `open` against the challenged blockhash.
 // - build: `createPaymentChannelSessionOpener` on `sessionOpenBuild.request`
-//   with the salt and deposit its options take; the result carries the
-//   `open` action as `sessionCredential`.
+//   with the salt and deposit its options take (and `maxTransactionVersion`
+//   from `signerMaxTransactionVersion`); the result carries the `open`
+//   action as `sessionCredential`.
 //
 // Mirrors rust/crates/kit/examples/vector_runner/session.rs.
 import {
@@ -379,6 +380,11 @@ async function verifyOpenTransaction(vector: ConformanceVector): Promise<RunnerR
 /** The shared code for a session client refusal (mirrors `build_code_for` in the Rust testee). */
 function buildCodeFor(message: string): RejectCode | undefined {
   const m = message.toLowerCase();
+  // No advertised version the signer can build; first, since the message
+  // also names the challenge's field.
+  if (m.includes("advertises no transaction version") || m.includes("signs up to version")) {
+    return "unsupported-version";
+  }
   return [
     "challenge",
     "network",
@@ -411,6 +417,9 @@ async function build(vector: ConformanceVector): Promise<RunnerResult> {
     }
     const opener = createPaymentChannelSessionOpener({
       deposit: text(params, "deposit", "sessionOpenBuild"),
+      ...(input.signerMaxTransactionVersion !== undefined
+        ? { maxTransactionVersion: input.signerMaxTransactionVersion }
+        : {}),
       rpcUrl: rpcUrlOf(vector),
       salt: text(params, "salt", "sessionOpenBuild"),
       sessionSigner,

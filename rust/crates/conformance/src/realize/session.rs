@@ -133,6 +133,9 @@ pub struct Server {
     pub grace_period_seconds: u32,
     pub idle_timeout_options: Option<Vec<u32>>,
     pub splits: Vec<(&'static str, u16)>,
+    /// The versions it accepts (and advertises) for client-submitted `open`
+    /// and `topUp` transactions; `None` is the default `[0]`.
+    pub transaction_versions: Option<Vec<u8>>,
 }
 
 impl Default for Server {
@@ -149,6 +152,7 @@ impl Default for Server {
             grace_period_seconds: 900,
             idle_timeout_options: None,
             splits: vec![],
+            transaction_versions: None,
         }
     }
 }
@@ -187,6 +191,9 @@ impl Server {
         }
         if let Some(program) = self.token_program {
             out["tokenProgram"] = json!(program);
+        }
+        if let Some(versions) = &self.transaction_versions {
+            out["transactionVersions"] = json!(versions);
         }
         out
     }
@@ -1641,6 +1648,9 @@ pub struct BuildRecipe {
     /// The latest blockhash of the client's cluster (`rpcFixtures`), when it
     /// is not the challenged one.
     pub client_blockhash: Option<&'static str>,
+    /// The highest message version the client's signer signs
+    /// (`input.signerMaxTransactionVersion`); `None` is unrestricted.
+    pub signer_max_version: Option<u8>,
 }
 
 pub fn build_input(recipe: &BuildRecipe) -> Result<Value, String> {
@@ -1681,6 +1691,9 @@ pub fn build_input(recipe: &BuildRecipe) -> Result<Value, String> {
     }
     if let Some(blockhash) = recipe.client_blockhash {
         input["rpcFixtures"] = json!({ "recentBlockhash": blockhash });
+    }
+    if let Some(max) = recipe.signer_max_version {
+        input["signerMaxTransactionVersion"] = json!(max);
     }
     Ok(input)
 }
@@ -1723,6 +1736,10 @@ fn open_summary(open: &Value) -> Result<Map<String, Value>, String> {
         json!(tx.message.recent_blockhash().to_string()),
     );
     out.insert(
+        "messageVersion".into(),
+        json!(crate::tx::MessageFormat::of(&tx.message).as_str()),
+    );
+    out.insert(
         "signatureSlots".into(),
         json!(crate::tx::signature_slots(&tx)
             .into_iter()
@@ -1744,6 +1761,15 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
     let session = signer_from(input, "sessionSignerSecretKey")?;
     let salt = u64_field(params, "salt")?;
     let deposit = u64_field(params, "deposit")?.ok_or("sessionOpenBuild.deposit missing")?;
+    let max_tx_version = match u64_field(input, "signerMaxTransactionVersion")? {
+        None => None,
+        Some(v) => Some(
+            TxVersion::try_from(
+                u8::try_from(v).map_err(|_| "invalid signerMaxTransactionVersion")?,
+            )
+            .map_err(|e| format!("invalid signerMaxTransactionVersion: {e}"))?,
+        ),
+    };
     let fixtures = crate::fixture_rpc::Fixtures::from_input(input)?;
     let (rpc, _log) = crate::fixture_rpc::rpc_client(&fixtures);
     let blockhash = match OpenBlockhash::verify(&rpc, &request).await {
@@ -1759,6 +1785,7 @@ pub async fn build(input: &Value) -> Result<Observed, String> {
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt,
+                max_tx_version,
                 ..Default::default()
             },
             ..Default::default()
@@ -1791,6 +1818,11 @@ fn reject_build(message: String) -> Observed {
 pub fn build_code_for(message: &str) -> Option<RejectCode> {
     let m = message.to_ascii_lowercase();
     let has = |n: &str| m.contains(n);
+    // No advertised version the signer can build (`core::tx::negotiate`);
+    // first, since the message also names the challenge's field.
+    if has("advertises no transaction version") || has("signs up to version") {
+        return Some(RejectCode::UnsupportedVersion);
+    }
     (has("challenge")
         || has("network")
         || has("program")
