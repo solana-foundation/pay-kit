@@ -210,11 +210,12 @@ class SessionConfig:
     # must survive between accepting a voucher and landing the on-chain close
     # settlement. A non-zero voucher expiry must outlast ``now +
     # settlement_window`` or the voucher is rejected, so a voucher cannot expire
-    # on-chain after the request has been served but before settle lands. It
-    # should match the channel ``grace_period`` granted at open (the on-chain
-    # forced-close window). 0 disables the outlast check (backward compatible),
-    # leaving only the ``expires_at <= now`` rejection for non-zero expiries.
-    settlement_window: int = 0
+    # on-chain after the request has been served but before settle lands.
+    # ``None`` (the default) uses ``grace_period_seconds``, the on-chain
+    # forced-close window granted at open, exactly as the Rust kit does. An
+    # explicit 0 disables the outlast check, leaving only the
+    # ``expires_at <= now`` rejection for non-zero expiries.
+    settlement_window: int | None = None
 
     # Voucher signing authority advertised to clients.
     voucher_signer: SessionVoucherSigner = "client"
@@ -354,6 +355,14 @@ class SessionServer:
         # verify-and-persist sequence per channel so concurrent open/topUp
         # requests cannot broadcast or apply the same funding operation twice.
         self._channel_locks: dict[str, asyncio.Lock] = {}
+
+    def _settlement_window(self) -> int:
+        """The window a voucher's expiry must outlast: ``settlement_window``
+        when set, otherwise the channel grace period (the Rust kit always uses
+        ``grace_period_seconds``)."""
+        if self._config.settlement_window is not None:
+            return self._config.settlement_window
+        return self._config.grace_period_seconds or 0
 
     def with_blockhash_cache(self, cache: BlockhashProvider) -> SessionServer:
         """Share the host's recent-blockhash cache with challenge issuance, so
@@ -971,7 +980,7 @@ class SessionServer:
                 signed=voucher,
                 deposit=state.deposit,
                 min_voucher_delta=self._config.min_voucher_delta,
-                settlement_window=self._config.settlement_window,
+                settlement_window=self._settlement_window(),
             )
         )
         if result.status == VoucherVerifyStatus.REJECTED:
@@ -1181,7 +1190,7 @@ class SessionServer:
         if committed is not None:
             if committed.cumulative == new_cumulative and committed.voucher_signature == payload.voucher.signature:
                 _raise_voucher_error(
-                    verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window)
+                    verify_session_voucher(payload.voucher, state.authorized_signer, self._settlement_window())
                 )
                 return _commit_receipt(
                     payload.delivery_id, channel_id, committed.amount, committed.cumulative, "replayed"
@@ -1196,7 +1205,7 @@ class SessionServer:
         if new_cumulative <= state.cumulative:
             raise ValueError(f"commit cumulative {new_cumulative} must exceed watermark {state.cumulative}")
         _raise_voucher_error(
-            verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window)
+            verify_session_voucher(payload.voucher, state.authorized_signer, self._settlement_window())
         )
 
         delivery_id = payload.delivery_id
@@ -1354,7 +1363,7 @@ class SessionServer:
                     # not recorded against a voucher that no longer outlasts the
                     # settlement window (the async settle would then fail on-chain).
                     _raise_voucher_error(
-                        verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
+                        verify_session_voucher(voucher, current.authorized_signer, self._settlement_window())
                     )
                     if nxt.highest_voucher_expires_at is None:
                         # Record the expiry as encoded in the signed bytes:
@@ -1369,7 +1378,7 @@ class SessionServer:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
                     _raise_voucher_error(
-                        verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
+                        verify_session_voucher(voucher, current.authorized_signer, self._settlement_window())
                     )
                     nxt.cumulative = cumulative
                     nxt.highest_voucher_signature = voucher.signature

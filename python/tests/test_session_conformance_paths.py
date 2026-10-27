@@ -9,6 +9,7 @@ the conformance vectors in harness/vectors/session-*.json do.
 from __future__ import annotations
 
 import base64
+import time
 from dataclasses import replace
 
 import pytest
@@ -43,8 +44,11 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     OpenPayload,
     SessionAuthentication,
     SessionRequest,
+    SignedVoucher,
     TopUpPayload,
     UsePayload,
+    VoucherData,
+    VoucherPayload,
     sign_session_authentication,
 )
 from solana_pay_kit.protocols.mpp.server import session_testkit
@@ -287,6 +291,7 @@ async def test_open_transaction_refuses_a_foreign_instruction_and_extra_privileg
     server = _server(_config())
     payload = await _open(server)
     message = _decoded(payload).message
+    assert isinstance(message, MessageV0)
     ix = message.instructions[-1]
     keys = list(message.account_keys)
     open_ix = Instruction(
@@ -741,3 +746,53 @@ async def test_rpc_is_blockhash_valid() -> None:
     rpc._client = _Client({"value": None})  # type: ignore[assignment]
     with pytest.raises(Exception, match="no boolean"):
         await rpc.is_blockhash_valid(BLOCKHASH)
+
+
+# ── voucher settlement window ──────────────────────────────────────────────
+
+
+def _expiring_voucher(channel_id: str, cumulative: int, expires_at: int) -> VoucherPayload:
+    data = VoucherData(channel_id, str(cumulative), expires_at=expires_at)
+    signed = SignedVoucher(
+        data=data,
+        signer=str(SESSION_KEY.pubkey()),
+        signature=str(SESSION_KEY.sign_message(data.message_bytes())),
+    )
+    return VoucherPayload(channel_id=channel_id, voucher=signed)
+
+
+async def test_new_session_voucher_must_outlast_the_grace_period() -> None:
+    """Like the Rust kit, the voucher settlement window is the configured grace
+    period: ``new_session(grace_period_seconds=...)`` refuses a voucher that
+    could expire on-chain before the forced-close window elapses."""
+
+    class _Rpc:
+        async def get_slot(self) -> int:
+            return SLOT
+
+    store = MemoryChannelStore()
+    state = _channel()
+    await store.update_channel(state.channel_id, lambda _: state)
+    options = SessionOptions(
+        recipient=RECIPIENT,
+        amount=25,
+        secret_key="s" * 32,
+        rpc=_Rpc(),  # type: ignore[arg-type]
+        store=store,
+        grace_period_seconds=600,
+    )
+    server = new_session(options).core()
+    now = int(time.time())
+    with pytest.raises(ValueError, match="expires-before-settlement"):
+        await server.verify_voucher(_expiring_voucher(state.channel_id, 100, now + 600))
+    assert await server.verify_voucher(_expiring_voucher(state.channel_id, 100, now + 3_600)) == 100
+
+
+async def test_explicit_zero_settlement_window_disables_the_outlast_check() -> None:
+    store = MemoryChannelStore()
+    state = _channel()
+    await store.update_channel(state.channel_id, lambda _: state)
+    server = _server(_config(settlement_window=0), store)
+    assert server.config.grace_period_seconds
+    now = int(time.time())
+    assert await server.verify_voucher(_expiring_voucher(state.channel_id, 100, now + 60)) == 100

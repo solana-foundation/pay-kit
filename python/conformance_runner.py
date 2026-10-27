@@ -607,10 +607,7 @@ def _session_server(
     # Only what the vector sets; everything else stays the SDK's default.
     optional: dict[str, Any] = {}
     if server.get("gracePeriodSeconds") is not None:
-        grace = _u64(server["gracePeriodSeconds"], "gracePeriodSeconds")
-        # The forced-close window a voucher must outlast is the grace period.
-        optional["grace_period_seconds"] = grace
-        optional["settlement_window"] = grace
+        optional["grace_period_seconds"] = _u64(server["gracePeriodSeconds"], "gracePeriodSeconds")
     if server.get("idleTimeoutSeconds") is not None:
         optional["idle_timeout_seconds"] = _u64(server["idleTimeoutSeconds"], "idleTimeoutSeconds")
     if server.get("voucherSigner") is not None:
