@@ -257,10 +257,16 @@ tracking = "FINDINGS.md#txv1-go"
 ids = [
   "cross/charge-build-duplicate-advertisement/rust/go",
   "cross/charge-build-v1-advertised/rust/go",
+  "cross/charge-build-v1-advertised/typescript/go",
+  "cross/charge-build-v1-advertised/python/go",
   "cross/charge-build-v1-large-memos/rust/go",
   "cross/charge-build-v1-only-advertised/rust/go",
   "cross/charge-build-v1-sol/rust/go",
+  "cross/charge-build-v1-sol/typescript/go",
+  "cross/charge-build-v1-sol/python/go",
   "cross/charge-build-v1-sponsored/rust/go",
+  "cross/charge-build-v1-sponsored/typescript/go",
+  "cross/charge-build-v1-sponsored/python/go",
 ]
 reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK's that the Rust judge accepts): the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-go"
@@ -268,7 +274,9 @@ tracking = "FINDINGS.md#txv1-go"
 [[known_failing]]
 ids = [
   "cross/x402-build-duplicate-advertisement/rust/go",
+  "cross/x402-build-duplicate-advertisement/python/go",
   "cross/x402-build-v1-advertised/rust/go",
+  "cross/x402-build-v1-advertised/python/go",
   "cross/x402-build-duplicate-advertisement/typescript/go",
   "cross/x402-build-v1-advertised/typescript/go",
 ]
