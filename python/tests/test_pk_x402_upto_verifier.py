@@ -336,9 +336,16 @@ def test_parse_upto_challenge() -> None:
 class _SlotRpc:
     """``getLatestBlockhash`` with its response-context slot."""
 
-    def __init__(self, slot: int | None = 5000) -> None:
+    def __init__(self, slot: int | None = 5000, live: bool = True) -> None:
         self.slot = slot
+        self.live = live
         self.calls = 0
+        self.checked: list[str] = []
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        assert commitment == "confirmed"
+        self.checked.append(blockhash)
+        return self.live
 
     async def get_latest_blockhash(self, commitment: str = "confirmed"):
         self.calls += 1
@@ -381,6 +388,19 @@ async def test_build_without_hints_reads_one_blockhash() -> None:
     del req["extra"]["recentSlot"]
     with pytest.raises(ValueError, match="no slot"):
         await build_upto_payload(client, req, NOW + 300, rpc=_SlotRpc(None))
+
+
+async def test_build_refuses_a_hint_blockhash_the_client_cluster_does_not_know() -> None:
+    _, op = _operator()
+    client = MemorySigner(Keypair())
+    req = _requirements(op, op)
+    live = _SlotRpc()
+    await build_upto_payload(client, req, NOW + 300, rpc=live)
+    assert live.checked == [BH] and live.calls == 0
+    dead = _SlotRpc(live=False)
+    with pytest.raises(ValueError, match="is not a live blockhash on the client's cluster"):
+        await build_upto_payload(client, req, NOW + 300, rpc=dead)
+    assert dead.checked == [BH]
 
 
 async def test_build_salt_follows_the_request_nonce() -> None:

@@ -145,7 +145,9 @@ async def build_upto_payload(
     version ``extra.transactionVersions`` advertises that the signer signs
     (``max_transaction_version``). ``extra.recentBlockhash`` and
     ``extra.recentSlot`` are hints; when either is absent one
-    ``getLatestBlockhash`` call on ``rpc`` supplies it.
+    ``getLatestBlockhash`` call on ``rpc`` supplies it. With ``rpc``, a
+    ``recentBlockhash`` hint is signed only once ``isBlockhashValid`` on it
+    confirms the hash is live on the client's cluster.
     """
     extra_raw: Any = cast("dict[str, Any]", requirements).get("extra")
     if not isinstance(extra_raw, dict):
@@ -208,6 +210,14 @@ async def build_upto_payload(
         blockhash = Hash.from_string(blockhash_str)
     except Exception as exc:  # noqa: BLE001
         raise _invalid_challenge(f"invalid extra.recentBlockhash: {exc}") from exc
+    # The hint is untrusted: a hash from another cluster would yield a
+    # signature valid there and not on the network the payment was approved
+    # for. With an rpc (the client's own cluster), sign it only once that rpc
+    # confirms it is live.
+    if hint_blockhash and rpc is not None and not await rpc.is_blockhash_valid(str(blockhash), "confirmed"):
+        raise _invalid_challenge(
+            f"challenge recentBlockhash {blockhash} is not a live blockhash on the client's cluster"
+        )
 
     payer = signer.pubkey
     salt = _salt_for_nonce(nonce)
