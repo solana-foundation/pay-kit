@@ -247,24 +247,9 @@ type X402VerifyInput = ConformanceVector["input"];
 // cannot express them, so it reports unsupported-mode instead of guessing.
 const SIGNER_VERSION_UNSUPPORTED =
   "unsupported-mode: @solana/mpp buildChargeTransaction takes no highest signable transaction version (input.signerMaxTransactionVersion)";
-const SPONSOR_VERSIONS_UNSUPPORTED =
-  "unsupported-mode: the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated), with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])";
-
-function sponsorVersionsExpressible(versions: ConformanceVector["input"]["x402ServerTransactionVersions"]): boolean {
-  // Absent: the vector's verdict does not depend on the sponsor's own set
-  // (the spec gives it no default, so every vector that depends on it states
-  // it), and the facilitator's fixed [0, 1] serves.
-  if (versions === undefined) return true;
-  // A repeated entry names the same version (RULINGS T1): compare as sets.
-  const set = new Set(versions);
-  return set.size === 2 && set.has(0) && set.has(1);
-}
 
 async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input as X402VerifyInput;
-  if (!sponsorVersionsExpressible(vector.input.x402ServerTransactionVersions)) {
-    return { error: SPONSOR_VERSIONS_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-  }
   if (!input.x402PaymentHeader) {
     throw new Error("invalid payload: x402 verify vector missing input.x402PaymentHeader");
   }
@@ -294,9 +279,16 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
     ...toFacilitatorSvmSigner(operator, { defaultRpcUrl: rpcUrlOf(vector) }),
     simulateTransaction: async (): Promise<void> => {},
   };
+  // The sponsor's own accepted set (scheme_exact_svm.md §1.5), as pay-kit's
+  // `x402.transactionVersions` forwards it; absent keeps the default [0, 1].
+  // Every other limit is the facilitator default pay-kit leaves unset.
   const facilitator = new x402Facilitator().register(
     network,
-    new ExactSvmFacilitator(facilitatorSigner, undefined, {}),
+    new ExactSvmFacilitator(facilitatorSigner, undefined, {
+      ...(input.x402ServerTransactionVersions !== undefined
+        ? { transactionVersions: input.x402ServerTransactionVersions }
+        : {}),
+    }),
   );
   // Same shape as pay-kit's `requirementsFor` (adapters/x402.ts).
   const requirements: PaymentRequirements = {

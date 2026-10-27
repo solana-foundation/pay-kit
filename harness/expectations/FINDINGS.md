@@ -12,7 +12,7 @@ Paths are file:line at the commit that recorded them.
 ## x402-extra-required-signer-accepted
 
 **Case:** `vector/x402-exact-verify-extra-required-signer-reject`
-**SDKs:** go, lua, php, python, ruby, typescript
+**SDKs:** go, lua, php, python, ruby
 
 scheme_exact_svm.md §2.1.4: “The transaction MUST NOT require any signatures
 beyond the client and the sponsor (feePayer).” The vector adds a third key as
@@ -217,21 +217,6 @@ the recipient creations and check recipient token accounts before co-signing
 the open; dropping the creations alone would forfeit payouts to accounts that
 do not exist.
 
-## batch-deposit-balance-unchecked
-
-**Case:** `vector/batch-verify-open-unfunded-payer-reject`,
-`vector/batch-verify-top-up-unfunded-payer-reject`
-**SDKs:** typescript
-
-scheme_batch_settlement_svm.md, canonical `open` and `top_up`: "It MUST
-confirm the payer has sufficient tokens". The pay-kit gate broadcasts the
-deposit only after the handler runs, so Rust reads the payer's token account
-and the transaction's blockhash before it reserves the request
-(`X402BatchSettlement::check_deposit_can_land`). The vendored `@x402/svm`
-2.28.0 verify reads no balance; its deposit settle simulates the
-transaction, which the offline harness signer stubs, so the vector cannot
-observe it there.
-
 ## session-open-initial-voucher-accepted
 
 **Case:** `vector/session-wire-action-open-initial-voucher-reject`
@@ -363,29 +348,6 @@ TypeScript through the vendored `@x402/svm` 2.28.0 upto facilitator's
 read-only `verify` (pay-kit's `X402Upto.verifyOpen` calls `settle`, which
 broadcasts).
 
-## upto-channel-exists-not-checked
-
-**Case:** `vector/x402-upto-verify-channel-already-open-reject`
-**SDKs:** typescript
-
-Phase 3 step 4: “Confirm the channel account does not already exist. If it
-does, reject with invalid_upto_svm_channel_already_open.” (RULINGS U2.) The
-vendored TS facilitator checks it only in `settle` (deposit), not in `verify`
-(`typescript/external/x402/typescript/packages/mechanisms/svm/src/upto/facilitator/scheme.ts:400`).
-
-## upto-slot-wire-type
-
-**Case:** `vector/x402-upto-verify-open-slot-number-accept`
-**SDKs:** typescript
-
-The pinned §4.2 table types `openSlot` as `number`, §4.1 types `recentSlot` as
-`number`, and both §4.1 examples carry `"recentSlot": 341000000`. TS
-`isUptoSvmPayload` requires a string `openSlot`
-(`typescript/external/x402/typescript/packages/mechanisms/svm/src/types.ts:79`),
-so the spec's own number form is refused. Rust reads both forms
-(`Slot` in `rust/crates/kit/src/x402/protocol/schemes/upto/types.rs`). See
-RULINGS U1; the fix is upstream spec text or parsers that accept both.
-
 ## go-upto-client-expires-beyond-timeout
 
 **Cases:** `interop/x402-upto-basic/go/rust`, `interop/x402-upto-zero-actual/go/rust`
@@ -412,17 +374,6 @@ MUST include a Memo instruction containing either the value of extra.memo
 (`go/protocols/x402/upto.go:795`) requires the open to be the only
 instruction, so a spec-conforming client open on an unbound route (the Rust
 client's random-nonce Memo) is refused.
-
-## ts-upto-open-trailing-bytes
-
-**Case:** `vector/x402-upto-verify-open-trailing-byte-reject`
-**SDKs:** typescript
-
-“The facilitator MUST fully decode the canonical open instruction data, reject
-truncated data or trailing bytes”. `verifyOpenTransaction` decodes the args
-with `getOpenInstructionDataDecoder().decode`
-(`typescript/external/x402/typescript/packages/mechanisms/svm/src/payment-channels/open.ts:969`),
-which ignores bytes past the arguments. The fix belongs in the x402 fork.
 
 ## txv1-ts-mpp-no-transaction-versions
 
@@ -457,19 +408,6 @@ throws while decoding (`Cannot read properties of undefined (reading
 'entries')`: the compiled version-1 message has no `instructions` array), a
 version-0 transaction is accepted for a challenge that advertises `[1]` only,
 legacy is accepted, and the version-0 size limit is not applied.
-
-## txv1-ts-x402-v1-policy
-
-**Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`
-**SDKs:** typescript
-
-The `@x402/svm` exact static path applies no compute unit cap unless
-`maxComputeUnits` is configured, and neither the runner nor pay-kit
-(`typescript/packages/pay-kit/src/config.ts`) sets it, so a version-1
-`computeUnitLimit` of 400,001 is sponsored. scheme_exact_svm.md §2.2.1 gives
-400,000 as the reference default (“Max compute units | `400,000`”), which
-the Rust kit now applies. Fix: default `maxComputeUnits` to 400,000 in
-pay-kit or upstream.
 
 ## txv1-go
 
@@ -555,22 +493,9 @@ regression tests, against [RULINGS.md](RULINGS.md):
   payment-identifier id.
 - The Kotlin conformance runner implements only the session voucher preimage
   vectors.
-- `@solana/pay-kit` exposes no upto distribution-hash or channel-PDA helper,
-  so those two wire goldens are unsupported for TypeScript.
 - `@solana/mpp` has no stateless subscription usability check and no
   subscriptions instruction encoder, so the `subscription-active-*` and
   `subscription-instruction-*` vectors are unsupported for TypeScript.
-- The vendored `@x402/svm` exact, upto and batch facilitators accept a fixed
-  transaction-version set (legacy, 0 and 1) with no option to narrow it, so
-  the vectors that configure a sponsor with `[0]`
-  (`input.x402ServerTransactionVersions`, `batchServer.transactionVersions`)
-  are unsupported for TypeScript. The spec gives the sponsor's own set no
-  default (“The sponsor enforces its own accepted set”), so those vectors
-  state it.
-- The TypeScript batch testee drives the stateless upstream facilitator, so
-  the vectors whose verdict rests on the resource server's store record alone
-  (`batchVerdictFromStore`, RULINGS B1: one-above, one-below, stale,
-  close-pending, refund at an older cumulative) are unsupported for it.
 
 ## Reclassified on 2026-10-27
 
@@ -585,13 +510,16 @@ the vectors or adapters instead:
 | `upto-client-blockhash-not-checked` | `extra.recentBlockhash` is a hint the client MAY use (“Pre-fetched blockhash so the client can build `openTransaction` without an RPC round trip.”); the vector pinned Rust policy and was removed |
 | `ts-upto-open-size-unbounded`, `ts-upto-no-transaction-versions`, `ts-batch-transaction-versions` (client), the network half of `ts-batch-accepted-not-checked` | the vendored 2.28.0 implements them; the testee mis-mapped the reasons or ignored `batchClient.maxTransactionVersion` |
 | `ts-batch-open-binding-memo` (client) | the client opens with the binding memo; the build judge required the caller's `openSlot` where the spec lets the client fetch the cluster slot or use `extra.recentSlot` |
-| `txv1-ts-x402-fixed-accepted-set`, `ts-batch-facilitator-stateless` | declared limitations above (`[[unsupported]]`) |
 
 ## Fixed in the SDKs on 2026-10-27
 
 | Finding | Fix |
 | --- | --- |
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
+| `x402-extra-required-signer-accepted` (TS), `txv1-ts-x402-v1-policy`, `txv1-ts-x402-fixed-accepted-set` | `@x402/svm` exact facilitator defaults `maxRequiredSignatures` to 2 and `maxComputeUnits` to the 400,000 reference default, and takes its accepted set as `transactionVersions` (pay-kit `x402.transactionVersions`); x402-foundation/x402 PR 3971 |
+| `upto-channel-exists-not-checked`, `upto-slot-wire-type`, `ts-upto-open-trailing-bytes`, the upto half of `txv1-ts-x402-fixed-accepted-set`, the upto distribution-hash and channel-PDA goldens | `@x402/svm` upto `verify` refuses an existing channel, accepts a numeric `openSlot`, refuses trailing open-args bytes and takes `transactionVersions`; `getChannelDistributionHash` and `findPaymentChannelPda` are exported (PR 3971) |
+| `batch-deposit-balance-unchecked`, `ts-batch-open-slot-window`, `ts-batch-setup-reason-code` (frozen payer ATA), `ts-batch-client-terms`, the batch half of `txv1-ts-x402-fixed-accepted-set` | `@x402/svm` batch facilitator checks every settlement ATA's token state and the payer's balance, judges `openSlot` against the cluster slot without `extra.recentSlot`, and takes `transactionVersions`; the client refuses `payer == extra.feePayer` (PR 3971) |
+| `ts-batch-facilitator-stateless`, the batch encoder, wire-guard, corrective and tracked-channel build gaps | `@x402/svm` exports `encodeBatchVoucherMessage`, `deriveBatchChannelId`, `encodeReceiverBindingMemo`, the batch wire guards, `checkCorrectiveState` and `buildBatch{Voucher,TopUp,Refund}Payload`; its resource server refuses a closing channel with `channel_closing` and an off-watermark refund with `close_state`; the testee drives store verdicts through `x402ResourceServer.verifyPayment` (PR 3971) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
@@ -864,66 +792,3 @@ steady-state voucher.
 discriminator is not `Channel` (1) with `channel_state`, so a refresh onto a
 `ClosedChannel` account refuses the voucher.
 
-### TypeScript: vendored upstream `@x402/svm` 2.28.0
-
-pay-kit has no batch-settlement implementation of its own; the TypeScript
-testee drives the upstream mechanism pay-kit bundles
-(`typescript/.x402-vendor/x402-svm-2.28.0.tgz`, solana-foundation/x402
-`feat/svm-client-transaction-v1` at `f7043a1`). It implements the
-receiver-binding memo and SVM transaction versions; what remains is mostly
-reason codes (the generic `transaction_failed` where the scheme names a
-specific code, being fixed in x402-foundation/x402 PR 3971) and a few
-unchecked rules, cross-checked against the same vectors as the Rust kit.
-
-## ts-batch-refund-cooperative
-
-**Cases:** `batch-verify-refund-sealed-channel-reject` (typescript)
-
-The refund retry (voucher plus `request_close`, RULINGS B2) now verifies. A
-refund for a channel the server already sealed is refused as
-`invalid_batch_settlement_svm_channel_state`; the vector expects
-`invalid_batch_settlement_svm_close_state` (“the channel cannot be closed, or a
-cooperative voucher does not equal server state or is behind the channel's
-onchain `settled` value”). The payment is refused; only the reason differs.
-
-## ts-batch-setup-reason-code
-
-**Cases:** `vector/batch-verify-top-up-frozen-payer-ata-reject` (typescript)
-
-The reason codes this section used to track (`transaction_failed` for every
-setup-transaction violation, `cumulative_amount_mismatch` for an over-deposit
-voucher, a foreign binding reported as missing) are fixed in
-x402-foundation/x402 PR 3971 (`56ff3cd5`, `d411aea1`). One top-up is still not
-rejected at `/verify`: a payer return ATA that is frozen (“it MUST reject
-before escrowing when a settlement account is missing, frozen, has the wrong
-owner or mint”). `assertSettlementAccounts` checks only that the account
-exists and its owner; the top-up simulation at settle would fail it.
-
-## ts-batch-open-slot-window
-
-**Cases:** `batch-verify-open-stale-slot-reject`, `batch-verify-open-future-slot-reject` (typescript)
-
-Phase 1: “The facilitator MUST reject an expired transaction blockhash and an
-`openSlot` outside the program's accepted window.” The batch facilitator's
-`verify` compares `channelConfig.openSlot` with the open instruction only; it
-never reads the cluster slot, so an open 1,501 slots stale or one slot in the
-future is accepted and fails only when it lands.
-
-## ts-batch-accepted-not-checked
-
-**Cases:** `batch-verify-accepted-{amount,pay-to}-mismatch-reject` (typescript)
-
-“For every request, `paymentPayload.accepted` MUST equal
-`paymentRequirements`.” The facilitator compares `accepted` with the
-requirements on scheme and network only (a network mismatch is refused as
-`network_mismatch`, which the harness reads as `accepted-mismatch`), so an
-amount or payTo mismatch is verified against `paymentRequirements` and
-accepted.
-
-## ts-batch-client-terms
-
-**Cases:** `batch-build-deposit-payer-is-fee-payer-reject` (typescript)
-
-The client opens a channel whose payer is the challenge's own `feePayer`
-(“`channelConfig.payer` and `channelConfig.payerAuthorizer` MUST NOT equal
-`extra.feePayer`.”).
