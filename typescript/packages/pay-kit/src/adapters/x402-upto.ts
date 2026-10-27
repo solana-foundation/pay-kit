@@ -118,6 +118,9 @@ export class X402Upto {
                 ...(config.x402.paymentChannelsTreasuryOwner && {
                     paymentChannelsTreasuryOwner: config.x402.paymentChannelsTreasuryOwner,
                 }),
+                ...(config.x402.transactionVersions && {
+                    transactionVersions: [...config.x402.transactionVersions],
+                }),
             },
         );
         this.#facilitator = new x402Facilitator().register(this.#network, scheme);

@@ -422,6 +422,24 @@ describe('x402 smart-wallet options', () => {
         expect(uptoCtorCalls.at(-1)?.[1]).toEqual({ paymentChannelsTreasuryOwner: owner });
     });
 
+    it('forwards the sponsored transaction versions to both facilitators and advertises them', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { transactionVersions: [0] },
+        });
+        uptoCtorCalls.length = 0;
+        const adapter = createX402ExactAdapter(config);
+        const upto = new X402Upto(config);
+        expect((ctorCalls.at(-1)?.[2] as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+        expect(uptoCtorCalls.at(-1)?.[1]).toEqual({ transactionVersions: [0] });
+        // scheme_exact_svm.md §1.5: the server copies the facilitator's set.
+        const entry = await adapter.acceptsEntry(gateFor(config), new Request('http://localhost/r'));
+        expect((entry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+        const [uptoEntry] = await upto.accepts(usd('1.00'));
+        expect((uptoEntry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+    });
+
     it('copies the allowlist so callers cannot mutate verification policy', async () => {
         const allowed = ['SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf'];
         const config = await configure({
