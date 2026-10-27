@@ -89,7 +89,16 @@ export function subscription(parameters: subscription.Parameters) {
         store = Store.memory(),
         splits,
         subscriptionExpires,
+        secretKey,
+        realm,
     } = parameters;
+
+    if (secretKey !== undefined && secretKey.length === 0) {
+        throw new Error('secretKey must be a non-empty string when set');
+    }
+    if (realm !== undefined && realm.length === 0) {
+        throw new Error('realm must be a non-empty string when set');
+    }
 
     if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
         throw new Error(`tokenProgram must be ${TOKEN_PROGRAM} or ${TOKEN_2022_PROGRAM}`);
@@ -113,6 +122,16 @@ export function subscription(parameters: subscription.Parameters) {
     }
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const routeBinding: RouteBinding = {
+        mint,
+        network,
+        periodHours: mapSubscriptionPeriodToHours(periodUnit, periodCount),
+        planAddress: planId,
+        realm,
+        recipient,
+        secretKey,
+        subscriptionProgram,
+    };
     const pendingAccessProofs = new WeakMap<Request, { credential: Credential.Credential; secretKey?: string }>();
     const httpTransport = Transport.http();
     const subscriptionTransport = Transport.from({
@@ -223,8 +242,12 @@ export function subscription(parameters: subscription.Parameters) {
         // its five-minute challenge expiry does not terminate a paid term.
         transport: subscriptionTransport,
 
-        async verify({ credential }) {
+        async verify({ credential, request }) {
             const cred = credential as unknown as CredentialPayload;
+            // Bind the echoed challenge to this server and route before reading
+            // anything else from it: verify() is reachable outside Mppx.create,
+            // which is where mppx would otherwise check the HMAC and the route.
+            assertChallengeBoundToRoute(cred.challenge, request as Partial<ChallengeRequest> | undefined, routeBinding);
             const challenge = cred.challenge.request;
             const payloadType = resolvePayloadType(cred.payload);
 
@@ -338,6 +361,91 @@ export function subscription(parameters: subscription.Parameters) {
     });
 
     return method;
+}
+
+type RouteBinding = {
+    mint: string;
+    network: string;
+    periodHours: number;
+    planAddress: string;
+    realm?: string;
+    recipient: string;
+    secretKey?: string;
+    subscriptionProgram: string;
+};
+
+/** `mainnet-beta` and `mainnet` name the same cluster; an omitted network means mainnet. */
+function canonicalNetwork(network: string | undefined): string {
+    if (network === undefined || network === 'mainnet-beta') return 'mainnet';
+    return network;
+}
+
+/**
+ * Refuse a credential whose echoed challenge this server did not issue for
+ * this route, mirroring the Rust server's tier-1 (HMAC) and tier-2 (pinned
+ * fields and route terms) checks. `route` is the authoritative route request
+ * (`VerifyContext.request`); its `amount` is the route's per-period price.
+ */
+function assertChallengeBoundToRoute(
+    challenge: CredentialPayload['challenge'],
+    route: Partial<ChallengeRequest> | undefined,
+    binding: RouteBinding,
+): void {
+    if (binding.secretKey !== undefined) {
+        if (
+            typeof challenge.id !== 'string' ||
+            !Challenge.verify(challenge as unknown as Challenge.Challenge, { secretKey: binding.secretKey })
+        ) {
+            throw new Error('Challenge HMAC mismatch: this server did not issue the echoed challenge');
+        }
+    }
+    if (challenge.method !== Methods.subscription.name) {
+        throw new Error(
+            `Credential method \`${String(challenge.method)}\` does not match this server (expected \`${Methods.subscription.name}\`)`,
+        );
+    }
+    if (challenge.intent !== Methods.subscription.intent) {
+        throw new Error(`Credential intent \`${String(challenge.intent)}\` is not a subscription`);
+    }
+    if (binding.realm !== undefined && challenge.realm !== binding.realm) {
+        throw new Error(
+            `Credential realm \`${String(challenge.realm)}\` does not match this server (expected \`${binding.realm}\`)`,
+        );
+    }
+
+    const request = challenge.request as Partial<ChallengeRequest> | undefined;
+    const details = (request?.methodDetails ?? {}) as Partial<ChallengeRequest['methodDetails']>;
+    if (request?.currency !== binding.mint) {
+        throw new Error(`Credential mint does not match this server (expected \`${binding.mint}\`)`);
+    }
+    if (request?.recipient !== binding.recipient) {
+        throw new Error('Credential recipient does not match this server');
+    }
+    if (details.subscriptionProgram !== binding.subscriptionProgram) {
+        throw new Error('methodDetails.subscriptionProgram does not match this server');
+    }
+    if (details.planAddress !== binding.planAddress) {
+        throw new Error('methodDetails.planAddress does not match this server');
+    }
+    if (canonicalNetwork(details.network) !== canonicalNetwork(binding.network)) {
+        throw new Error(`methodDetails.network does not match this server (expected \`${binding.network}\`)`);
+    }
+    const routeAmount = route?.amount;
+    if (typeof routeAmount !== 'string') {
+        throw new Error('Subscription verify requires the route request with its amount');
+    }
+    let periodHours: number | undefined;
+    try {
+        periodHours =
+            request?.periodUnit === undefined || request.periodCount === undefined
+                ? undefined
+                : mapSubscriptionPeriodToHours(request.periodUnit, request.periodCount);
+    } catch {
+        periodHours = undefined;
+    }
+    if (request?.amount !== routeAmount || periodHours !== binding.periodHours) {
+        throw new Error('Subscription terms do not match this server');
+    }
 }
 
 function assertActivationChallengeNotExpired(expires: string | undefined): void {
@@ -551,43 +659,20 @@ async function verifySubscriptionAccess(
         throw new Error('Subscription proof does not match the activation binding');
     }
 
-    const delegation = await fetchSubscriptionDelegation(rpcUrl, expectedDelegation, address(programId));
-    if (!delegation) throw new Error('SubscriptionDelegation account not found');
-    if (delegation.planPda !== challenge.methodDetails.planAddress || delegation.subscriber !== authentication.payer) {
-        throw new Error('SubscriptionDelegation does not match the bound plan and payer');
-    }
-    const authorityPda = await deriveSubscriptionAuthorityPda({
-        mint: address(challenge.methodDetails.mint),
-        programId: address(programId),
-        subscriber: address(authentication.payer),
+    const { delegation, periodEndTs } = await loadActiveDelegation({
+        amount: challenge.amount,
+        mint: challenge.methodDetails.mint,
+        periodHours: mapSubscriptionPeriodToHours(challenge.periodUnit, challenge.periodCount),
+        planAddress: challenge.methodDetails.planAddress,
+        rpcUrl,
+        subscriber: authentication.payer,
+        subscriptionProgram: programId,
     });
-    const authorityInitId = await fetchSubscriptionAuthorityInitId(rpcUrl, authorityPda, address(programId));
-    if (authorityInitId !== delegation.authorityInitId) {
-        throw new Error('Subscription authority has been invalidated');
-    }
-
-    const expectedPeriodHours = mapSubscriptionPeriodToHours(challenge.periodUnit, challenge.periodCount);
-    if (
-        delegation.amountPerPeriod !== challenge.amount ||
-        delegation.periodHours !== expectedPeriodHours ||
-        delegation.amountPulledInPeriod !== challenge.amount
-    ) {
-        throw new Error('Subscription is not paid for the current billing period');
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const periodLengthSeconds = expectedPeriodHours * 3600;
-    const periodEndTs = delegation.currentPeriodStartTs + periodLengthSeconds;
-    if (now < delegation.currentPeriodStartTs || now >= periodEndTs) {
-        throw new Error('Subscription is not paid for the current billing period');
-    }
-    if (delegation.expiresAtTs !== 0 && now >= delegation.expiresAtTs) {
-        throw new Error('Subscription cancellation has taken effect');
-    }
     if (binding.subscriptionExpires && Date.parse(binding.subscriptionExpires) <= Date.now()) {
         throw new Error('Subscription has expired');
     }
 
+    const periodLengthSeconds = delegation.periodHours * 3600;
     const elapsed = delegation.currentPeriodStartTs - binding.periodStartTs;
     if (elapsed < 0 || elapsed % periodLengthSeconds !== 0) {
         throw new Error('Subscription billing anchor does not align with the current period');
@@ -606,6 +691,147 @@ async function verifySubscriptionAccess(
         subscriptionId: binding.subscriptionId,
         timestamp: new Date().toISOString(),
     });
+}
+
+/**
+ * Inputs of {@link verifyActiveSubscription}: the route's subscription terms
+ * (as configured on {@link subscription}) and the subscriber to check.
+ */
+export type VerifyActiveSubscriptionParameters = {
+    /** Per-period price in base units the subscriber must be paying. */
+    amount: string;
+    /** Base58 of the SPL token mint the subscription authority was initialised for. */
+    mint: string;
+    /** Positive integer count of `periodUnit` values per billing period. */
+    periodCount: number | string;
+    /** Billing period unit (`day` or `week`). */
+    periodUnit: 'day' | 'week';
+    /** Base58 of the on-chain Plan PDA. */
+    planId: string;
+    /** RPC URL to read the delegation and authority accounts from. */
+    rpcUrl: string;
+    /** Base58 of the subscriber wallet. */
+    subscriber: string;
+    /** Optional RFC3339 expiry of the recurring authorization configured on the route. */
+    subscriptionExpires?: string;
+    /** Base58 of the subscriptions program. Defaults to the canonical deployment. */
+    subscriptionProgram?: string;
+};
+
+/** The live delegation returned by {@link verifyActiveSubscription}. */
+export type ActiveSubscription = {
+    amountPerPeriod: string;
+    amountPulledInPeriod: string;
+    /** Unix seconds at which the subscriber's cancellation takes effect, or 0. */
+    expiresAtTs: number;
+    /** Unix seconds at which the current, paid billing period ends. */
+    periodEndTs: number;
+    periodHours: number;
+    /** Unix seconds at which the current billing period started. */
+    periodStartTs: number;
+    planAddress: string;
+    subscriber: string;
+    /** Base58 of the `SubscriptionDelegation` PDA. */
+    subscriptionDelegation: string;
+};
+
+/**
+ * Check on-chain that `subscriber` holds a live, paid subscription to the
+ * Plan at `amount` per period, at the current clock: the delegation exists
+ * and is owned by the subscriptions program, its `SubscriptionAuthority` is
+ * the generation it was created under, the current period is paid, and
+ * neither a cancellation nor `subscriptionExpires` has taken effect.
+ *
+ * It is stateless: it reads no server store. Use it after an identity-only
+ * check before serving subscription-gated work.
+ *
+ * @throws If the subscription is not usable; the message names the reason.
+ */
+export async function verifyActiveSubscription(
+    parameters: VerifyActiveSubscriptionParameters,
+): Promise<ActiveSubscription> {
+    const amount = parameters.amount;
+    if (typeof amount !== 'string' || !/^(0|[1-9][0-9]*)$/.test(amount) || BigInt(amount) >= 1n << 64n) {
+        throw new Error('Subscription amount must be an unsigned integer');
+    }
+    const periodHours = mapSubscriptionPeriodToHours(parameters.periodUnit, parameters.periodCount);
+    const subscriptionProgram = parameters.subscriptionProgram ?? SUBSCRIPTIONS_PROGRAM;
+    const { delegation, delegationAddress, periodEndTs } = await loadActiveDelegation({
+        amount,
+        mint: parameters.mint,
+        periodHours,
+        planAddress: parameters.planId,
+        rpcUrl: parameters.rpcUrl,
+        subscriber: parameters.subscriber,
+        subscriptionProgram,
+    });
+    if (parameters.subscriptionExpires !== undefined) {
+        const expiresAt = Date.parse(parameters.subscriptionExpires);
+        if (!Number.isFinite(expiresAt)) throw new Error('Invalid subscriptionExpires: must be an RFC3339 timestamp');
+        if (expiresAt <= Date.now()) throw new Error('Subscription has expired');
+    }
+    return {
+        amountPerPeriod: delegation.amountPerPeriod,
+        amountPulledInPeriod: delegation.amountPulledInPeriod,
+        expiresAtTs: delegation.expiresAtTs,
+        periodEndTs,
+        periodHours: delegation.periodHours,
+        periodStartTs: delegation.currentPeriodStartTs,
+        planAddress: delegation.planPda,
+        subscriber: delegation.subscriber,
+        subscriptionDelegation: delegationAddress,
+    };
+}
+
+/**
+ * Load the subscriber's delegation and require it to be live now. Shared by
+ * {@link verifyActiveSubscription} and the bearer-proof access path.
+ */
+async function loadActiveDelegation(parameters: {
+    amount: string;
+    mint: string;
+    periodHours: number;
+    planAddress: string;
+    rpcUrl: string;
+    subscriber: string;
+    subscriptionProgram: string;
+}): Promise<{ delegation: SubscriptionDelegation; delegationAddress: string; periodEndTs: number }> {
+    const programId = address(parameters.subscriptionProgram);
+    const delegationAddress = await deriveSubscriptionPda({
+        planPda: address(parameters.planAddress),
+        programId,
+        subscriber: address(parameters.subscriber),
+    });
+    const delegation = await fetchSubscriptionDelegation(parameters.rpcUrl, delegationAddress, programId);
+    if (!delegation) throw new Error(`SubscriptionDelegation account ${delegationAddress} not found`);
+    if (delegation.planPda !== parameters.planAddress || delegation.subscriber !== parameters.subscriber) {
+        throw new Error('SubscriptionDelegation does not match the bound plan and payer');
+    }
+    const authorityPda = await deriveSubscriptionAuthorityPda({
+        mint: address(parameters.mint),
+        programId,
+        subscriber: address(parameters.subscriber),
+    });
+    const authorityInitId = await fetchSubscriptionAuthorityInitId(parameters.rpcUrl, authorityPda, programId);
+    if (authorityInitId !== delegation.authorityInitId) {
+        throw new Error('Subscription authority has been invalidated');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const periodEndTs = delegation.currentPeriodStartTs + parameters.periodHours * 3600;
+    if (
+        now < delegation.currentPeriodStartTs ||
+        delegation.amountPerPeriod !== parameters.amount ||
+        delegation.periodHours !== parameters.periodHours ||
+        delegation.amountPulledInPeriod !== parameters.amount ||
+        now >= periodEndTs
+    ) {
+        throw new Error('Subscription is not paid for the current billing period');
+    }
+    if (delegation.expiresAtTs !== 0 && now >= delegation.expiresAtTs) {
+        throw new Error('Subscription cancellation has taken effect');
+    }
+    return { delegation, delegationAddress: delegationAddress.toString(), periodEndTs };
 }
 
 function requireSubscriptionAuthentication(payload: CredentialPayload['payload']): SubscriptionAuthentication {
@@ -933,6 +1159,9 @@ async function validateActivationInstructions(
 }
 
 // ── On-chain SubscriptionDelegation decoding ──
+
+/** `SubscriptionAuthority` account size: discriminator, version, bump, user, mint, payer, init_id. */
+const SUBSCRIPTION_AUTHORITY_SIZE = 106;
 //
 // Keep account layout handling in the official Codama-generated SDK. This
 // avoids duplicating offsets here when the subscription program evolves.
@@ -977,6 +1206,14 @@ async function fetchSubscriptionAuthorityInitId(
     }
     const [b64] = account.value.data;
     const data = new Uint8Array(getBase64Codec().encode(b64));
+    if (data.length !== SUBSCRIPTION_AUTHORITY_SIZE) {
+        throw new Error(
+            `Unexpected SubscriptionAuthority account length: ${data.length} bytes (expected ${SUBSCRIPTION_AUTHORITY_SIZE})`,
+        );
+    }
+    if (data[0] !== 0) {
+        throw new Error(`Invalid SubscriptionAuthority account discriminator: ${data[0]}`);
+    }
     return getSubscriptionAuthorityDecoder().decode(data).initId;
 }
 
@@ -985,6 +1222,10 @@ function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation 
         throw new Error(
             `Unexpected SubscriptionDelegation account length: ${data.length} bytes (expected ${SUBSCRIPTION_SIZE})`,
         );
+    }
+    // header.discriminator = 4 (SubscriptionDelegation), header.version = 1.
+    if (data[0] !== 4 || data[1] !== 1) {
+        throw new Error(`Invalid SubscriptionDelegation discriminator/version: ${data[0]}/${data[1]}`);
     }
     const decoded = getSubscriptionDelegationDecoder().decode(data);
 
@@ -1148,6 +1389,9 @@ type CredentialPayload = {
     challenge: {
         expires?: string;
         id?: string;
+        intent?: string;
+        method?: string;
+        realm?: string;
         request: ChallengeRequest;
     };
     payload: {
@@ -1224,10 +1468,19 @@ export declare namespace subscription {
         planId: string;
         /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
         puller: string;
+        /** 402 realm the challenges were issued under. When set, `verify` refuses any other realm. */
+        realm?: string;
         /** Base58 of the primary recipient wallet. MUST match what plan.destinations resolves to. */
         recipient: string;
         /** Custom RPC URL. Defaults to the public RPC for the selected network. */
         rpcUrl?: string;
+        /**
+         * HMAC secret the challenges were issued under (the `secretKey` given
+         * to `Mppx.create`). When set, `verify` itself refuses a credential
+         * whose echoed challenge id is not the HMAC this server computes, so a
+         * host that calls `verify` outside `Mppx.create` keeps tier-1 binding.
+         */
+        secretKey?: string;
         /** Optional fee-payer signer. When set, the server co-signs activation as fee payer. */
         signer?: TransactionPartialSigner;
         /** Advisory distribution splits. The on-chain split is governed by plan.destinations. */

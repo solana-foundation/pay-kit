@@ -49,6 +49,26 @@ const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const PULLER = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 
+/** The route request Mppx.create hands to verify(): this route's per-period amount. */
+const ROUTE_REQUEST = { amount: '10000000' };
+
+/** A challenge request bound to the default test route (mainnet-beta). */
+const ROUTE_CHALLENGE_REQUEST = {
+    amount: '10000000',
+    currency: MINT,
+    methodDetails: {
+        decimals: 6,
+        mint: MINT,
+        planAddress: PLAN_ID,
+        puller: PULLER,
+        subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+        tokenProgram: TOKEN_PROGRAM,
+    },
+    periodCount: '30',
+    periodUnit: 'day',
+    recipient: RECIPIENT,
+};
+
 // ── Test setup ──
 
 let originalFetch: typeof globalThis.fetch;
@@ -882,6 +902,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'test-challenge',
                         request: {
                             amount: '10000000',
@@ -902,7 +924,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/first-period charge/);
     });
@@ -923,6 +945,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         request: {
                             amount: '10000000',
                             currency: MINT,
@@ -930,7 +954,8 @@ describe('subscription().verify()', () => {
                                 decimals: 6,
                                 feePayer: true,
                                 mint: MINT,
-                                planId: PLAN_ID,
+                                planAddress: PLAN_ID,
+                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
                                 tokenProgram: TOKEN_PROGRAM,
                             },
@@ -941,7 +966,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { signature: 'abc', type: 'signature' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/Push-mode/);
     });
@@ -960,10 +985,10 @@ describe('subscription().verify()', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: { request: { methodDetails: {} } },
+                    challenge: { intent: 'subscription', method: 'solana', request: ROUTE_CHALLENGE_REQUEST },
                     payload: { type: 'mystery' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/payload type/);
     });
@@ -1030,6 +1055,8 @@ describe('subscription().verify()', () => {
         });
         const credential = {
             challenge: {
+                intent: 'subscription',
+                method: 'solana',
                 id: 'test-challenge',
                 request: {
                     amount: '10000000',
@@ -1066,7 +1093,7 @@ describe('subscription().verify()', () => {
         });
         const receipt = await method.verify!({
             credential: credential as never,
-            request: {} as never,
+            request: ROUTE_REQUEST as never,
         });
         expect((receipt as { status: string }).status).toBe('success');
         expect(await store.get(bindingKey)).toMatchObject({
@@ -1074,7 +1101,7 @@ describe('subscription().verify()', () => {
             challengeId: 'test-challenge',
         });
 
-        const recovered = await method.verify!({ credential: credential as never, request: {} as never });
+        const recovered = await method.verify!({ credential: credential as never, request: ROUTE_REQUEST as never });
         expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
         expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
         expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
@@ -1092,8 +1119,8 @@ describe('subscription().verify()', () => {
                 type: 'proof',
             },
         } as never;
-        const firstAccess = await method.verify!({ credential: accessCredential, request: {} as never });
-        const repeatedAccess = await method.verify!({ credential: accessCredential, request: {} as never });
+        const firstAccess = await method.verify!({ credential: accessCredential, request: ROUTE_REQUEST as never });
+        const repeatedAccess = await method.verify!({ credential: accessCredential, request: ROUTE_REQUEST as never });
         expect((firstAccess as { status: string }).status).toBe('success');
         expect((repeatedAccess as { status: string }).status).toBe('success');
         expect(firstAccess).toMatchObject({
@@ -1225,6 +1252,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         expires: '2000-01-01T00:00:00Z',
                         id: 'expired-activation',
                         request: {
@@ -1233,6 +1262,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 puller: PULLER,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
@@ -1245,7 +1275,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { transaction: 'not-a-transaction', type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/challenge expired/);
     });
@@ -1268,6 +1298,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'expired-subscription',
                         request: {
                             amount: '10000000',
@@ -1275,6 +1307,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 puller: PULLER,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
@@ -1288,7 +1321,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { transaction: 'not-a-transaction', type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/subscription expired/);
     });
@@ -1339,6 +1372,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'wrong-plan-challenge',
                         request: {
                             amount: '10000000',
@@ -1346,6 +1381,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
@@ -1358,7 +1394,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/plan mismatch/);
     });
@@ -1397,6 +1433,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'absent-account-challenge',
                         request: {
                             amount: '10000000',
@@ -1404,6 +1442,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
@@ -1416,7 +1455,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/SubscriptionDelegation account not found/);
     });
@@ -1461,6 +1500,8 @@ describe('subscription().verify()', () => {
                 method.verify!({
                     credential: {
                         challenge: {
+                            intent: 'subscription',
+                            method: 'solana',
                             id: 'simulation-challenge',
                             request: {
                                 amount: '10000000',
@@ -1468,6 +1509,7 @@ describe('subscription().verify()', () => {
                                 methodDetails: {
                                     decimals: 6,
                                     mint: MINT,
+                                    network: 'devnet',
                                     planAddress: PLAN_ID,
                                     subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                     puller: PULLER,
@@ -1480,7 +1522,7 @@ describe('subscription().verify()', () => {
                         },
                         payload: { authentication, transaction, type: 'transaction' },
                     } as never,
-                    request: {} as never,
+                    request: ROUTE_REQUEST as never,
                 }),
             ).rejects.toThrow(/simulation failed/);
         } finally {
@@ -1522,6 +1564,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'broadcast-challenge',
                         request: {
                             amount: '10000000',
@@ -1529,6 +1573,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
@@ -1541,7 +1586,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/RPC error/);
     });
@@ -1573,6 +1618,8 @@ describe('subscription().verify()', () => {
             method.verify!({
                 credential: {
                     challenge: {
+                        intent: 'subscription',
+                        method: 'solana',
                         id: 'push-challenge',
                         request: {
                             amount: '10000000',
@@ -1580,6 +1627,7 @@ describe('subscription().verify()', () => {
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
@@ -1592,7 +1640,7 @@ describe('subscription().verify()', () => {
                     },
                     payload: { authentication, signature: 'activation-signature', type: 'signature' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/Push-mode \(type="signature"\) subscription activation is not supported/);
         expect(rpcCalls).toBe(0);
@@ -1631,6 +1679,8 @@ describe('subscription().verify() credential source', () => {
         return method.verify!({
             credential: {
                 challenge: {
+                    intent: 'subscription',
+                    method: 'solana',
                     id: 'source-challenge',
                     request: {
                         amount: '10000000',
@@ -1652,7 +1702,7 @@ describe('subscription().verify() credential source', () => {
                 payload: { authentication, transaction, type: 'transaction' },
                 ...(value === undefined ? {} : { source: value }),
             } as never,
-            request: {} as never,
+            request: ROUTE_REQUEST as never,
         });
     }
 
