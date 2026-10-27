@@ -236,6 +236,14 @@ impl Chain {
             // which a deployed cluster already has.
             if scenario.intent == super::claims::Intent::X402Batch {
                 self.fund_token(&acc.fee_payer.pubkey, mint, 0, program)?;
+            }
+            // Payment-channels `distribute` (batch and upto) also pays the
+            // protocol treasury's token account, which a deployed cluster
+            // already has; the upto readiness check refuses the open without it.
+            if matches!(
+                scenario.intent,
+                super::claims::Intent::X402Batch | super::claims::Intent::X402Upto
+            ) {
                 self.fund_token(PAYMENT_CHANNEL_TREASURY_OWNER, mint, 0, program)?;
             }
             if scenario.pre_create_platform_ata {
