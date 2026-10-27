@@ -251,6 +251,24 @@ impl Chain {
             .map_err(|e| format!("{method}: {e}"))
     }
 
+    /// Confirmed signatures touching `address`, newest first.
+    pub fn signatures_for_address(&self, address: &str) -> Result<Vec<String>, String> {
+        let v = self.send(
+            "getSignaturesForAddress",
+            json!([address, {"commitment": "confirmed"}]),
+        )?;
+        v.as_array()
+            .ok_or_else(|| format!("getSignaturesForAddress {address}: {v}"))?
+            .iter()
+            .map(|entry| {
+                entry["signature"]
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("getSignaturesForAddress {address}: {entry}"))
+            })
+            .collect()
+    }
+
     /// Token balance of `owner`'s ATA; a missing account reads as zero.
     pub fn token_balance(&self, owner: &str, mint: &str, program: &str) -> Result<u64, String> {
         let ata = crate::keys::ata(owner, mint, program).to_string();

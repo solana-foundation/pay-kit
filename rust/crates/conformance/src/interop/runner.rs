@@ -351,7 +351,27 @@ fn settled(ctx: &Ctx<'_>, s: &Scenario, acc: &Accounts, signature: &str) -> Resu
             ));
         }
     }
-    settle::assert_shape(s, acc, &message)
+    settle::assert_shape(s, acc, &message)?;
+    if let Some(version) = s.open_version {
+        let channel = message
+            .upto_channel(s.primary_delta())
+            .ok_or("the settlement names no channel")?
+            .to_string();
+        // The channel's first transaction is the client's open.
+        let open = ctx
+            .chain
+            .signatures_for_address(&channel)?
+            .pop()
+            .ok_or_else(|| format!("no transaction on channel {channel}"))?;
+        let open_version =
+            settle::decode(&ctx.chain.transaction(&open, SETTLEMENT_DEADLINE)?)?.version();
+        if open_version != version.to_string() {
+            return Err(format!(
+                "channel open {open} is version {open_version}, expected version {version}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn assert_paid(

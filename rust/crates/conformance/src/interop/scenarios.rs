@@ -269,6 +269,10 @@ pub struct Scenario {
     /// Message version the settled transaction must have, when the scenario
     /// pins one (`None`: any accepted version).
     pub settled_version: Option<u8>,
+    /// `x402-upto`: message version the client's channel `open` must have.
+    /// The judge finds the open as the oldest transaction on the settled
+    /// channel.
+    pub open_version: Option<u8>,
     /// `x402-batch`: channels the client opens before the server redeems
     /// them all at once. Each is paid by its deposit, and the first one by a
     /// second voucher.
@@ -372,12 +376,23 @@ const BASE: Scenario = Scenario {
     pre_create_platform_ata: false,
     compute_unit_limit: None,
     settled_version: None,
+    open_version: None,
     batch_channels: None,
 };
 
 const ONLY_RUST_BATCH: Participants = Participants::Only(
     &["rust"],
     "x402 batch-settlement is implemented only by the Rust SDK in pay-kit",
+);
+
+const ONLY_RUST_V1_UPTO_CLIENT: Participants = Participants::Only(
+    &["rust"],
+    "only the Rust upto client builds a version-1 channel open; the Go, Python, Swift and Kotlin upto clients build version 0 only",
+);
+
+const X402_V1_UPTO_SERVERS: Participants = Participants::Only(
+    &["rust", "typescript"],
+    "only the Rust and TypeScript upto servers advertise transactionVersions [0, 1] and accept a version-1 open; the Go and Python upto servers accept version 0 only",
 );
 
 const X402_V1_SDKS: Participants = Participants::Only(
@@ -764,6 +779,23 @@ pub const SCENARIOS: &[Scenario] = &[
         actual_amount: Some("50000"),
         resource_path: "/usage",
         settlement_header: "x-payment-settlement-signature",
+        ..BASE
+    },
+    Scenario {
+        id: "x402-upto-v1",
+        intent: Intent::X402Upto,
+        description: "The server advertises transactionVersions [0, 1]: the client opens the channel with a version-1 transaction, the server's facilitator runs its open + settle + distribute readiness simulation and broadcasts the open, then settles the metered 50000 with a version-1 settle_and_seal and distribute.",
+        spec: spec(UPTO_SVM_DOC, "PaymentPayload", "Its message version MUST be one advertised in `extra.transactionVersions`"),
+        network: SOLANA_DEVNET,
+        price: "0.10",
+        amount: "100000",
+        actual_amount: Some("50000"),
+        resource_path: "/usage",
+        settlement_header: "x-payment-settlement-signature",
+        settled_version: Some(1),
+        open_version: Some(1),
+        clients: ONLY_RUST_V1_UPTO_CLIENT,
+        servers: X402_V1_UPTO_SERVERS,
         ..BASE
     },
     Scenario {

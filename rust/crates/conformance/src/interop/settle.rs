@@ -33,6 +33,14 @@ impl Message {
         }
     }
 
+    /// The channel an `x402-upto` settlement closes: account 1 (`channel`) of
+    /// its `settle_and_seal`, which follows the Ed25519 verify when the
+    /// metered amount is non-zero.
+    pub fn upto_channel(&self, actual: u64) -> Option<&str> {
+        let settle = self.instructions().get(usize::from(actual != 0))?;
+        settle.accounts.get(1).map(|index| self.account(*index))
+    }
+
     fn account(&self, index: u8) -> &str {
         self.keys
             .get(index as usize)

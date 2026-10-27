@@ -17,7 +17,7 @@ flow = true
 # (`pkc run --cross --require`); cells are cross/<case>/<client>/<server>.
 cross = true
 # Interop roles (pkc run --tier interop), <protocol>:<scheme>:<role>; cases are interop/<scenario>/<client>/<server>.
-interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server"]
+interop = ["mpp:charge:client", "mpp:charge:server", "x402:exact:client", "x402:exact:server", "x402:upto:server"]
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
@@ -107,6 +107,14 @@ ids = [
 ]
 reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
 tracking = "FINDINGS.md#charge-client-request-not-verified"
+
+[[known_failing]]
+ids = [
+  "interop/x402-upto-basic/rust/typescript",
+  "interop/x402-upto-v1/rust/typescript",
+]
+reason = "the @x402/svm upto facilitator infers the payment-channels treasury owner from the network label and takes no program-id or treasury override, so against the harness's locally built program (mainnet treasury constant, devnet label) its open + settle + distribute readiness simulation fails distribute with TreasuryAccountMismatch (0x961) and the open is refused as invalid_upto_svm_settlement_simulation"
+tracking = "FINDINGS.md#x402-upto-ts-treasury-not-configurable"
 
 [[known_failing]]
 ids = [

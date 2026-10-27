@@ -201,6 +201,14 @@ const TS_EXACT_CLIENT: &[&str] = &[
     "tsx",
     "src/fixtures/typescript/exact-client.ts",
 ];
+const TS_UPTO_SERVER: &[&str] = &[
+    "pnpm",
+    "exec",
+    "node",
+    "--import",
+    "tsx",
+    "src/fixtures/typescript/upto-server.ts",
+];
 const TS_EXACT_SERVER: &[&str] = &[
     "pnpm",
     "exec",
@@ -383,6 +391,14 @@ pub const ADAPTERS: &[Adapter] = &[
     ),
     // x402 upto servers.
     a("rust", "rust", Sv, X402Upto, "rust", N(RUST_UPTO_SERVER)),
+    a(
+        "typescript",
+        "typescript",
+        Sv,
+        X402Upto,
+        "typescript",
+        S(TS_UPTO_SERVER),
+    ),
     a("go", "go", Sv, X402Upto, "go-paykit", N(GO_SERVER)),
     a("python", "python", Sv, X402Upto, "python", S(PY_SERVER)),
     // x402 batch-settlement: only the Rust SDK implements it.
