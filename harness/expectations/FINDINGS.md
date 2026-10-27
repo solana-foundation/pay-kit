@@ -331,6 +331,19 @@ with `getOpenInstructionDataDecoder().decode`
 (`typescript/external/x402/typescript/packages/mechanisms/svm/src/payment-channels/open.ts:969`),
 which ignores bytes past the arguments. The fix belongs in the x402 fork.
 
+## txv1-ts-mpp-session-no-version-admission
+**Cases:** `vector/session-open-v1-not-advertised-reject` (and, declared
+`[[unsupported]]`, the `session-open-*` vectors that configure
+`sessionOpenVerify.server.transactionVersions`)
+The `@solana/mpp` session server (`createSessionServer` /
+`session()`, `typescript/packages/mpp/src/server/Session.ts`) takes no
+accepted transaction-version set, and its open verifier (`verifyOpenTx`,
+`typescript/packages/mpp/src/server/session/on-chain.ts`) has no version
+admission: a version-1 open for a server accepting `[0]` throws while
+decoding (`message.instructions is not iterable`) instead of “transaction
+version 1 is not accepted” (`unsupported-version`), and legacy opens are
+policed as version 0 where the Rust server refuses them. Same gap as
+`txv1-ts-mpp-server-no-version-admission` for charge.
 ## txv1-ts-x402-v1-policy
 
 **Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`
@@ -467,6 +480,7 @@ the vectors or adapters instead:
 | `txv1-ts-mpp-no-transaction-versions`, `txv1-ts-mpp-client-v0-only`, `txv1-ts-mpp-server-no-version-admission` (with the `cross/charge-build-*/*/typescript` cases) | `@solana/mpp` charge and session request schemas parse `methodDetails.transactionVersions` strictly; the charge client negotiates the version (`maxTransactionVersion` for the signer's highest) and builds version 1 with the budget in the header; `verifyChargeTransaction` admits by the advertised set, refuses legacy, applies each version's size limits and the version-1 header caps (`typescript/packages/mpp/src/utils/transaction-versions.ts`) |
 | `mpp-payment-page-legacy-build` (TypeScript and Rust; no vector covers the bundled page) | the `html: true` payment page compiled a legacy message, which the TypeScript and Rust charge verifiers refuse, so every “Continue with Solana” payment failed; it ignored `transactionVersions` too. The page now compiles version 0 (0x80 prefix, empty lookup-table section) and refuses a challenge that does not list version 0 (`html/src/transaction.ts`); the embedded assets are regenerated for every server, `payment-page.test.ts` runs the page build through `verifyChargeTransaction`, and the Playwright e2e test requires the paid response. Version 1 is not built by the page |
 | pay-kit client `maxTransactionVersion` not forwarded to MPP | `createPayKitClient` passes it to `solana.charge`, so a version-0 signer builds version 0 for a `[0, 1]` charge (`typescript/packages/pay-kit/src/client/index.ts`) |
+| TypeScript session server and client (the `session-open-*`, `session-voucher-verify-*`, `session-topup-*`, `session-close-*`, `session-use-*` and `session-build-*` vectors, previously unreachable from the testee): the open's declared channel not checked against the PDA of its own fields; the open and top-up instructions not compared account-for-account, extra payment-channels instructions beside the open skipped rather than refused, account privileges and client signatures unchecked (a forged payer signature or a writable mint passed); the sponsored top-up never co-signed (and, once co-signed, its transaction id read from the client wire before the sponsor signature existed); no authenticate-then-charge-metered `use` (draft-solana-session-00 Debit Processing, RULINGS SS5); a voucher accepted on an operator-signed channel; a non-base58 voucher signature reported as a bad signature; the settlement window off unless configured (Rust uses the grace period); a repeated close accepted; the client open builder not checking the challenge (network, decimals, `tokenProgram`, `channelProgram`, zero grace period), ignoring the challenged `tokenProgram`, and signing over a blockhash its cluster does not know (now checked by default against the challenged network's RPC when no `rpcUrl` is given) | `@solana/mpp` `createSessionServer` (`authenticateUse`, `chargeOperatorRequest`, `processUse`, `verifyOpenPreBroadcast`, `verifyTopUpPreBroadcast`, `verifyVoucherForAmount`, `processClose`), `verifyOpenTx`, `verifyTopUpTx`, `buildOpenPaymentChannelTransaction` |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 | Python `subscription` suite unclaimed (no subscription intent) | `solana_pay_kit.protocols.mpp` subscription intent, activation client, offline activation verifier and active-subscription check, subscriptions program helpers; `subscription` claimed (2026-10-27). The end-to-end server stays open as `python-subscription-server-partial` |
 

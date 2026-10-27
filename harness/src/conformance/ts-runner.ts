@@ -13,6 +13,7 @@
 
 import { createHmac } from "node:crypto";
 import { run as runBatch } from "./intents/x402-batch-settlement";
+import { run as runSessionServer } from "./intents/session";
 import { run as runSubscription } from "./intents/subscription";
 import { run as runUpto } from "./intents/x402-upto";
 import { createServer } from "node:http";
@@ -428,16 +429,10 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
     return runX402Vector(vector);
   }
   if (vector.intent === "session" && vector.mode === "build-transaction") {
-    return {
-      error: "unsupported-mode: no session client open builder path (input.sessionOpenBuild)",
-      id: vector.id,
-      outcome: "unsupported-mode",
-    };
+    return runSessionServer(vector);
   }
   if (vector.intent === "session" && vector.mode === "verify-transaction") {
-    if (!vector.input.sessionVoucherVerify) {
-      return { error: "unsupported-mode: session verify input", id: vector.id, outcome: "unsupported-mode" };
-    }
+    if (!vector.input.sessionVoucherVerify) return runSessionServer(vector);
     return runSessionVoucherVerify(vector);
   }
   if (vector.mode === "canonical-bytes") {

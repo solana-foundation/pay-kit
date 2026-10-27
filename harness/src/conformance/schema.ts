@@ -676,6 +676,8 @@ export type VectorInput = {
     credential: Record<string, unknown>;
   };
   sessionServerFeePayerSecretKey?: number[];
+  // verify-transaction (session `use`): the operator's voucher key.
+  sessionServerOperatorSecretKey?: number[];
   // build-transaction (session): the client's `open` for `request` (the
   // challenge's SessionRequest) with the channel `salt` its builder takes
   // and the `deposit` its caller authorizes; `signerSecretKey` is the payer,

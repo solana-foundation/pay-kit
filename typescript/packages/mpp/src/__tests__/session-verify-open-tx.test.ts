@@ -30,9 +30,12 @@ import {
     getCompiledTransactionMessageEncoder,
     getTransactionDecoder,
     getTransactionEncoder,
+    type KeyPairSigner,
     type Signature,
 } from '@solana/kit';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { stubClusterRpc } from './cluster-rpc-stub.js';
 
 import { buildOpenPaymentChannelTransaction } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
@@ -47,6 +50,15 @@ import {
     waitForSignatureConfirmation,
 } from '../server/session/on-chain.js';
 import type { OpenPayload } from '../shared/session-types.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+beforeEach(() => {
+    stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -68,6 +80,7 @@ function challengeRequest(recipient: string, methodDetails: Record<string, unkno
         suggestedDeposit: '5000',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             gracePeriodSeconds: 900,
             network: 'devnet',
             recentBlockhash: CHALLENGED_BLOCKHASH,
@@ -122,17 +135,18 @@ async function verifiedOpenFixture() {
     return { expected, open, openPayload, payee, payer, sessionSigner };
 }
 
-/** Re-encode a v0 wire transaction as a legacy wire transaction. */
-function reencodeAsLegacy(transactionBase64: string): string {
+/** Re-encode a v0 wire transaction as a legacy wire transaction, re-signed by `signer`. */
+async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner): Promise<string> {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
     const legacyMessageBytes = getCompiledTransactionMessageEncoder().encode({
         ...compiled,
         version: 'legacy',
     } as never);
+    const [signature] = await signer.signMessages([{ content: legacyMessageBytes as Uint8Array } as never]);
     const legacyTx = getTransactionEncoder().encode({
         messageBytes: legacyMessageBytes as never,
-        signatures: tx.signatures,
+        signatures: { ...tx.signatures, ...signature } as never,
     });
     return getBase64Codec().decode(legacyTx);
 }
@@ -184,8 +198,8 @@ describe('verifyOpenTx transaction shape', () => {
     });
 
     test('accepts a legacy-encoded open transaction (pre-cutover client wire format)', async () => {
-        const { expected, open, openPayload } = await verifiedOpenFixture();
-        const legacyTransaction = reencodeAsLegacy(open.transaction);
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const legacyTransaction = await reencodeAsLegacy(open.transaction, payer);
         expect(legacyTransaction).not.toBe(open.transaction);
 
         const verified = await verifyOpenTx({
@@ -370,6 +384,133 @@ describe('verifyOpenTx Compute Budget policy', () => {
             /unsupported compute budget instruction/,
         );
         await expect(withBudget([{ accounts: [0], data: unitPrice(1n) }])).rejects.toThrow(/must not have accounts/);
+    });
+});
+
+// ── verifyOpenTx: instruction allowlist ────────────────────────────────
+
+describe('verifyOpenTx instruction allowlist', () => {
+    /**
+     * Sponsored open with extra payment-channels instructions appended after
+     * the real open, re-signed by the channel payer. The operator's fee-payer
+     * slot stays empty so the server would co-sign it.
+     */
+    async function sponsoredOpenWithExtra(extra: readonly Uint8Array[]) {
+        const { payee, payer, sessionSigner } = await clientOpenFixture();
+        const operator = await generateKeyPairSigner();
+        const request = challengeRequest(payee.address, {
+            feePayer: true,
+            feePayerKey: operator.address,
+        }) as unknown as SessionRequest;
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: sessionSigner.address,
+            request,
+            salt: 7n,
+            signer: payer,
+        });
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(open.transaction));
+        const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            instructions: readonly { accountIndices?: readonly number[]; programAddressIndex: number }[];
+            staticAccounts: readonly string[];
+        };
+        const programIndex = compiled.staticAccounts.indexOf(PAYMENT_CHANNELS_PROGRAM_ID.toString());
+        expect(programIndex).toBeGreaterThan(0);
+        const openIx = compiled.instructions.find(ix => ix.programAddressIndex === programIndex);
+        const messageBytes = getCompiledTransactionMessageEncoder().encode({
+            ...compiled,
+            instructions: [
+                ...compiled.instructions,
+                ...extra.map(data => ({
+                    accountIndices: openIx?.accountIndices ?? [],
+                    data,
+                    programAddressIndex: programIndex,
+                })),
+            ],
+        } as never);
+        const [payerSignature] = await payer.signMessages([{ content: messageBytes as Uint8Array } as never]);
+        const signed = getTransactionEncoder().encode({
+            messageBytes: messageBytes as never,
+            signatures: { ...tx.signatures, ...payerSignature } as never,
+        });
+        const transaction = getBase64Codec().decode(signed);
+        const openPayload: OpenPayload = {
+            authorizedSigner: sessionSigner.address,
+            channelId: open.channelId,
+            depositAmount: open.deposit,
+            gracePeriodSeconds: open.gracePeriod,
+            mint: open.mint,
+            openSlot: open.openSlot,
+            payee: open.payee,
+            payer: open.payer,
+            salt: open.salt,
+            transaction,
+        };
+        const expected: VerifyOpenTxExpected = {
+            authorizedSigner: sessionSigner.address,
+            channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            currency: 'USDC',
+            feePayer: operator.address,
+            network: 'devnet',
+            openSlot: CHALLENGED_SLOT,
+            recentBlockhash: CHALLENGED_BLOCKHASH,
+            recipient: open.payee,
+            rentPayer: operator.address,
+            splits: [],
+            tokenProgram: TOKEN_PROGRAM,
+        };
+        let operatorSignCalls = 0;
+        const payerSigner = {
+            address: operator.address,
+            signTransactions: async (transactions: readonly unknown[]) => {
+                operatorSignCalls += 1;
+                return await operator.signTransactions(transactions as never);
+            },
+        };
+        return { expected, openPayload, operatorSignCalls: () => operatorSignCalls, payerSigner };
+    }
+
+    test('the sponsored fixture without extras verifies', async () => {
+        const { expected, openPayload } = await sponsoredOpenWithExtra([]);
+        await expect(verifyOpenTx({ expected, openPayload })).resolves.toBeDefined();
+    });
+
+    test.each([
+        ['a different payment-channels discriminator (topUp)', new Uint8Array([2, 0, 0, 0, 0, 0, 0, 0, 0])],
+        ['empty instruction data', new Uint8Array([])],
+        ['arbitrary data', new Uint8Array([0xff, 1, 2, 3])],
+    ])('refuses an open carrying %s before co-signing', async (_label, data) => {
+        const { expected, openPayload, operatorSignCalls, payerSigner } = await sponsoredOpenWithExtra([data]);
+        await expect(verifyOpenTx({ expected, openPayload })).rejects.toThrow(
+            /open transaction contains an unexpected instruction/,
+        );
+        const rpc = submitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+        await expect(
+            submitOpenTx({
+                confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+                expected,
+                openPayload,
+                payerSigner: payerSigner as never,
+                rpc: rpc as never,
+            }),
+        ).rejects.toThrow(/open transaction contains an unexpected instruction/);
+        expect(operatorSignCalls()).toBe(0);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('refuses an open carrying a second open instruction', async () => {
+        const { openPayload: base } = await sponsoredOpenWithExtra([]);
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(base.transaction!));
+        const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            instructions: readonly { data?: Uint8Array; programAddressIndex: number }[];
+            staticAccounts: readonly string[];
+        };
+        const programIndex = compiled.staticAccounts.indexOf(PAYMENT_CHANNELS_PROGRAM_ID.toString());
+        const openData = compiled.instructions.find(ix => ix.programAddressIndex === programIndex)?.data;
+        expect(openData?.[0]).toBe(1);
+        const { expected, openPayload } = await sponsoredOpenWithExtra([openData!]);
+        await expect(verifyOpenTx({ expected, openPayload })).rejects.toThrow(
+            /open transaction contains an unexpected instruction/,
+        );
     });
 });
 

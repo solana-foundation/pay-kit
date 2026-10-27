@@ -29,7 +29,9 @@ import {
     getUtf8Encoder,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { stubClusterRpc } from './cluster-rpc-stub.js';
 
 import { buildOpenPaymentChannelTransaction, derivePaymentChannelOpen } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
@@ -49,6 +51,15 @@ import {
     treasuryOwnerForNetwork,
 } from '../server/session/on-chain.js';
 import type { SignedVoucher } from '../shared/session-types.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+beforeEach(() => {
+    stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // Deterministic fixture
@@ -509,6 +520,7 @@ function openChallengeRequest(overrides: Record<string, unknown> = {}): SessionR
         currency: 'USDC',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             // Gasless flow: the operator co-signs as fee payer and rentPayer.
             feePayer: true,
             feePayerKey: OPERATOR,
