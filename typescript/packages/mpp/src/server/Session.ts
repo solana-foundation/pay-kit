@@ -34,6 +34,7 @@ import type {
     SignedVoucher,
 } from '../shared/session-types.js';
 import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
+import { advertisedTransactionVersions, type TransactionVersion } from '../utils/transaction-versions.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
@@ -138,6 +139,7 @@ export function session(parameters: session.Parameters) {
         store,
         suggestedDeposit,
         tokenProgram,
+        transactionVersions,
         voucherSigner,
     } = config;
     const { currency, decimals, signer } = parameters;
@@ -233,6 +235,7 @@ export function session(parameters: session.Parameters) {
                         ? { recentBlockhash: openContext.blockhash, recentSlot: openContext.slot.toString() }
                         : {}),
                     tokenProgram,
+                    ...(transactionVersions ? { transactionVersions: [...transactionVersions] } : {}),
                     voucherSigner,
                 },
             };
@@ -341,6 +344,11 @@ interface ResolvedSessionConfig {
     readonly store: SessionStore;
     readonly suggestedDeposit: bigint | undefined;
     readonly tokenProgram: string;
+    /**
+     * The advertised `methodDetails.transactionVersions`: the accepted set
+     * when it is not the default `[0]`, else undefined (absent means `[0]`).
+     */
+    readonly transactionVersions: readonly TransactionVersion[] | undefined;
     readonly voucherSigner: SessionVoucherSigner;
 }
 
@@ -407,6 +415,7 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         throw new Error('decimals must be an integer from 0 to 9');
     }
     const tokenProgram = parameters.tokenProgram ?? defaultTokenProgramForCurrency(currency, network);
+    const transactionVersions = advertisedTransactionVersions(parameters.transactionVersions);
     // draft-solana-session-00: a voucher's non-zero expiry must outlast the
     // channel's forced-close grace period, so the operator can still settle
     // after the payer starts a forced close. Mirrors the Rust server, which
@@ -436,6 +445,7 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         store,
         suggestedDeposit,
         tokenProgram,
+        transactionVersions,
         voucherSigner,
     };
 }
@@ -941,6 +951,7 @@ async function validateOpen(
         rentPayer,
         splits: configuredSplits,
         tokenProgram: config.tokenProgram,
+        transactionVersions: config.transactionVersions,
     };
     const verified = await verifyOpenTx({ expected, openPayload: payload });
     return {
@@ -1423,6 +1434,7 @@ async function prepareTopUp(
         serverFeePayer: sponsor ? existing.rentPayer : undefined,
         tokenProgram: config.tokenProgram,
         transaction: payload.transaction,
+        transactionVersions: config.transactionVersions,
     });
     return { additionalAmount, existing, sponsor };
 }
@@ -2147,6 +2159,14 @@ export declare namespace session {
         readonly suggestedDeposit?: bigint;
         /** SPL token program (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from currency/network. */
         readonly tokenProgram?: string;
+        /**
+         * Transaction message versions the server accepts for open and topUp
+         * transactions, advertised as `methodDetails.transactionVersions`
+         * (mpp-specs-txv1). Defaults to `[0]`, which is not advertised. List
+         * `1` only once the cluster has activated the `enable_tx_v1` feature
+         * gate. Legacy messages are always refused.
+         */
+        readonly transactionVersions?: readonly TransactionVersion[];
         /** Unit priced by `amount`. */
         readonly unitType?: string;
         /** Voucher signing authority advertised by this session. */

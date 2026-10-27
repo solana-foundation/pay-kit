@@ -6,8 +6,10 @@
  * verifyOpenTx API, plus coverage for the verifier checks that landed with
  * it:
  *
- *   - verifyOpenTx accepts both legacy and v0 transaction encodings and
- *     rejects malformed wire bytes.
+ *   - verifyOpenTx admits the transaction version first: version 0 by
+ *     default, version 1 when `transactionVersions` lists it (with the
+ *     version-1 header budget caps), never legacy; it rejects malformed wire
+ *     bytes.
  *   - verifyOpenTx rejects v0 opens carrying address-lookup tables — every
  *     account it inspects must be static.
  *   - verifyOpenTx binds the open instruction's accounts (payee, mint,
@@ -36,6 +38,7 @@ import {
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { stubClusterRpc } from './cluster-rpc-stub.js';
+import { reencodeAsV1, V1_LOADED_ACCOUNTS_DATA_SIZE, VALID_SESSION_V1_CONFIG } from './reencode-v1.js';
 
 import { buildOpenPaymentChannelTransaction } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
@@ -183,6 +186,93 @@ function stripSignature(transactionBase64: string, signer: string): string {
     return getBase64Codec().decode(stripped);
 }
 
+// ── verifyOpenTx: transaction versions ──────────────────────────────────
+
+describe('verifyOpenTx transaction versions', () => {
+    test('rejects a version-1 open when the server accepts only the default [0]', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG);
+        for (const transactionVersions of [undefined, [0] as const]) {
+            await expect(
+                verifyOpenTx({
+                    expected: { ...expected, transactionVersions },
+                    openPayload: { ...openPayload, transaction: v1 },
+                }),
+            ).rejects.toThrow('transaction version 1 is not accepted; accepted versions: 0');
+        }
+    });
+
+    test('accepts a version-1 open when transactionVersions lists 1', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG);
+        const verified = await verifyOpenTx({
+            expected: { ...expected, transactionVersions: [0, 1] },
+            openPayload: { ...openPayload, transaction: v1 },
+        });
+        expect(verified.channelId).toBe(open.channelId);
+        expect(verified.deposit).toBe(5_000n);
+    });
+
+    test('rejects a version-0 open when the server accepts only version 1', async () => {
+        const { expected, openPayload } = await verifiedOpenFixture();
+        await expect(
+            verifyOpenTx({ expected: { ...expected, transactionVersions: [1] }, openPayload }),
+        ).rejects.toThrow('transaction version 0 is not accepted; accepted versions: 1');
+    });
+
+    test('holds the version-1 header budget to the session caps', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const accepting = { ...expected, transactionVersions: [0, 1] as const };
+        const attempt = async (config: Parameters<typeof reencodeAsV1>[2]) =>
+            await verifyOpenTx({
+                expected: accepting,
+                openPayload: { ...openPayload, transaction: await reencodeAsV1(open.transaction, payer, config) },
+            });
+        const { computeUnitLimit: _limit, ...withoutLimit } = VALID_SESSION_V1_CONFIG;
+        await expect(attempt(withoutLimit)).rejects.toThrow('version 1 transaction config must set computeUnitLimit');
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, computeUnitLimit: 200_001 })).rejects.toThrow(
+            'compute unit limit 200001 exceeds maximum 200000',
+        );
+        // 1_000_001 lamports over 200_000 units is a 5_000_005 micro-lamport price, over the 5_000_000 cap.
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, priorityFeeLamports: 1_000_001n })).rejects.toThrow(
+            /compute unit price \d+ exceeds maximum 5000000/,
+        );
+        await expect(
+            attempt({ ...VALID_SESSION_V1_CONFIG, loadedAccountsDataSizeLimit: V1_LOADED_ACCOUNTS_DATA_SIZE - 1 }),
+        ).rejects.toThrow('version 1 loaded accounts data size limit must be 67108864');
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, priorityFeeLamports: 1_000_000n })).resolves.toBeDefined();
+    });
+
+    test('applies the sponsored price cap to a version-1 open the server pays for', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        // Judged as sponsored (the expected fee payer is not the channel payer):
+        // 2_001 lamports over 200_000 units is a 10_005 micro-lamport price, over the 10_000 cap.
+        const sponsored = { ...expected, feePayer: open.payee, transactionVersions: [0, 1] as const };
+        const v1 = await reencodeAsV1(open.transaction, payer, {
+            ...VALID_SESSION_V1_CONFIG,
+            priorityFeeLamports: 2_001n,
+        });
+        await expect(
+            verifyOpenTx({ expected: sponsored, openPayload: { ...openPayload, transaction: v1 } }),
+        ).rejects.toThrow(/compute unit price \d+ exceeds maximum 10000/);
+    });
+
+    test('rejects ComputeBudget instructions in a version-1 open', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        // SetComputeUnitPrice(1): the budget belongs in the version-1 header.
+        const setPrice = new Uint8Array([3, 1, 0, 0, 0, 0, 0, 0, 0]);
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG, {
+            computeBudgetInstruction: setPrice,
+        });
+        await expect(
+            verifyOpenTx({
+                expected: { ...expected, transactionVersions: [0, 1] },
+                openPayload: { ...openPayload, transaction: v1 },
+            }),
+        ).rejects.toThrow('version 1 transactions must not contain ComputeBudget instructions');
+    });
+});
+
 // ── verifyOpenTx: transaction shape ─────────────────────────────────────
 
 describe('verifyOpenTx transaction shape', () => {
@@ -197,18 +287,19 @@ describe('verifyOpenTx transaction shape', () => {
         expect(verified.salt).toBe(7n);
     });
 
-    test('accepts a legacy-encoded open transaction (pre-cutover client wire format)', async () => {
+    test('rejects a legacy-encoded open transaction, whatever the accepted set', async () => {
         const { expected, open, openPayload, payer } = await verifiedOpenFixture();
         const legacyTransaction = await reencodeAsLegacy(open.transaction, payer);
         expect(legacyTransaction).not.toBe(open.transaction);
 
-        const verified = await verifyOpenTx({
-            expected,
-            openPayload: { ...openPayload, transaction: legacyTransaction },
-        });
-        expect(verified.channelId).toBe(open.channelId);
-        expect(verified.deposit).toBe(5_000n);
-        expect(verified.salt).toBe(7n);
+        for (const transactionVersions of [undefined, [0, 1] as const]) {
+            await expect(
+                verifyOpenTx({
+                    expected: { ...expected, transactionVersions },
+                    openPayload: { ...openPayload, transaction: legacyTransaction },
+                }),
+            ).rejects.toThrow(/legacy transaction version is not accepted/);
+        }
     });
 
     test('rejects a v0 open carrying an address-lookup table', async () => {
@@ -217,7 +308,7 @@ describe('verifyOpenTx transaction shape', () => {
 
         await expect(
             verifyOpenTx({ expected, openPayload: { ...openPayload, transaction: withLookup } }),
-        ).rejects.toThrow(/address-lookup tables are not permitted/);
+        ).rejects.toThrow(/address lookup tables are not supported/);
     });
 
     test('rejects a payload without a transaction', async () => {

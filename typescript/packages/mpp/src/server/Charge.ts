@@ -25,6 +25,7 @@ import {
 import * as Methods from '../Methods.js';
 import {
     acceptedTransactionVersions,
+    advertisedTransactionVersions,
     checkTransactionEnvelope,
     checkV1BudgetCaps,
     type CompiledMessageView,
@@ -248,25 +249,6 @@ export function charge(parameters: charge.Parameters) {
     });
 
     return method;
-}
-
-/**
- * The `transactionVersions` a server advertises for its accepted set: omitted
- * for the default `[0]`, which an absent field already means. Throws on an
- * empty set or a version outside 0 and 1.
- */
-function advertisedTransactionVersions(
-    versions: readonly TransactionVersion[] | undefined,
-): TransactionVersion[] | undefined {
-    if (versions === undefined) return undefined;
-    const unique = [...new Set(versions)].sort();
-    if (unique.length === 0) {
-        throw new Error('transactionVersions must list at least one transaction version');
-    }
-    if (unique.some(version => version !== 0 && version !== 1)) {
-        throw new Error('transactionVersions entries must be 0 or 1');
-    }
-    return unique.length === 1 && unique[0] === 0 ? undefined : unique;
 }
 
 // Route binding: every request field except the per-challenge blockhash must

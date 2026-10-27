@@ -37,6 +37,8 @@ import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } 
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { describe, expect, test } from 'vitest';
 
+import { reencodeAsV1, VALID_SESSION_V1_CONFIG } from './reencode-v1.js';
+
 import { ActiveSession, signSessionAuthentication } from '../client/Session.js';
 import { ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM } from '../constants.js';
 import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
@@ -293,6 +295,35 @@ async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner
     return getBase64Codec().decode(legacyTx);
 }
 
+// ── request() — transactionVersions ─────────────────────────────────────
+
+describe('session() advertises transactionVersions', () => {
+    const methodDetails = async (transactionVersions?: ReadonlyArray<0 | 1>) => {
+        const f = await makeFixture();
+        const method = makeMethod(f, mockRpc().rpc, transactionVersions ? { transactionVersions } : {});
+        // A credential skips the blockhash prefetch.
+        const built = await (
+            method as unknown as {
+                request: (args: unknown) => Promise<{ methodDetails: Record<string, unknown> }>;
+            }
+        ).request({ credential: {}, request: {} });
+        return built.methodDetails;
+    };
+
+    test('omits the default [0] and lists any other set', async () => {
+        expect(await methodDetails()).not.toHaveProperty('transactionVersions');
+        expect(await methodDetails([0])).not.toHaveProperty('transactionVersions');
+        expect((await methodDetails([1, 0])).transactionVersions).toEqual([0, 1]);
+        expect((await methodDetails([1])).transactionVersions).toEqual([1]);
+    });
+
+    test('refuses an empty or unknown set at construction', async () => {
+        const f = await makeFixture();
+        expect(() => makeMethod(f, mockRpc().rpc, { transactionVersions: [] })).toThrow('at least one');
+        expect(() => makeMethod(f, mockRpc().rpc, { transactionVersions: [2] })).toThrow('must be 0 or 1');
+    });
+});
+
 // ── verify() — topUp ────────────────────────────────────────────────────
 
 describe('session() verify() topUp', () => {
@@ -445,26 +476,69 @@ describe('session() verify() topUp', () => {
         expect(state?.processedTopUpSignatures).toHaveLength(1);
     });
 
-    test('topUp accepts a legacy-encoded wire transaction under the version-0 rules', async () => {
+    test('topUp rejects a legacy-encoded wire transaction before broadcasting it', async () => {
         const f = await makeFixture();
         const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
-        const method = makeMethod(f, rpc);
+        const method = makeMethod(f, rpc, { transactionVersions: [0, 1] });
         await seedChannel(f);
 
-        // A pre-cutover client's legacy (unversioned) top-up is verified and
-        // broadcast exactly like a v0 one.
+        // MPP refuses legacy messages whatever the accepted set.
         const wire = await reencodeAsLegacy(await buildTopUpWire(f, rpc, 4_000n), f.payer);
-        const receipt = await verify(
-            method,
-            makeCred(f, {
-                action: 'topUp',
-                additionalAmount: '4000',
-                channelId: f.channel.address,
-                transaction: wire,
-            }),
+        await expect(
+            verify(
+                method,
+                makeCred(f, {
+                    action: 'topUp',
+                    additionalAmount: '4000',
+                    channelId: f.channel.address,
+                    transaction: wire,
+                }),
+            ),
+        ).rejects.toThrow('legacy transaction version is not accepted; accepted versions: 0, 1');
+        expect(sent).toHaveLength(0);
+    });
+
+    test('topUp admits a version-1 wire transaction only when transactionVersions lists 1', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        await seedChannel(f);
+        const wire = await reencodeAsV1(await buildTopUpWire(f, rpc, 4_000n), f.payer, VALID_SESSION_V1_CONFIG);
+        const cred = makeCred(f, {
+            action: 'topUp',
+            additionalAmount: '4000',
+            channelId: f.channel.address,
+            transaction: wire,
+        });
+
+        await expect(verify(makeMethod(f, rpc), cred)).rejects.toThrow(
+            'transaction version 1 is not accepted; accepted versions: 0',
         );
+        expect(sent).toHaveLength(0);
+
+        const receipt = await verify(makeMethod(f, rpc, { transactionVersions: [0, 1] }), cred);
         expect(receipt.status).toBe('success');
         expect(sent).toHaveLength(1);
+    });
+
+    test('topUp holds a version-1 header budget to the session caps', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc, { transactionVersions: [1] });
+        await seedChannel(f);
+        const { computeUnitLimit: _limit, ...withoutLimit } = VALID_SESSION_V1_CONFIG;
+        const wire = await reencodeAsV1(await buildTopUpWire(f, rpc, 4_000n), f.payer, withoutLimit);
+        await expect(
+            verify(
+                method,
+                makeCred(f, {
+                    action: 'topUp',
+                    additionalAmount: '4000',
+                    channelId: f.channel.address,
+                    transaction: wire,
+                }),
+            ),
+        ).rejects.toThrow('version 1 transaction config must set computeUnitLimit');
+        expect(sent).toHaveLength(0);
     });
 
     test('topUp rejects an unknown channel before touching the network', async () => {

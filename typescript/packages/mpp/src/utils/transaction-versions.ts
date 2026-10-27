@@ -48,6 +48,25 @@ export function acceptedTransactionVersions(
 }
 
 /**
+ * The `transactionVersions` a server advertises for its accepted set: omitted
+ * for the default `[0]`, which an absent field already means. Throws on an
+ * empty set or a version outside 0 and 1.
+ */
+export function advertisedTransactionVersions(
+    versions: readonly TransactionVersion[] | undefined,
+): TransactionVersion[] | undefined {
+    if (versions === undefined) return undefined;
+    const unique = [...new Set(versions)].sort();
+    if (unique.length === 0) {
+        throw new Error('transactionVersions must list at least one transaction version');
+    }
+    if (unique.some(version => version !== 0 && version !== 1)) {
+        throw new Error('transactionVersions entries must be 0 or 1');
+    }
+    return unique.length === 1 && unique[0] === 0 ? undefined : unique;
+}
+
+/**
  * The version a client builds: the highest advertised version its signer can
  * sign (`maxSignable`, unrestricted when omitted). Throws when nothing is
  * advertised or no advertised version is signable.
