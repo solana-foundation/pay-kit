@@ -9,8 +9,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@solana-program/token": "^0.11.0",
-    "@solana/kit": "^6.5.0",
+    "@solana-program/token": "^0.18.0",
+    "@solana/kit": "^8.5.0",
     "@solana/mpp": "file:../../packages/mpp",
     "@solana/pay-kit": "file:../../packages/pay-kit",
     "cors": "^2.8.5",
