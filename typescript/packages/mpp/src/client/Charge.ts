@@ -72,7 +72,15 @@ import * as Methods from '../Methods.js';
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-    const { signer, broadcast = false, onProgress, maxAmount, expectedNetwork, allowUnknownToken2022 } = parameters;
+    const {
+        signer,
+        broadcast = false,
+        onProgress,
+        maxAmount,
+        expectedNetwork,
+        expectedRecipient,
+        allowUnknownToken2022,
+    } = parameters;
 
     const method = Method.toClient(Methods.charge, {
         async createCredential({ challenge }) {
@@ -100,6 +108,13 @@ export function charge(parameters: charge.Parameters) {
             ) {
                 throw new Error(
                     `Challenge network "${network ?? 'mainnet'}" does not match the expected network "${expectedNetwork}"`,
+                );
+            }
+            // Core: "Clients MUST verify before authorizing payment: ...
+            // Recipient/address is expected".
+            if (expectedRecipient !== undefined && challenge.request.recipient !== expectedRecipient) {
+                throw new Error(
+                    `Challenge recipient ${challenge.request.recipient} does not match the expected recipient ${expectedRecipient}`,
                 );
             }
 
@@ -563,6 +578,12 @@ export declare namespace charge {
          * not match this value. Use for auto-pay flows. Defaults to no constraint.
          */
         expectedNetwork?: string;
+        /**
+         * Opt-in guard: refuse to sign a challenge whose primary `recipient` is
+         * not this address. Use for auto-pay flows that know whom they pay.
+         * Defaults to no constraint.
+         */
+        expectedRecipient?: string;
         /**
          * Opt-in guard (audit #10): refuse to sign a challenge whose amount (in
          * base units) exceeds this cap. Use for auto-pay flows where the server
