@@ -41,6 +41,7 @@ import {
     TOKEN_PROGRAM,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
+import { parseRfc3339 } from '../shared/rfc3339.js';
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -463,7 +464,7 @@ function parseU64Amount(value: string, label: string): bigint {
  */
 function assertChallengeNotExpired(expires: string | undefined): void {
     if (expires === undefined) return;
-    const expiresAt = new Date(expires).getTime();
+    const expiresAt = parseRfc3339(expires);
     if (Number.isNaN(expiresAt)) {
         throw new Error(`Refusing to sign: malformed challenge expires timestamp "${expires}"`);
     }
