@@ -5,6 +5,7 @@ import {
     type Base64EncodedWireTransaction,
     type Blockhash,
     createNoopSigner,
+    createSolanaRpc,
     createTransactionMessage,
     generateKeyPairSigner,
     getAddressEncoder,
@@ -25,8 +26,15 @@ import {
     defaultTokenProgramForCurrency,
     normalizeNetwork,
     resolveStablecoinMint,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+    validateNetwork,
 } from '../constants.js';
-import { findEventAuthorityPda, getOpenInstruction } from '../generated/payment-channels/index.js';
+import {
+    findEventAuthorityPda,
+    getOpenInstruction,
+    PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+} from '../generated/payment-channels/index.js';
 import {
     ActiveSession,
     type AmountLike,
@@ -106,6 +114,12 @@ export async function buildOpenPaymentChannelTransaction(
     // `recentSlot` inside `preparePaymentChannelOpen` — the client never
     // fetches either on its own.
     const recentBlockhash = resolveOpenBlockhash(parameters.recentBlockhash, request);
+    // The challenged blockhash must be live on the cluster the client pays
+    // on: an open signed over another cluster's blockhash would be valid
+    // there. An explicit override is the caller's own blockhash.
+    if (!parameters.recentBlockhash && parameters.rpcUrl) {
+        await assertLiveChallengeBlockhash(parameters.rpcUrl, recentBlockhash);
+    }
     const open = await preparePaymentChannelOpen({
         ...parameters,
         payer: signer.address,
@@ -305,7 +319,12 @@ export declare namespace buildOpenPaymentChannelTransaction {
         readonly recentBlockhash?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         readonly request: SessionRequest;
-        /** Unused: the open now derives its blockhash and slot from the challenge, never from RPC. */
+        /**
+         * RPC of the cluster the client pays on. When set, the challenged
+         * `recentBlockhash` must be live there (`isBlockhashValid`) before
+         * the open is signed; the blockhash and slot themselves always come
+         * from the challenge.
+         */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
         readonly signer: TransactionSigner;
@@ -331,7 +350,12 @@ export declare namespace createPaymentChannelSessionOpener {
         /** Blockhash override for the open transaction. Defaults to the challenged `recentBlockhash`. */
         readonly recentBlockhash?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
-        /** Unused: the open now derives its blockhash and slot from the challenge, never from RPC. */
+        /**
+         * RPC of the cluster the client pays on. When set, the challenged
+         * `recentBlockhash` must be live there (`isBlockhashValid`) before
+         * the open is signed; the blockhash and slot themselves always come
+         * from the challenge.
+         */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
         readonly sessionSigner?: SessionSigner | undefined;
@@ -380,16 +404,28 @@ async function preparePaymentChannelOpen(
     parameters: derivePaymentChannelOpen.Parameters,
 ): Promise<PreparedPaymentChannelOpen> {
     const { request } = parameters;
+    validateSessionChallenge(request);
     const network = normalizeNetwork(request.methodDetails.network);
     const mint = resolveStablecoinMint(request.currency, network);
     if (!mint) {
         throw new Error('payment-channel sessions require an SPL token currency');
     }
 
-    const programAddress = address(parameters.programAddress ?? request.methodDetails.channelProgram);
-    // Mirror the Rust client: the token program defaults from the challenge
-    // currency (PYUSD/USDG/CASH are Token-2022 mints).
-    const tokenProgram = address(parameters.tokenProgram ?? defaultTokenProgramForCurrency(request.currency, network));
+    const channelProgram = request.methodDetails.channelProgram;
+    if (channelProgram !== PAYMENT_CHANNELS_PROGRAM_ADDRESS) {
+        throw new Error(`session challenge channelProgram ${channelProgram} is an unknown channel program`);
+    }
+    if (parameters.programAddress !== undefined && parameters.programAddress !== channelProgram) {
+        throw new Error('program override does not match channelProgram');
+    }
+    const programAddress = address(channelProgram);
+    // Mirror the Rust client: the challenged token program, else the default
+    // for the challenge currency (PYUSD/USDG/CASH are Token-2022 mints).
+    const tokenProgram = address(
+        parameters.tokenProgram ??
+            request.methodDetails.tokenProgram ??
+            defaultTokenProgramForCurrency(request.currency, network),
+    );
     const payer = address(parameters.payer);
     const payee = address(request.recipient);
     const mintAddress = address(mint);
@@ -440,6 +476,52 @@ async function preparePaymentChannelOpen(
         salt,
         tokenProgram,
     };
+}
+
+/**
+ * The method-details rules a client checks before it signs an open
+ * (draft-solana-session-00 Method Details): `network` is one of the three
+ * clusters, `decimals` is present (session currencies are always mints) and
+ * within 0 through 9, `tokenProgram` (when present) is SPL Token or
+ * Token-2022, and `gracePeriodSeconds` is greater than zero. Mirrors
+ * `validate_challenge` in `rust/crates/kit/src/mpp/client/session.rs`.
+ */
+function validateSessionChallenge(request: SessionRequest): void {
+    const details = request.methodDetails;
+    validateNetwork(details.network);
+    if (details.decimals === undefined) {
+        throw new Error('session challenge is missing decimals for its mint');
+    }
+    if (!Number.isInteger(details.decimals) || details.decimals < 0 || details.decimals > 9) {
+        throw new Error(`session challenge decimals ${details.decimals} is outside 0 through 9`);
+    }
+    const tokenProgram = details.tokenProgram;
+    if (tokenProgram !== undefined && tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error(`session challenge tokenProgram ${tokenProgram} is neither SPL Token nor Token-2022`);
+    }
+    if (details.gracePeriodSeconds === 0) {
+        throw new Error('session challenge gracePeriodSeconds must be greater than zero');
+    }
+}
+
+/** Refuse a challenged blockhash the client's own cluster does not know as live. */
+async function assertLiveChallengeBlockhash(rpcUrl: string, blockhash: string): Promise<void> {
+    let live: boolean;
+    try {
+        const response = await createSolanaRpc(rpcUrl)
+            .isBlockhashValid(blockhash as Blockhash, { commitment: 'confirmed' })
+            .send();
+        live = response.value;
+    } catch (error) {
+        throw new Error(
+            `could not check the challenged recentBlockhash: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+    if (!live) {
+        throw new Error(
+            `invalid challenged recentBlockhash: challenge recentBlockhash ${blockhash} is not a live blockhash on the client's cluster`,
+        );
+    }
 }
 
 async function findPaymentChannelPda(parameters: FindPaymentChannelPdaParameters) {

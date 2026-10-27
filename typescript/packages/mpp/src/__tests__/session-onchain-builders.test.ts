@@ -509,6 +509,7 @@ function openChallengeRequest(overrides: Record<string, unknown> = {}): SessionR
         currency: 'USDC',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             // Gasless flow: the operator co-signs as fee payer and rentPayer.
             feePayer: true,
             feePayerKey: OPERATOR,

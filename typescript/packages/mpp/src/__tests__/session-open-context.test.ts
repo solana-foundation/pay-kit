@@ -27,7 +27,12 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildOpenPaymentChannelTransaction, derivePaymentChannelOpen } from '../client/PaymentChannels.js';
 import { session as clientSession, type SessionRequest } from '../client/Session.js';
 import { session as serverSession } from '../server/Session.js';
-import { OPEN_SLOT_WINDOW, PAYMENT_CHANNELS_PROGRAM_ID, verifyOpenTx } from '../server/session/on-chain.js';
+import {
+    deriveChannelAddress,
+    OPEN_SLOT_WINDOW,
+    PAYMENT_CHANNELS_PROGRAM_ID,
+    verifyOpenTx,
+} from '../server/session/on-chain.js';
 
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 // resolveStablecoinMint('USDC', 'devnet')
@@ -158,6 +163,7 @@ function challengeRequest(recipient: string, methodDetails: Record<string, unkno
         suggestedDeposit: '5000',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             gracePeriodSeconds: 900,
             network: 'devnet',
             recentBlockhash: CHALLENGED_BLOCKHASH,
@@ -185,9 +191,19 @@ function openCredential(
 }
 
 async function openPayloadFor(signer: { address: string }, openSlot: string) {
+    // The declared channel is the PDA its own fields derive, so the slot
+    // checks are what refuses these payloads.
+    const channelId = await deriveChannelAddress({
+        authorizedSigner: signer.address,
+        mint: USDC_DEVNET_MINT,
+        openSlot: BigInt(openSlot),
+        payee: signer.address,
+        payer: signer.address,
+        salt: 7n,
+    });
     return {
         authorizedSigner: signer.address,
-        channelId: signer.address,
+        channelId,
         depositAmount: '5000',
         gracePeriodSeconds: 900,
         mint: USDC_DEVNET_MINT,

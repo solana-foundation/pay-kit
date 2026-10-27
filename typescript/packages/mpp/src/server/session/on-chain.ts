@@ -17,12 +17,14 @@ import {
     type AccountMeta,
     type Address,
     address,
+    createNoopSigner,
     getAddressEncoder,
     getBase58Encoder,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
     getI64Encoder,
     getProgramDerivedAddress,
+    getPublicKeyFromAddress,
     getSignatureFromTransaction,
     getTransactionDecoder,
     getU64Encoder,
@@ -30,10 +32,13 @@ import {
     type Instruction,
     type InstructionWithAccounts,
     type InstructionWithData,
+    isSignerRole,
+    isWritableRole,
     type ReadonlyUint8Array,
     type Signature,
     type TransactionPartialSigner,
     type TransactionSigner,
+    verifySignature,
 } from '@solana/kit';
 import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 
@@ -46,7 +51,10 @@ import {
 } from '../../constants.js';
 import { fetchChannel } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
-import { getOpenInstructionDataDecoder } from '../../generated/payment-channels/instructions/open.js';
+import {
+    getOpenInstruction,
+    getOpenInstructionDataDecoder,
+} from '../../generated/payment-channels/instructions/open.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
 import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
@@ -587,7 +595,9 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     const decoded = getTransactionDecoder().decode(txBytes);
     // The kit compiled-message decoder dispatches on the version prefix
     // byte, so legacy and v0 messages both decode to this shape.
-    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+    const message = getCompiledTransactionMessageDecoder().decode(
+        decoded.messageBytes,
+    ) as unknown as CompiledChannelMessage & {
         addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly {
             accountIndices?: readonly number[];
@@ -595,7 +605,6 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             programAddressIndex: number;
         }[];
         lifetimeToken?: string | undefined;
-        staticAccounts: readonly string[];
     };
 
     // The compiled message must use the challenged `recentBlockhash`: it
@@ -790,7 +799,307 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error(`verifyOpenTx: channel token account ${channelTokenAccountAddr} is not the canonical ATA`);
     }
 
+    // The exact open instruction the verified fields imply: every account
+    // (programs, sysvars and PDAs included) and the argument bytes. A field
+    // check above can pass while an account it does not name was swapped.
+    const expectedOpen = await buildExpectedOpenInstruction({
+        authorizedSigner: authorizedSignerAddr,
+        channel: channelAddr,
+        deposit,
+        gracePeriod,
+        mint: mintAddr,
+        openSlot,
+        payee: payeeAddr,
+        payer: payerAddr,
+        programAddress,
+        recipients,
+        rentPayer: rentPayerAddr,
+        salt,
+        tokenProgram: expected.tokenProgram ?? tokenProgramAddr,
+    });
+    const openAccounts = indices.map(index => message.staticAccounts[index]);
+    if (
+        openAccounts.length !== expectedOpen.accounts.length ||
+        openAccounts.some((account, index) => account !== expectedOpen.accounts[index]?.address)
+    ) {
+        throw new Error('verifyOpenTx: open transaction accounts do not match the declared channel');
+    }
+    if (!bytesEqual(openIx.data, expectedOpen.data)) {
+        throw new Error('verifyOpenTx: open instruction arguments do not match the credential');
+    }
+    verifyChannelPrivileges(message, expectedOpen.accounts, expected.feePayer, 'verifyOpenTx');
+    // A sponsored open's fee-payer slot is the server's: it co-signs after
+    // these checks, so the slot must still be empty here.
+    const serverFeePayer = expected.feePayer === payerAddr ? undefined : expected.feePayer;
+    await verifyClientTransactionSignatures(decoded, message, serverFeePayer, 'verifyOpenTx');
+
     return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
+}
+
+/**
+ * Derive a payment-channel PDA from its seed components
+ * (draft-solana-session-00 Channel State): `"channel"`, payer, payee, mint,
+ * authorizedSigner, salt and openSlot (both u64 LE).
+ */
+export async function deriveChannelAddress(args: {
+    readonly authorizedSigner: string;
+    readonly mint: string;
+    readonly openSlot: bigint;
+    readonly payee: string;
+    readonly payer: string;
+    readonly programAddress?: string | undefined;
+    readonly salt: bigint;
+}): Promise<string> {
+    const [channel] = await getProgramDerivedAddress({
+        programAddress: address(args.programAddress ?? PAYMENT_CHANNELS_PROGRAM_ID),
+        seeds: [
+            getUtf8Encoder().encode('channel'),
+            getAddressEncoder().encode(address(args.payer)),
+            getAddressEncoder().encode(address(args.payee)),
+            getAddressEncoder().encode(address(args.mint)),
+            getAddressEncoder().encode(address(args.authorizedSigner)),
+            getU64Encoder().encode(args.salt),
+            getU64Encoder().encode(args.openSlot),
+        ],
+    });
+    return channel;
+}
+
+async function buildExpectedOpenInstruction(args: {
+    readonly authorizedSigner: string;
+    readonly channel: string;
+    readonly deposit: bigint;
+    readonly gracePeriod: number;
+    readonly mint: string;
+    readonly openSlot: bigint;
+    readonly payee: string;
+    readonly payer: string;
+    readonly programAddress: Address;
+    readonly recipients: readonly { readonly bps: number; readonly recipient: Address }[];
+    readonly rentPayer: string;
+    readonly salt: bigint;
+    readonly tokenProgram: string;
+}): Promise<ServerInstruction> {
+    const mint = address(args.mint);
+    const tokenProgram = address(args.tokenProgram);
+    const payer = createNoopSigner(address(args.payer));
+    const rentPayer = args.rentPayer === args.payer ? payer : createNoopSigner(address(args.rentPayer));
+    const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: payer.address, tokenProgram });
+    const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: address(args.channel), tokenProgram });
+    const [eventAuthority] = await findEventAuthorityPda({ programAddress: args.programAddress });
+    const ix = getOpenInstruction(
+        {
+            associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
+            authorizedSigner: address(args.authorizedSigner),
+            channel: address(args.channel),
+            channelTokenAccount,
+            eventAuthority,
+            mint,
+            openArgs: {
+                deposit: args.deposit,
+                gracePeriod: args.gracePeriod,
+                openSlot: args.openSlot,
+                recipients: args.recipients.map(r => ({ bps: r.bps, recipient: r.recipient })),
+                salt: args.salt,
+            },
+            payee: address(args.payee),
+            payer,
+            payerTokenAccount,
+            rent: address(RENT_SYSVAR_ADDRESS),
+            rentPayer,
+            selfProgram: args.programAddress,
+            tokenProgram,
+        },
+        { programAddress: args.programAddress },
+    );
+    return ix as unknown as ServerInstruction;
+}
+
+const RENT_SYSVAR_ADDRESS = 'SysvarRent111111111111111111111111111111111';
+
+function bytesEqual(left: ReadonlyUint8Array, right: ReadonlyUint8Array): boolean {
+    return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+/** The compiled message fields the channel-transaction checks read. */
+interface CompiledChannelMessage {
+    readonly header: {
+        readonly numReadonlyNonSignerAccounts: number;
+        readonly numReadonlySignerAccounts: number;
+        readonly numSignerAccounts: number;
+    };
+    readonly staticAccounts: readonly string[];
+}
+
+/**
+ * Every static account's signer and writable privilege must be exactly what
+ * the expected instruction (plus the fee payer, a writable signer) needs: no
+ * extra signer the client could make the sponsor co-sign for, no writable
+ * account the instruction does not write. Mirrors `verify_channel_privileges`
+ * in the Rust SessionServer.
+ */
+function verifyChannelPrivileges(
+    message: CompiledChannelMessage,
+    expectedAccounts: readonly AccountMeta[],
+    feePayer: string,
+    label: string,
+): void {
+    const { header, staticAccounts } = message;
+    const required = header.numSignerAccounts;
+    const writableSigned = required - header.numReadonlySignerAccounts;
+    const writableUnsignedEnd = staticAccounts.length - header.numReadonlyNonSignerAccounts;
+    staticAccounts.forEach((key, index) => {
+        const signer = index < required;
+        const writable = signer ? index < writableSigned : index < writableUnsignedEnd;
+        const expectedSigner =
+            key === feePayer || expectedAccounts.some(meta => meta.address === key && isSignerRole(meta.role));
+        const expectedWritable =
+            key === feePayer || expectedAccounts.some(meta => meta.address === key && isWritableRole(meta.role));
+        if (signer !== expectedSigner || writable !== expectedWritable) {
+            throw new Error(`${label}: channel transaction account privileges do not match committed policy`);
+        }
+    });
+}
+
+/**
+ * One signature slot per required signer, each verifying over the message,
+ * except the server's own fee-payer slot, which must still be empty before it
+ * co-signs. Mirrors `require_presigned` in the Rust kit.
+ */
+async function verifyClientTransactionSignatures(
+    decoded: ReturnType<ReturnType<typeof getTransactionDecoder>['decode']>,
+    message: CompiledChannelMessage,
+    serverFeePayer: string | undefined,
+    label: string,
+): Promise<void> {
+    const required = message.header.numSignerAccounts;
+    const signatures = decoded.signatures as Readonly<Record<string, ReadonlyUint8Array | null>>;
+    if (Object.keys(signatures).length !== required || message.staticAccounts.length < required) {
+        throw new Error(`${label}: session transaction signature slots do not match its required signers`);
+    }
+    for (const [index, key] of message.staticAccounts.slice(0, required).entries()) {
+        const signature = signatures[key];
+        if (key === serverFeePayer) {
+            if (index !== 0 || (signature && signature.some(byte => byte !== 0))) {
+                throw new Error(`${label}: fee-payer signature slot must be empty before server co-signing`);
+            }
+            continue;
+        }
+        const valid =
+            !!signature &&
+            (await verifySignature(
+                await getPublicKeyFromAddress(address(key)),
+                signature as Parameters<typeof verifySignature>[1],
+                decoded.messageBytes,
+            ));
+        if (!valid) {
+            throw new Error(`${label}: session transaction has an invalid client signature for required signer ${key}`);
+        }
+    }
+}
+
+/** Arguments to {@link verifyTopUpTx}. */
+export interface VerifyTopUpTxArgs {
+    readonly additionalAmount: bigint;
+    readonly channelId: string;
+    readonly channelProgram: string;
+    /** The transaction fee payer the channel's policy requires. */
+    readonly feePayer?: string | undefined;
+    /** SPL mint of the channel; with `tokenProgram`, pins the instruction's accounts. */
+    readonly mint?: string | undefined;
+    readonly payer: string;
+    /**
+     * The server's own fee-payer key on a sponsored top-up it has not
+     * co-signed yet: its slot must still be empty.
+     */
+    readonly serverFeePayer?: string | undefined;
+    readonly tokenProgram?: string | undefined;
+    readonly transaction: string;
+}
+
+/**
+ * Validate a client-built top-up transaction against the stored channel,
+ * before it is co-signed or broadcast: no lookup tables, the compute budget
+ * policy, the fee payer, exactly one top-up instruction for this channel,
+ * payer and `additionalAmount` (with the exact expected accounts when the
+ * mint and token program are known), the account privileges and the
+ * client's signatures. Mirrors `prepare_topup_transaction` in Rust.
+ */
+export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
+    let decoded: ReturnType<ReturnType<typeof getTransactionDecoder>['decode']>;
+    let message: CompiledChannelMessage & {
+        addressTableLookups?: readonly unknown[] | undefined;
+        instructions: readonly { accountIndices?: readonly number[]; data?: Uint8Array; programAddressIndex: number }[];
+    };
+    try {
+        decoded = getTransactionDecoder().decode(getBase64Codec().encode(args.transaction));
+        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as typeof message;
+    } catch (error) {
+        throw new Error(
+            `submitTopUpTx: invalid top-up transaction: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+    if (message.addressTableLookups?.length) throw new Error('submitTopUpTx: address lookup tables are not permitted');
+    const feePayer = args.feePayer ?? message.staticAccounts[0];
+    if (message.staticAccounts[0] !== feePayer) {
+        throw new Error('submitTopUpTx: top-up transaction fee payer does not match the challenge policy');
+    }
+    const expected =
+        args.mint && args.tokenProgram
+            ? await buildTopUpInstruction({
+                  amount: args.additionalAmount,
+                  channelId: args.channelId,
+                  mint: args.mint,
+                  payer: createNoopSigner(address(args.payer)),
+                  programId: address(args.channelProgram),
+                  tokenProgram: args.tokenProgram,
+              })
+            : undefined;
+    let found = false;
+    const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
+    for (const ix of message.instructions) {
+        const program = message.staticAccounts[ix.programAddressIndex];
+        if (program === COMPUTE_BUDGET_PROGRAM_ADDRESS) {
+            computeBudgetIxs.push(ix);
+            continue;
+        }
+        if (program !== args.channelProgram || !ix.data || found) {
+            throw new Error(`submitTopUpTx: unexpected instruction program ${String(program)}`);
+        }
+        const indices = ix.accountIndices ?? [];
+        const accounts = indices.map(index => message.staticAccounts[index]);
+        if (expected) {
+            if (ix.data[0] !== expected.data[0]) {
+                throw new Error(`submitTopUpTx: unexpected instruction program ${String(program)}`);
+            }
+            if (
+                accounts.length !== expected.accounts.length ||
+                accounts.some((account, index) => account !== expected.accounts[index]?.address)
+            ) {
+                throw new Error('submitTopUpTx: payer or channel does not match persisted channel state');
+            }
+        }
+        const decodedData = getTopUpInstructionDataDecoder().decode(ix.data);
+        const payer = accounts[0];
+        const channel = accounts[1];
+        if (payer !== args.payer || channel !== args.channelId) {
+            throw new Error('submitTopUpTx: payer or channel does not match persisted channel state');
+        }
+        if (
+            decodedData.topUpArgs.amount !== args.additionalAmount ||
+            (expected && !bytesEqual(ix.data, expected.data))
+        ) {
+            throw new Error('submitTopUpTx: amount does not match additionalAmount');
+        }
+        found = true;
+    }
+    if (!found) throw new Error('submitTopUpTx: top-up instruction not found');
+    validateComputeBudgetInstructions(computeBudgetIxs, {
+        label: 'submitTopUpTx',
+        sponsored: message.staticAccounts[0] !== args.payer,
+    });
+    if (expected) verifyChannelPrivileges(message, expected.accounts, feePayer, 'submitTopUpTx');
+    await verifyClientTransactionSignatures(decoded, message, args.serverFeePayer, 'submitTopUpTx');
 }
 
 /** Validate, broadcast, and confirm a top-up transaction bound to one channel. */
@@ -801,12 +1110,21 @@ export async function submitTopUpTx(args: {
     /** Deposit recorded before this top-up, for the post-confirm re-check. */
     readonly currentDeposit: bigint;
     readonly payer: string;
+    /** The sponsor that co-signs a sponsored top-up as fee payer before broadcast. */
+    readonly payerSigner?: TransactionPartialSigner | undefined;
     readonly rpc: SignatureStatusRpc & {
         sendTransaction: (wire: string, config?: unknown) => { send(): Promise<Signature> };
     };
     readonly transaction: string;
 }): Promise<Signature> {
-    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(args.transaction));
+    let transaction = args.transaction;
+    if (args.payerSigner) {
+        const unsigned = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
+        if (unsigned.signatures[args.payerSigner.address] !== undefined) {
+            transaction = await coSignBase64Transaction(args.payerSigner, transaction);
+        }
+    }
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
         addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly { accountIndices?: readonly number[]; data?: Uint8Array; programAddressIndex: number }[];
@@ -843,9 +1161,7 @@ export async function submitTopUpTx(args: {
     });
     let signature: Signature;
     try {
-        signature = await args.rpc
-            .sendTransaction(args.transaction, { encoding: 'base64', skipPreflight: false })
-            .send();
+        signature = await args.rpc.sendTransaction(transaction, { encoding: 'base64', skipPreflight: false }).send();
     } catch (error) {
         // A duplicate of an already-landed top-up dies at preflight with
         // "already processed". The signature identifies this exact verified

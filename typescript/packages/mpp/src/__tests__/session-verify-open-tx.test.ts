@@ -30,6 +30,7 @@ import {
     getCompiledTransactionMessageEncoder,
     getTransactionDecoder,
     getTransactionEncoder,
+    type KeyPairSigner,
     type Signature,
 } from '@solana/kit';
 import { describe, expect, test } from 'vitest';
@@ -68,6 +69,7 @@ function challengeRequest(recipient: string, methodDetails: Record<string, unkno
         suggestedDeposit: '5000',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             gracePeriodSeconds: 900,
             network: 'devnet',
             recentBlockhash: CHALLENGED_BLOCKHASH,
@@ -122,17 +124,18 @@ async function verifiedOpenFixture() {
     return { expected, open, openPayload, payee, payer, sessionSigner };
 }
 
-/** Re-encode a v0 wire transaction as a legacy wire transaction. */
-function reencodeAsLegacy(transactionBase64: string): string {
+/** Re-encode a v0 wire transaction as a legacy wire transaction, re-signed by `signer`. */
+async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner): Promise<string> {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
     const legacyMessageBytes = getCompiledTransactionMessageEncoder().encode({
         ...compiled,
         version: 'legacy',
     } as never);
+    const [signature] = await signer.signMessages([{ content: legacyMessageBytes as Uint8Array } as never]);
     const legacyTx = getTransactionEncoder().encode({
         messageBytes: legacyMessageBytes as never,
-        signatures: tx.signatures,
+        signatures: { ...tx.signatures, ...signature } as never,
     });
     return getBase64Codec().decode(legacyTx);
 }
@@ -184,8 +187,8 @@ describe('verifyOpenTx transaction shape', () => {
     });
 
     test('accepts a legacy-encoded open transaction (pre-cutover client wire format)', async () => {
-        const { expected, open, openPayload } = await verifiedOpenFixture();
-        const legacyTransaction = reencodeAsLegacy(open.transaction);
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const legacyTransaction = await reencodeAsLegacy(open.transaction, payer);
         expect(legacyTransaction).not.toBe(open.transaction);
 
         const verified = await verifyOpenTx({

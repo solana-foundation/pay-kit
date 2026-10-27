@@ -37,6 +37,12 @@ export interface CommittedDelivery {
 
 /** Cached operator-use result keyed by the HTTP idempotency key. */
 export interface ProcessedUse {
+    /**
+     * The request's charged total (its metered cost so far), recorded so a
+     * retry or a later charge of the same request pays only the difference.
+     * `undefined` on records written before totals were kept.
+     */
+    readonly amount?: bigint | undefined;
     readonly challengeId: string;
     readonly cumulative: bigint;
     readonly idempotencyKey: string;

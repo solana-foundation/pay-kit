@@ -267,17 +267,18 @@ async function buildTopUpWire(
     return await buildAndSignWireTransaction(rpc as never, payer, [...prefix, instruction]);
 }
 
-/** Re-encode a v0 wire transaction as a legacy (unversioned) wire transaction. */
-function reencodeAsLegacy(transactionBase64: string): string {
+/** Re-encode a v0 wire transaction as a legacy (unversioned) wire transaction, re-signed by `signer`. */
+async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner): Promise<string> {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
     const legacyMessageBytes = getCompiledTransactionMessageEncoder().encode({
         ...compiled,
         version: 'legacy',
     } as never);
+    const [signature] = await signer.signMessages([{ content: legacyMessageBytes as Uint8Array } as never]);
     const legacyTx = getTransactionEncoder().encode({
         messageBytes: legacyMessageBytes as never,
-        signatures: tx.signatures,
+        signatures: { ...tx.signatures, ...signature } as never,
     });
     return getBase64Codec().decode(legacyTx);
 }
@@ -442,7 +443,7 @@ describe('session() verify() topUp', () => {
 
         // A pre-cutover client's legacy (unversioned) top-up is verified and
         // broadcast exactly like a v0 one.
-        const wire = reencodeAsLegacy(await buildTopUpWire(f, rpc, 4_000n));
+        const wire = await reencodeAsLegacy(await buildTopUpWire(f, rpc, 4_000n), f.payer);
         const receipt = await verify(
             method,
             makeCred(f, {
@@ -542,7 +543,8 @@ describe('session() verify() topUp', () => {
         const intruder = await generateKeyPairSigner();
 
         // Self-consistent transaction, but funded by a different payer than
-        // the one recorded at open.
+        // the one recorded at open: it pays its own fee, so the fee payer is
+        // not the channel payer the policy requires.
         const wire = await buildTopUpWire(f, rpc, 4_000n, intruder);
         await expect(
             verify(
@@ -554,7 +556,7 @@ describe('session() verify() topUp', () => {
                     transaction: wire,
                 }),
             ),
-        ).rejects.toThrow(/payer or channel does not match persisted channel state/);
+        ).rejects.toThrow(/top-up transaction fee payer does not match the challenge policy/);
         expect(sent).toHaveLength(0);
         expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
     });
@@ -1134,7 +1136,7 @@ describe('session() verify() close authorization', () => {
 
         await expect(
             verify(method, makeCred(f, { action: 'close', authentication: mismatched, channelId: f.channel.address })),
-        ).rejects.toThrow(/invalid close authentication signature/);
+        ).rejects.toThrow(/close authentication does not match the proof bound at open/);
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.closeRequestedAt).toBeUndefined();
         expect(sent).toHaveLength(0);

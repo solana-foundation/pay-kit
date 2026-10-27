@@ -13,7 +13,7 @@
 // mirror lives in
 // `mpp/src/protocol/intents/session.rs::VoucherData::message_bytes`.
 
-import { getBase58Encoder, getI64Encoder, getU64Encoder } from '@solana/kit';
+import { getBase58Encoder, getI64Encoder, getU64Encoder, type ReadonlyUint8Array } from '@solana/kit';
 
 import type { AmountLike, SignedVoucher, VoucherData, VoucherDataInput } from './session-types.js';
 
@@ -52,6 +52,17 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): SignedVoucher
             `invalid-voucher: expiresAt ${data.expiresAt} is not a safe JavaScript integer — ` +
                 'the wire type is an i64, and JSON numbers above 2^53 - 1 lose precision, so such values cannot be accepted',
         );
+    }
+    // A signature that is not 64 base58-encoded bytes is a malformed payload,
+    // not a signature that failed to verify.
+    let signatureBytes: ReadonlyUint8Array;
+    try {
+        signatureBytes = getBase58Encoder().encode(signed.signature);
+    } catch {
+        throw new Error('invalid payload: voucher signature is not base58');
+    }
+    if (signatureBytes.length !== 64) {
+        throw new Error('invalid payload: voucher signature is not a 64-byte Ed25519 signature');
     }
     return {
         signature: signed.signature,
