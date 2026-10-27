@@ -100,9 +100,13 @@ impl TxVersion {
     ///
     /// A legacy (unprefixed) message is policed as version 0: it shares the
     /// 1232-byte packet limit, carries its compute budget as ComputeBudget
-    /// instructions, and cannot reference address lookup tables. Servers keep
-    /// accepting legacy messages from existing clients for backward
-    /// compatibility whenever they accept version 0; the kit never builds or
+    /// instructions, and cannot reference address lookup tables. Whether a
+    /// legacy message is accepted at all is the protocol's call: the x402
+    /// sponsors keep accepting it from existing clients whenever they accept
+    /// version 0 (scheme_exact_svm.md §1.5, via [`super::check_envelope`]),
+    /// while the MPP charge and session servers refuse it ("servers MUST NOT
+    /// advertise \"legacy\" and MUST reject a legacy message", via
+    /// [`super::check_envelope_without_legacy`]). The kit never builds or
     /// advertises legacy itself.
     pub fn of(message: &VersionedMessage) -> Result<TxVersion> {
         match message {

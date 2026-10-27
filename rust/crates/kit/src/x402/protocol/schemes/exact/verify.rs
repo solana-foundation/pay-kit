@@ -15,8 +15,9 @@ use crate::x402::error::Error;
 
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 
-/// Highest compute-unit limit a sponsored fee payer co-signs.
-const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+/// Highest compute-unit limit a sponsored fee payer co-signs: the reference
+/// default of scheme_exact_svm.md §2.2.1 ("Max compute units | `400,000`").
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 400_000;
 
 /// Verify a confirmed transaction matches the expected payment requirements.
 ///
