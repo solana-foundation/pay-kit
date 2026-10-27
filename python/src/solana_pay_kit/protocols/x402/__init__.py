@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
@@ -143,6 +144,11 @@ class X402Adapter:
         blockhash = self._fetch_recent_blockhash()
         if blockhash is not None:
             extra["recentBlockhash"] = blockhash
+        # §1.5: advertise the accepted message versions unless they are the
+        # default [0]; the verifier reads the accepted set back from the offer.
+        versions = self._config.x402.transaction_versions
+        if versions is not None and tuple(versions) != (0,):
+            extra["transactionVersions"] = list(versions)
         return {
             "protocol": "x402",
             "scheme": "exact",
@@ -530,18 +536,17 @@ def _bind_legacy(
 async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
     """Sign the facilitator slot while preserving existing client signatures.
 
-    The signature covers ``to_bytes_versioned(msg)``: the 0x80 prefix plus
-    the v0 body, or the bare legacy message. ``VersionedTransaction.from_bytes``
-    dispatches on the prefix, so a pre-cutover client's legacy wire is
-    co-signed like a v0 one. The fee payer must occupy a signature slot.
+    The signature covers the exact signed message bytes: the 0x80 prefix plus
+    the v0 body, the bare legacy message, or the prefixed version-1 message.
+    Legacy and v0 wires are co-signed through ``sign_transaction``; version 1
+    (which solders cannot represent) through ``sign_message`` over its message
+    bytes. The fee payer must occupy a signature slot.
     """
-    from solders.transaction import VersionedTransaction
-
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = signer.pubkey
 
     try:
-        vtx = VersionedTransaction.from_bytes(raw)
+        vtx = txv1.decode_transaction(raw)
     except Exception as exc:  # noqa: BLE001
         raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     account_keys = list(vtx.message.account_keys)
@@ -557,14 +562,20 @@ async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
     if idx >= num_required:
         raise InvalidProofError("solana_pay_kit: fee payer is not a required signer", code="payment_invalid")
 
-    signed = await signer.sign_transaction(vtx)
-    cosigned = bytes(signed.transaction)
+    if txv1.is_v1(vtx):
+        signatures = list(vtx.signatures)
+        signatures[idx] = await signer.sign_message(txv1.signed_message_bytes(vtx.message))
+        cosigned_tx = txv1.TransactionV1.populate(vtx.message, signatures)
+    else:
+        signed = await signer.sign_transaction(vtx)
+        cosigned_tx = txv1.decode_transaction(bytes(signed.transaction))
+    cosigned = bytes(cosigned_tx)
     # Every required signer, the payer included, must have signed before the
     # signature is claimed or the transaction sent: a landed multi-signer
     # transaction cut down to its first signature would otherwise be claimed
     # and reconciled on the landed transaction's status.
     try:
-        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+        verify_required_signatures(cosigned_tx)
     except SignatureCheckError as exc:
         raise InvalidProofError(
             f"solana_pay_kit: transaction signature verification failed: {exc}", code="payment_invalid"
@@ -579,10 +590,8 @@ def _transaction_parse_error(message: str) -> InvalidProofError:
 
 def _transaction_signature(transaction_wire: bytes) -> str:
     """Return the deterministic first signature from a signed wire transaction."""
-    from solders.transaction import VersionedTransaction
-
     try:
-        signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
+        signatures = txv1.decode_transaction(transaction_wire).signatures
     except Exception as exc:  # noqa: BLE001
         raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     if not signatures:
@@ -644,11 +653,9 @@ async def _recover_replay_record(
 
 def _recent_blockhash_of(transaction_b64: str) -> str | None:
     """Best-effort extract of the recent blockhash for the network check."""
-    from solders.transaction import VersionedTransaction
-
     try:
         raw = base64.b64decode(transaction_b64)
-        tx = VersionedTransaction.from_bytes(raw)
+        tx = txv1.decode_transaction(raw)
         return str(tx.message.recent_blockhash)
     except Exception:  # noqa: BLE001 - the verifier already validated shape
         return None

@@ -22,9 +22,11 @@ class X402ExtraRequired(TypedDict):
 
 
 class X402Extra(X402ExtraRequired, total=False):
-    """An x402 ``accepts[].extra`` block; ``recentBlockhash`` is optional."""
+    """An x402 ``accepts[].extra`` block; ``recentBlockhash`` and ``transactionVersions`` are optional."""
 
     recentBlockhash: str
+    #: Accepted message versions (scheme_exact_svm.md §1.5); absent means [0].
+    transactionVersions: list[int]
 
 
 class X402Resource(TypedDict):
