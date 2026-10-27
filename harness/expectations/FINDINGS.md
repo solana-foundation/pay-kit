@@ -458,6 +458,23 @@ throws while decoding (`Cannot read properties of undefined (reading
 version-0 transaction is accepted for a challenge that advertises `[1]` only,
 legacy is accepted, and the version-0 size limit is not applied.
 
+## txv1-ts-mpp-session-no-version-admission
+
+**Cases:** `vector/session-open-v1-not-advertised-reject` (and, declared
+`[[unsupported]]`, the `session-open-*` vectors that configure
+`sessionOpenVerify.server.transactionVersions`)
+**SDKs:** typescript
+
+The `@solana/mpp` session server (`createSessionServer` /
+`session()`, `typescript/packages/mpp/src/server/Session.ts`) takes no
+accepted transaction-version set, and its open verifier (`verifyOpenTx`,
+`typescript/packages/mpp/src/server/session/on-chain.ts`) has no version
+admission: a version-1 open for a server accepting `[0]` throws while
+decoding (`message.instructions is not iterable`) instead of “transaction
+version 1 is not accepted” (`unsupported-version`), and legacy opens are
+policed as version 0 where the Rust server refuses them. Same gap as
+`txv1-ts-mpp-server-no-version-admission` for charge.
+
 ## txv1-ts-x402-v1-policy
 
 **Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`
@@ -593,6 +610,7 @@ the vectors or adapters instead:
 | --- | --- |
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
+| TypeScript session server and client (the `session-open-*`, `session-voucher-verify-*`, `session-topup-*`, `session-close-*`, `session-use-*` and `session-build-*` vectors, previously unreachable from the testee): the open's declared channel not checked against the PDA of its own fields; the open and top-up instructions not compared account-for-account, account privileges and client signatures unchecked (a forged payer signature or a writable mint passed); the sponsored top-up never co-signed; no authenticate-then-charge-metered `use` (draft-solana-session-00 Debit Processing, RULINGS SS5); a voucher accepted on an operator-signed channel; a non-base58 voucher signature reported as a bad signature; the settlement window off unless configured (Rust uses the grace period); a repeated close accepted; the client open builder not checking the challenge (network, decimals, `tokenProgram`, `channelProgram`, zero grace period), ignoring the challenged `tokenProgram`, and signing over a blockhash its cluster does not know | `@solana/mpp` `createSessionServer` (`authenticateUse`, `chargeOperatorRequest`, `processUse`, `verifyOpenPreBroadcast`, `verifyTopUpPreBroadcast`, `verifyVoucherForAmount`, `processClose`), `verifyOpenTx`, `verifyTopUpTx`, `buildOpenPaymentChannelTransaction` |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
