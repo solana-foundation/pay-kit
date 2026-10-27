@@ -108,10 +108,12 @@ async function payTarget(
         // adapter covers both wire modes.
         broadcast: environment.paymentMode === "push",
         // Like the Rust client fixture: refuse a challenge for another
-        // cluster or above the amount the scenario agreed to pay.
+        // cluster, for another recipient, or above the amount the scenario
+        // agreed to pay.
         ...(process.env.MPP_HARNESS_NETWORK
           ? { expectedNetwork: process.env.MPP_HARNESS_NETWORK }
           : {}),
+        expectedRecipient: environment.payTo,
         ...(process.env.MPP_HARNESS_AMOUNT
           ? { maxAmount: BigInt(process.env.MPP_HARNESS_AMOUNT) }
           : {}),

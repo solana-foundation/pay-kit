@@ -19,7 +19,7 @@ import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { paymentIdentifierDeclaration, readPaymentIdentifier } from '../payment-identifier.js';
 import { caip2 } from '../protocol.js';
-import { verifyX402ExactCredential } from './x402-exact-verify.js';
+import { bindX402ExactCredential } from './x402-exact-verify.js';
 import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
@@ -38,6 +38,9 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
  * and fee-pays. The 402 challenge is delivered both as the `PAYMENT-REQUIRED`
  * header and in the JSON body's `accepts[]`, and the paid retry is read from
  * `X-PAYMENT` (or `PAYMENT-SIGNATURE`), matching the x402 HTTP convention.
+ * Both a v2 credential and a legacy v1 one (`x402Version: 1`, top-level
+ * `scheme` + plain network name) are verified; see
+ * {@link bindX402ExactCredential}.
  */
 export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = caip2(config.network) as Network;
@@ -142,31 +145,39 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             } catch (error) {
                 throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
             }
-            // The header is client-controlled: reject what the v2 facilitator
+            // The header is client-controlled: reject what the facilitator
             // cannot take as a 402 (x402 v2 §9 error codes) instead of letting
-            // it throw out of `verify` as a server error.
-            if (payload?.x402Version !== X402_VERSION) {
+            // it throw out of `verify` as a server error. A legacy v1
+            // `X-PAYMENT` credential (x402-specification-v1.md) is accepted
+            // and bound by its scheme and network below.
+            if (payload?.x402Version !== X402_VERSION && payload?.x402Version !== 1) {
                 throw new InvalidProofError(
                     'invalid_x402_version',
                     `Unsupported x402 version: ${String(payload?.x402Version)}`,
                 );
             }
-            if (payload.accepted === null || typeof payload.accepted !== 'object') {
+            if (
+                payload.x402Version === X402_VERSION &&
+                (payload.accepted === null || typeof payload.accepted !== 'object')
+            ) {
                 throw new InvalidProofError('invalid_payload', 'x402 v2 payment payload is missing `accepted`');
             }
-            // Before any chain work: a missing or malformed id is a 400.
+            // Before any chain work: a missing or malformed id is a 400. A v1
+            // credential carries no extensions, so a gate requiring an id
+            // refuses it here.
             if (gate.paymentIdentifier) readPaymentIdentifier(payload.extensions, gate.paymentIdentifier);
 
             const requirements = requirementsFor(gate);
-            // Bind `accepted` to this route and keep the fee payer out of every
-            // instruction (§2.1.1) before the facilitator, which checks neither.
-            verifyX402ExactCredential(payload, requirements);
-            const verification = await facilitator.verify(payload, requirements);
+            // Bind the credential to this route (v2 `accepted`, v1 scheme and
+            // network) and keep the fee payer out of every instruction
+            // (§2.1.1) before the facilitator, which checks neither.
+            const bound = bindX402ExactCredential(payload, requirements) as PaymentPayload;
+            const verification = await facilitator.verify(bound, requirements);
             if (!verification.isValid) {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
             }
 
-            const settlement = await facilitator.settle(payload, requirements);
+            const settlement = await facilitator.settle(bound, requirements);
             if (!settlement.success) {
                 throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
             }

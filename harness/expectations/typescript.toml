@@ -31,40 +31,13 @@ ids = [
   "flow/same_origin_post_payment_request",
 ]
 
-[[unsupported]]
-reason = "@solana/pay-kit speaks x402 v2 only: its client answers only the PAYMENT-REQUIRED header and its server registers only the v2 exact facilitator"
+[[known_failing]]
 ids = [
-  "vector/x402-exact-v1-build-devnet",
-  "vector/x402-exact-v1-build-mainnet-network-name",
-  "vector/x402-exact-v1-verify-accept-devnet",
-  "vector/x402-exact-v1-verify-accept-mainnet",
-  "vector/x402-exact-v1-verify-reject-wrong-network",
-]
-
-[[unsupported]]
-reason = "@solana/pay-kit speaks x402 v2 only, so its verifier cannot check other SDKs' v1 X-PAYMENT builds"
-pattern = "cross/x402-exact-v1-build-*/*/typescript"
-
-[[unsupported]]
-reason = "@solana/pay-kit generates the payment-identifier id itself and has no option to supply the caller-chosen id these vectors pin"
-ids = [
-  "vector/x402-ext-echo-payment-identifier-pinned-id",
-  "vector/x402-ext-preserve-unknown-verbatim",
 ]
 
 [[known_failing]]
 ids = [
-  "interop/charge-client-mis-signed-challenge/typescript/rust",
 ]
-reason = "the client pays a challenge whose recipient was replaced after the server bound its id (core: \"Clients MUST verify before authorizing payment ... Recipient/address is expected\")"
-tracking = "FINDINGS.md#charge-client-request-not-verified"
-
-[[known_failing]]
-ids = [
-  "interop/x402-exact-cross-route-replay/rust/typescript",
-]
-reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
-tracking = "FINDINGS.md#x402-canonical-codes"
 
 [[known_failing]]
 ids = [

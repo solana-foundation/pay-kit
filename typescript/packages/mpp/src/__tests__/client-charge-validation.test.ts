@@ -466,6 +466,19 @@ test('#10 createCredential rejects a network that does not match expectedNetwork
     await expect(method.createCredential({ challenge })).rejects.toThrow(/does not match the expected network/);
 });
 
+test('#10 createCredential rejects a recipient that does not match expectedRecipient', async () => {
+    const signer = await newSigner();
+    const expected = (await newSigner()).address;
+    const method = charge({ signer, expectedRecipient: expected });
+    const challenge = challengeFor({
+        amount: '1000',
+        currency: 'sol',
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet', recentBlockhash: BLOCKHASH },
+    });
+    await expect(method.createCredential({ challenge })).rejects.toThrow(/does not match the expected recipient/);
+});
+
 // ── draft-solana-charge-00 challenge checks the client applies before any RPC ──
 
 /** An RPC endpoint that fails the test if the builder asks it anything. */

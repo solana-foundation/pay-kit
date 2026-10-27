@@ -176,7 +176,7 @@ The TypeScript SDK does not compare it.
 ## charge-client-request-not-verified
 
 **Cases:** `charge-client-over-asking-price/*/rust`,
-`charge-client-mis-signed-challenge/*/rust` (go, kotlin, swift, typescript)
+`charge-client-mis-signed-challenge/*/rust` (go, kotlin, swift)
 
 The proxy multiplies the challenged amount by 10 000, or swaps the recipient,
 after the server bound the challenge id. These clients pay. Core: “Clients
@@ -240,15 +240,12 @@ TypeScript x402 servers serve it. Adapter gap; the case never ran before
 
 ## x402-canonical-codes
 
-**Cases:** `x402-exact-idempotent-resubmit/rust/{go,lua,php,ruby,ruby-x402-server}`,
-`x402-exact-cross-route-replay/rust/typescript`
+**Cases:** `x402-exact-idempotent-resubmit/rust/{go,lua,php,ruby,ruby-x402-server}`
 
 A second presentation of a settled x402 payment is refused (402) without the
 canonical `signature_consumed`: Go returns a
 fresh challenge with no code, Lua and PHP `invalid_proof`, Ruby a raw RPC
-error. TypeScript rejects a cross-route payment with `payment_invalid`
-(sdkCode `accepted_mismatch`) instead of `charge_request_mismatch`. x402 has
-no shared reject-code table yet; the refusals are correct.
+error. x402 has no shared reject-code table yet; the refusals are correct.
 
 Open findings from the x402 `upto` (SVM) vectors (`x402-upto-*.json`,
 2026-10-21). Rust is driven through
@@ -376,8 +373,6 @@ regression tests, against [RULINGS.md](RULINGS.md):
 - Client-only SDKs (Swift, Kotlin) cannot verify.
 - Go and Swift session types still model the superseded session draft, so
   session wire vectors are unsupported for them.
-- `@solana/pay-kit` speaks x402 v2 only, and cannot pin a caller-chosen
-  payment-identifier id.
 - The Kotlin conformance runner implements only the session voucher preimage
   vectors.
 
@@ -434,6 +429,10 @@ binding store, `verify_access_credential` for `type="proof"` access, and the
 receipt. `verify_activation` refuses `type="proof"` credentials rather than
 returning an unverified result; `python/README.md` marks the server ◐.
 | `subscription-ts-route-binding-in-mppx`, the `subscription-active-*` and `subscription-instruction-*` limitations | `@solana/mpp` `subscription().verify` checks the HMAC and realm (`secretKey`/`realm`, falling back to `MPP_SECRET_KEY`/`MPP_REALM`; fails closed when neither gives them), method, intent, mint, recipient, program, Plan, network and the route's amount and period itself, as the Rust server does; new stateless `verifyActiveSubscription` (`@solana/mpp/server`) and `encodeSubscribeInstructionData` / `encodeTransferSubscriptionInstructionData` (`@solana/mpp`) |
+| `@solana/pay-kit` spoke x402 v2 only (`x402-exact-v1-*` vectors, `cross/x402-exact-v1-build-*/*/typescript`) | `@solana/pay-kit` client answers a v1 challenge body with an `X-PAYMENT` envelope; its server binds a v1 credential by scheme and network (`bindX402ExactCredential`) and verifies it with the exact facilitator |
+| `@solana/pay-kit` could not pin a caller-chosen payment-identifier id (`x402-ext-echo-payment-identifier-pinned-id`, `x402-ext-preserve-unknown-verbatim`) | `client.fetch(url, init, { paymentIdentifier })` |
+| `charge-client-request-not-verified` (TypeScript: `charge-client-mis-signed-challenge/typescript/rust`) | `@solana/mpp` charge client `expectedRecipient` guard, set by the harness client adapter from `MPP_HARNESS_PAY_TO` |
+| `x402-canonical-codes` (TypeScript: `x402-exact-cross-route-replay/rust/typescript`) | the ts-x402 server adapter maps `accepted_mismatch` and the transfer amount/mint/recipient mismatches to `charge_request_mismatch`, as the Rust harness server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
 
