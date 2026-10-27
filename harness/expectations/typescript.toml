@@ -53,11 +53,6 @@ ids = [
 ]
 
 [[known_failing]]
-id = "vector/x402-exact-verify-extra-required-signer-reject"
-reason = "the vendored upstream @x402/svm static path accepts a third required signer (scheme_exact_svm.md §2.1.4); maxRequiredSignatures is unset in pay-kit (typescript/packages/pay-kit/src/config.ts:48)"
-tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
-
-[[known_failing]]
 ids = [
   "interop/charge-client-mis-signed-challenge/typescript/rust",
 ]
@@ -71,50 +66,7 @@ ids = [
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
 tracking = "FINDINGS.md#x402-canonical-codes"
 
-[[unsupported]]
-reason = "@solana/pay-kit and the vendored @x402/svm expose no distribution-hash or channel-PDA helper (both are internal to the payment-channels module)"
-ids = [
-  "vector/x402-upto-distribution-hash-golden",
-  "vector/x402-upto-channel-pda-golden",
-]
-
-[[known_failing]]
-ids = [
-  "vector/x402-upto-verify-channel-already-open-reject",
-]
-reason = "the vendored facilitator's read-only verify omits the channel-exists check (it runs only in settle, which broadcasts)"
-tracking = "FINDINGS.md#upto-channel-exists-not-checked"
-
-[[known_failing]]
-ids = [
-  "vector/x402-upto-verify-open-slot-number-accept",
-]
-reason = "isUptoSvmPayload requires openSlot to be a string; the pinned spec types it as a number"
-tracking = "FINDINGS.md#upto-slot-wire-type"
-
-[[known_failing]]
-ids = [
-  "vector/batch-verify-open-unfunded-payer-reject",
-  "vector/batch-verify-top-up-unfunded-payer-reject",
-]
-reason = "the vendored @x402/svm 2.28.0 batch verify reads no payer balance: an unfunded deposit is caught only by the simulation its deposit settle runs, which the offline signer stubs (\"It MUST confirm the payer has sufficient tokens.\")"
-tracking = "FINDINGS.md#batch-deposit-balance-unchecked"
-
-[[known_failing]]
-ids = [
-  "vector/x402-upto-verify-open-trailing-byte-reject",
-]
-reason = "verifyOpenTransaction decodes the open args with a decoder that ignores trailing bytes"
-tracking = "FINDINGS.md#ts-upto-open-trailing-bytes"
-
-[[unsupported]]
-reason = "the vendored @x402/svm upto facilitator's accepted transaction-version set is fixed (legacy, 0 and 1) with no option to narrow it, so a sponsor configured with [0] (input.x402ServerTransactionVersions) cannot be expressed (\"The facilitator enforces its own accepted set\")"
-ids = [
-  "vector/x402-upto-verify-v1-unadvertised-reject",
-  "vector/x402-upto-verify-v1-unadvertised-before-layout-reject",
-]
 # subscription (draft-solana-subscription-00) vectors
-
 [[known_failing]]
 ids = [
   "vector/subscription-verify-forged-challenge-id-reject",
@@ -156,116 +108,16 @@ ids = [
   "vector/subscription-instruction-transfer-data",
 ]
 reason = "@solana/mpp exposes no subscriptions instruction-data encoder (it builds instructions with @solana/subscriptions); the layouts are judged through the build vectors' instruction multiset"
-# ── x402 batch-settlement (SVM): vendored @x402/svm 2.28.0 ──
-
-[[known_failing]]
-ids = [
-  "vector/batch-verify-open-future-slot-reject",
-  "vector/batch-verify-open-stale-slot-reject",
-]
-reason = "the batch facilitator's verify never compares channelConfig.openSlot with the cluster slot, so an open outside the program's open-slot window is accepted (\"The facilitator MUST reject an expired transaction blockhash and an `openSlot` outside the program's accepted window.\")"
-tracking = "FINDINGS.md#ts-batch-open-slot-window"
-
-[[unsupported]]
-reason = "the upstream batch facilitator's accepted transaction-version set is fixed (legacy, 0 and 1) with no option to narrow it, so a facilitator configured with [0] (batchServer.transactionVersions) cannot be expressed (\"The facilitator enforces its own accepted set\")"
-ids = [
-  "vector/batch-txv1-refund-v1-not-advertised-reject",
-  "vector/batch-txv1-top-up-v1-not-advertised-reject",
-]
-
-[[unsupported]]
-reason = "the testee drives the stateless upstream facilitator, which never sees the resource server's store record (chargedCumulativeAmount, the accepted cumulative, a close-pending mark) these verdicts rest on (batchVerdictFromStore, RULINGS B1); upstream keeps that state in its resource server, which has no single-shot entry point"
-ids = [
-  "vector/batch-verify-refund-voucher-not-accepted-cumulative-reject",
-  "vector/batch-verify-voucher-close-pending-in-store-reject",
-  "vector/batch-verify-voucher-one-above-reject",
-  "vector/batch-verify-voucher-one-below-reject",
-  "vector/batch-verify-voucher-stale-reject",
-]
-
-[[known_failing]]
-ids = [
-  "vector/batch-verify-top-up-frozen-payer-ata-reject",
-]
-reason = "the batch facilitator's verify checks only that the payer return ATA exists and its owner, not its token state, so a top-up whose payer return ATA is frozen is accepted (\"Before co-signing ... MUST reject ... frozen\"); the top-up simulation at settle would fail it"
-tracking = "FINDINGS.md#ts-batch-setup-reason-code"
-
-[[known_failing]]
-ids = [
-  "vector/batch-build-deposit-payer-is-fee-payer-reject",
-]
-reason = "the upstream batch client builds an open whose payer is the challenge's own extra.feePayer (\"`channelConfig.payer` and `channelConfig.payerAuthorizer` MUST NOT equal `extra.feePayer`.\")"
-tracking = "FINDINGS.md#ts-batch-client-terms"
-
-[[unsupported]]
-reason = "@x402/svm exports no batch voucher-message, channel-PDA or receiver-binding memo encoder"
-ids = [
-  "vector/batch-channel-id-derivation-frozen",
-  "vector/batch-channel-id-hex-salt-reject",
-  "vector/batch-channel-id-receiver-is-not-a-seed",
-  "vector/batch-channel-id-salt-u64-max",
-  "vector/batch-receiver-binding-memo-frozen",
-  "vector/batch-voucher-message-frozen",
-  "vector/batch-voucher-message-non-decimal-amount-reject",
-  "vector/batch-voucher-message-nonzero-expiry-layout",
-  "vector/batch-voucher-message-u64-max",
-]
-
-[[unsupported]]
-reason = "@x402/svm exports no codec or guard for batch requirements, PaymentPayload envelopes, settlement responses or PaymentRequired objects"
-ids = [
-  "vector/batch-wire-corrective-payment-required",
-  "vector/batch-wire-payment-payload-frozen",
-  "vector/batch-wire-requirements-frozen",
-  "vector/batch-wire-requirements-transaction-versions",
-  "vector/batch-wire-requirements-redemption-capacity",
-  "vector/batch-wire-requirements-unknown-transaction-version-reject",
-  "vector/batch-wire-settlement-response-voucher-acceptance",
-]
-
-[[unsupported]]
-reason = "@x402/svm adopts a corrective 402 only inside its client channel flow; it has no single-shot entry point"
-ids = [
-  "vector/batch-corrective-adopt-own-signature",
-  "vector/batch-corrective-charged-below-signed",
-  "vector/batch-corrective-charged-exceeds-signed-reject",
-  "vector/batch-corrective-foreign-signature-reject",
-  "vector/batch-corrective-nonzero-expiry-reject",
-  "vector/batch-corrective-other-channel-reject",
-  "vector/batch-corrective-without-proof-reject",
-]
-
-[[unsupported]]
-reason = "@x402/svm builds a voucher, top-up or refund only from its own client channel storage, which the vector input does not model"
-ids = [
-  "vector/batch-build-refund",
-  "vector/batch-build-top-up",
-  "vector/batch-build-top-up-version-1",
-  "vector/batch-build-voucher-first",
-  "vector/batch-build-voucher-next",
-]
 # Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
-
 [[unsupported]]
-reason = "the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated) with no option to narrow it, so a sponsor configured with [0] (input.x402ServerTransactionVersions) cannot be expressed (scheme_exact_svm.md §1.5: \"The sponsor enforces its own accepted set\")"
 ids = [
-  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
-  "vector/x402-verify-v1-not-accepted-reject",
 ]
 
 [[known_failing]]
-id = "vector/x402-verify-v1-compute-limit-over-cap-reject"
-reason = "the @x402/svm exact facilitator has no default compute unit cap (maxComputeUnits is unset in the runner and in pay-kit), so a version-1 computeUnitLimit of 400001, over the 400,000 reference default, is sponsored (scheme_exact_svm.md §2.2.1 \"MUST NOT exceed the configured maximum\")"
-tracking = "FINDINGS.md#txv1-ts-x402-v1-policy"
 
 [[known_failing]]
-id = "vector/x402-verify-v1-extra-signer-reject"
-reason = "as for version 0: the @x402/svm static path accepts a third required signer (scheme_exact_svm.md §2.1.4); maxRequiredSignatures is unset in pay-kit (typescript/packages/pay-kit/src/config.ts)"
-tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
 
 [[unsupported]]
-reason = "the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated) with no option to narrow it, so a sponsor configured with [0] explicitly (input.x402ServerTransactionVersions) cannot be expressed"
-pattern = "cross/x402-build-v0-advertised/*/typescript"
 
 
 

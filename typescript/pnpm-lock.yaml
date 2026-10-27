@@ -2577,7 +2577,7 @@ packages:
     version: 2.28.0
 
   '@x402/svm@file:.x402-vendor/x402-svm-2.28.0.tgz':
-    resolution: {integrity: sha512-cuY8ppSxs5aWYO1SqsHT7P6/zfZoR/MT70tTYADGsBppG3Vn/aT4e18lkcqoGdB5y2Rg/iUQrX+CiMyhzSRyJg==, tarball: file:.x402-vendor/x402-svm-2.28.0.tgz}
+    resolution: {integrity: sha512-x+/IMZCgarfiRopIRhMHvrleX42RQEX6OjZqSbKiUTpZ9nGxiCEQycIQT9JbFik686ebmsG43B6lQwo+bWOkDA==, tarball: file:.x402-vendor/x402-svm-2.28.0.tgz}
     version: 2.28.0
     peerDependencies:
       '@solana/kit': '>=8.0.0'
